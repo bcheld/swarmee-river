@@ -445,7 +445,7 @@ def test_auto_generated_title(mock_environment, mock_thread):
     assert len(args) >= 2
     assert args[0] == "Test content"  # First arg is content
     # Second arg (title) should be auto-generated, not None
-    assert "Strands Memory" in args[1]  # Second arg should contain auto-generated title
+    assert "Swarmee Memory" in args[1]  # Second arg should contain auto-generated title
 
     # Title format in response should include "Strands Memory"
-    assert "Title: Strands Memory" in result["content"][1]["text"]
+    assert "Title: Swarmee Memory" in result["content"][1]["text"]

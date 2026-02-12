@@ -1,4 +1,4 @@
-"""Create instance of SDK's Ollama model provider."""
+"""Create instance of Strands SDK Ollama model provider."""
 
 from typing import Optional
 

@@ -6,11 +6,15 @@ __pycache__*
 .pytest_cache
 .ruff_cache
 .welcome
+.swarmee
+.vscode
 build
 *.bak
 *.egg-info
 dist
 venv
+.venv
+.env
 
 notifications
 repl_state

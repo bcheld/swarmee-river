@@ -1,6 +1,4 @@
-"""
-Knowledge base utility functions for Strands
-"""
+"""Knowledge base utility functions for Swarmee River."""
 
 import os
 from pathlib import Path
@@ -89,12 +87,13 @@ def store_conversation_in_kb(agent, user_input, response=None, knowledge_base_id
 def load_system_prompt():
     """
     Load system prompt with the following priority:
-    1. STRANDS_SYSTEM_PROMPT environment variable
+    1. SWARMEE_SYSTEM_PROMPT environment variable
+    2. STRANDS_SYSTEM_PROMPT environment variable (backwards compatibility)
     2. .prompt file in current working directory
     3. Default prompt
     """
     # Try to get from environment variable
-    system_prompt = os.getenv("STRANDS_SYSTEM_PROMPT")
+    system_prompt = os.getenv("SWARMEE_SYSTEM_PROMPT") or os.getenv("STRANDS_SYSTEM_PROMPT")
     if system_prompt:
         return system_prompt
 
