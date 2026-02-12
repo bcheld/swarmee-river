@@ -6,11 +6,11 @@
   </div>
 
   <h1>
-    Strands Agent Builder
+    Swarmee River
   </h1>
 
   <h2>
-    A model-driven approach to building AI agents in just a few lines of code.
+    Enterprise analytics + coding assistant built on the Strands Agents SDK.
   </h2>
 
   <div align="center">
@@ -18,8 +18,8 @@
     <a href="https://github.com/strands-agents/agent-builder/issues"><img alt="GitHub open issues" src="https://img.shields.io/github/issues/strands-agents/agent-builder"/></a>
     <a href="https://github.com/strands-agents/agent-builder/pulls"><img alt="GitHub open pull requests" src="https://img.shields.io/github/issues-pr/strands-agents/agent-builder"/></a>
     <a href="https://github.com/strands-agents/agent-builder/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/strands-agents/agent-builder"/></a>
-    <a href="https://pypi.org/project/strands-agents-builder/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/strands-agents-builder"/></a>
-    <a href="https://python.org"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/strands-agents-builder"/></a>
+    <a href="https://pypi.org/project/swarmee-river/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/swarmee-river"/></a>
+    <a href="https://python.org"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/swarmee-river"/></a>
   </div>
   
   <p>
@@ -32,25 +32,25 @@
   </p>
 </div>
 
-An interactive Strands agent toolkit designed to help you build, test, and extend your own custom AI agents and tools. With the Strands Agent Builder, you can create specialized agents, develop custom tools, and compose complex AI workflows—all from your terminal.
+Swarmee River is an interactive, enterprise-oriented analytics + coding assistant built on the Strands Agents SDK. It keeps what works (simple packaging, hot-loaded tools, AWS connectivity) while adding better context management, SOPs, and observability.
 
 ## Quick Start
 
 ```bash
 # Install
-pipx install strands-agents-builder
+pipx install swarmee-river
 
-# Run interactive mode for agent development
-strands
+# Run interactive mode
+swarmee
 
 # Build a custom tool and use it immediately
-strands "Create a tool named sentiment_analyzer that analyzes text sentiment and test it with some examples"
+swarmee "Create a tool named sentiment_analyzer that analyzes text sentiment and test it with some examples"
 
 # Pipe content to build an agent based on specifications
-cat agent-spec.txt | strands "Build a specialized agent based on these specifications"
+cat agent-spec.txt | swarmee "Build a specialized agent based on these specifications"
 
 # Use with knowledge base to extend existing tools
-strands --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with scientific functions"
+swarmee --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with scientific functions"
 ```
 
 ## Features
@@ -59,6 +59,7 @@ strands --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with sc
 - 🤖 Build specialized agents with focused capabilities
 - 🔄 Extend existing tools and enhance their functionality
 - 💬 Interactive command-line interface with rich output
+- ⛔ Interrupt a running agent with `Esc`
 - 🛠️ Powerful integrated tools (12+ tools including shell, editor, HTTP, Python)
 - 🧠 Knowledge base integration for persisting and loading tools
 - 🎮 Customizable system prompt for specialized agents
@@ -68,7 +69,7 @@ strands --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with sc
 
 ## Integrated Tools
 
-Strands comes with a comprehensive set of built-in tools:
+Swarmee River uses Strands Tools and supports hot-loading tools from `./tools`.
 
 - **agent_graph**: Create and manage graphs of agents
 - **calculator**: Perform mathematical operations
@@ -95,12 +96,12 @@ Strands comes with a comprehensive set of built-in tools:
 - **think**: Perform deep thinking by creating parallel branches of agentic reasoning
 - **use_aws**: Interact with AWS services
 - **use_llm**: Run a new AI event loop with custom prompts
-- **welcome**: Manage the Strands Agent Builder welcome text
+- **welcome**: Manage the Swarmee welcome text
 - **workflow**: Orchestrate sequenced workflows
 
 ## Knowledge Base Integration
 
-Strands Agent Builder leverages Amazon Bedrock Knowledge Bases to store and retrieve custom tools, agent configurations, and development history.
+Swarmee River can leverage Amazon Bedrock Knowledge Bases to store and retrieve useful context and artifacts.
 
 ### Set up your Knowledge Base
 
@@ -153,7 +154,7 @@ Create via AWS CLI or SDK:
 # Example using AWS CLI
 aws bedrock-agent create-knowledge-base \
   --name "MyKnowledgeBase" \
-  --description "Strands Agent Builder KB" \
+  --description "Swarmee River KB" \
   --role-arn "arn:aws:iam::ACCOUNT:role/AmazonBedrockExecutionRoleForKnowledgeBase" \
   --knowledge-base-configuration '{
     "type": "VECTOR",
@@ -188,11 +189,11 @@ The ID format: `ABCDEFGHIJ` (10 characters)
 
 ```bash
 # Load and extend tools from your knowledge base
-strands --kb YOUR_KB_ID "Load my data_visualizer tool and add 3D plotting capabilities"
+swarmee --kb YOUR_KB_ID "Load my data_visualizer tool and add 3D plotting capabilities"
 
 # Or set a default knowledge base via environment variable
 export STRANDS_KNOWLEDGE_BASE_ID="YOUR_KB_ID"
-strands "Find my most recent agent configuration and make it more efficient"
+swarmee "Find my most recent agent configuration and make it more efficient"
 ```
 
 Features:
@@ -205,7 +206,7 @@ Features:
 
 ### Optimized Defaults
 
-Strands comes with optimized, maxed-out configuration settings for the Bedrock model provider:
+Swarmee River defaults to an optimized Bedrock configuration when using `--model-provider bedrock`:
 
 ```json
 {
@@ -249,21 +250,48 @@ export STRANDS_BUDGET_TOKENS=1024
 
 ## Custom Model Provider
 
-You can configure strands to use a different model provider with specific settings by passing in the following arguments:
+You can configure Swarmee to use a different model provider with specific settings by passing in the following arguments:
 
 ```bash
-strands --model-provider <NAME> --model-config <JSON|FILE>
+swarmee --model-provider <NAME> --model-config <JSON|FILE>
 ```
 
 As an example, if you wanted to use the packaged Ollama provider with a specific model id, you would run:
 
 ```bash
-strands --model-provider ollama --model-config '{"model_id": "<ID>"}'
+swarmee --model-provider ollama --model-config '{"model_id": "<ID>"}'
 ```
 
-Strands Agent Builder is packaged with `bedrock` and `ollama`.
+Swarmee River is packaged with `bedrock`, `ollama`, and `openai`.
 
-If you have implemented a custom model provider ([instructions](https://strandsagents.com/latest/user-guide/concepts/model-providers/custom_model_provider/)) and would like to use it with strands, create a python module under the directory "$CWD/.models" and expose an `instance` function that returns an instance of your provider. As an example, assume you have:
+### OpenAI (low-cost default)
+
+Create a local `.env` file with your key:
+
+```bash
+echo "OPENAI_API_KEY=..." > .env
+echo "OPENAI_BASE_URL=https://api.openai.com/v1" >> .env
+```
+
+Then run:
+
+```bash
+swarmee --model-provider openai "Hello from gpt-5-nano"
+```
+
+Tip: if you see a `max_tokens` / output token limit error, increase the output cap:
+
+```bash
+swarmee --model-provider openai --max-output-tokens 1024 "List your tools (briefly)"
+```
+
+To override the model/limits:
+
+```bash
+swarmee --model-provider openai --model-config '{"model_id":"gpt-5-nano","params":{"max_completion_tokens":256}}' "Summarize this repo"
+```
+
+If you have implemented a custom model provider ([instructions](https://strandsagents.com/latest/user-guide/concepts/model-providers/custom_model_provider/)) and would like to use it with Swarmee, create a python module under the directory "$CWD/.models" and expose an `instance` function that returns an instance of your provider. As an example, assume you have:
 
 ```bash
 $ cat ./.models/custom_model.py
@@ -273,17 +301,17 @@ def instance(**config):
     return CustomModel(**config)
 ```
 
-You can then use it with strands by running:
+You can then use it with Swarmee by running:
 
 ```bash
-$ strands --model-provider custom_model --model-config <JSON|FILE>
+$ swarmee --model-provider custom_model --model-config <JSON|FILE>
 ```
 
 ## Custom System Prompts
 
 ```bash
 # Via environment variable
-export STRANDS_SYSTEM_PROMPT="You are a Python expert."
+export SWARMEE_SYSTEM_PROMPT="You are a Python expert."
 
 # Or local file
 echo "You are a security expert." > .prompt
@@ -291,7 +319,7 @@ echo "You are a security expert." > .prompt
 
 ## 🌍 Environment Variables Configuration
 
-Strands Agent Builder also provides customization through environment variables:
+Swarmee River provides customization through environment variables (Strands variables still work where applicable):
 
 | Environment Variable | Description | Default | 
 |----------------------|-------------|---------|
@@ -306,6 +334,19 @@ Strands Agent Builder also provides customization through environment variables:
 | STRANDS_KNOWLEDGE_BASE_ID | Default Knowledge Base ID | None |
 | STRANDS_TOOL_CONSOLE_MODE | Enable rich console UI | enabled |
 | BYPASS_TOOL_CONSENT | Skip tool confirmation prompts | false |
+
+Swarmee-specific variables (selected):
+
+| Environment Variable | Description | Default |
+|----------------------|-------------|---------|
+| SWARMEE_SYSTEM_PROMPT | Custom system prompt | None |
+| SWARMEE_KNOWLEDGE_BASE_ID | Default Knowledge Base ID | None |
+| SWARMEE_CONTEXT_MANAGER | `summarize` / `sliding` / `none` | summarize |
+| SWARMEE_CONTEXT_BUDGET_TOKENS | Prompt budget before summarization (approx) | 20000 |
+| SWARMEE_ENABLE_SOPS | Allow only these SOPs (comma-separated) | None |
+| SWARMEE_DISABLE_SOPS | Block these SOPs (comma-separated) | None |
+| SWARMEE_LOG_EVENTS | Enable JSONL event logging | true |
+| SWARMEE_LOG_S3_BUCKET | Optional S3 bucket for log uploads | None |
 
 ## Exit
 
@@ -327,4 +368,3 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 ## Security
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
-

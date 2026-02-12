@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Welcome message utility functions for Strands
-"""
+"""Welcome message utility functions for Swarmee."""
 
 from rich.align import Align
 from rich.box import ROUNDED
@@ -49,8 +47,8 @@ def render_welcome_message(welcome_text):
     # Create a centered panel with the welcome message
     welcome_panel = Panel(
         Align.center(panel_content),
-        title="[heading]Welcome to Strands[/heading]",
-        subtitle="[info]strands[/info]",
+        title="[heading]Welcome to Swarmee[/heading]",
+        subtitle="[info]swarmee[/info]",
         border_style="blue",
         box=ROUNDED,
         expand=False,
@@ -69,7 +67,7 @@ def render_goodbye_message():
     console.print("\n")
     console.print(
         Panel(
-            Align.center("[highlight]Thank you for using Strands![/highlight]"),
+            Align.center("[highlight]Thank you for using Swarmee![/highlight]"),
             border_style="blue",
             box=ROUNDED,
             expand=False,

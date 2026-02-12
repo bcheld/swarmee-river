@@ -1,9 +1,12 @@
 import time
+from threading import Event
 from typing import Any
 
 from colorama import Fore, Style, init
 from halo import Halo
 from rich.status import Status
+
+from swarmee_river.interrupts import AgentInterruptedError
 
 # Initialize Colorama
 init(autoreset=True)
@@ -81,6 +84,7 @@ class CallbackHandler:
         self.current_spinner = None
         self.current_tool = None
         self.tool_histories = {}
+        self.interrupt_event: Event | None = None
 
     def notify(self, title: str, message: str, sound: bool = True):
         """Send a native notification using mac_automation tool."""
@@ -97,6 +101,15 @@ class CallbackHandler:
         start_event_loop = kwargs.get("start_event_loop", False)
         event_loop_throttled_delay = kwargs.get("event_loop_throttled_delay", None)
         console = kwargs.get("console", None)
+
+        if self.interrupt_event is not None and self.interrupt_event.is_set():
+            try:
+                if self.thinking_spinner:
+                    self.thinking_spinner.stop()
+                if self.current_spinner:
+                    self.current_spinner.stop()
+            finally:
+                raise AgentInterruptedError("Interrupted by user (Esc)")
 
         try:
             # Concurrent thinking spinners are usual, which leads to:
@@ -224,3 +237,7 @@ class CallbackHandler:
 
 callback_handler_instance = CallbackHandler()
 callback_handler = callback_handler_instance.callback_handler
+
+
+def set_interrupt_event(event: Event | None) -> None:
+    callback_handler_instance.interrupt_event = event

@@ -150,7 +150,7 @@ def store_in_kb(content: str, title: str = None, knowledge_base_id: str = None) 
 
     region_name = os.getenv("AWS_REGION", "us-west-2")
 
-    doc_title = title or f"Strands Memory {time.strftime('%Y%m%d_%H%M%S')}"
+    doc_title = title or f"Swarmee Memory {time.strftime('%Y%m%d_%H%M%S')}"
 
     thread = threading.Thread(
         target=_store_in_kb_background, args=(content, doc_title, kb_id, region_name), daemon=True

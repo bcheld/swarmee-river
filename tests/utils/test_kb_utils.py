@@ -1,7 +1,7 @@
 import os
 from unittest import mock
 
-from strands_agents_builder.utils.kb_utils import load_system_prompt, store_conversation_in_kb
+from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
 
 
 def test_load_system_prompt_from_env(temp_env):

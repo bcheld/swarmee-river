@@ -25,7 +25,7 @@ class TestWelcomeTool:
             # Check that the result contains the default welcome text
             assert result["status"] == "success"
             assert DEFAULT_WELCOME_TEXT in result["content"][0]["text"]
-            assert "welcome to strands" in result["content"][0]["text"]
+            assert "welcome to swarmee" in result["content"][0]["text"]
 
             # Verify file wasn't opened since it doesn't exist
             mock_file.assert_not_called()

@@ -1,7 +1,7 @@
 """
 Strand Tool - Provides access to Strands functionality as a Strands tool
 
-This tool allows using Strands (a minimal Strands CLI) from within Strands itself,
+This tool allows using Swarmee (CLI) from within a Strands agent itself,
 enabling nested Strands agent instances with their own tools and system prompts.
 """
 
@@ -46,7 +46,7 @@ def strand(
         sys.stdout = captured_output
 
         try:
-            from strands_agents_builder.tools import get_tools
+            from swarmee_river.tools import get_tools
 
             all_tools = get_tools()
 

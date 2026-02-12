@@ -1,4 +1,4 @@
-"""Utilities for loading model providers in strands."""
+"""Utilities for loading model providers in Swarmee."""
 
 import importlib
 import json
@@ -9,8 +9,8 @@ from typing import Any
 from botocore.config import Config
 from strands.models import Model
 
-# Default model configuration
-DEFAULT_MODEL_CONFIG = {
+# Default Bedrock model configuration
+DEFAULT_BEDROCK_MODEL_CONFIG: dict[str, Any] = {
     "model_id": os.getenv("STRANDS_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
     "max_tokens": int(os.getenv("STRANDS_MAX_TOKENS", "32768")),
     "boto_client_config": Config(
@@ -29,7 +29,46 @@ DEFAULT_MODEL_CONFIG = {
 }
 ANTHROPIC_BETA_FEATURES = os.getenv("STRANDS_ANTHROPIC_BETA", "interleaved-thinking-2025-05-14")
 if len(ANTHROPIC_BETA_FEATURES) > 0:
-    DEFAULT_MODEL_CONFIG["additional_request_fields"]["anthropic_beta"] = ANTHROPIC_BETA_FEATURES.split(",")
+    DEFAULT_BEDROCK_MODEL_CONFIG["additional_request_fields"]["anthropic_beta"] = ANTHROPIC_BETA_FEATURES.split(",")
+
+
+def default_model_config(provider: str) -> dict[str, Any]:
+    provider = provider.strip().lower()
+    if provider == "bedrock":
+        return DEFAULT_BEDROCK_MODEL_CONFIG
+
+    if provider == "ollama":
+        return {
+            "host": os.getenv("SWARMEE_OLLAMA_HOST"),
+            "model_id": os.getenv("SWARMEE_OLLAMA_MODEL_ID", os.getenv("OLLAMA_MODEL", "llama3.1")),
+        }
+
+    if provider == "openai":
+        model_id = os.getenv("SWARMEE_OPENAI_MODEL_ID", "gpt-5-nano")
+        max_tokens = os.getenv("SWARMEE_MAX_TOKENS")
+        params: dict[str, Any] = {}
+        if max_tokens and max_tokens.isdigit():
+            # OpenAI Chat Completions uses `max_completion_tokens` for newer models.
+            params["max_completion_tokens"] = int(max_tokens)
+
+        client_args: dict[str, Any] = {}
+        if os.getenv("OPENAI_API_KEY"):
+            client_args["api_key"] = os.getenv("OPENAI_API_KEY")
+        if os.getenv("OPENAI_BASE_URL"):
+            base_url = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+            # OpenAI Python SDK expects base_url to include `/v1` (default is https://api.openai.com/v1).
+            if base_url and not base_url.endswith("/v1"):
+                base_url = base_url + "/v1"
+            client_args["base_url"] = base_url
+
+        config: dict[str, Any] = {"model_id": model_id}
+        if params:
+            config["params"] = params
+        if client_args:
+            config["client_args"] = client_args
+        return config
+
+    return {}
 
 
 def load_path(name: str) -> pathlib.Path:
@@ -56,7 +95,7 @@ def load_path(name: str) -> pathlib.Path:
     return path
 
 
-def load_config(config: str) -> dict[str, Any]:
+def load_config(config: str) -> dict[str, Any] | None:
     """Load model configuration from a JSON string or file.
 
     Args:
@@ -67,7 +106,7 @@ def load_config(config: str) -> dict[str, Any]:
         The parsed configuration.
     """
     if not config or config == "{}":
-        return DEFAULT_MODEL_CONFIG
+        return None
 
     if config.endswith(".json"):
         with open(config) as fp:

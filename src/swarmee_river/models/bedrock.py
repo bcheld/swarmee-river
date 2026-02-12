@@ -1,4 +1,4 @@
-"""Create instance of SDK's Bedrock model provider."""
+"""Create instance of Strands SDK Bedrock model provider."""
 
 from botocore.config import Config as BotocoreConfig
 from strands.models import BedrockModel, Model
