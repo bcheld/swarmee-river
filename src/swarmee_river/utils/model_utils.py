@@ -25,7 +25,6 @@ DEFAULT_BEDROCK_MODEL_CONFIG: dict[str, Any] = {
         },
     },
     "cache_tools": os.getenv("STRANDS_CACHE_TOOLS", "default"),
-    "cache_prompt": os.getenv("STRANDS_CACHE_PROMPT", "default"),
 }
 ANTHROPIC_BETA_FEATURES = os.getenv("STRANDS_ANTHROPIC_BETA", "interleaved-thinking-2025-05-14")
 if len(ANTHROPIC_BETA_FEATURES) > 0:

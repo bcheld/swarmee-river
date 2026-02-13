@@ -22,6 +22,7 @@ def shell(
     Notes:
     - Uses `subprocess.run(..., shell=True)` to allow typical shell syntax.
     - Intended for enterprise environments where `strands_tools.shell` may be unavailable on Windows.
+    - In non-interactive mode, stdin is detached to avoid blocking on prompts.
     """
     if not command or not command.strip():
         return {"status": "error", "content": [{"text": "Command is required."}]}
@@ -36,6 +37,7 @@ def shell(
             shell=True,
             cwd=cwd,
             env=run_env,
+            stdin=subprocess.DEVNULL if non_interactive_mode else None,
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -77,4 +79,3 @@ def shell(
             {"text": combined or "(no output)"},
         ],
     }
-

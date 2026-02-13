@@ -425,7 +425,6 @@ Swarmee River provides customization through environment variables (Strands vari
 | STRANDS_THINKING_TYPE | Type of thinking capability | enabled |
 | STRANDS_ANTHROPIC_BETA | Anthropic beta features (comma-separated) | interleaved-thinking-2025-05-14 |
 | STRANDS_CACHE_TOOLS | Tool caching strategy | default |
-| STRANDS_CACHE_PROMPT | Prompt caching strategy | default |
 | STRANDS_SYSTEM_PROMPT | Custom system prompt (overrides .prompt file) | None |
 | STRANDS_KNOWLEDGE_BASE_ID | Default Knowledge Base ID | None |
 | STRANDS_TOOL_CONSOLE_MODE | Enable rich console UI | enabled |
@@ -439,6 +438,7 @@ Swarmee-specific variables (selected):
 | SWARMEE_KNOWLEDGE_BASE_ID | Default Knowledge Base ID | None |
 | SWARMEE_CONTEXT_MANAGER | `summarize` / `sliding` / `none` | summarize |
 | SWARMEE_CONTEXT_BUDGET_TOKENS | Prompt budget before summarization (approx) | 20000 |
+| SWARMEE_PREFLIGHT_PRINT | Print startup preflight snapshot in interactive mode | false |
 | SWARMEE_ENABLE_SOPS | Allow only these SOPs (comma-separated) | None |
 | SWARMEE_DISABLE_SOPS | Block these SOPs (comma-separated) | None |
 | SWARMEE_LOG_EVENTS | Enable JSONL event logging | true |

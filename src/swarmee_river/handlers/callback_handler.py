@@ -90,17 +90,23 @@ class CallbackHandler:
         """Send a native notification using mac_automation tool."""
         print(f"Notification: {title} - {message}")
 
-    def callback_handler(self, **kwargs: Any) -> None:
-        reasoningText = kwargs.get("reasoningText", False)
-        data = kwargs.get("data", "")
-        complete = kwargs.get("complete", False)
-        force_stop = kwargs.get("force_stop", False)
-        message = kwargs.get("message", {})
-        current_tool_use = kwargs.get("current_tool_use", {})
-        init_event_loop = kwargs.get("init_event_loop", False)
-        start_event_loop = kwargs.get("start_event_loop", False)
-        event_loop_throttled_delay = kwargs.get("event_loop_throttled_delay", None)
-        console = kwargs.get("console", None)
+    def callback_handler(
+        self,
+        reasoningText: str | bool = False,
+        data: str = "",
+        complete: bool = False,
+        force_stop: bool = False,
+        message: dict[str, Any] | None = None,
+        current_tool_use: dict[str, Any] | None = None,
+        init_event_loop: bool = False,
+        start_event_loop: bool = False,
+        event_loop_throttled_delay: int | None = None,
+        console: Any = None,
+        invocation_state: dict[str, Any] | None = None,
+    ) -> None:
+        del invocation_state  # Explicitly accepted for newer callback APIs.
+        message = message or {}
+        current_tool_use = current_tool_use or {}
 
         # Cleanup calls (e.g., from top-level exception handlers) should never re-raise an interrupt.
         if force_stop:

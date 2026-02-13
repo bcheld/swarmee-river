@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.project_map import build_project_map, render_project_map_summary, save_project_map
+from tools.project_context import run_project_context
 
 
 def _truthy(value: str | None, default: bool) -> bool:
@@ -22,7 +22,6 @@ class ContextSnapshot:
 
 def build_context_snapshot(
     *,
-    agent: Any,
     artifact_store: ArtifactStore,
     interactive: bool,
     default_preflight_level: str | None = None,
@@ -55,7 +54,7 @@ def build_context_snapshot(
         preflight_parts: list[str] = []
         for action in actions:
             try:
-                result = agent.tool.project_context(action=action, max_chars=max_chars, record_direct_tool_call=False)
+                result = run_project_context(action=action, max_chars=max_chars)
                 if result.get("status") == "success":
                     preflight_parts.append(result.get("content", [{"text": ""}])[0].get("text", ""))
             except Exception:
@@ -69,7 +68,8 @@ def build_context_snapshot(
                 metadata={"source": "project_context", "level": level},
             )
             preflight_prompt_section = f"Project context snapshot:\n{preflight_text}"
-            if interactive:
+            should_print_preflight = _truthy(os.getenv("SWARMEE_PREFLIGHT_PRINT", "disabled"), False)
+            if interactive and should_print_preflight:
                 print("\n[preflight]\n" + preflight_text + "\n")
 
     if _truthy(os.getenv("SWARMEE_PROJECT_MAP", "enabled"), True):

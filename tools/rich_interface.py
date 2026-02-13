@@ -1,5 +1,4 @@
 import textwrap
-from typing import Any
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -215,7 +214,7 @@ TOOL_SPEC = {
 }
 
 
-def rich_interface(tool: ToolUse, **kwargs: Any) -> ToolResult:
+def rich_interface(tool: ToolUse) -> ToolResult:
     tool_use_id = tool["toolUseId"]
     tool_input = tool["input"]
     console = Console()

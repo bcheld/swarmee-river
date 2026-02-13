@@ -13,6 +13,7 @@ from swarmee_river.cli.diagnostics import (
     render_log_tail,
     render_replay_invocation,
 )
+from tools.sop import run_sop
 
 
 def register_builtin_commands(registry: CommandRegistry) -> None:
@@ -107,7 +108,7 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     def _sop(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
         subcmd = (inv.args[0].lower() if inv.args else "list").strip()
         if subcmd == "list":
-            result = ctx.agent.tool.sop(action="list", sop_paths=ctx.effective_sop_paths, record_direct_tool_call=False)
+            result = run_sop(action="list", sop_paths=ctx.effective_sop_paths)
             ctx.output(result.get("content", [{"text": ""}])[0].get("text", ""))
             return CommandDispatchResult(handled=True)
 
@@ -127,11 +128,10 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
             if not ctx.active_sop_name:
                 ctx.output("No active SOP.")
                 return CommandDispatchResult(handled=True)
-            result = ctx.agent.tool.sop(
+            result = run_sop(
                 action="get",
                 name=ctx.active_sop_name,
                 sop_paths=ctx.effective_sop_paths,
-                record_direct_tool_call=False,
             )
             ctx.output(result.get("content", [{"text": ""}])[0].get("text", ""))
             return CommandDispatchResult(handled=True)

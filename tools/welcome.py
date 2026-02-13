@@ -1,29 +1,39 @@
 """Tool for managing the Swarmee welcome text."""
 
-import os
 from pathlib import Path
-from typing import Any
 
 from strands.types.tools import ToolResult, ToolUse
 
 # Default welcome text (kept intentionally small to avoid bloating the system prompt)
 DEFAULT_WELCOME_TEXT = """# Swarmee
 
-An enterprise analytics + coding assistant built on Strands Agents.
+Enterprise analytics + coding assistant built on Strands Agents.
 
-## Quick tips
-- Tools in `./tools/*.py` are hot-loaded. Add a new tool and use it immediately.
-- Prefer targeted context: read small file sections, summarize large outputs, and keep the prompt lean.
-- If configured, you can `--kb <ID>` to retrieve/store context in an Amazon Bedrock Knowledge Base.
+## First things to try
+- Ask for a concrete task: "find the bug in <file>" or "add tests for <module>".
+- Use `:help` to see all command shortcuts.
+- Use `:tools` to list currently available tools.
 
-## Exiting
+## Useful commands
+- `:plan` force the next prompt into plan-then-approve mode.
+- `:approve` or `:cancel` handle a pending plan.
+- `:session new|save|load|list` manage project-local sessions.
+- `:status`, `:diff`, `:log tail`, `:config show` for diagnostics.
+- `!<command>` run a one-off shell command.
+
+## Workflow tips
+- Tools in `./tools/*.py` are hot-loaded.
+- Keep prompts focused and context lean for faster iterations.
+- If configured, use `--kb <ID>` for Bedrock Knowledge Base retrieval/storage.
+
+## Exit
 Type `exit` or `quit`.
 """
 
 TOOL_SPEC = {
     "name": "welcome",
     "description": (
-        "Edit and manage Swarmee welcome text with a backup in cwd()/.welcome. Can also be used as a "
+        "Edit and manage Swarmee welcome text in cwd()/.welcome. Can also be used as a "
         "shared scratchpad for inter-session communication, status tracking, and coordination between "
         "multiple Swarmee instances."
     ),
@@ -47,7 +57,23 @@ TOOL_SPEC = {
 }
 
 
-def welcome(tool: ToolUse, **kwargs: Any) -> ToolResult:
+def _welcome_path(cwd: Path | None = None) -> Path:
+    return (cwd or Path.cwd()) / ".welcome"
+
+
+def read_welcome_text(*, cwd: Path | None = None) -> str:
+    path = _welcome_path(cwd)
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return DEFAULT_WELCOME_TEXT
+
+
+def write_welcome_text(content: str, *, cwd: Path | None = None) -> None:
+    path = _welcome_path(cwd)
+    path.write_text(content, encoding="utf-8")
+
+
+def welcome(tool: ToolUse) -> ToolResult:
     """Tool implementation for managing welcome text.
 
     Beyond simple welcome text management, this tool can be used creatively as:
@@ -62,7 +88,6 @@ def welcome(tool: ToolUse, **kwargs: Any) -> ToolResult:
     tool_use_id = tool["toolUseId"]
     tool_input = tool["input"]
 
-    welcome_path = f"{Path.cwd()}/.welcome"
     action = tool_input["action"]
 
     try:
@@ -72,9 +97,7 @@ def welcome(tool: ToolUse, **kwargs: Any) -> ToolResult:
                 raise ValueError("content is required for edit action")
 
             content = tool_input["content"]
-            # Write both to original and backup
-            with open(welcome_path, "w") as f:
-                f.write(content)
+            write_welcome_text(content)
 
             return {
                 "toolUseId": tool_use_id,
@@ -83,19 +106,12 @@ def welcome(tool: ToolUse, **kwargs: Any) -> ToolResult:
             }
 
         elif action == "view":
-            # Read from backup if exists, otherwise from default
-            if os.path.exists(welcome_path):
-                with open(welcome_path, "r") as f:
-                    content = f.read()
-                msg = "*.*"
-            else:
-                msg = "*welcome to swarmee!*"
-                content = DEFAULT_WELCOME_TEXT
+            content = read_welcome_text()
 
             return {
                 "toolUseId": tool_use_id,
                 "status": "success",
-                "content": [{"text": f"{msg}\n{content}"}],
+                "content": [{"text": content}],
             }
 
         else:

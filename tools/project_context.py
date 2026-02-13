@@ -39,6 +39,17 @@ def project_context(
     cwd: Optional[str] = None,
     max_chars: int = 12000,
 ) -> dict[str, Any]:
+    return run_project_context(action=action, query=query, path=path, cwd=cwd, max_chars=max_chars)
+
+
+def run_project_context(
+    *,
+    action: str = "summary",
+    query: str | None = None,
+    path: str | None = None,
+    cwd: Optional[str] = None,
+    max_chars: int = 12000,
+) -> dict[str, Any]:
     """
     Explore the current project context from the working directory.
 

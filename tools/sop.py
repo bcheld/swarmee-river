@@ -153,6 +153,16 @@ def sop(
     sop_paths: str | None = None,
     include_builtin: bool = True,
 ) -> dict[str, Any]:
+    return run_sop(action=action, name=name, sop_paths=sop_paths, include_builtin=include_builtin)
+
+
+def run_sop(
+    *,
+    action: str = "list",
+    name: str | None = None,
+    sop_paths: str | None = None,
+    include_builtin: bool = True,
+) -> dict[str, Any]:
     """
     Inspect and load SOPs (Standard Operating Procedures).
 

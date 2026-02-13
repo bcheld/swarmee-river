@@ -35,9 +35,6 @@ class TestInteractiveMode:
         # Call the main function
         swarmee.main()
 
-        # Verify welcome text was retrieved
-        mock_agent.tool.welcome.assert_called_with(action="view", record_direct_tool_call=False)
-
         # Verify welcome message was rendered
         mock_welcome_message.assert_called_once()
 
@@ -137,10 +134,6 @@ class TestInteractiveMode:
         mock_agent_instance = mock.MagicMock()
         mock_agent.return_value = mock_agent_instance
 
-        # Setup welcome mock
-        mock_welcome_result = {"status": "success", "content": [{"text": "Test welcome"}]}
-        mock_agent_instance.tool.welcome.return_value = mock_welcome_result
-
         # Simulate KeyboardInterrupt when getting input
         mock_input.side_effect = KeyboardInterrupt()
 
@@ -159,10 +152,6 @@ class TestInteractiveMode:
         # Setup mocks
         mock_agent_instance = mock.MagicMock()
         mock_agent.return_value = mock_agent_instance
-
-        # Setup welcome mock
-        mock_welcome_result = {"status": "success", "content": [{"text": "Test welcome"}]}
-        mock_agent_instance.tool.welcome.return_value = mock_welcome_result
 
         # Simulate EOFError when getting input
         mock_input.side_effect = EOFError()
@@ -186,10 +175,6 @@ class TestInteractiveMode:
         mock_agent_instance.invoke_async = mock.AsyncMock(
             return_value=mock.MagicMock(structured_output=None, message=[])
         )
-
-        # Setup welcome mock
-        mock_welcome_result = {"status": "success", "content": [{"text": "Test welcome"}]}
-        mock_agent_instance.tool.welcome.return_value = mock_welcome_result
 
         # First return valid input, then cause exception, then exit
         mock_input.side_effect = ["test input", Exception("Test error"), "exit"]
@@ -398,9 +383,7 @@ class TestKnowledgeBaseIntegration:
         # Setup mocks
         mock_user_input.side_effect = ["test query", "exit"]
 
-        # Mock welcome result
-        mock_welcome_result = {"status": "success", "content": [{"text": "Custom welcome text"}]}
-        mock_agent.tool.welcome.return_value = mock_welcome_result
+        monkeypatch.setattr(swarmee, "read_welcome_text", lambda: "Custom welcome text")
 
         # Mock load_system_prompt
         base_system_prompt = "Base system prompt"
@@ -429,9 +412,7 @@ class TestKnowledgeBaseIntegration:
         # Setup mocks
         mock_user_input.side_effect = ["test query", "exit"]
 
-        # Mock welcome result with error status
-        mock_welcome_result = {"status": "error", "content": [{"text": "Failed to load welcome text"}]}
-        mock_agent.tool.welcome.return_value = mock_welcome_result
+        monkeypatch.setattr(swarmee, "read_welcome_text", lambda: "")
 
         # Mock load_system_prompt
         base_system_prompt = "Base system prompt"
@@ -446,3 +427,41 @@ class TestKnowledgeBaseIntegration:
 
         # Verify agent was called with system prompt that excludes welcome text reference
         assert mock_agent.system_prompt == base_system_prompt
+
+
+class TestToolConsentPrompt:
+    """Tests for consent prompt UX wiring."""
+
+    def test_consent_prompt_uses_repl_style_input(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        captured: dict[str, object] = {}
+
+        class FakeToolConsentHooks:
+            def __init__(self, *args, **kwargs):
+                captured["prompt"] = kwargs["prompt"]
+
+        monkeypatch.setattr(swarmee, "ToolConsentHooks", FakeToolConsentHooks)
+        monkeypatch.setattr(sys, "argv", ["swarmee", "test", "query"])
+
+        swarmee.main()
+
+        prompt_fn = captured.get("prompt")
+        assert callable(prompt_fn)
+
+        consent_text = "Allow tool 'shell'? [y]es/[n]o/[a]lways/[v]never:"
+        with (
+            mock.patch.object(swarmee, "callback_handler") as mock_callback_handler,
+            mock.patch.object(swarmee, "get_user_input", return_value="y") as mock_user_input,
+            mock.patch.object(swarmee, "print") as mock_print,
+        ):
+            response = prompt_fn(consent_text)  # type: ignore[operator]
+
+        assert response == "y"
+        mock_callback_handler.assert_called_once_with(force_stop=True)
+        mock_print.assert_any_call(f"\n[tool consent] {consent_text}")
+        mock_user_input.assert_called_once_with("\n~ consent> ", default="", keyboard_interrupt_return_default=True)

@@ -32,6 +32,11 @@ except Exception:
     ToolResultLimiterHooks = None  # type: ignore[assignment]
     ToolPolicyHooks = None  # type: ignore[assignment]
     _HAS_STRANDS_HOOKS = False
+
+try:
+    from swarmee_river.hooks.tool_message_repair import ToolMessageRepairHooks
+except Exception:
+    ToolMessageRepairHooks = None  # type: ignore[assignment]
 from swarmee_river.interrupts import AgentInterruptedError, interrupt_watcher_from_env
 from swarmee_river.intent import classify_intent
 from swarmee_river.cli.builtin_commands import register_builtin_commands
@@ -48,7 +53,7 @@ from swarmee_river.cli.diagnostics import (
 from swarmee_river.cli.repl import run_repl
 from swarmee_river.harness.context_snapshot import build_context_snapshot
 from swarmee_river.planning import WorkPlan, structured_plan_prompt
-from swarmee_river.project_map import build_project_map, render_project_map_summary, save_project_map
+from swarmee_river.project_map import build_project_map
 from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.session.store import SessionStore
@@ -60,6 +65,8 @@ from swarmee_river.utils.env_utils import load_env_file
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
 from swarmee_river.utils.provider_utils import resolve_model_provider
 from swarmee_river.utils.welcome_utils import render_goodbye_message, render_welcome_message
+from tools.sop import run_sop
+from tools.welcome import read_welcome_text
 
 os.environ["STRANDS_TOOL_CONSOLE_MODE"] = "enabled"
 
@@ -468,7 +475,15 @@ def main():
     hooks = []
     if _HAS_STRANDS_HOOKS:
         def _consent_prompt(text: str) -> str:
-            return get_user_input(text, default="", keyboard_interrupt_return_default=True)
+            # Keep consent prompts aligned with interactive UX:
+            # 1) stop active spinners so prompt doesn't appear inline/garbled
+            # 2) render consent context as an explicit line
+            # 3) reuse the familiar input prompt style
+            callback_handler(force_stop=True)
+            prompt_text = (text or "").strip()
+            if prompt_text:
+                print(f"\n[tool consent] {prompt_text}")
+            return get_user_input("\n~ consent> ", default="", keyboard_interrupt_return_default=True)
 
         hooks = [
             JSONLLoggerHooks(),  # type: ignore[misc]
@@ -481,6 +496,8 @@ def main():
             ),
             ToolResultLimiterHooks(),  # type: ignore[misc]
         ]
+        if ToolMessageRepairHooks is not None:
+            hooks.insert(2, ToolMessageRepairHooks())
 
     agent_kwargs: dict[str, Any] = {
         "model": model,
@@ -538,11 +555,10 @@ def main():
         if ctx.active_sop_name:
             sop_text = ""
             try:
-                sop_result = agent.tool.sop(
+                sop_result = run_sop(
                     action="get",
                     name=ctx.active_sop_name,
                     sop_paths=effective_sop_paths,
-                    record_direct_tool_call=False,
                 )
                 if sop_result.get("status") == "success":
                     sop_text = sop_result.get("content", [{}])[0].get("text", "")
@@ -825,7 +841,6 @@ def main():
 
         profile = settings.harness.tier_profiles.get(model_manager.current_tier)
         snapshot = build_context_snapshot(
-            agent=agent,
             artifact_store=artifact_store,
             interactive=False,
             default_preflight_level=profile.preflight_level if profile else None,
@@ -864,16 +879,16 @@ def main():
             # Store conversation in knowledge base
             store_conversation_in_kb(agent, query, response, knowledge_base_id)
     else:
-        # Display welcome text at startup
-        welcome_result = agent.tool.welcome(action="view", record_direct_tool_call=False)
-        welcome_text = ""
-        if welcome_result["status"] == "success":
-            welcome_text = welcome_result["content"][0]["text"]
+        # Display welcome text at startup.
+        try:
+            welcome_text = read_welcome_text()
+        except Exception:
+            welcome_text = ""
+        if welcome_text:
             ctx.welcome_text = welcome_text
             render_welcome_message(welcome_text)
         profile = settings.harness.tier_profiles.get(model_manager.current_tier)
         snapshot = build_context_snapshot(
-            agent=agent,
             artifact_store=artifact_store,
             interactive=True,
             default_preflight_level=profile.preflight_level if profile else None,
