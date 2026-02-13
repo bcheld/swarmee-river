@@ -17,25 +17,46 @@ def _default_settings_path() -> Path:
     return Path.cwd() / ".swarmee" / "settings.json"
 
 
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Deep merge two dicts (override wins). Lists are replaced, not merged."""
+    out: dict[str, Any] = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dict(out[key], value)  # type: ignore[arg-type]
+        else:
+            out[key] = value
+    return out
+
+
 @dataclass(frozen=True)
 class ModelTier:
-    provider: str
+    provider: str = ""
     model_id: str | None = None
+    display_name: str | None = None
+    description: str | None = None
     client_args: dict[str, Any] | None = None
     params: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "ModelTier":
-        provider = str(raw.get("provider") or "").strip()
+    def from_dict(cls, raw: dict[str, Any], *, default_provider: str | None = None) -> "ModelTier":
+        provider = str(raw.get("provider") or default_provider or "").strip()
         model_id = raw.get("model_id")
+        display_name = raw.get("display_name")
+        description = raw.get("description")
         client_args = raw.get("client_args")
         params = raw.get("params")
 
-        extra = {k: v for k, v in raw.items() if k not in {"provider", "model_id", "client_args", "params"}}
+        extra = {
+            k: v
+            for k, v in raw.items()
+            if k not in {"provider", "model_id", "display_name", "description", "client_args", "params"}
+        }
         return cls(
             provider=provider,
             model_id=str(model_id) if isinstance(model_id, str) else None,
+            display_name=str(display_name) if isinstance(display_name, str) else None,
+            description=str(description) if isinstance(description, str) else None,
             client_args=client_args if isinstance(client_args, dict) else None,
             params=params if isinstance(params, dict) else None,
             extra=extra,
@@ -45,10 +66,56 @@ class ModelTier:
         out: dict[str, Any] = {"provider": self.provider}
         if self.model_id:
             out["model_id"] = self.model_id
+        if self.display_name:
+            out["display_name"] = self.display_name
+        if self.description:
+            out["description"] = self.description
         if self.client_args:
             out["client_args"] = self.client_args
         if self.params:
             out["params"] = self.params
+        out.update(self.extra)
+        return out
+
+
+@dataclass(frozen=True)
+class ProviderModels:
+    display_name: str | None = None
+    description: str | None = None
+    tiers: dict[str, ModelTier] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any], *, provider: str) -> "ProviderModels":
+        display_name = raw.get("display_name")
+        description = raw.get("description")
+
+        tiers_raw = raw.get("tiers")
+        tiers: dict[str, ModelTier] = {}
+        if isinstance(tiers_raw, dict):
+            for tier_name, tier_value in tiers_raw.items():
+                if not isinstance(tier_name, str) or not isinstance(tier_value, dict):
+                    continue
+                tiers[tier_name.strip().lower()] = ModelTier.from_dict(tier_value, default_provider=provider)
+
+        extra = {
+            k: v
+            for k, v in raw.items()
+            if k not in {"display_name", "description", "tiers"}
+        }
+        return cls(
+            display_name=str(display_name) if isinstance(display_name, str) else None,
+            description=str(description) if isinstance(description, str) else None,
+            tiers=tiers,
+            extra=extra,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"tiers": {k: v.to_dict() for k, v in self.tiers.items()}}
+        if self.display_name:
+            out["display_name"] = self.display_name
+        if self.description:
+            out["description"] = self.description
         out.update(self.extra)
         return out
 
@@ -82,14 +149,18 @@ class AutoEscalation:
 
 @dataclass(frozen=True)
 class ModelsConfig:
+    provider: str | None = None
     default_tier: str = "balanced"
     tiers: dict[str, ModelTier] = field(default_factory=dict)
+    providers: dict[str, ProviderModels] = field(default_factory=dict)
     auto_escalation: AutoEscalation = field(default_factory=AutoEscalation)
     availability: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ModelsConfig":
+        provider = raw.get("provider")
         default_tier = str(raw.get("default_tier") or "balanced").strip()
+
         tiers_raw = raw.get("tiers")
         tiers: dict[str, ModelTier] = {}
         if isinstance(tiers_raw, dict):
@@ -97,22 +168,38 @@ class ModelsConfig:
                 if not isinstance(tier_name, str) or not isinstance(tier_value, dict):
                     continue
                 tiers[tier_name.strip().lower()] = ModelTier.from_dict(tier_value)
+
+        providers_raw = raw.get("providers")
+        providers: dict[str, ProviderModels] = {}
+        if isinstance(providers_raw, dict):
+            for provider_name, provider_value in providers_raw.items():
+                if not isinstance(provider_name, str) or not isinstance(provider_value, dict):
+                    continue
+                key = provider_name.strip().lower()
+                providers[key] = ProviderModels.from_dict(provider_value, provider=key)
+
         auto = raw.get("auto_escalation")
         availability = raw.get("availability")
         return cls(
+            provider=str(provider).strip().lower() if isinstance(provider, str) and provider.strip() else None,
             default_tier=default_tier,
             tiers=tiers,
+            providers=providers,
             auto_escalation=AutoEscalation.from_dict(auto) if isinstance(auto, dict) else AutoEscalation(),
             availability=availability if isinstance(availability, dict) else {},
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "default_tier": self.default_tier,
             "tiers": {k: v.to_dict() for k, v in self.tiers.items()},
+            "providers": {k: v.to_dict() for k, v in self.providers.items()},
             "auto_escalation": self.auto_escalation.to_dict(),
             "availability": self.availability,
         }
+        if self.provider:
+            out["provider"] = self.provider
+        return out
 
 
 @dataclass(frozen=True)
@@ -225,6 +312,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
     Environment overrides:
     - SWARMEE_MODEL_TIER: force the active tier in the CLI
     - SWARMEE_TIER_AUTO: enable/disable auto escalation
+    - SWARMEE_MODEL_PROVIDER: choose the default provider (bedrock|openai|ollama)
     """
     settings_path = path or _default_settings_path()
     raw: dict[str, Any] = {}
@@ -234,17 +322,32 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
         except Exception:
             raw = {}
 
-    settings = SwarmeeSettings.from_dict(raw)
+    defaults = default_settings_template().to_dict()
+    merged = _deep_merge_dict(defaults, raw) if raw else defaults
+    settings = SwarmeeSettings.from_dict(merged)
 
     # Apply env overrides into the returned structure (does not persist to disk).
     forced_tier = os.getenv("SWARMEE_MODEL_TIER")
     tier_auto = os.getenv("SWARMEE_TIER_AUTO")
+    forced_provider = os.getenv("SWARMEE_MODEL_PROVIDER")
 
     models = settings.models
+    if forced_provider and forced_provider.strip():
+        models = ModelsConfig(
+            provider=forced_provider.strip().lower(),
+            default_tier=models.default_tier,
+            tiers=models.tiers,
+            providers=models.providers,
+            auto_escalation=models.auto_escalation,
+            availability=models.availability,
+        )
+
     if forced_tier and forced_tier.strip():
         models = ModelsConfig(
+            provider=models.provider,
             default_tier=forced_tier.strip().lower(),
             tiers=models.tiers,
+            providers=models.providers,
             auto_escalation=models.auto_escalation,
             availability=models.availability,
         )
@@ -256,8 +359,10 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
             triggers=models.auto_escalation.triggers,
         )
         models = ModelsConfig(
+            provider=models.provider,
             default_tier=models.default_tier,
             tiers=models.tiers,
+            providers=models.providers,
             auto_escalation=auto,
             availability=models.availability,
         )
@@ -276,15 +381,109 @@ def save_settings(settings: SwarmeeSettings, path: Path | None = None) -> Path:
 
 
 def default_settings_template() -> SwarmeeSettings:
-    # Keep defaults conservative; users can edit `.swarmee/settings.json` per environment.
+    # Package defaults: designed to work without users editing `.swarmee/settings.json`.
+    #
+    # Provider selection precedence (highest -> lowest):
+    # - CLI args
+    # - env (e.g., SWARMEE_MODEL_PROVIDER)
+    # - `.swarmee/settings.json`
+    # - built-ins (this function)
     return SwarmeeSettings(
         models=ModelsConfig(
+            provider=None,
             default_tier="balanced",
-            tiers={
-                "fast": ModelTier(provider="bedrock", model_id=""),
-                "balanced": ModelTier(provider="bedrock", model_id=""),
-                "deep": ModelTier(provider="bedrock", model_id=""),
-                "long": ModelTier(provider="bedrock", model_id=""),
+            tiers={},
+            providers={
+                "bedrock": ProviderModels(
+                    display_name="Amazon Bedrock",
+                    description="AWS-managed models (Anthropic Claude, etc). Uses STRANDS_* env vars by default.",
+                    tiers={
+                        "fast": ModelTier(
+                            provider="bedrock",
+                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+                            display_name="Claude Sonnet 4 (fast)",
+                            description="Lower latency / lower cost default (override via SWARMEE_BEDROCK_FAST_MODEL_ID).",
+                        ),
+                        "balanced": ModelTier(
+                            provider="bedrock",
+                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+                            display_name="Claude Sonnet 4 (balanced)",
+                            description="Default tier for most coding and analysis work.",
+                        ),
+                        "deep": ModelTier(
+                            provider="bedrock",
+                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+                            display_name="Claude Sonnet 4 (deep)",
+                            description="Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID).",
+                        ),
+                        "long": ModelTier(
+                            provider="bedrock",
+                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+                            display_name="Claude Sonnet 4 (long)",
+                            description="Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID).",
+                        ),
+                    },
+                ),
+                "openai": ProviderModels(
+                    display_name="OpenAI",
+                    description="OpenAI API models. Requires OPENAI_API_KEY.",
+                    tiers={
+                        "fast": ModelTier(
+                            provider="openai",
+                            model_id="gpt-5-nano",
+                            display_name="GPT-5 nano",
+                            description="Lowest latency/cost; good for quick iterations.",
+                        ),
+                        "balanced": ModelTier(
+                            provider="openai",
+                            model_id="gpt-5-mini",
+                            display_name="GPT-5 mini",
+                            description="Default OpenAI tier for most coding tasks.",
+                        ),
+                        "deep": ModelTier(
+                            provider="openai",
+                            model_id="gpt-5",
+                            display_name="GPT-5",
+                            description="Stronger reasoning; slower / more expensive.",
+                        ),
+                        "long": ModelTier(
+                            provider="openai",
+                            model_id="gpt-5",
+                            display_name="GPT-5 (long)",
+                            description="Long-form outputs (override via SWARMEE_OPENAI_LONG_MODEL_ID).",
+                        ),
+                    },
+                ),
+                "ollama": ProviderModels(
+                    display_name="Ollama",
+                    description="Local models via Ollama (SWARMEE_OLLAMA_HOST).",
+                    tiers={
+                        "fast": ModelTier(
+                            provider="ollama",
+                            model_id="llama3.1",
+                            display_name="llama3.1",
+                            description="Local default for fast iteration (override via SWARMEE_OLLAMA_FAST_MODEL_ID).",
+                        ),
+                        "balanced": ModelTier(
+                            provider="ollama",
+                            model_id="llama3.1",
+                            display_name="llama3.1",
+                            description="Local balanced default.",
+                        ),
+                        "deep": ModelTier(
+                            provider="ollama",
+                            model_id="llama3.1",
+                            display_name="llama3.1",
+                            description="Local deep tier (override via SWARMEE_OLLAMA_DEEP_MODEL_ID).",
+                        ),
+                        "long": ModelTier(
+                            provider="ollama",
+                            model_id="llama3.1",
+                            display_name="llama3.1",
+                            description="Local long tier (override via SWARMEE_OLLAMA_LONG_MODEL_ID).",
+                        ),
+                    },
+                ),
             },
             auto_escalation=AutoEscalation(enabled=False, max_escalations_per_task=1, triggers={}),
             availability={},
@@ -301,4 +500,3 @@ def default_settings_template() -> SwarmeeSettings:
         packs=PacksConfig(installed=[]),
         raw={},
     )
-

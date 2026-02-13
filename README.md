@@ -37,8 +37,24 @@ Swarmee River is an interactive, enterprise-oriented analytics + coding assistan
 ## Quick Start
 
 ```bash
-# Install
+# Install (recommended)
 pipx install swarmee-river
+
+# --- Choose a model provider ---
+#
+# OpenAI:
+export OPENAI_API_KEY="..."
+export SWARMEE_MODEL_PROVIDER="openai"
+#
+# Bedrock:
+# export SWARMEE_MODEL_PROVIDER="bedrock"
+# export AWS_REGION="us-east-2"
+# export STRANDS_MODEL_ID="us.anthropic.claude-sonnet-4-20250514-v1:0"
+#
+# Ollama:
+# export SWARMEE_MODEL_PROVIDER="ollama"
+# export SWARMEE_OLLAMA_HOST="http://localhost:11434"
+# export SWARMEE_OLLAMA_MODEL_ID="llama3.1"
 
 # Run interactive mode
 swarmee
@@ -52,6 +68,22 @@ cat agent-spec.txt | swarmee "Build a specialized agent based on these specifica
 # Use with knowledge base to extend existing tools
 swarmee --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with scientific functions"
 ```
+
+## Configuration
+
+Swarmee is designed to work without users editing config files.
+
+Configuration precedence (highest → lowest):
+1) CLI flags (e.g., `--model-provider`)
+2) Environment variables / `.env`
+3) Project settings file: `.swarmee/settings.json` (optional; great for teams/repos)
+4) Built-in defaults (packaged)
+
+For a comprehensive list of env vars, see `env.example`.
+
+## Contributing
+
+Developer onboarding and contribution workflow: see `CONTRIBUTING.md`.
 
 ## Features
 
@@ -96,7 +128,8 @@ Switch models within a session:
 - `:tier set fast|balanced|deep|long`
 - `:tier auto on|off`
 
-Tier configuration lives in `.swarmee/settings.json`.
+Tier configuration lives in `.swarmee/settings.json` (optional), with env overrides such as
+`SWARMEE_OPENAI_FAST_MODEL_ID` / `SWARMEE_BEDROCK_DEEP_MODEL_ID`.
 
 ### Packs (tools + SOPs + prompts)
 Install/enable packs by updating `.swarmee/settings.json` via CLI:
@@ -147,7 +180,9 @@ Swarmee River can be used inside Jupyter via an IPython extension that registers
 
 1) Install optional deps:
 ```bash
-pip install -e .[jupyter]
+pip install "swarmee-river[jupyter]"
+# or (from source)
+pip install -e ".[jupyter]"
 ```
 
 2) In a notebook:

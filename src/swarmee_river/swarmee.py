@@ -112,7 +112,7 @@ def main():
     parser.add_argument(
         "--model-provider",
         type=model_utils.load_path,
-        default="bedrock",
+        default=None,
         help="Model provider to use for inference",
     )
     parser.add_argument(
@@ -270,7 +270,16 @@ def main():
         print("Usage: swarmee pack list | swarmee pack install <path> | swarmee pack enable|disable <name>")
         return
 
-    model_manager = SessionModelManager(settings, fallback_provider=args.model_provider.stem)
+    if args.model_provider is not None:
+        selected_provider = args.model_provider.stem
+    elif settings.models.provider:
+        selected_provider = settings.models.provider
+    elif os.getenv("OPENAI_API_KEY"):
+        selected_provider = "openai"
+    else:
+        selected_provider = "bedrock"
+
+    model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
     model_manager.set_fallback_config(args.model_config)
     model = model_manager.build_model()
 
@@ -683,8 +692,14 @@ def main():
                         for t in model_manager.list_tiers():
                             mark = "*" if t.name == current else " "
                             status = "available" if t.available else f"unavailable ({t.reason})"
-                            mid = f" model_id={t.model_id}" if t.model_id else ""
-                            lines.append(f"{mark} {t.name}: provider={t.provider}{mid} [{status}]")
+                            model_bits: list[str] = []
+                            if t.display_name:
+                                model_bits.append(t.display_name)
+                            if t.model_id:
+                                model_bits.append(f"model_id={t.model_id}")
+                            model_str = f" ({', '.join(model_bits)})" if model_bits else ""
+                            desc = f" - {t.description}" if t.description else ""
+                            lines.append(f"{mark} {t.name}: provider={t.provider}{model_str} [{status}]{desc}")
                         print("\n".join(lines))
                     elif subcmd == "set" and len(parts) == 3:
                         tier = parts[2].strip().lower()
