@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from strands.hooks import HookRegistry, HookProvider, Hooks
+from strands.hooks import HookRegistry, HookProvider
 from strands.hooks.events import (
     AfterInvocationEvent,
     AfterModelCallEvent,
@@ -45,7 +45,7 @@ def _safe_json(value: Any) -> str:
         return str(value)
 
 
-class JSONLLoggerHooks(Hooks, HookProvider):
+class JSONLLoggerHooks(HookProvider):
     """
     Lightweight JSONL logging of model/tool/invocation events for performance monitoring and replay.
 

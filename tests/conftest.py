@@ -11,6 +11,13 @@ import swarmee_river
 from swarmee_river import swarmee
 
 
+@pytest.fixture(autouse=True)
+def _disable_frontier_startup(monkeypatch):
+    """Keep unit tests deterministic and side-effect free."""
+    monkeypatch.setenv("SWARMEE_PREFLIGHT", "disabled")
+    monkeypatch.setenv("SWARMEE_PROJECT_MAP", "disabled")
+
+
 @pytest.fixture
 def mock_agent():
     """
@@ -19,6 +26,7 @@ def mock_agent():
     with mock.patch.object(swarmee, "Agent") as mock_agent_class:
         mock_agent_instance = mock.MagicMock()
         mock_agent_class.return_value = mock_agent_instance
+        mock_agent_instance.invoke_async = mock.AsyncMock(return_value=mock.MagicMock(structured_output=None, message=[]))
         mock_agent_instance.tool.welcome.return_value = {
             "status": "success",
             "content": [{"text": "Test welcome message"}],

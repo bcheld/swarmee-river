@@ -6,8 +6,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from strands.hooks import HookRegistry, HookProvider, Hooks
+from strands.hooks import HookRegistry, HookProvider
 from strands.hooks.events import AfterToolCallEvent
+
+from swarmee_river.artifacts import ArtifactStore
 
 
 def _truthy_env(name: str, default: bool) -> bool:
@@ -17,7 +19,7 @@ def _truthy_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
 
 
-class ToolResultLimiterHooks(Hooks, HookProvider):
+class ToolResultLimiterHooks(HookProvider):
     """
     Reduce prompt bloat by truncating large tool results before they are added to the agent conversation.
 
@@ -74,6 +76,7 @@ class ToolResultLimiterHooks(Hooks, HookProvider):
 
             self.artifacts_dir.mkdir(parents=True, exist_ok=True)
             ts = time.strftime("%Y%m%d_%H%M%S")
+            iso_ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
             artifact_path = self.artifacts_dir / f"{ts}_{tool_name}_{tool_use_id}.txt"
             artifact_meta_path = self.artifacts_dir / f"{ts}_{tool_name}_{tool_use_id}.meta.json"
 
@@ -91,6 +94,22 @@ class ToolResultLimiterHooks(Hooks, HookProvider):
                 ),
                 encoding="utf-8",
             )
+            try:
+                ArtifactStore(self.artifacts_dir).append_index(
+                    {
+                        "id": f"{ts}_{tool_name}_{tool_use_id}",
+                        "kind": "tool_result",
+                        "path": str(artifact_path),
+                        "meta_path": str(artifact_meta_path),
+                        "created_at": iso_ts,
+                        "toolUseId": tool_use_id,
+                        "tool": tool_name,
+                        "original_chars": len(text),
+                        "kept_chars": self.max_text_chars,
+                    }
+                )
+            except Exception:
+                pass
 
             truncated = text[: self.max_text_chars]
             suffix = (

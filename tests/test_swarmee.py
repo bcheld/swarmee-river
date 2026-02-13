@@ -45,7 +45,12 @@ class TestInteractiveMode:
         mock_user_input.assert_called_with("\n~ ", default="", keyboard_interrupt_return_default=False)
 
         # Verify user input was processed
-        mock_agent.assert_called_with("test query")
+        mock_agent.invoke_async.assert_called_with(
+            "test query",
+            invocation_state={"swarmee": {"mode": "execute"}},
+            structured_output_model=None,
+            structured_output_prompt=None,
+        )
 
         # Verify goodbye message was rendered
         mock_goodbye_message.assert_called_once()
@@ -179,6 +184,9 @@ class TestInteractiveMode:
         # Setup mocks
         mock_agent_instance = mock.MagicMock()
         mock_agent.return_value = mock_agent_instance
+        mock_agent_instance.invoke_async = mock.AsyncMock(
+            return_value=mock.MagicMock(structured_output=None, message=[])
+        )
 
         # Setup welcome mock
         mock_welcome_result = {"status": "success", "content": [{"text": "Test welcome"}]}
@@ -210,7 +218,12 @@ class TestCommandLine:
         swarmee.main()
 
         # Verify agent was called with the query
-        mock_agent.assert_called_with("test query")
+        mock_agent.invoke_async.assert_called_with(
+            "test query",
+            invocation_state={"swarmee": {"mode": "execute"}},
+            structured_output_model=None,
+            structured_output_prompt=None,
+        )
 
     def test_command_line_query_with_kb(
         self, mock_agent, mock_bedrock, mock_load_prompt, mock_store_conversation, monkeypatch
@@ -235,6 +248,9 @@ class TestCommandLine:
         # Setup mocks
         mock_agent_instance = mock.MagicMock()
         mock_agent.return_value = mock_agent_instance
+        mock_agent_instance.invoke_async = mock.AsyncMock(
+            return_value=mock.MagicMock(structured_output=None, message=[])
+        )
 
         # Run main with test query and environment variable
         with (
@@ -268,7 +284,12 @@ class TestConfiguration:
         mock_load_prompt.assert_called_once()
 
         # Verify agent was called with the correct prompt
-        mock_agent.assert_called_with("test query")
+        mock_agent.invoke_async.assert_called_with(
+            "test query",
+            invocation_state={"swarmee": {"mode": "execute"}},
+            structured_output_model=None,
+            structured_output_prompt=None,
+        )
 
     def test_kb_environment_variable(
         self, mock_agent, mock_bedrock, mock_load_prompt, mock_store_conversation, monkeypatch
@@ -296,7 +317,7 @@ class TestErrorHandling:
     def test_general_exception(self, mock_agent, mock_bedrock, mock_load_prompt, monkeypatch, capfd):
         """Test handling of general exceptions"""
         # Make agent raise an exception
-        mock_agent.side_effect = Exception("Test error")
+        mock_agent.invoke_async.side_effect = Exception("Test error")
 
         # Mock sys.argv with a test query
         monkeypatch.setattr(sys, "argv", ["swarmee", "test", "query"])

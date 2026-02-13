@@ -1,0 +1,54 @@
+{
+  "models": {
+    "default_tier": "balanced",
+    "tiers": {
+      "fast": {
+        "provider": "bedrock"
+      },
+      "balanced": {
+        "provider": "bedrock"
+      },
+      "deep": {
+        "provider": "bedrock"
+      },
+      "long": {
+        "provider": "bedrock"
+      }
+    },
+    "auto_escalation": {
+      "enabled": false,
+      "max_escalations_per_task": 1,
+      "triggers": {}
+    },
+    "availability": {}
+  },
+  "safety": {
+    "tool_consent": "ask",
+    "tool_rules": [
+      {
+        "tool": "shell",
+        "default": "ask",
+        "remember": true
+      },
+      {
+        "tool": "file_write",
+        "default": "ask",
+        "remember": true
+      },
+      {
+        "tool": "editor",
+        "default": "ask",
+        "remember": true
+      },
+      {
+        "tool": "http_request",
+        "default": "ask",
+        "remember": true
+      }
+    ]
+  },
+  "packs": {
+    "installed": []
+  }
+}
+

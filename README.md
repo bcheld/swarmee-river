@@ -60,6 +60,11 @@ swarmee --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with sc
 - 🔄 Extend existing tools and enhance their functionality
 - 💬 Interactive command-line interface with rich output
 - ⛔ Interrupt a running agent with `Esc`
+- 🧭 Plan-first workflow for “do work” prompts (plan → approve → execute)
+- ✅ Tool consent prompts for high-risk tools (shell/editor/file_write/http_request)
+- ⚡ In-session model tier switching (`:tier set fast|balanced|deep|long`)
+- 📁 Local artifacts + JSONL logs under `.swarmee/` (with optional S3 upload)
+- 📦 User/team extensibility via packs (tools + SOPs + prompts)
 - 🛠️ Powerful integrated tools (12+ tools including shell, editor, HTTP, Python)
 - 🧠 Knowledge base integration for persisting and loading tools
 - 🎮 Customizable system prompt for specialized agents
@@ -67,11 +72,47 @@ swarmee --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with sc
 - 🔧 Dynamic tool loading for extending functionality
 - 🖥️ Environment variable management and customization
 
+## Frontier Harnessing (Claude Code–inspired)
+
+### Project preflight (automatic)
+On interactive startup, Swarmee can run a lightweight repo preflight and inject the summary into the system prompt.
+
+Controls:
+- `SWARMEE_PREFLIGHT=enabled|disabled`
+- `SWARMEE_PREFLIGHT_LEVEL=summary|summary+tree|summary+files`
+
+### Plan / approve / execute loop
+For “do work” prompts (e.g., implement/fix/refactor/add), Swarmee generates a structured plan and waits for approval.
+
+Interactive commands:
+- `:plan` plan the next prompt
+- `:approve` / `:y` execute the last plan
+- `:n` cancel the last plan
+- `:replan` regenerate the plan for the pending request
+
+### Model tiers
+Switch models within a session:
+- `:tier list`
+- `:tier set fast|balanced|deep|long`
+- `:tier auto on|off`
+
+Tier configuration lives in `.swarmee/settings.json`.
+
+### Packs (tools + SOPs + prompts)
+Install/enable packs by updating `.swarmee/settings.json` via CLI:
+```bash
+swarmee pack list
+swarmee pack install /path/to/pack
+swarmee pack enable my-pack
+swarmee pack disable my-pack
+```
+
 ## Integrated Tools
 
 Swarmee River uses Strands Tools and supports hot-loading tools from `./tools`.
 
 - **agent_graph**: Create and manage graphs of agents
+- **artifact**: List/read/upload/store artifacts under `.swarmee/artifacts/`
 - **project_context**: Explore the project in the current working directory (files/search/git status)
 - **calculator**: Perform mathematical operations
 - **cron**: Task scheduling with cron jobs *(not available on Windows)*

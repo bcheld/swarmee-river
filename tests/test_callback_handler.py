@@ -12,7 +12,6 @@ from rich.status import Status
 import pytest
 
 import swarmee_river
-from swarmee_river.interrupts import AgentInterruptedError
 from swarmee_river.handlers.callback_handler import CallbackHandler, ToolSpinner, format_message
 
 
@@ -195,14 +194,15 @@ class TestCallbackHandler:
             mock_print.assert_called_once()
 
     def test_callback_handler_interrupt_event(self):
-        """Test callback_handler raises when interrupt_event is set."""
+        """Test callback_handler stops cleanly when interrupt_event is set."""
         handler = CallbackHandler()
         interrupt = Event()
         interrupt.set()
         handler.interrupt_event = interrupt
 
-        with pytest.raises(AgentInterruptedError):
+        with mock.patch("builtins.print") as mock_print:
             handler.callback_handler(data="Test data", complete=True)
+            mock_print.assert_not_called()
 
     def test_callback_handler_data_incomplete(self):
         """Test callback_handler with incomplete data."""
