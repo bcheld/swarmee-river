@@ -72,6 +72,7 @@ swarmee --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with sc
 Swarmee River uses Strands Tools and supports hot-loading tools from `./tools`.
 
 - **agent_graph**: Create and manage graphs of agents
+- **project_context**: Explore the project in the current working directory (files/search/git status)
 - **calculator**: Perform mathematical operations
 - **cron**: Task scheduling with cron jobs *(not available on Windows)*
 - **current_time**: Get the current date and time
@@ -98,6 +99,25 @@ Swarmee River uses Strands Tools and supports hot-loading tools from `./tools`.
 - **use_llm**: Run a new AI event loop with custom prompts
 - **welcome**: Manage the Swarmee welcome text
 - **workflow**: Orchestrate sequenced workflows
+
+## Jupyter Notebook Integration
+
+Swarmee River can be used inside Jupyter via an IPython extension that registers a `%%swarmee` cell magic.
+
+1) Install optional deps:
+```bash
+pip install -e .[jupyter]
+```
+
+2) In a notebook:
+```python
+%load_ext swarmee_river.jupyter
+
+%%swarmee
+Review this notebook and suggest improvements to the code.
+```
+
+Example notebook: `examples/notebooks/swarmee_magic_demo.ipynb`
 
 ## Knowledge Base Integration
 

@@ -1,5 +1,5 @@
 """Swarmee River package."""
 
-from . import handlers, models, swarmee, utils
+from . import handlers, jupyter, models, swarmee, utils
 
-__all__ = ["handlers", "models", "swarmee", "utils"]
+__all__ = ["handlers", "jupyter", "models", "swarmee", "utils"]
