@@ -44,6 +44,7 @@ from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.env_utils import load_env_file
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
+from swarmee_river.utils.provider_utils import resolve_model_provider
 from swarmee_river.utils.welcome_utils import render_goodbye_message, render_welcome_message
 
 os.environ["STRANDS_TOOL_CONSOLE_MODE"] = "enabled"
@@ -270,14 +271,13 @@ def main():
         print("Usage: swarmee pack list | swarmee pack install <path> | swarmee pack enable|disable <name>")
         return
 
-    if args.model_provider is not None:
-        selected_provider = args.model_provider.stem
-    elif settings.models.provider:
-        selected_provider = settings.models.provider
-    elif os.getenv("OPENAI_API_KEY"):
-        selected_provider = "openai"
-    else:
-        selected_provider = "bedrock"
+    selected_provider, provider_notice = resolve_model_provider(
+        cli_provider=args.model_provider.stem if args.model_provider is not None else None,
+        env_provider=os.getenv("SWARMEE_MODEL_PROVIDER"),
+        settings_provider=settings.models.provider,
+    )
+    if provider_notice:
+        print(f"[provider] {provider_notice}")
 
     model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
     model_manager.set_fallback_config(args.model_config)
@@ -844,7 +844,19 @@ def main():
                 break
             except Exception as e:
                 callback_handler(force_stop=True)  # Stop spinners
-                print(f"\nError: {str(e)}")
+                error_text = str(e)
+                print(f"\nError: {error_text}")
+                if "unable to locate credentials" in error_text.lower():
+                    if selected_provider == "bedrock":
+                        print(
+                            "Hint: Bedrock requires AWS credentials (AWS_PROFILE or AWS_ACCESS_KEY_ID/"
+                            "AWS_SECRET_ACCESS_KEY). Or run with `--model-provider openai`."
+                        )
+                    elif knowledge_base_id:
+                        print(
+                            "Hint: Knowledge Base operations require AWS credentials even when model "
+                            "provider is OpenAI."
+                        )
 
 
 if __name__ == "__main__":

@@ -32,12 +32,13 @@ class SessionModelManager:
     and tool registry remain intact.
     """
 
-    def __init__(self, settings: SwarmeeSettings, *, fallback_provider: str = "bedrock") -> None:
+    def __init__(self, settings: SwarmeeSettings, *, fallback_provider: str | None = None) -> None:
         self._settings = settings
-        self._fallback_provider = (fallback_provider or "bedrock").strip().lower()
-        self._default_provider = (
-            (settings.models.provider or self._fallback_provider or "bedrock").strip().lower()
+        chosen_provider = (
+            (fallback_provider or settings.models.provider or "bedrock").strip().lower()
         )
+        self._fallback_provider = chosen_provider
+        self._default_provider = chosen_provider
         self._fallback_config: dict[str, Any] | None = None
         self.current_tier: str = settings.models.default_tier.strip().lower() or "balanced"
         self.auto_escalation_enabled: bool = settings.models.auto_escalation.enabled

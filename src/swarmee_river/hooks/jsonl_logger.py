@@ -18,6 +18,8 @@ from strands.hooks.events import (
     BeforeToolCallEvent,
 )
 
+from swarmee_river.hooks._compat import event_messages, model_response_payload, register_hook_callback
+
 
 def _truthy_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -71,12 +73,12 @@ class JSONLLoggerHooks(HookProvider):
         self._log_path = self.log_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{self.session_id}.jsonl"
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
-        registry.register(BeforeInvocationEvent, self.before_invocation)
-        registry.register(AfterInvocationEvent, self.after_invocation)
-        registry.register(BeforeToolCallEvent, self.before_tool_call)
-        registry.register(AfterToolCallEvent, self.after_tool_call)
-        registry.register(BeforeModelCallEvent, self.before_model_call)
-        registry.register(AfterModelCallEvent, self.after_model_call)
+        register_hook_callback(registry, BeforeInvocationEvent, self.before_invocation)
+        register_hook_callback(registry, AfterInvocationEvent, self.after_invocation)
+        register_hook_callback(registry, BeforeToolCallEvent, self.before_tool_call)
+        register_hook_callback(registry, AfterToolCallEvent, self.after_tool_call)
+        register_hook_callback(registry, BeforeModelCallEvent, self.before_model_call)
+        register_hook_callback(registry, AfterModelCallEvent, self.after_model_call)
 
     def _write_append(self, line: str) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -104,8 +106,9 @@ class JSONLLoggerHooks(HookProvider):
             }
         )
 
+        messages = event_messages(event)
         input_summary = {
-            "input_items": len(event.input) if isinstance(event.input, list) else None,
+            "input_items": len(messages) if isinstance(messages, list) else None,
         }
         self._log("before_invocation", {"invocation_id": inv_id, **input_summary})
 
@@ -163,7 +166,8 @@ class JSONLLoggerHooks(HookProvider):
         call_id = uuid.uuid4().hex
         sw.get("model_t0", {})[call_id] = time.time()
 
-        msg_count = len(event.messages) if isinstance(event.messages, list) else None
+        messages = event_messages(event)
+        msg_count = len(messages) if isinstance(messages, list) else None
         self._log("before_model_call", {"invocation_id": inv_id, "model_call_id": call_id, "messages": msg_count})
         event.invocation_state["swarmee_model_call_id"] = call_id
 
@@ -174,7 +178,8 @@ class JSONLLoggerHooks(HookProvider):
         t0 = sw.get("model_t0", {}).pop(call_id, None)
         duration_s = round(time.time() - t0, 3) if isinstance(t0, (int, float)) else None
 
-        resp_summary = _truncate(str(event.response), self.max_field_chars)
+        response_payload = model_response_payload(event)
+        resp_summary = _truncate(str(response_payload), self.max_field_chars)
         self._log(
             "after_model_call",
             {

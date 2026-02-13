@@ -10,6 +10,7 @@ from strands.hooks import HookRegistry, HookProvider
 from strands.hooks.events import AfterToolCallEvent
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.hooks._compat import register_hook_callback
 
 
 def _truthy_env(name: str, default: bool) -> bool:
@@ -41,7 +42,7 @@ class ToolResultLimiterHooks(HookProvider):
         self.artifacts_dir = default_artifacts_dir if artifacts_dir is None else artifacts_dir
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
-        registry.register(AfterToolCallEvent, self.after_tool_call)
+        register_hook_callback(registry, AfterToolCallEvent, self.after_tool_call)
 
     def after_tool_call(self, event: AfterToolCallEvent) -> None:
         if not self.enabled:

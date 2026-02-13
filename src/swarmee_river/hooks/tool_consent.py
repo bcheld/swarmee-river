@@ -8,6 +8,7 @@ from typing import Any, Callable
 from strands.hooks import HookRegistry, HookProvider
 from strands.hooks.events import BeforeToolCallEvent
 
+from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.settings import SafetyConfig, ToolRule
 
 
@@ -54,7 +55,7 @@ class ToolConsentHooks(HookProvider):
         self._lock = threading.Lock()
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
-        registry.register(BeforeToolCallEvent, self.before_tool_call)
+        register_hook_callback(registry, BeforeToolCallEvent, self.before_tool_call)
 
     def _find_rule(self, tool_name: str) -> ToolRule | None:
         for rule in self._safety.tool_rules:

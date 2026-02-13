@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from swarmee_river.session.models import SessionModelManager
@@ -65,3 +66,15 @@ def test_tier_env_model_id_beats_provider_env_model_id(tmp_path: Path, monkeypat
     assert tiers["fast"].model_id == "gpt-5-nano"
     assert tiers["balanced"].model_id == "gpt-4o-mini"
 
+
+def test_fallback_provider_overrides_settings_provider_for_session(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({"models": {"provider": "bedrock"}}), encoding="utf-8")
+    settings = load_settings(settings_path)
+
+    manager = SessionModelManager(settings, fallback_provider="openai")
+    tiers = {t.name: t for t in manager.list_tiers()}
+
+    assert tiers["balanced"].provider == "openai"

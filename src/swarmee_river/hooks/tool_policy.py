@@ -6,6 +6,8 @@ from typing import Any
 from strands.hooks import HookRegistry, HookProvider
 from strands.hooks.events import BeforeToolCallEvent
 
+from swarmee_river.hooks._compat import register_hook_callback
+
 
 def _truthy_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -38,7 +40,7 @@ class ToolPolicyHooks(HookProvider):
         self.plan_mode_allowed_tools = {"retrieve", "sop"}
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
-        registry.register(BeforeToolCallEvent, self.before_tool_call)
+        register_hook_callback(registry, BeforeToolCallEvent, self.before_tool_call)
 
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
         if event.cancel_tool:
