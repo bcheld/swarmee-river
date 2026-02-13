@@ -3,13 +3,13 @@ import unittest.mock
 
 import pytest
 
-import strands_agents_builder
-import strands_agents_builder.utils.model_utils
+import swarmee_river
+import swarmee_river.utils.model_utils
 
 
 @pytest.fixture
 def cwd(tmp_path):
-    with unittest.mock.patch.object(strands_agents_builder.utils.model_utils.pathlib.Path, "cwd") as mock_cwd:
+    with unittest.mock.patch.object(swarmee_river.utils.model_utils.pathlib.Path, "cwd") as mock_cwd:
         mock_cwd.return_value = tmp_path
         yield tmp_path
 
@@ -24,7 +24,7 @@ def custom_model_dir(cwd):
 
 @pytest.fixture
 def packaged_model_dir():
-    return pathlib.Path(strands_agents_builder.models.__file__).parent
+    return pathlib.Path(swarmee_river.models.__file__).parent
 
 
 @pytest.fixture
@@ -44,39 +44,48 @@ def test_load_path_custom(custom_model_dir):
     model_path = custom_model_dir / "test.py"
     model_path.touch()
 
-    tru_path = strands_agents_builder.utils.model_utils.load_path("test")
+    tru_path = swarmee_river.utils.model_utils.load_path("test")
     exp_path = model_path
     assert tru_path == exp_path
 
 
-@pytest.mark.parametrize("name", ["bedrock", "ollama"])
+@pytest.mark.parametrize("name", ["bedrock", "ollama", "openai"])
 def test_load_path_packaged(name, packaged_model_dir):
-    tru_path = strands_agents_builder.utils.model_utils.load_path(name).resolve()
+    tru_path = swarmee_river.utils.model_utils.load_path(name).resolve()
     exp_path = packaged_model_dir / f"{name}.py"
     assert tru_path == exp_path
 
 
 def test_load_path_missing():
     with pytest.raises(ImportError):
-        strands_agents_builder.utils.model_utils.load_path("invalid")
+        swarmee_river.utils.model_utils.load_path("invalid")
 
 
 def test_load_config_str(config_str):
-    tru_config = strands_agents_builder.utils.model_utils.load_config(config_str)
+    tru_config = swarmee_river.utils.model_utils.load_config(config_str)
     exp_config = {"model_id": "test"}
     assert tru_config == exp_config
 
 
 def test_load_config_path(config_path):
-    tru_config = strands_agents_builder.utils.model_utils.load_config(str(config_path))
+    tru_config = swarmee_river.utils.model_utils.load_config(str(config_path))
     exp_config = {"model_id": "test"}
     assert tru_config == exp_config
+
+
+def test_load_config_default_none():
+    assert swarmee_river.utils.model_utils.load_config("{}") is None
+
+
+def test_default_model_config_openai():
+    config = swarmee_river.utils.model_utils.default_model_config("openai")
+    assert config["model_id"]
 
 
 def test_load_model(custom_model_dir):
     model_path = custom_model_dir / "test_model.py"
     model_path.write_text("def instance(**config): return config")
 
-    tru_result = strands_agents_builder.utils.model_utils.load_model(model_path, {"k1": "v1"})
+    tru_result = swarmee_river.utils.model_utils.load_model(model_path, {"k1": "v1"})
     exp_result = {"k1": "v1"}
     assert tru_result == exp_result

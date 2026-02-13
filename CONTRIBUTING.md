@@ -6,6 +6,55 @@ documentation, we greatly value feedback and contributions from our community.
 Please read through this document before submitting any issues or pull requests to ensure we have all the necessary
 information to effectively respond to your bug report or contribution.
 
+## Developer onboarding (local development)
+
+### Prerequisites
+- Python `>=3.10`
+- `git`
+- Recommended: `pipx`
+
+### Set up the repo
+```bash
+git clone <your-fork-or-upstream-repo-url>
+cd swarmee-river
+```
+
+### Install dev tooling
+This repo uses [Hatch](https://hatch.pypa.io/) for environments and scripts, and `pre-commit` for local checks.
+
+```bash
+pipx install hatch pre-commit
+```
+
+### Run formatting, lint, and tests
+```bash
+# Format (ruff format)
+hatch fmt --formatter
+
+# Lint (ruff check + mypy)
+hatch fmt --linter
+
+# Unit tests
+hatch test --cover
+```
+
+### Enable pre-commit hooks (recommended)
+```bash
+pre-commit install
+pre-commit install --hook-type commit-msg
+```
+
+### Run Swarmee from source
+Swarmee loads `.env` automatically when run from the repo. A typical local setup:
+```bash
+cp env.example .env
+# edit .env with OPENAI_API_KEY or AWS credentials/region as needed
+
+hatch run swarmee
+```
+
+See `README.md` for user-facing configuration and model-provider setup.
+
 
 ## Security issue notifications
 If you discover a potential security issue in this project we ask that you notify AWS/Amazon Security via our [vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/). Please do **not** create a public GitHub issue.

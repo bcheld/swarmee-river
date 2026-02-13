@@ -3,7 +3,7 @@ from unittest import mock
 
 from strands import Agent
 
-from strands_agents_builder import strands
+from swarmee_river import swarmee
 
 
 def test_build_agent_from_specification_file():
@@ -20,8 +20,8 @@ def test_build_agent_from_specification_file():
     # Simulate: cat agent-spec.txt | strands "Build a specialized agent based on these specifications"
     query = f"Build a specialized agent based on these specifications:\n\n{spec_content}"
 
-    with mock.patch.object(sys, "argv", ["strands", query]):
-        strands.main()
+    with mock.patch.object(sys, "argv", ["swarmee", query]):
+        swarmee.main()
 
     # Validate agent
     agent = Agent(

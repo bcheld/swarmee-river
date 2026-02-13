@@ -6,11 +6,18 @@ __pycache__*
 .pytest_cache
 .ruff_cache
 .welcome
+.swarmee/*
+!.swarmee/settings.json
+.vscode
 build
 *.bak
 *.egg-info
 dist
 venv
+.venv
+.env
+
+third_party/opencode/
 
 notifications
 repl_state

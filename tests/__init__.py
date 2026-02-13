@@ -1,3 +1,3 @@
 """
-Test package for strands
+Test package for Swarmee River
 """

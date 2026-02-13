@@ -3,7 +3,7 @@ from unittest import mock
 
 from strands.agent import Agent
 
-from strands_agents_builder import strands
+from swarmee_river import swarmee
 
 
 @mock.patch("strands_tools.utils.user_input.get_user_input", return_value="y")
@@ -15,8 +15,8 @@ def test_interactive_model_create_tool_then_validate(mock_get_user_input, capsys
     with mock.patch.dict("os.environ", {"STRANDS_TOOLS_DIR": str(tmp_file_structure["tools_dir"])}):
         test_query = "create a tool that can only calculate sum of two number called calculator"
 
-        with mock.patch.object(sys, "argv", ["strands", test_query]):
-            strands.main()
+        with mock.patch.object(sys, "argv", ["swarmee", test_query]):
+            swarmee.main()
 
         agent = Agent(
             load_tools_from_directory=True,

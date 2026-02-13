@@ -1,0 +1,7 @@
+{
+  "name": "opencode-compat",
+  "version": "0.1.0",
+  "description": "Compatibility pack for OpenCode users (prompt style + workflow hints).",
+  "tags": ["compat", "opencode"]
+}
+

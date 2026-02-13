@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Any, Optional
+
+from strands import tool
+
+
+def _run(cmd: list[str], *, cwd: Path, timeout_s: int) -> tuple[int, str, str]:
+    try:
+        p = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except Exception as e:
+        return 1, "", str(e)
+    return p.returncode, p.stdout or "", p.stderr or ""
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n… (truncated to {max_chars} chars) …"
+
+
+@tool
+def git(
+    action: str = "status",
+    *,
+    cwd: Optional[str] = None,
+    paths: list[str] | None = None,
+    ref: str | None = None,
+    message: str | None = None,
+    stash_action: str | None = None,
+    max_lines: int = 50,
+    timeout_s: int = 60,
+    max_chars: int = 12000,
+) -> dict[str, Any]:
+    """
+    Git tool for common repo workflows.
+
+    Actions:
+    - status
+    - diff
+    - diff_staged
+    - log
+    - branch
+    - checkout
+    - add
+    - commit
+    - restore
+    - stash (sub-actions: list|push|pop)
+    """
+    action = (action or "").strip().lower()
+    base = Path(cwd or ".").expanduser().resolve()
+    path_args = ["--", *(paths or [])] if paths else []
+
+    if action == "status":
+        code, out, err = _run(["git", "status", "--porcelain=v1", "-b"], cwd=base, timeout_s=timeout_s)
+        text = out.strip() if out.strip() else err.strip()
+        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+
+    if action == "diff":
+        code, out, err = _run(["git", "diff", *path_args], cwd=base, timeout_s=timeout_s)
+        text = out if out else err
+        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+
+    if action == "diff_staged":
+        code, out, err = _run(["git", "diff", "--staged", *path_args], cwd=base, timeout_s=timeout_s)
+        text = out if out else err
+        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+
+    if action == "log":
+        n = max(1, int(max_lines))
+        code, out, err = _run(["git", "log", "--oneline", "-n", str(n)], cwd=base, timeout_s=timeout_s)
+        text = out if out else err
+        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+
+    if action == "branch":
+        code1, out1, err1 = _run(["git", "branch", "--show-current"], cwd=base, timeout_s=timeout_s)
+        code2, out2, err2 = _run(["git", "branch", "--list"], cwd=base, timeout_s=timeout_s)
+        text = ""
+        if out1.strip():
+            text += f"current: {out1.strip()}\n"
+        text += out2 if out2 else (err2 or err1)
+        code = 0 if (code1 == 0 and code2 == 0) else 1
+        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+
+    if action == "checkout":
+        if not ref or not ref.strip():
+            return {"status": "error", "content": [{"text": "ref is required for action=checkout"}]}
+        code, out, err = _run(["git", "checkout", ref.strip()], cwd=base, timeout_s=timeout_s)
+        text = out.strip() if out.strip() else err.strip()
+        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+
+    if action == "add":
+        if not paths:
+            return {"status": "error", "content": [{"text": "paths is required for action=add"}]}
+        code, out, err = _run(["git", "add", "--", *paths], cwd=base, timeout_s=timeout_s)
+        text = out.strip() if out.strip() else err.strip()
+        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+
+    if action == "commit":
+        if not message or not message.strip():
+            return {"status": "error", "content": [{"text": "message is required for action=commit"}]}
+        code, out, err = _run(["git", "commit", "-m", message.strip()], cwd=base, timeout_s=timeout_s)
+        text = out.strip() if out.strip() else err.strip()
+        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+
+    if action == "restore":
+        if not paths:
+            return {"status": "error", "content": [{"text": "paths is required for action=restore"}]}
+        code, out, err = _run(["git", "restore", "--", *paths], cwd=base, timeout_s=timeout_s)
+        text = out.strip() if out.strip() else err.strip()
+        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+
+    if action == "stash":
+        sub = (stash_action or "list").strip().lower()
+        if sub == "list":
+            code, out, err = _run(["git", "stash", "list"], cwd=base, timeout_s=timeout_s)
+            text = out.strip() if out.strip() else err.strip()
+            return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        if sub == "push":
+            args = ["git", "stash", "push"]
+            if message and message.strip():
+                args.extend(["-m", message.strip()])
+            code, out, err = _run(args, cwd=base, timeout_s=timeout_s)
+            text = out.strip() if out.strip() else err.strip()
+            return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        if sub == "pop":
+            code, out, err = _run(["git", "stash", "pop"], cwd=base, timeout_s=timeout_s)
+            text = out.strip() if out.strip() else err.strip()
+            return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "error", "content": [{"text": "Unknown stash_action. Use list|push|pop."}]}
+
+    return {"status": "error", "content": [{"text": f"Unknown action: {action}"}]}
+

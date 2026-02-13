@@ -4,13 +4,15 @@ Unit tests for the callback_handler module.
 """
 
 import time
+from threading import Event
 from unittest import mock
 
 from colorama import Fore
 from rich.status import Status
+import pytest
 
-import strands_agents_builder
-from strands_agents_builder.handlers.callback_handler import CallbackHandler, ToolSpinner, format_message
+import swarmee_river
+from swarmee_river.handlers.callback_handler import CallbackHandler, ToolSpinner, format_message
 
 
 class TestFormatMessage:
@@ -18,7 +20,7 @@ class TestFormatMessage:
 
     def test_format_message_no_color(self):
         """Test format_message without color."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Style") as mock_style:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Style") as mock_style:
             # Mock Style.RESET_ALL to be empty
             mock_style.RESET_ALL = ""
             result = format_message("Test message")
@@ -33,7 +35,7 @@ class TestFormatMessage:
 
     def test_format_message_truncate(self):
         """Test format_message truncates long messages."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Style") as mock_style:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Style") as mock_style:
             # Mock Style.RESET_ALL to be empty
             mock_style.RESET_ALL = ""
             long_message = "x" * 100
@@ -60,7 +62,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_start(self):
         """Test ToolSpinner start method."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -71,7 +73,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_start_with_text(self):
         """Test ToolSpinner start method with text update."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -83,7 +85,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_update(self):
         """Test ToolSpinner update method."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -95,7 +97,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_succeed(self):
         """Test ToolSpinner succeed method."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -106,7 +108,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_succeed_with_text(self):
         """Test ToolSpinner succeed method with text update."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -118,7 +120,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_fail(self):
         """Test ToolSpinner fail method."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -129,7 +131,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_fail_with_text(self):
         """Test ToolSpinner fail method with text update."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -141,7 +143,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_info(self):
         """Test ToolSpinner info method."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -152,7 +154,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_info_with_text(self):
         """Test ToolSpinner info method with text update."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -164,7 +166,7 @@ class TestToolSpinner:
 
     def test_tool_spinner_stop(self):
         """Test ToolSpinner stop method."""
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Halo") as mock_halo:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Halo") as mock_halo:
             mock_spinner = mock.MagicMock()
             mock_halo.return_value = mock_spinner
 
@@ -191,6 +193,17 @@ class TestCallbackHandler:
             handler.callback_handler(data="Test data", complete=True)
             mock_print.assert_called_once()
 
+    def test_callback_handler_interrupt_event(self):
+        """Test callback_handler stops cleanly when interrupt_event is set."""
+        handler = CallbackHandler()
+        interrupt = Event()
+        interrupt.set()
+        handler.interrupt_event = interrupt
+
+        with mock.patch("builtins.print") as mock_print:
+            handler.callback_handler(data="Test data", complete=True)
+            mock_print.assert_not_called()
+
     def test_callback_handler_data_incomplete(self):
         """Test callback_handler with incomplete data."""
         handler = CallbackHandler()
@@ -203,7 +216,7 @@ class TestCallbackHandler:
         handler = CallbackHandler()
 
         # Mock the ToolSpinner class
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "ToolSpinner") as mock_spinner_class:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "ToolSpinner") as mock_spinner_class:
             mock_spinner = mock.MagicMock()
             mock_spinner_class.return_value = mock_spinner
 
@@ -313,7 +326,7 @@ class TestCallbackHandler:
         handler = CallbackHandler()
         mock_status = mock.MagicMock()
 
-        with mock.patch.object(strands_agents_builder.handlers.callback_handler, "Status") as mock_status_class:
+        with mock.patch.object(swarmee_river.handlers.callback_handler, "Status") as mock_status_class:
             mock_status_class.return_value = mock_status
 
             # Call callback_handler to initialize thinking spinner

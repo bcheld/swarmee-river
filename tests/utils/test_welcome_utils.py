@@ -1,12 +1,12 @@
 from unittest import mock
 
-import strands_agents_builder
-from strands_agents_builder.utils.welcome_utils import render_goodbye_message, render_welcome_message
+import swarmee_river
+from swarmee_river.utils.welcome_utils import render_goodbye_message, render_welcome_message
 
 
 def test_render_welcome_message():
     """Test rendering welcome message"""
-    with mock.patch.object(strands_agents_builder.utils.welcome_utils, "console") as mock_console:
+    with mock.patch.object(swarmee_river.utils.welcome_utils, "console") as mock_console:
         # Call the function
         render_welcome_message("Test welcome message")
 
@@ -33,7 +33,7 @@ def test_render_welcome_message_with_invalid_markdown():
 
 def test_render_goodbye_message():
     """Test rendering goodbye message"""
-    with mock.patch.object(strands_agents_builder.utils.welcome_utils, "console") as mock_console:
+    with mock.patch.object(swarmee_river.utils.welcome_utils, "console") as mock_console:
         # Call the function
         render_goodbye_message()
 
