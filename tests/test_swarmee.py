@@ -153,6 +153,27 @@ class TestInteractiveMode:
 
         swarmee.main()
 
+    def test_plan_generation_sets_structured_output_tool_allowlist(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        from swarmee_river.planning import PlanStep, WorkPlan
+
+        plan = WorkPlan(summary="Fix a bug", steps=[PlanStep(description="Inspect failing test", tools_expected=["file_read"])])
+        mock_agent.invoke_async = mock.AsyncMock(return_value=mock.MagicMock(structured_output=plan, message=[]))
+
+        monkeypatch.setattr(sys, "argv", ["swarmee", "fix", "the", "bug"])
+
+        swarmee.main()
+
+        call = mock_agent.invoke_async.call_args
+        sw_state = call.kwargs["invocation_state"]["swarmee"]
+        assert sw_state["mode"] == "plan"
+        assert "WorkPlan" in sw_state.get("plan_allowed_tools", [])
+
     @mock.patch.object(swarmee, "get_user_input")
     @mock.patch.object(swarmee, "Agent")
     @mock.patch.object(swarmee, "render_goodbye_message")

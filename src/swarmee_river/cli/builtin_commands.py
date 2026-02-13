@@ -85,6 +85,7 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     def _cancel(ctx: CLIContext, _inv: CommandInvocation) -> CommandDispatchResult:
         ctx.pending_plan = None
         ctx.pending_request = None
+        ctx.force_plan_next = False
         ctx.output("Plan canceled.")
         return CommandDispatchResult(handled=True)
 
@@ -302,6 +303,7 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     registry.register("tier", _tier, help="List/set model tiers", usage="list | set <tier> | auto on|off")
     registry.register("approve", _approve, help="Approve and execute the pending plan")
     registry.register("y", _approve, help="Alias for :approve")
+    registry.register("cancel", _cancel, help="Cancel the pending plan")
     registry.register("n", _cancel, help="Cancel the pending plan")
     registry.register("replan", _replan, help="Regenerate the pending plan")
     registry.register("plan", _plan, help="Force plan-first for next prompt")

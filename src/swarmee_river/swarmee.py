@@ -588,6 +588,14 @@ def main():
             profile = settings.harness.tier_profiles.get(model_manager.current_tier)
             if profile is not None:
                 sw_state["tool_profile"] = profile.to_dict()
+            if sw_state.get("mode") == "plan" and structured_output_model is not None:
+                model_tool_name = getattr(structured_output_model, "__name__", "").strip()
+                if model_tool_name:
+                    existing = sw_state.get("plan_allowed_tools")
+                    merged: set[str] = {model_tool_name}
+                    if isinstance(existing, (list, tuple, set)):
+                        merged.update(str(item).strip() for item in existing if str(item).strip())
+                    sw_state["plan_allowed_tools"] = sorted(merged)
         invocation_state = resolved_state
 
         interrupt_event.clear()

@@ -4,6 +4,15 @@ from typing import Any, Callable
 
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
 
+
+def _prompt_for_context(ctx: CLIContext) -> str:
+    if ctx.pending_plan is not None:
+        return "\n~ [plan-pending] "
+    if ctx.force_plan_next:
+        return "\n~ [plan-next] "
+    return "\n~ "
+
+
 def run_repl(
     *,
     ctx: CLIContext,
@@ -14,7 +23,11 @@ def run_repl(
 ) -> None:
     while True:
         try:
-            user_input = get_user_input("\n~ ", default="", keyboard_interrupt_return_default=False)
+            user_input = get_user_input(
+                _prompt_for_context(ctx),
+                default="",
+                keyboard_interrupt_return_default=False,
+            )
 
             if (user_input or "").lower() in {"exit", "quit"}:
                 render_goodbye_message()

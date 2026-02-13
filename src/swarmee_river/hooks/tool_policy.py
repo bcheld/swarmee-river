@@ -45,6 +45,16 @@ class ToolPolicyHooks(HookProvider):
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, BeforeToolCallEvent, self.before_tool_call)
 
+    def _plan_mode_allowlist(self, sw_state: dict[str, Any]) -> set[str]:
+        allowed = set(self.plan_mode_allowed_tools)
+        extra = sw_state.get("plan_allowed_tools")
+        if isinstance(extra, (list, tuple, set)):
+            for item in extra:
+                value = str(item).strip()
+                if value:
+                    allowed.add(value)
+        return allowed
+
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
         if event.cancel_tool:
             return
@@ -57,9 +67,11 @@ class ToolPolicyHooks(HookProvider):
         sw = event.invocation_state.get("swarmee", {}) if isinstance(event.invocation_state, dict) else {}
         mode = sw.get("mode")
 
-        if mode == "plan" and name not in self.plan_mode_allowed_tools:
-            event.cancel_tool = f"Tool '{name}' blocked in plan mode."
-            return
+        if mode == "plan":
+            plan_allowed_tools = self._plan_mode_allowlist(sw if isinstance(sw, dict) else {})
+            if name not in plan_allowed_tools:
+                event.cancel_tool = f"Tool '{name}' blocked in plan mode."
+                return
         if mode == "plan" and name == "project_context":
             tool_input = tool_use.get("input")
             action = tool_input.get("action") if isinstance(tool_input, dict) else None
