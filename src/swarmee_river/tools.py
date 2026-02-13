@@ -4,7 +4,7 @@ import importlib
 from typing import Any, Optional
 
 # Custom tools (packaged + hot-loaded from ./tools)
-from tools import agent_graph, artifact, project_context, sop, store_in_kb, strand, swarm, welcome
+from tools import agent_graph, artifact, git, patch_apply, project_context, run_checks, sop, store_in_kb, strand, swarm, welcome
 
 from tools.python_repl import python_repl as python_repl_fallback
 from tools.shell import shell as shell_fallback
@@ -78,6 +78,9 @@ def get_tools() -> dict[str, Any]:
         "sop": sop,
         "artifact": artifact,
         "project_context": project_context,
+        "git": git,
+        "patch_apply": patch_apply,
+        "run_checks": run_checks,
         # Override any `strands_tools.agent_graph` with a cancellable implementation.
         "agent_graph": agent_graph,
         # Override any `strands_tools.swarm` with a cancellable implementation.

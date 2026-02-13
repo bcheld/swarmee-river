@@ -45,12 +45,11 @@ class TestInteractiveMode:
         mock_user_input.assert_called_with("\n~ ", default="", keyboard_interrupt_return_default=False)
 
         # Verify user input was processed
-        mock_agent.invoke_async.assert_called_with(
-            "test query",
-            invocation_state={"swarmee": {"mode": "execute"}},
-            structured_output_model=None,
-            structured_output_prompt=None,
-        )
+        call = mock_agent.invoke_async.call_args
+        assert call.args[0] == "test query"
+        assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
+        assert call.kwargs["structured_output_model"] is None
+        assert call.kwargs["structured_output_prompt"] is None
 
         # Verify goodbye message was rendered
         mock_goodbye_message.assert_called_once()
@@ -218,12 +217,11 @@ class TestCommandLine:
         swarmee.main()
 
         # Verify agent was called with the query
-        mock_agent.invoke_async.assert_called_with(
-            "test query",
-            invocation_state={"swarmee": {"mode": "execute"}},
-            structured_output_model=None,
-            structured_output_prompt=None,
-        )
+        call = mock_agent.invoke_async.call_args
+        assert call.args[0] == "test query"
+        assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
+        assert call.kwargs["structured_output_model"] is None
+        assert call.kwargs["structured_output_prompt"] is None
 
     def test_command_line_query_with_kb(
         self, mock_agent, mock_bedrock, mock_load_prompt, mock_store_conversation, monkeypatch
@@ -284,12 +282,11 @@ class TestConfiguration:
         mock_load_prompt.assert_called_once()
 
         # Verify agent was called with the correct prompt
-        mock_agent.invoke_async.assert_called_with(
-            "test query",
-            invocation_state={"swarmee": {"mode": "execute"}},
-            structured_output_model=None,
-            structured_output_prompt=None,
-        )
+        call = mock_agent.invoke_async.call_args
+        assert call.args[0] == "test query"
+        assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
+        assert call.kwargs["structured_output_model"] is None
+        assert call.kwargs["structured_output_prompt"] is None
 
     def test_kb_environment_variable(
         self, mock_agent, mock_bedrock, mock_load_prompt, mock_store_conversation, monkeypatch

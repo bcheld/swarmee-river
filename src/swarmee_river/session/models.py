@@ -152,6 +152,15 @@ class SessionModelManager:
             else:
                 config[k] = v
 
+        if provider == "openai" and tier_name.strip().lower() == "deep":
+            effort = os.getenv("SWARMEE_OPENAI_REASONING_EFFORT")
+            if isinstance(effort, str) and effort.strip().lower() not in {"", "none", "off", "disabled"}:
+                params = config.get("params")
+                if not isinstance(params, dict):
+                    params = {}
+                params["reasoning_effort"] = effort.strip()
+                config["params"] = params
+
         model_path = model_utils.load_path(provider)
         return model_utils.load_model(model_path, config)
 

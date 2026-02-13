@@ -34,10 +34,24 @@ except Exception:
     _HAS_STRANDS_HOOKS = False
 from swarmee_river.interrupts import AgentInterruptedError, interrupt_watcher_from_env
 from swarmee_river.intent import classify_intent
+from swarmee_river.cli.builtin_commands import register_builtin_commands
+from swarmee_river.cli.commands import CLIContext, CommandRegistry
+from swarmee_river.cli.diagnostics import (
+    render_artifact_get,
+    render_artifact_list,
+    render_effective_config,
+    render_git_diff,
+    render_git_status,
+    render_log_tail,
+    render_replay_invocation,
+)
+from swarmee_river.cli.repl import run_repl
+from swarmee_river.harness.context_snapshot import build_context_snapshot
 from swarmee_river.planning import WorkPlan, structured_plan_prompt
 from swarmee_river.project_map import build_project_map, render_project_map_summary, save_project_map
 from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.session.models import SessionModelManager
+from swarmee_river.session.store import SessionStore
 from swarmee_river.settings import PackEntry, PacksConfig, SwarmeeSettings, load_settings, save_settings
 from swarmee_river.tools import get_tools
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
@@ -197,6 +211,7 @@ def main():
     )
 
     settings = load_settings()
+    settings_path_for_project = Path.cwd() / ".swarmee" / "settings.json"
     auto_approve = args.yes or _truthy(os.getenv("SWARMEE_AUTO_APPROVE", "false"))
 
     # Pack management is intentionally CLI-first: treat `swarmee pack ...` as a command.
@@ -210,6 +225,7 @@ def main():
                 models=settings.models,
                 safety=settings.safety,
                 packs=PacksConfig(installed=installed),
+                harness=settings.harness,
                 raw=settings.raw,
             )
             save_settings(new_settings, settings_path)
@@ -270,6 +286,148 @@ def main():
 
         print("Usage: swarmee pack list | swarmee pack install <path> | swarmee pack enable|disable <name>")
         return
+
+    # Session management is CLI-first as well (project-local under .swarmee/sessions).
+    if args.query and args.query[0].strip().lower() == "session":
+        sub = args.query[1:] if len(args.query) > 1 else []
+        store = SessionStore()
+
+        if not sub or sub[0] in {"list", "ls"}:
+            entries = store.list()
+            if not entries:
+                print("No sessions found.")
+                return
+            lines = ["# Sessions", ""]
+            for e in entries:
+                sid = str(e.get("id") or "")
+                updated = str(e.get("updated_at") or e.get("created_at") or "")
+                provider = str(e.get("provider") or "")
+                tier = str(e.get("tier") or "")
+                suffix = " ".join([p for p in [updated, provider, tier] if p]).strip()
+                lines.append(f"- {sid}" + (f" ({suffix})" if suffix else ""))
+            print("\n".join(lines))
+            return
+
+        if sub[0] == "new":
+            try:
+                pm = build_project_map()
+                git_root = pm.get("git_root")
+            except Exception:
+                git_root = None
+            meta = {
+                "cwd": str(Path.cwd()),
+                "git_root": git_root,
+                "provider": (os.getenv("SWARMEE_MODEL_PROVIDER") or settings.models.provider),
+                "tier": os.getenv("SWARMEE_MODEL_TIER") or settings.models.default_tier,
+            }
+            sid = store.create(meta=meta)
+            print(sid)
+            return
+
+        if sub[0] in {"rm", "delete"} and len(sub) >= 2:
+            sid = sub[1].strip()
+            store.delete(sid)
+            print(f"Deleted session: {sid}")
+            return
+
+        if sub[0] == "info" and len(sub) >= 2:
+            sid = sub[1].strip()
+            meta = store.read_meta(sid)
+            print(json.dumps(meta, indent=2, ensure_ascii=False))
+            return
+
+        print("Usage: swarmee session list | swarmee session new | swarmee session info <id> | swarmee session rm <id>")
+        return
+
+    # Lightweight one-shot commands (do not require model invocation).
+    if args.query and args.query[0].strip().lower() in {"config", "status", "diff", "artifact", "log", "replay"}:
+        cmd = args.query[0].strip().lower()
+        sub = args.query[1:] if len(args.query) > 1 else []
+
+        if cmd == "config":
+            subcmd = (sub[0].strip().lower() if sub else "show")
+            if subcmd != "show":
+                print("Usage: swarmee config show")
+                return
+
+            selected_provider, provider_notice = resolve_model_provider(
+                cli_provider=args.model_provider.stem if args.model_provider is not None else None,
+                env_provider=os.getenv("SWARMEE_MODEL_PROVIDER"),
+                settings_provider=settings.models.provider,
+            )
+            if provider_notice:
+                print(f"[provider] {provider_notice}")
+
+            model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
+            model_manager.set_fallback_config(args.model_config)
+
+            print(
+                render_effective_config(
+                    cwd=Path.cwd(),
+                    settings_path=settings_path_for_project,
+                    settings=settings,
+                    selected_provider=selected_provider,
+                    model_manager=model_manager,
+                    knowledge_base_id=knowledge_base_id,
+                    effective_sop_paths=args.sop_paths,
+                    auto_approve=auto_approve,
+                )
+            )
+            return
+
+        if cmd == "status":
+            print(render_git_status(cwd=Path.cwd()))
+            return
+
+        if cmd == "diff":
+            staged = False
+            paths: list[str] = []
+            for item in sub:
+                if item in {"--staged", "--cached"}:
+                    staged = True
+                elif item.startswith("-"):
+                    continue
+                else:
+                    paths.append(item)
+            print(render_git_diff(cwd=Path.cwd(), staged=staged, paths=paths or None))
+            return
+
+        if cmd == "artifact":
+            subcmd = (sub[0].strip().lower() if sub else "list")
+            if subcmd in {"list", "ls"}:
+                print(render_artifact_list(cwd=Path.cwd()))
+                return
+            if subcmd == "get":
+                artifact_id = sub[1].strip() if len(sub) >= 2 else None
+                if not artifact_id:
+                    print("Usage: swarmee artifact get <artifact_id>")
+                    return
+                print(render_artifact_get(cwd=Path.cwd(), artifact_id=artifact_id, path=None))
+                return
+            print("Usage: swarmee artifact list | swarmee artifact get <artifact_id>")
+            return
+
+        if cmd == "log":
+            subcmd = (sub[0].strip().lower() if sub else "tail")
+            if subcmd != "tail":
+                print("Usage: swarmee log tail [--lines N]")
+                return
+            n = 50
+            if "--lines" in sub:
+                try:
+                    idx = sub.index("--lines")
+                    n = int(sub[idx + 1])
+                except Exception:
+                    n = 50
+            print(render_log_tail(cwd=Path.cwd(), lines=n))
+            return
+
+        if cmd == "replay":
+            if not sub:
+                print("Usage: swarmee replay <invocation_id>")
+                return
+            print(render_replay_invocation(cwd=Path.cwd(), invocation_id=sub[0].strip()))
+            return
 
     selected_provider, provider_notice = resolve_model_provider(
         cli_provider=args.model_provider.stem if args.model_provider is not None else None,
@@ -356,7 +514,6 @@ def main():
 
     interrupt_event = threading.Event()
 
-    active_sop_name: str | None = args.sop
     preflight_prompt_section: str | None = None
     project_map_prompt_section: str | None = None
     active_plan_prompt_section: str | None = None
@@ -364,8 +521,7 @@ def main():
     artifact_store = ArtifactStore()
 
     def refresh_system_prompt(welcome_text_local: str) -> None:
-        base_system_prompt = load_system_prompt()
-        parts: list[str] = [base_system_prompt]
+        parts: list[str] = [system_prompt]
 
         if pack_prompt_sections:
             parts.extend(pack_prompt_sections)
@@ -379,12 +535,12 @@ def main():
         if args.include_welcome_in_prompt and welcome_text_local:
             parts.append(f"Welcome Text Reference:\n{welcome_text_local}")
 
-        if active_sop_name:
+        if ctx.active_sop_name:
             sop_text = ""
             try:
                 sop_result = agent.tool.sop(
                     action="get",
-                    name=active_sop_name,
+                    name=ctx.active_sop_name,
                     sop_paths=effective_sop_paths,
                     record_direct_tool_call=False,
                 )
@@ -408,6 +564,15 @@ def main():
         structured_output_prompt: str | None = None,
     ) -> Any:
         nonlocal agent
+        resolved_state: dict[str, Any] = dict(invocation_state) if isinstance(invocation_state, dict) else {}
+        sw_state = resolved_state.setdefault("swarmee", {})
+        if isinstance(sw_state, dict):
+            sw_state["tier"] = model_manager.current_tier
+            profile = settings.harness.tier_profiles.get(model_manager.current_tier)
+            if profile is not None:
+                sw_state["tool_profile"] = profile.to_dict()
+        invocation_state = resolved_state
+
         interrupt_event.clear()
         set_interrupt_event(interrupt_event)
         with interrupt_watcher_from_env(interrupt_event):
@@ -543,6 +708,31 @@ def main():
 
         raise last_error or ValueError("Failed to generate plan")
 
+    def _swap_agent(messages: Any | None, state: Any | None) -> None:
+        nonlocal agent
+        agent = create_agent(messages=messages, state=state)
+        ctx.agent = agent
+
+    def _build_session_meta() -> dict[str, Any]:
+        enabled_packs = [
+            {"name": p.name, "path": p.path, "enabled": p.enabled}
+            for p in settings.packs.installed
+            if getattr(p, "enabled", True)
+        ]
+        try:
+            pm = build_project_map()
+            git_root = pm.get("git_root")
+        except Exception:
+            git_root = None
+        return {
+            "cwd": str(Path.cwd()),
+            "git_root": git_root,
+            "provider": selected_provider,
+            "tier": model_manager.current_tier,
+            "packs": enabled_packs,
+            "active_sop": ctx.active_sop_name,
+        }
+
     def _execute_with_plan(user_request: str, plan: WorkPlan, *, welcome_text_local: str) -> Any:
         nonlocal active_plan_prompt_section
 
@@ -595,6 +785,37 @@ def main():
             active_plan_prompt_section = None
             refresh_system_prompt(welcome_text_local)
 
+    registry = CommandRegistry()
+    register_builtin_commands(registry)
+
+    ctx = CLIContext(
+        agent=agent,
+        agent_kwargs=agent_kwargs,
+        tools_dict=tools_dict,
+        model_manager=model_manager,
+        knowledge_base_id=knowledge_base_id,
+        effective_sop_paths=effective_sop_paths,
+        welcome_text="",
+        auto_approve=auto_approve,
+        selected_provider=selected_provider,
+        settings=settings,
+        settings_path=settings_path_for_project,
+        refresh_system_prompt=lambda: refresh_system_prompt(ctx.welcome_text),
+        generate_plan=_generate_plan,
+        execute_with_plan=lambda req, plan: _execute_with_plan(req, plan, welcome_text_local=ctx.welcome_text),
+        render_plan=_render_plan,
+        run_agent=run_agent,
+        store_conversation=lambda user_input, response: store_conversation_in_kb(
+            agent, user_input, response, knowledge_base_id
+        ),
+        output=print,
+        stop_spinners=lambda: callback_handler(force_stop=True),
+        build_session_meta=_build_session_meta,
+        swap_agent=_swap_agent,
+    )
+    ctx.active_sop_name = args.sop
+    ctx.session_store = SessionStore()
+
     # Process query or enter interactive mode
     if args.query:
         query = " ".join(args.query)
@@ -602,9 +823,21 @@ def main():
         if knowledge_base_id:
             agent.tool.retrieve(text=query, knowledgeBaseId=knowledge_base_id)
 
+        profile = settings.harness.tier_profiles.get(model_manager.current_tier)
+        snapshot = build_context_snapshot(
+            agent=agent,
+            artifact_store=artifact_store,
+            interactive=False,
+            default_preflight_level=profile.preflight_level if profile else None,
+        )
+        preflight_prompt_section = snapshot.preflight_prompt_section
+        project_map_prompt_section = snapshot.project_map_prompt_section
+        ctx.refresh_system_prompt()
+
         intent = classify_intent(query)
         if intent == "work":
             plan = _generate_plan(query)
+            ctx.last_plan = plan
             print(_render_plan(plan))
             if not auto_approve:
                 print("\nPlan generated. Re-run with --yes (or set SWARMEE_AUTO_APPROVE=true) to execute.")
@@ -636,227 +869,26 @@ def main():
         welcome_text = ""
         if welcome_result["status"] == "success":
             welcome_text = welcome_result["content"][0]["text"]
+            ctx.welcome_text = welcome_text
             render_welcome_message(welcome_text)
-        # Project preflight + cached project map
-        if _truthy(os.getenv("SWARMEE_PREFLIGHT", "enabled")):
-            level = (os.getenv("SWARMEE_PREFLIGHT_LEVEL", "summary") or "summary").strip().lower()
-            max_chars = int(os.getenv("SWARMEE_PREFLIGHT_MAX_CHARS", "8000"))
-            actions = ["summary"]
-            if level == "summary+tree":
-                actions.append("tree")
-            elif level == "summary+files":
-                actions.append("files")
-            preflight_parts: list[str] = []
-            for action in actions:
-                try:
-                    result = agent.tool.project_context(action=action, max_chars=max_chars, record_direct_tool_call=False)
-                    if result.get("status") == "success":
-                        preflight_parts.append(result.get("content", [{"text": ""}])[0].get("text", ""))
-                except Exception:
-                    continue
-            preflight_text = "\n\n".join([p for p in preflight_parts if p]).strip()
-            if preflight_text:
-                artifact_store.write_text(kind="preflight", text=preflight_text, suffix="txt", metadata={"level": level})
-                preflight_prompt_section = f"Project preflight:\n{preflight_text}"
-                print("\n[preflight]\n" + preflight_text + "\n")
+        profile = settings.harness.tier_profiles.get(model_manager.current_tier)
+        snapshot = build_context_snapshot(
+            agent=agent,
+            artifact_store=artifact_store,
+            interactive=True,
+            default_preflight_level=profile.preflight_level if profile else None,
+        )
+        preflight_prompt_section = snapshot.preflight_prompt_section
+        project_map_prompt_section = snapshot.project_map_prompt_section
 
-        if _truthy(os.getenv("SWARMEE_PROJECT_MAP", "enabled")):
-            try:
-                pm = build_project_map()
-                pm_path = save_project_map(pm)
-                project_map_prompt_section = render_project_map_summary(pm) + f"\n(project_map: {pm_path})"
-            except Exception:
-                project_map_prompt_section = None
-        else:
-            project_map_prompt_section = None
-
-        refresh_system_prompt(welcome_text)
-        pending_plan: WorkPlan | None = None
-        pending_request: str | None = None
-        force_plan_next = False
-        while True:
-            try:
-                user_input = get_user_input("\n~ ", default="", keyboard_interrupt_return_default=False)
-                if user_input.lower() in ["exit", "quit"]:
-                    render_goodbye_message()
-                    break
-                if user_input.strip() == ":tools":
-                    print("\n".join(sorted(tools_dict.keys())))
-                    continue
-                if user_input.startswith(":tier"):
-                    parts = user_input.strip().split(maxsplit=2)
-                    subcmd = parts[1].lower() if len(parts) >= 2 else "list"
-                    if subcmd == "list":
-                        current = model_manager.current_tier
-                        lines = [f"# Model tiers (current: {current})", ""]
-                        for t in model_manager.list_tiers():
-                            mark = "*" if t.name == current else " "
-                            status = "available" if t.available else f"unavailable ({t.reason})"
-                            model_bits: list[str] = []
-                            if t.display_name:
-                                model_bits.append(t.display_name)
-                            if t.model_id:
-                                model_bits.append(f"model_id={t.model_id}")
-                            model_str = f" ({', '.join(model_bits)})" if model_bits else ""
-                            desc = f" - {t.description}" if t.description else ""
-                            lines.append(f"{mark} {t.name}: provider={t.provider}{model_str} [{status}]{desc}")
-                        print("\n".join(lines))
-                    elif subcmd == "set" and len(parts) == 3:
-                        tier = parts[2].strip().lower()
-                        model_manager.set_tier(agent, tier)
-                        agent_kwargs["model"] = agent.model
-                        print(f"Active tier set to: {tier}")
-                    elif subcmd == "auto" and len(parts) == 3:
-                        val = parts[2].strip().lower()
-                        enabled = val in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
-                        model_manager.set_auto_escalation(enabled)
-                        print(f"Auto-escalation: {'on' if enabled else 'off'}")
-                    else:
-                        print("Usage: :tier list | :tier set <fast|balanced|deep|long> | :tier auto on|off")
-                    continue
-                if user_input.strip() in {":approve", ":y"}:
-                    if pending_plan and pending_request:
-                        try:
-                            response = _execute_with_plan(pending_request, pending_plan, welcome_text_local=welcome_text)
-                            if knowledge_base_id:
-                                store_conversation_in_kb(agent, pending_request, response, knowledge_base_id)
-                        except AgentInterruptedError as e:
-                            callback_handler(force_stop=True)
-                            print(f"\n{str(e)}")
-                        except MaxTokensReachedException:
-                            pass
-                        finally:
-                            pending_plan = None
-                            pending_request = None
-                    else:
-                        print("No pending plan to approve.")
-                    continue
-                if user_input.strip() in {":n"}:
-                    pending_plan = None
-                    pending_request = None
-                    print("Plan canceled.")
-                    continue
-                if user_input.strip() == ":replan":
-                    if not pending_request:
-                        print("No pending request to replan.")
-                        continue
-                    pending_plan = _generate_plan(pending_request)
-                    print(_render_plan(pending_plan))
-                    print(pending_plan.confirmation_prompt)
-                    continue
-                if user_input.strip() == ":plan":
-                    force_plan_next = True
-                    print("Next prompt will be planned before execution.")
-                    continue
-                if user_input.startswith(":sop"):
-                    # Minimal interactive SOP management:
-                    # :sop list
-                    # :sop use <name>
-                    # :sop clear
-                    # :sop show
-                    parts = user_input.strip().split(maxsplit=2)
-                    subcmd = parts[1].lower() if len(parts) >= 2 else "list"
-
-                    if subcmd == "list":
-                        result = agent.tool.sop(
-                            action="list", sop_paths=effective_sop_paths, record_direct_tool_call=False
-                        )
-                        print(result.get("content", [{"text": ""}])[0].get("text", ""))
-                    elif subcmd == "use" and len(parts) == 3:
-                        active_sop_name = parts[2].strip()
-                        refresh_system_prompt(welcome_text)
-                        print(f"Active SOP set to: {active_sop_name}")
-                    elif subcmd == "clear":
-                        active_sop_name = None
-                        refresh_system_prompt(welcome_text)
-                        print("Active SOP cleared.")
-                    elif subcmd == "show":
-                        if active_sop_name:
-                            result = agent.tool.sop(
-                                action="get",
-                                name=active_sop_name,
-                                sop_paths=effective_sop_paths,
-                                record_direct_tool_call=False,
-                            )
-                            print(result.get("content", [{"text": ""}])[0].get("text", ""))
-                        else:
-                            print("No active SOP.")
-                    else:
-                        print("Usage: :sop list | :sop use <name> | :sop clear | :sop show")
-                    continue
-                if user_input.startswith("!"):
-                    shell_command = user_input[1:]  # Remove the ! prefix
-                    print(f"$ {shell_command}")
-
-                    try:
-                        # Execute shell command directly using the shell tool
-                        agent.tool.shell(
-                            command=shell_command,
-                            user_message_override=user_input,
-                            non_interactive_mode=True,
-                            record_direct_tool_call=False,
-                        )
-
-                        print()  # new line after shell command execution
-                    except Exception as e:
-                        print(f"Shell command execution error: {str(e)}")
-                    continue
-
-                if user_input.strip():
-                    # Use retrieve if knowledge_base_id is defined
-                    if knowledge_base_id:
-                        agent.tool.retrieve(text=user_input, knowledgeBaseId=knowledge_base_id)
-                    refresh_system_prompt(welcome_text)
-
-                    intent = "work" if force_plan_next else classify_intent(user_input)
-                    force_plan_next = False
-
-                    if intent == "work":
-                        pending_request = user_input
-                        pending_plan = _generate_plan(user_input)
-                        print(_render_plan(pending_plan))
-                        if auto_approve:
-                            print("\nAuto-approving plan (--yes / SWARMEE_AUTO_APPROVE).")
-                            response = _execute_with_plan(user_input, pending_plan, welcome_text_local=welcome_text)
-                            pending_plan = None
-                            pending_request = None
-                            if knowledge_base_id:
-                                store_conversation_in_kb(agent, user_input, response, knowledge_base_id)
-                        else:
-                            print(pending_plan.confirmation_prompt)
-                        continue
-
-                    try:
-                        response = run_agent(user_input, invocation_state={"swarmee": {"mode": "execute"}})
-                    except AgentInterruptedError as e:
-                        callback_handler(force_stop=True)
-                        print(f"\n{str(e)}")
-                        continue
-                    except MaxTokensReachedException:
-                        # run_agent already printed guidance and reset agent
-                        continue
-
-                    if knowledge_base_id:
-                        # Store conversation in knowledge base
-                        store_conversation_in_kb(agent, user_input, response, knowledge_base_id)
-            except (KeyboardInterrupt, EOFError):
-                render_goodbye_message()
-                break
-            except Exception as e:
-                callback_handler(force_stop=True)  # Stop spinners
-                error_text = str(e)
-                print(f"\nError: {error_text}")
-                if "unable to locate credentials" in error_text.lower():
-                    if selected_provider == "bedrock":
-                        print(
-                            "Hint: Bedrock requires AWS credentials (AWS_PROFILE or AWS_ACCESS_KEY_ID/"
-                            "AWS_SECRET_ACCESS_KEY). Or run with `--model-provider openai`."
-                        )
-                    elif knowledge_base_id:
-                        print(
-                            "Hint: Knowledge Base operations require AWS credentials even when model "
-                            "provider is OpenAI."
-                        )
+        ctx.refresh_system_prompt()
+        run_repl(
+            ctx=ctx,
+            registry=registry,
+            get_user_input=get_user_input,
+            classify_intent=classify_intent,
+            render_goodbye_message=render_goodbye_message,
+        )
 
 
 if __name__ == "__main__":

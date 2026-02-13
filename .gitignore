@@ -17,6 +17,8 @@ venv
 .venv
 .env
 
+third_party/opencode/
+
 notifications
 repl_state
 slack_events

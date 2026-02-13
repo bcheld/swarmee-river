@@ -37,7 +37,10 @@ class ToolPolicyHooks(HookProvider):
         self.enabled_tools = _csv_env("SWARMEE_ENABLE_TOOLS")
         self.disabled_tools = _csv_env("SWARMEE_DISABLE_TOOLS")
         self.swarm_enabled = _truthy_env("SWARMEE_SWARM_ENABLED", True)
-        self.plan_mode_allowed_tools = {"retrieve", "sop"}
+        # Plan mode should stay read-only to prevent the model from mutating the repo while planning.
+        # We allow repo inspection tools so plans can be grounded in reality.
+        self.plan_mode_allowed_tools = {"retrieve", "sop", "project_context", "file_read"}
+        self.plan_mode_project_context_actions = {"summary", "files", "tree", "search", "read", "git_status"}
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, BeforeToolCallEvent, self.before_tool_call)
@@ -57,6 +60,12 @@ class ToolPolicyHooks(HookProvider):
         if mode == "plan" and name not in self.plan_mode_allowed_tools:
             event.cancel_tool = f"Tool '{name}' blocked in plan mode."
             return
+        if mode == "plan" and name == "project_context":
+            tool_input = tool_use.get("input")
+            action = tool_input.get("action") if isinstance(tool_input, dict) else None
+            if isinstance(action, str) and action.strip().lower() not in self.plan_mode_project_context_actions:
+                event.cancel_tool = f"Tool 'project_context' action '{action}' blocked in plan mode."
+                return
 
         if mode == "execute" and sw.get("enforce_plan"):
             allowed_tools = sw.get("allowed_tools")
@@ -67,6 +76,24 @@ class ToolPolicyHooks(HookProvider):
                         f"Tool '{name}' not in approved plan. Use :replan to update the plan "
                         "before using additional tools."
                     )
+                    return
+
+        if mode == "execute":
+            profile = sw.get("tool_profile")
+            tier = sw.get("tier")
+            if isinstance(profile, dict):
+                allow = profile.get("tool_allowlist")
+                block = profile.get("tool_blocklist")
+                allow_set = {str(x) for x in allow if str(x).strip()} if isinstance(allow, list) else set()
+                block_set = {str(x) for x in block if str(x).strip()} if isinstance(block, list) else set()
+
+                if allow_set and name not in allow_set:
+                    suffix = f" (tier={tier})" if tier else ""
+                    event.cancel_tool = f"Tool '{name}' blocked by tier tool_allowlist{suffix}."
+                    return
+                if block_set and name in block_set:
+                    suffix = f" (tier={tier})" if tier else ""
+                    event.cancel_tool = f"Tool '{name}' blocked by tier tool_blocklist{suffix}."
                     return
 
         if self.enabled_tools and name not in self.enabled_tools:

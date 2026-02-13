@@ -162,4 +162,10 @@ def with_installed_pack(settings: SwarmeeSettings, entry: PackEntry) -> SwarmeeS
     installed.append(entry)
     from swarmee_river.settings import PacksConfig, SwarmeeSettings as Settings
 
-    return Settings(models=settings.models, safety=settings.safety, packs=PacksConfig(installed=installed), raw=settings.raw)
+    return Settings(
+        models=settings.models,
+        safety=settings.safety,
+        packs=PacksConfig(installed=installed),
+        harness=settings.harness,
+        raw=settings.raw,
+    )

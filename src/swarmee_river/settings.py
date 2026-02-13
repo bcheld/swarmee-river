@@ -275,10 +275,67 @@ class PacksConfig:
 
 
 @dataclass(frozen=True)
+class TierProfile:
+    """
+    Tier-specific harness defaults.
+
+    These profiles are used to:
+    - choose sensible context snapshot depth defaults per tier
+    - optionally restrict tool availability per tier (allow/block lists)
+    """
+
+    tool_allowlist: list[str] = field(default_factory=list)
+    tool_blocklist: list[str] = field(default_factory=list)
+    preflight_level: str | None = None  # summary|summary+tree|summary+files
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "TierProfile":
+        allow = raw.get("tool_allowlist")
+        block = raw.get("tool_blocklist")
+        preflight_level = raw.get("preflight_level")
+        return cls(
+            tool_allowlist=[str(x).strip() for x in allow if str(x).strip()] if isinstance(allow, list) else [],
+            tool_blocklist=[str(x).strip() for x in block if str(x).strip()] if isinstance(block, list) else [],
+            preflight_level=str(preflight_level).strip().lower()
+            if isinstance(preflight_level, str) and preflight_level.strip()
+            else None,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "tool_allowlist": list(self.tool_allowlist),
+            "tool_blocklist": list(self.tool_blocklist),
+        }
+        if self.preflight_level:
+            out["preflight_level"] = self.preflight_level
+        return out
+
+
+@dataclass(frozen=True)
+class HarnessConfig:
+    tier_profiles: dict[str, TierProfile] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "HarnessConfig":
+        profiles_raw = raw.get("tier_profiles")
+        tier_profiles: dict[str, TierProfile] = {}
+        if isinstance(profiles_raw, dict):
+            for tier_name, profile_value in profiles_raw.items():
+                if not isinstance(tier_name, str) or not isinstance(profile_value, dict):
+                    continue
+                tier_profiles[tier_name.strip().lower()] = TierProfile.from_dict(profile_value)
+        return cls(tier_profiles=tier_profiles)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"tier_profiles": {k: v.to_dict() for k, v in self.tier_profiles.items()}}
+
+
+@dataclass(frozen=True)
 class SwarmeeSettings:
     models: ModelsConfig = field(default_factory=ModelsConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     packs: PacksConfig = field(default_factory=PacksConfig)
+    harness: HarnessConfig = field(default_factory=HarnessConfig)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -286,10 +343,12 @@ class SwarmeeSettings:
         models_raw = raw.get("models")
         safety_raw = raw.get("safety")
         packs_raw = raw.get("packs")
+        harness_raw = raw.get("harness")
         return cls(
             models=ModelsConfig.from_dict(models_raw) if isinstance(models_raw, dict) else ModelsConfig(),
             safety=SafetyConfig.from_dict(safety_raw) if isinstance(safety_raw, dict) else SafetyConfig(),
             packs=PacksConfig.from_dict(packs_raw) if isinstance(packs_raw, dict) else PacksConfig(),
+            harness=HarnessConfig.from_dict(harness_raw) if isinstance(harness_raw, dict) else HarnessConfig(),
             raw=raw,
         )
 
@@ -300,6 +359,7 @@ class SwarmeeSettings:
                 "models": self.models.to_dict(),
                 "safety": self.safety.to_dict(),
                 "packs": self.packs.to_dict(),
+                "harness": self.harness.to_dict(),
             }
         )
         return base
@@ -368,7 +428,13 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
         )
 
     if models is not settings.models:
-        return SwarmeeSettings(models=models, safety=settings.safety, packs=settings.packs, raw=settings.raw)
+        return SwarmeeSettings(
+            models=models,
+            safety=settings.safety,
+            packs=settings.packs,
+            harness=settings.harness,
+            raw=settings.raw,
+        )
 
     return settings
 
@@ -415,6 +481,14 @@ def default_settings_template() -> SwarmeeSettings:
                             model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
                             display_name="Claude Sonnet 4 (deep)",
                             description="Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID).",
+                            extra={
+                                "additional_request_fields": {
+                                    "thinking": {
+                                        "type": "enabled",
+                                        "budget_tokens": 8192,
+                                    }
+                                }
+                            },
                         ),
                         "long": ModelTier(
                             provider="bedrock",
@@ -495,8 +569,19 @@ def default_settings_template() -> SwarmeeSettings:
                 ToolRule(tool="file_write", default="ask", remember=True),
                 ToolRule(tool="editor", default="ask", remember=True),
                 ToolRule(tool="http_request", default="ask", remember=True),
+                ToolRule(tool="git", default="ask", remember=True),
+                ToolRule(tool="patch_apply", default="ask", remember=True),
+                ToolRule(tool="run_checks", default="ask", remember=True),
             ],
         ),
         packs=PacksConfig(installed=[]),
+        harness=HarnessConfig(
+            tier_profiles={
+                "fast": TierProfile(preflight_level="summary"),
+                "balanced": TierProfile(preflight_level="summary+tree"),
+                "deep": TierProfile(preflight_level="summary+files"),
+                "long": TierProfile(preflight_level="summary+files"),
+            }
+        ),
         raw={},
     )
