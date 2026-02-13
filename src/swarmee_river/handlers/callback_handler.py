@@ -103,8 +103,19 @@ class CallbackHandler:
         event_loop_throttled_delay: int | None = None,
         console: Any = None,
         invocation_state: dict[str, Any] | None = None,
+        structured_output_model: type[Any] | None = None,
+        structured_output_prompt: str | None = None,
+        result: Any = None,
+        **extra_event_fields: Any,
     ) -> None:
-        del invocation_state  # Explicitly accepted for newer callback APIs.
+        # Future-compatible callback shape support:
+        # Strands may add event fields (or merge invocation_state keys into callback kwargs).
+        # Keep these accepted and ignored unless needed by this handler.
+        del invocation_state
+        del structured_output_model
+        del structured_output_prompt
+        del result
+        del extra_event_fields
         message = message or {}
         current_tool_use = current_tool_use or {}
 

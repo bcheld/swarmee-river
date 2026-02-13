@@ -6,6 +6,7 @@ Swarmee - A minimal CLI interface for Swarmee River (built on Strands)
 import argparse
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -635,12 +636,21 @@ def main():
 
                     canceller_task = asyncio.create_task(_canceller())
                     try:
-                        return await agent.invoke_async(
-                            query,
-                            invocation_state=invocation_state,
-                            structured_output_model=structured_output_model,
-                            structured_output_prompt=structured_output_prompt,
-                        )
+                        invoke_kwargs: dict[str, Any] = {"invocation_state": invocation_state}
+                        if structured_output_model is not None:
+                            invoke_kwargs["structured_output_model"] = structured_output_model
+
+                        supports_structured_output_prompt = True
+                        try:
+                            invoke_sig = inspect.signature(agent.invoke_async)
+                            supports_structured_output_prompt = "structured_output_prompt" in invoke_sig.parameters
+                        except (TypeError, ValueError):
+                            supports_structured_output_prompt = True
+
+                        if structured_output_prompt is not None and supports_structured_output_prompt:
+                            invoke_kwargs["structured_output_prompt"] = structured_output_prompt
+
+                        return await agent.invoke_async(query, **invoke_kwargs)
                     except asyncio.CancelledError as e:
                         if interrupt_event.is_set():
                             raise AgentInterruptedError("Interrupted by user (Esc)") from e

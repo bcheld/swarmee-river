@@ -45,8 +45,8 @@ class TestInteractiveMode:
         call = mock_agent.invoke_async.call_args
         assert call.args[0] == "test query"
         assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
-        assert call.kwargs["structured_output_model"] is None
-        assert call.kwargs["structured_output_prompt"] is None
+        assert "structured_output_model" not in call.kwargs
+        assert "structured_output_prompt" not in call.kwargs
 
         # Verify goodbye message was rendered
         mock_goodbye_message.assert_called_once()
@@ -124,6 +124,34 @@ class TestInteractiveMode:
 
         # Verify agent's methods were not called for the empty input
         mock_agent.assert_not_called()
+
+    def test_invoke_async_compat_without_structured_output_prompt(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        mock_user_input,
+        mock_welcome_message,
+        mock_goodbye_message,
+        monkeypatch,
+    ):
+        """Ensure compatibility with SDK variants lacking structured_output_prompt kwarg."""
+
+        async def invoke_async_no_prompt(
+            prompt: str,
+            *,
+            invocation_state: dict[str, object],
+            structured_output_model: type[object] | None = None,
+        ):
+            del invocation_state
+            del structured_output_model
+            return mock.MagicMock(structured_output=None, message=[{"role": "assistant", "content": [{"text": "ok"}]}])
+
+        mock_agent.invoke_async = invoke_async_no_prompt
+        mock_user_input.side_effect = ["test query", "exit"]
+        monkeypatch.setattr(sys, "argv", ["swarmee"])
+
+        swarmee.main()
 
     @mock.patch.object(swarmee, "get_user_input")
     @mock.patch.object(swarmee, "Agent")
@@ -205,8 +233,8 @@ class TestCommandLine:
         call = mock_agent.invoke_async.call_args
         assert call.args[0] == "test query"
         assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
-        assert call.kwargs["structured_output_model"] is None
-        assert call.kwargs["structured_output_prompt"] is None
+        assert "structured_output_model" not in call.kwargs
+        assert "structured_output_prompt" not in call.kwargs
 
     def test_command_line_query_with_kb(
         self, mock_agent, mock_bedrock, mock_load_prompt, mock_store_conversation, monkeypatch
@@ -270,8 +298,8 @@ class TestConfiguration:
         call = mock_agent.invoke_async.call_args
         assert call.args[0] == "test query"
         assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
-        assert call.kwargs["structured_output_model"] is None
-        assert call.kwargs["structured_output_prompt"] is None
+        assert "structured_output_model" not in call.kwargs
+        assert "structured_output_prompt" not in call.kwargs
 
     def test_kb_environment_variable(
         self, mock_agent, mock_bedrock, mock_load_prompt, mock_store_conversation, monkeypatch

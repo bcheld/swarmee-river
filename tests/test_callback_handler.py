@@ -608,3 +608,15 @@ class TestCallbackHandler:
         handler.callback_handler(message={"role": "assistant", "content": [{"toolUse": {"name": "test-tool"}}]})
 
         # Should not raise any exception. The test passes if no exception is raised.
+
+    def test_callback_handler_ignores_unknown_event_fields(self):
+        """Test callback handler tolerates extra callback event fields."""
+        handler = CallbackHandler()
+
+        # Older/newer SDK versions may send additional event kwargs.
+        handler.callback_handler(
+            structured_output_prompt="format as json",
+            structured_output_model=str,
+            result=object(),
+            some_future_field={"x": 1},
+        )
