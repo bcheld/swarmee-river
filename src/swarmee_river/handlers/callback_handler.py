@@ -102,14 +102,22 @@ class CallbackHandler:
         event_loop_throttled_delay = kwargs.get("event_loop_throttled_delay", None)
         console = kwargs.get("console", None)
 
+        # Cleanup calls (e.g., from top-level exception handlers) should never re-raise an interrupt.
+        if force_stop:
+            if self.thinking_spinner:
+                self.thinking_spinner.stop()
+            if self.current_spinner:
+                self.current_spinner.stop()
+            return
+
         if self.interrupt_event is not None and self.interrupt_event.is_set():
-            try:
-                if self.thinking_spinner:
-                    self.thinking_spinner.stop()
-                if self.current_spinner:
-                    self.current_spinner.stop()
-            finally:
-                raise AgentInterruptedError("Interrupted by user (Esc)")
+            # Don't raise from inside the callback path. Interrupt cancellation is handled by the caller.
+            # Raising here can cause noisy generator shutdown errors in upstream libraries.
+            if self.thinking_spinner:
+                self.thinking_spinner.stop()
+            if self.current_spinner:
+                self.current_spinner.stop()
+            return
 
         try:
             # Concurrent thinking spinners are usual, which leads to:
@@ -140,12 +148,6 @@ class CallbackHandler:
             console.print(
                 f"[red]Throttled! Waiting [bold]{event_loop_throttled_delay} seconds[/bold] before retrying...[/red]"
             )
-
-        if force_stop:
-            if self.thinking_spinner:
-                self.thinking_spinner.stop()
-            if self.current_spinner:
-                self.current_spinner.stop()
 
         # Handle regular output
         if data:

@@ -4,6 +4,9 @@ Swarmee - A minimal CLI interface for Swarmee River (built on Strands)
 """
 
 import argparse
+import asyncio
+import contextlib
+import logging
 import os
 import threading
 from typing import Any, Optional
@@ -253,7 +256,61 @@ def main():
         set_interrupt_event(interrupt_event)
         with interrupt_watcher_from_env(interrupt_event):
             try:
-                return agent(query)
+                async def _invoke() -> Any:
+                    loop = asyncio.get_running_loop()
+                    previous_handler = loop.get_exception_handler()
+
+                    def _exception_handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+                        if interrupt_event.is_set():
+                            message = str(context.get("message") or "")
+                            exc = context.get("exception")
+                            if message.startswith("an error occurred during closing of asynchronous generator"):
+                                return
+                            if isinstance(exc, RuntimeError) and "athrow(): asynchronous generator is already running" in str(
+                                exc
+                            ):
+                                return
+                        if previous_handler:
+                            previous_handler(loop, context)
+                        else:
+                            loop.default_exception_handler(context)
+
+                    loop.set_exception_handler(_exception_handler)
+
+                    class _OtelDetachFilter(logging.Filter):
+                        def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+                            if interrupt_event.is_set() and str(record.getMessage()).startswith("Failed to detach context"):
+                                return False
+                            return True
+
+                    otel_logger = logging.getLogger("opentelemetry.context")
+                    otel_filter = _OtelDetachFilter()
+                    otel_logger.addFilter(otel_filter)
+
+                    current_task = asyncio.current_task()
+
+                    async def _canceller() -> None:
+                        while not interrupt_event.is_set():
+                            await asyncio.sleep(0.05)
+                        callback_handler(force_stop=True)
+                        if current_task:
+                            current_task.cancel()
+
+                    canceller_task = asyncio.create_task(_canceller())
+                    try:
+                        return await agent.invoke_async(query)
+                    except asyncio.CancelledError as e:
+                        if interrupt_event.is_set():
+                            raise AgentInterruptedError("Interrupted by user (Esc)") from e
+                        raise
+                    finally:
+                        canceller_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await canceller_task
+                        otel_logger.removeFilter(otel_filter)
+                        loop.set_exception_handler(previous_handler)
+
+                return asyncio.run(_invoke())
             except MaxTokensReachedException:
                 callback_handler(force_stop=True)
                 configured = os.getenv("SWARMEE_MAX_TOKENS") or os.getenv("STRANDS_MAX_TOKENS") or "(unset)"
