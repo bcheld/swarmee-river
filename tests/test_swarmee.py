@@ -4,6 +4,7 @@ Unit tests for the swarmee.py module using pytest
 """
 
 import asyncio
+import contextlib
 import os
 import sys
 import warnings
@@ -586,14 +587,25 @@ class TestToolConsentPrompt:
         with (
             mock.patch.object(swarmee, "callback_handler") as mock_callback_handler,
             mock.patch.object(swarmee, "_render_tool_consent_message") as mock_render_consent,
-            mock.patch.object(swarmee, "get_user_input", return_value="y") as mock_user_input,
+            mock.patch.object(
+                swarmee,
+                "pause_active_interrupt_watcher_for_input",
+                return_value=contextlib.nullcontext(),
+            ) as mock_pause,
+            mock.patch.object(swarmee, "_get_user_input_compat", return_value="y") as mock_user_input_compat,
         ):
             response = prompt_fn(consent_text)  # type: ignore[operator]
 
         assert response == "y"
         mock_callback_handler.assert_called_once_with(force_stop=True)
         mock_render_consent.assert_called_once_with(consent_text)
-        mock_user_input.assert_called_once_with("\n~ consent> ", default="", keyboard_interrupt_return_default=True)
+        mock_pause.assert_called_once_with()
+        mock_user_input_compat.assert_called_once_with(
+            "\n~ consent> ",
+            default="",
+            keyboard_interrupt_return_default=True,
+            prefer_prompt_toolkit_in_async=True,
+        )
 
     def test_get_user_input_compat_uses_stdin_when_event_loop_running(self):
         async def _run() -> str:

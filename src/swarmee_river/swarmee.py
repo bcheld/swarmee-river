@@ -72,7 +72,11 @@ from swarmee_river.cli.diagnostics import (
 from swarmee_river.cli.repl import run_repl
 from swarmee_river.harness.context_snapshot import build_context_snapshot
 from swarmee_river.intent import classify_intent
-from swarmee_river.interrupts import AgentInterruptedError, interrupt_watcher_from_env
+from swarmee_river.interrupts import (
+    AgentInterruptedError,
+    interrupt_watcher_from_env,
+    pause_active_interrupt_watcher_for_input,
+)
 from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.planning import WorkPlan, structured_plan_prompt
 from swarmee_river.project_map import build_project_map
@@ -625,7 +629,13 @@ def main():
             # 3) reuse the familiar input prompt style
             callback_handler(force_stop=True)
             _render_tool_consent_message(text)
-            return _get_user_input_compat("\n~ consent> ", default="", keyboard_interrupt_return_default=True)
+            with pause_active_interrupt_watcher_for_input():
+                return _get_user_input_compat(
+                    "\n~ consent> ",
+                    default="",
+                    keyboard_interrupt_return_default=True,
+                    prefer_prompt_toolkit_in_async=True,
+                )
 
         hooks = [
             JSONLLoggerHooks(),  # type: ignore[misc]

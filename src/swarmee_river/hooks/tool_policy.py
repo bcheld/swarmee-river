@@ -35,6 +35,16 @@ _WINDOWS_POSIX_BIASED_TOKENS = {
 }
 
 
+def _project_context_signature(tool_use: dict[str, Any]) -> str:
+    tool_input = tool_use.get("input")
+    if not isinstance(tool_input, dict):
+        return "project_context"
+    action = str(tool_input.get("action") or "").strip().lower()
+    query = str(tool_input.get("query") or "").strip()
+    path = str(tool_input.get("path") or "").strip()
+    return f"{action}|{query}|{path}"
+
+
 def _first_command_token(command: str) -> str:
     text = (command or "").strip()
     if not text:
@@ -137,6 +147,21 @@ class ToolPolicyHooks(HookProvider):
             action = tool_input.get("action") if isinstance(tool_input, dict) else None
             if isinstance(action, str) and action.strip().lower() not in self.plan_mode_project_context_actions:
                 event.cancel_tool = f"Tool 'project_context' action '{action}' blocked in plan mode."
+                return
+
+        if mode == "execute" and name == "project_context" and isinstance(sw, dict):
+            signature = _project_context_signature(tool_use)
+            last_signature = str(sw.get("_project_context_last_signature") or "")
+            streak_raw = sw.get("_project_context_streak")
+            streak = int(streak_raw) if isinstance(streak_raw, int) else 0
+            streak = streak + 1 if signature == last_signature else 1
+            sw["_project_context_last_signature"] = signature
+            sw["_project_context_streak"] = streak
+            if streak > 6:
+                event.cancel_tool = (
+                    "Repeated project_context loop detected. Ask the user for clarification "
+                    "or switch tools instead of retrying the same call."
+                )
                 return
 
         # Structured-output planning tool should never run during execute mode.

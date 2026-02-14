@@ -6,11 +6,16 @@ import sys
 import threading
 import time
 from contextlib import AbstractContextManager
+from contextlib import contextmanager
 from typing import Optional
 
 
 class AgentInterruptedError(RuntimeError):
     """Raised to abort the current agent invocation (e.g., when Esc is pressed)."""
+
+
+_ACTIVE_WATCHER_LOCK = threading.Lock()
+_ACTIVE_WATCHER: "EscInterruptWatcher | None" = None
 
 
 class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
@@ -28,12 +33,15 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
         self._poll_interval_s = poll_interval_s
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._pause_count = 0
+        self._pause_lock = threading.Lock()
 
         self._is_windows = platform.system() == "Windows"
         self._stdin_fd: Optional[int] = None
         self._termios_old: Optional[object] = None
 
     def __enter__(self) -> "EscInterruptWatcher":
+        global _ACTIVE_WATCHER
         if not self._enabled:
             return self
 
@@ -58,9 +66,12 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
 
         self._thread = threading.Thread(target=self._watch_posix, daemon=True)
         self._thread.start()
+        with _ACTIVE_WATCHER_LOCK:
+            _ACTIVE_WATCHER = self
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        global _ACTIVE_WATCHER
         if not self._enabled:
             return None
 
@@ -75,8 +86,24 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
                 termios.tcsetattr(self._stdin_fd, termios.TCSADRAIN, self._termios_old)
             except Exception:
                 pass
+        with _ACTIVE_WATCHER_LOCK:
+            if _ACTIVE_WATCHER is self:
+                _ACTIVE_WATCHER = None
 
         return None
+
+    def pause(self) -> None:
+        with self._pause_lock:
+            self._pause_count += 1
+
+    def resume(self) -> None:
+        with self._pause_lock:
+            if self._pause_count > 0:
+                self._pause_count -= 1
+
+    def _is_paused(self) -> bool:
+        with self._pause_lock:
+            return self._pause_count > 0
 
     def _watch_windows(self) -> None:
         try:
@@ -85,6 +112,9 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
             return
 
         while not self._stop_event.is_set() and not self._interrupt_event.is_set():
+            if self._is_paused():
+                time.sleep(self._poll_interval_s)
+                continue
             try:
                 if msvcrt.kbhit():
                     ch = msvcrt.getwch()
@@ -102,6 +132,9 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
             return
 
         while not self._stop_event.is_set() and not self._interrupt_event.is_set():
+            if self._is_paused():
+                time.sleep(self._poll_interval_s)
+                continue
             try:
                 rlist, _, _ = select.select([sys.stdin], [], [], self._poll_interval_s)
                 if rlist:
@@ -111,6 +144,22 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
                         return
             except Exception:
                 return
+
+
+@contextmanager
+def pause_active_interrupt_watcher_for_input():
+    watcher: EscInterruptWatcher | None = None
+    with _ACTIVE_WATCHER_LOCK:
+        watcher = _ACTIVE_WATCHER
+    if watcher is None:
+        yield
+        return
+
+    watcher.pause()
+    try:
+        yield
+    finally:
+        watcher.resume()
 
 
 def interrupt_watcher_from_env(interrupt_event: threading.Event) -> EscInterruptWatcher:
