@@ -34,6 +34,19 @@ _WINDOWS_POSIX_BIASED_TOKENS = {
     "xargs",
 }
 
+_SHELL_FILE_INSPECTION_TOKENS = {
+    "ls",
+    "dir",
+    "find",
+    "sed",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "rg",
+    "tree",
+}
+
 
 def _project_context_signature(tool_use: dict[str, Any]) -> str:
     tool_input = tool_use.get("input")
@@ -69,6 +82,20 @@ def _looks_posix_only_shell_command(command: str) -> bool:
     if token in _WINDOWS_POSIX_BIASED_TOKENS:
         return True
     if token.startswith("./") and token.endswith(".sh"):
+        return True
+    return False
+
+
+def _looks_file_inspection_shell_command(command: str) -> bool:
+    text = (command or "").strip()
+    if not text:
+        return False
+    token = _first_command_token(text)
+    if token in _SHELL_FILE_INSPECTION_TOKENS:
+        return True
+    # Common "read a file chunk" patterns.
+    lower = text.lower()
+    if "sed -n" in lower or "cat " in lower or "find " in lower:
         return True
     return False
 
@@ -136,6 +163,11 @@ class ToolPolicyHooks(HookProvider):
                     f"{shell_family}. Use PowerShell/CMD syntax or invoke bash explicitly."
                 )
                 return
+            if mode == "execute" and isinstance(command, str) and _looks_file_inspection_shell_command(command):
+                event.cancel_tool = (
+                    "Use file_list/file_search/file_read for repository inspection instead of shell."
+                )
+                return
 
         if mode == "plan":
             plan_allowed_tools = self._plan_mode_allowlist(sw if isinstance(sw, dict) else {})
@@ -150,6 +182,17 @@ class ToolPolicyHooks(HookProvider):
                 return
 
         if mode == "execute" and name == "project_context" and isinstance(sw, dict):
+            total_raw = sw.get("_project_context_total")
+            total = int(total_raw) if isinstance(total_raw, int) else 0
+            total += 1
+            sw["_project_context_total"] = total
+            if total > 6:
+                event.cancel_tool = (
+                    "Repeated project_context loop detected. Ask the user for clarification "
+                    "or switch tools instead of retrying project_context."
+                )
+                return
+
             signature = _project_context_signature(tool_use)
             last_signature = str(sw.get("_project_context_last_signature") or "")
             streak_raw = sw.get("_project_context_streak")

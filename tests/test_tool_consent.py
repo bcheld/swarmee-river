@@ -50,3 +50,26 @@ def test_plan_approval_counts_as_consent():
     )
     hook.before_tool_call(event)
     assert event.cancel_tool is False
+
+
+def test_tool_consent_prompt_includes_shell_command_context():
+    safety = SafetyConfig(tool_consent="ask", tool_rules=[ToolRule(tool="shell", default="ask", remember=True)])
+    prompts: list[str] = []
+
+    def prompt(text: str) -> str:
+        prompts.append(text)
+        return "y"
+
+    hook = ToolConsentHooks(safety, interactive=True, auto_approve=False, prompt=prompt)
+
+    event = SimpleNamespace(
+        tool_use={"name": "shell", "input": {"command": "ls -al", "cwd": "/tmp/work"}},
+        invocation_state={},
+        cancel_tool=False,
+    )
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool is False
+    assert prompts
+    assert "Command: ls -al" in prompts[0]
+    assert "CWD: /tmp/work" in prompts[0]

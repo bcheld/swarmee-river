@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 from dataclasses import dataclass
@@ -17,6 +18,61 @@ def _truthy_env(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+
+
+def _truncate(value: str, limit: int = 240) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
+def _tool_prompt_context(tool_name: str, tool_use: dict[str, Any]) -> str:
+    tool_input = tool_use.get("input")
+    if not isinstance(tool_input, dict):
+        return ""
+
+    if tool_name == "shell":
+        command = _truncate(str(tool_input.get("command") or ""))
+        cwd = _truncate(str(tool_input.get("cwd") or ""))
+        lines = []
+        if command:
+            lines.append(f"  Command: {command}")
+        if cwd:
+            lines.append(f"  CWD: {cwd}")
+        return "\n".join(lines)
+
+    if tool_name == "git":
+        action = _truncate(str(tool_input.get("action") or ""))
+        ref = _truncate(str(tool_input.get("ref") or ""))
+        message = _truncate(str(tool_input.get("message") or ""))
+        lines = []
+        if action:
+            lines.append(f"  Action: {action}")
+        if ref:
+            lines.append(f"  Ref: {ref}")
+        if message:
+            lines.append(f"  Message: {message}")
+        return "\n".join(lines)
+
+    if tool_name == "project_context":
+        action = _truncate(str(tool_input.get("action") or ""))
+        query = _truncate(str(tool_input.get("query") or ""))
+        path = _truncate(str(tool_input.get("path") or ""))
+        lines = []
+        if action:
+            lines.append(f"  Action: {action}")
+        if query:
+            lines.append(f"  Query: {query}")
+        if path:
+            lines.append(f"  Path: {path}")
+        return "\n".join(lines)
+
+    try:
+        payload = json.dumps(tool_input, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        payload = str(tool_input)
+    return f"  Input: {_truncate(payload)}"
 
 
 @dataclass(frozen=True)
@@ -126,10 +182,11 @@ class ToolConsentHooks(HookProvider):
             if remember_allowed:
                 prompt = (
                     f"Allow tool '{tool_name}'?\n"
+                    f"{_tool_prompt_context(tool_name, tool_use)}\n"
                     "  [y] Yes   [n] No   [a] Always (session)   [v] Never (session): "
                 )
             else:
-                prompt = f"Allow tool '{tool_name}'?\n  [y] Yes   [n] No: "
+                prompt = f"Allow tool '{tool_name}'?\n{_tool_prompt_context(tool_name, tool_use)}\n  [y] Yes   [n] No: "
 
             choice = (self._prompt(prompt) or "").strip().lower()
             if remember_allowed:

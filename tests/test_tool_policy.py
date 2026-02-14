@@ -82,6 +82,52 @@ def test_execute_mode_blocks_repeated_project_context_loop() -> None:
     assert "Repeated project_context loop detected" in str(last_event.cancel_tool)
 
 
+def test_execute_mode_blocks_project_context_after_total_cap_even_when_varied() -> None:
+    hook = ToolPolicyHooks()
+    invocation_state = {"swarmee": {"mode": "execute"}}
+    last_event = None
+
+    for i in range(7):
+        event = SimpleNamespace(
+            tool_use={"name": "project_context", "input": {"action": "search", "query": f"q{i}"}},
+            invocation_state=invocation_state,
+            cancel_tool=False,
+        )
+        hook.before_tool_call(event)
+        last_event = event
+
+    assert last_event is not None
+    assert last_event.cancel_tool
+    assert "Repeated project_context loop detected" in str(last_event.cancel_tool)
+
+
+def test_execute_mode_blocks_shell_file_inspection_commands() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "shell", "input": {"command": "sed -n '1,240p' src/swarmee_river/settings.py"}},
+        invocation_state={"swarmee": {"mode": "execute"}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool
+    assert "file_list/file_search/file_read" in str(event.cancel_tool)
+
+
+def test_execute_mode_allows_shell_non_file_inspection_commands() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "shell", "input": {"command": "pytest -q"}},
+        invocation_state={"swarmee": {"mode": "execute"}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool is False
+
+
 def test_execute_mode_blocks_workplan_tool() -> None:
     hook = ToolPolicyHooks()
     event = SimpleNamespace(

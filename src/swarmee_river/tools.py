@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import os
 from typing import Any, Optional
 
 # Custom tools (packaged + hot-loaded from ./tools)
 from tools import (
     agent_graph,
     artifact,
+    file_ops,
     git,
     patch_apply,
     project_context,
@@ -19,6 +21,13 @@ from tools import (
 )
 from tools.python_repl import python_repl as python_repl_fallback
 from tools.shell import shell as shell_fallback
+
+
+def _truthy_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
 
 
 def _load_strands_tool(name: str) -> Optional[Any]:
@@ -82,13 +91,16 @@ def get_tools() -> dict[str, Any]:
     tools.setdefault("python_repl", python_repl_fallback)
 
     # Packaged custom tools
-    tools |= {
+    custom_tools: dict[str, Any] = {
+        # Core repository navigation primitives (safe, non-shell).
+        "file_list": file_ops.file_list,
+        "file_search": file_ops.file_search,
+        "file_read": file_ops.file_read,
         "store_in_kb": store_in_kb,
         "strand": strand,
         "welcome": welcome,
         "sop": sop,
         "artifact": artifact,
-        "project_context": project_context,
         "git": git,
         "patch_apply": patch_apply,
         "run_checks": run_checks,
@@ -97,5 +109,8 @@ def get_tools() -> dict[str, Any]:
         # Override any `strands_tools.swarm` with a cancellable implementation.
         "swarm": swarm,
     }
+    if _truthy_env("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", False):
+        custom_tools["project_context"] = project_context
+    tools |= custom_tools
 
     return tools

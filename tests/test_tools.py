@@ -14,3 +14,18 @@ def test_tools_include_core_coding_primitives():
     assert "git" in tools
     assert "patch_apply" in tools
     assert "run_checks" in tools
+    assert "file_list" in tools
+    assert "file_search" in tools
+    assert "file_read" in tools
+
+
+def test_project_context_tool_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", raising=False)
+    tools = get_tools()
+    assert "project_context" not in tools
+
+
+def test_project_context_tool_can_be_enabled(monkeypatch):
+    monkeypatch.setenv("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", "true")
+    tools = get_tools()
+    assert "project_context" in tools

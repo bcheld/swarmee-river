@@ -604,7 +604,7 @@ class TestToolConsentPrompt:
             "\n~ consent> ",
             default="",
             keyboard_interrupt_return_default=True,
-            prefer_prompt_toolkit_in_async=True,
+            prefer_prompt_toolkit_in_async=False,
         )
 
     def test_get_user_input_compat_uses_stdin_when_event_loop_running(self):

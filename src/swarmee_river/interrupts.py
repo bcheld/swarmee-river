@@ -35,10 +35,12 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
         self._thread: Optional[threading.Thread] = None
         self._pause_count = 0
         self._pause_lock = threading.Lock()
+        self._termios_lock = threading.Lock()
 
         self._is_windows = platform.system() == "Windows"
         self._stdin_fd: Optional[int] = None
         self._termios_old: Optional[object] = None
+        self._cbreak_enabled = False
 
     def __enter__(self) -> "EscInterruptWatcher":
         global _ACTIVE_WATCHER
@@ -50,15 +52,13 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
         if self._is_windows:
             self._thread = threading.Thread(target=self._watch_windows, daemon=True)
             self._thread.start()
+            with _ACTIVE_WATCHER_LOCK:
+                _ACTIVE_WATCHER = self
             return self
 
         try:
-            import termios
-            import tty
-
             self._stdin_fd = sys.stdin.fileno()
-            self._termios_old = termios.tcgetattr(self._stdin_fd)
-            tty.setcbreak(self._stdin_fd)
+            self._capture_and_enable_cbreak_mode()
         except Exception:
             # If we can't switch modes (non-tty, CI, etc), still run the watcher best-effort.
             self._stdin_fd = None
@@ -79,13 +79,7 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
         if self._thread:
             self._thread.join(timeout=0.2)
 
-        if not self._is_windows and self._stdin_fd is not None and self._termios_old is not None:
-            try:
-                import termios
-
-                termios.tcsetattr(self._stdin_fd, termios.TCSADRAIN, self._termios_old)
-            except Exception:
-                pass
+        self._restore_terminal_mode()
         with _ACTIVE_WATCHER_LOCK:
             if _ACTIVE_WATCHER is self:
                 _ACTIVE_WATCHER = None
@@ -93,13 +87,21 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
         return None
 
     def pause(self) -> None:
+        should_restore_terminal = False
         with self._pause_lock:
             self._pause_count += 1
+            should_restore_terminal = self._pause_count == 1
+        if should_restore_terminal:
+            self._restore_terminal_mode()
 
     def resume(self) -> None:
+        should_enable_cbreak = False
         with self._pause_lock:
             if self._pause_count > 0:
                 self._pause_count -= 1
+            should_enable_cbreak = self._pause_count == 0
+        if should_enable_cbreak:
+            self._enable_cbreak_mode()
 
     def _is_paused(self) -> bool:
         with self._pause_lock:
@@ -144,6 +146,49 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
                         return
             except Exception:
                 return
+
+    def _capture_and_enable_cbreak_mode(self) -> None:
+        if self._is_windows or self._stdin_fd is None:
+            return
+        try:
+            import termios
+            import tty
+        except Exception:
+            return
+        with self._termios_lock:
+            if self._termios_old is None:
+                self._termios_old = termios.tcgetattr(self._stdin_fd)
+            tty.setcbreak(self._stdin_fd)
+            self._cbreak_enabled = True
+
+    def _enable_cbreak_mode(self) -> None:
+        if self._is_windows or self._stdin_fd is None or self._termios_old is None:
+            return
+        try:
+            import tty
+        except Exception:
+            return
+        with self._termios_lock:
+            if self._cbreak_enabled:
+                return
+            tty.setcbreak(self._stdin_fd)
+            self._cbreak_enabled = True
+
+    def _restore_terminal_mode(self) -> None:
+        if self._is_windows or self._stdin_fd is None or self._termios_old is None:
+            return
+        try:
+            import termios
+        except Exception:
+            return
+        with self._termios_lock:
+            if not self._cbreak_enabled:
+                return
+            try:
+                termios.tcsetattr(self._stdin_fd, termios.TCSADRAIN, self._termios_old)
+            except Exception:
+                return
+            self._cbreak_enabled = False
 
 
 @contextmanager

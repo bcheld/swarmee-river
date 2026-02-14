@@ -95,6 +95,12 @@ from tools.welcome import read_welcome_text
 
 os.environ["STRANDS_TOOL_CONSOLE_MODE"] = "enabled"
 _STRANDS_KWARGS_DEPRECATION = r"`\*\*kwargs` parameter is deprecating, use `invocation_state` instead\."
+_TOOL_USAGE_RULES = (
+    "Tool usage rules:\n"
+    "- Use file_list/file_search/file_read for repository exploration and file reading.\n"
+    "- Do not use shell for ls/find/sed/cat/grep/rg when file tools can do it.\n"
+    "- Reserve shell for real command execution tasks."
+)
 
 
 _consent_prompt_session: Any | None = None
@@ -634,7 +640,7 @@ def main():
                     "\n~ consent> ",
                     default="",
                     keyboard_interrupt_return_default=True,
-                    prefer_prompt_toolkit_in_async=True,
+                    prefer_prompt_toolkit_in_async=False,
                 )
 
         hooks = [
@@ -690,7 +696,7 @@ def main():
     artifact_store = ArtifactStore()
 
     def refresh_system_prompt(welcome_text_local: str) -> None:
-        parts: list[str] = [system_prompt]
+        parts: list[str] = [system_prompt, _TOOL_USAGE_RULES]
 
         if runtime_environment_prompt_section:
             parts.append(runtime_environment_prompt_section)
