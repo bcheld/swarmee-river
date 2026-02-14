@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import shlex
 from typing import Any
 
-from strands.hooks import HookRegistry, HookProvider
+from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import BeforeToolCallEvent
 
 from swarmee_river.hooks._compat import register_hook_callback
@@ -21,6 +22,45 @@ def _csv_env(name: str) -> set[str]:
     if not raw:
         return set()
     return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+_WINDOWS_POSIX_BIASED_TOKENS = {
+    "awk",
+    "chmod",
+    "chown",
+    "grep",
+    "sed",
+    "source",
+    "xargs",
+}
+
+
+def _first_command_token(command: str) -> str:
+    text = (command or "").strip()
+    if not text:
+        return ""
+    try:
+        parts = shlex.split(text, posix=True)
+    except ValueError:
+        parts = text.split()
+    if not parts:
+        return ""
+    return str(parts[0]).strip().lower()
+
+
+def _looks_posix_only_shell_command(command: str) -> bool:
+    text = (command or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if lower.startswith(("bash ", "bash -lc", "sh ", "zsh ")):
+        return False
+    token = _first_command_token(text)
+    if token in _WINDOWS_POSIX_BIASED_TOKENS:
+        return True
+    if token.startswith("./") and token.endswith(".sh"):
+        return True
+    return False
 
 
 class ToolPolicyHooks(HookProvider):
@@ -66,6 +106,26 @@ class ToolPolicyHooks(HookProvider):
 
         sw = event.invocation_state.get("swarmee", {}) if isinstance(event.invocation_state, dict) else {}
         mode = sw.get("mode")
+        runtime_env = sw.get("runtime_environment") if isinstance(sw, dict) else {}
+
+        if name == "shell":
+            tool_input = tool_use.get("input")
+            command = tool_input.get("command") if isinstance(tool_input, dict) else None
+            os_name = str(runtime_env.get("os") or "").strip().lower() if isinstance(runtime_env, dict) else ""
+            shell_family = (
+                str(runtime_env.get("shell_family") or "").strip().lower() if isinstance(runtime_env, dict) else ""
+            )
+            if (
+                os_name == "windows"
+                and shell_family in {"powershell", "cmd"}
+                and isinstance(command, str)
+                and _looks_posix_only_shell_command(command)
+            ):
+                event.cancel_tool = (
+                    "Shell command appears POSIX-specific, but runtime shell is Windows "
+                    f"{shell_family}. Use PowerShell/CMD syntax or invoke bash explicitly."
+                )
+                return
 
         if mode == "plan":
             plan_allowed_tools = self._plan_mode_allowlist(sw if isinstance(sw, dict) else {})

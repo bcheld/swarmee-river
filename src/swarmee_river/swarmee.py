@@ -16,10 +16,11 @@ from typing import Any, Optional
 
 # Strands
 from strands import Agent
-from strands_tools.utils.user_input import get_user_input
 from strands.types.exceptions import MaxTokensReachedException
+from strands_tools.utils.user_input import get_user_input
 
 from swarmee_river.handlers.callback_handler import callback_handler, set_interrupt_event
+
 try:
     from prompt_toolkit import HTML, PromptSession
     from prompt_toolkit.patch_stdout import patch_stdout
@@ -27,12 +28,18 @@ except Exception:
     HTML = None  # type: ignore[assignment]
     PromptSession = None  # type: ignore[assignment]
     patch_stdout = None  # type: ignore[assignment]
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+except Exception:
+    Console = None  # type: ignore[assignment]
+    Panel = None  # type: ignore[assignment]
 
 try:
     from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks
     from swarmee_river.hooks.tool_consent import ToolConsentHooks
-    from swarmee_river.hooks.tool_result_limiter import ToolResultLimiterHooks
     from swarmee_river.hooks.tool_policy import ToolPolicyHooks
+    from swarmee_river.hooks.tool_result_limiter import ToolResultLimiterHooks
 
     _HAS_STRANDS_HOOKS = True
 except Exception:
@@ -46,8 +53,7 @@ try:
     from swarmee_river.hooks.tool_message_repair import ToolMessageRepairHooks
 except Exception:
     ToolMessageRepairHooks = None  # type: ignore[assignment]
-from swarmee_river.interrupts import AgentInterruptedError, interrupt_watcher_from_env
-from swarmee_river.intent import classify_intent
+from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.cli.builtin_commands import register_builtin_commands
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
 from swarmee_river.cli.diagnostics import (
@@ -61,14 +67,16 @@ from swarmee_river.cli.diagnostics import (
 )
 from swarmee_river.cli.repl import run_repl
 from swarmee_river.harness.context_snapshot import build_context_snapshot
+from swarmee_river.intent import classify_intent
+from swarmee_river.interrupts import AgentInterruptedError, interrupt_watcher_from_env
+from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.planning import WorkPlan, structured_plan_prompt
 from swarmee_river.project_map import build_project_map
-from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
+from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.session.store import SessionStore
 from swarmee_river.settings import PackEntry, PacksConfig, SwarmeeSettings, load_settings, save_settings
 from swarmee_river.tools import get_tools
-from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.env_utils import load_env_file
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
@@ -82,6 +90,7 @@ os.environ["STRANDS_TOOL_CONSOLE_MODE"] = "enabled"
 
 _consent_prompt_session: Any | None = None
 _consent_prompt_lock = threading.Lock()
+_consent_console: Any | None = Console() if Console is not None else None
 
 
 def _truthy(value: Optional[str]) -> bool:
@@ -147,6 +156,32 @@ def _get_user_input_compat(
             keyboard_interrupt_return_default=keyboard_interrupt_return_default,
         )
     )
+
+
+def _render_tool_consent_message(message: str) -> None:
+    text = (message or "").strip()
+    if not text:
+        return
+
+    if _consent_console is not None and Panel is not None:
+        _consent_console.print()
+        _consent_console.print(
+            Panel(
+                text,
+                title="Tool Consent",
+                border_style="cyan",
+                expand=False,
+                padding=(0, 1),
+            )
+        )
+        return
+
+    print(f"\n[tool consent] {text}")
+
+
+def _plan_json_for_execution(plan: WorkPlan) -> str:
+    payload = plan.model_dump(exclude={"confirmation_prompt"})
+    return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
 def _build_conversation_manager(*, window_size: Optional[int], per_turn: Optional[int]) -> Any:
@@ -519,6 +554,8 @@ def main():
     model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
     model_manager.set_fallback_config(args.model_config)
     model = model_manager.build_model()
+    runtime_environment = detect_runtime_environment(cwd=Path.cwd())
+    runtime_environment_prompt_section = render_runtime_environment_section(runtime_environment)
 
     # Load system prompt
     system_prompt = load_system_prompt()
@@ -546,15 +583,14 @@ def main():
 
     hooks = []
     if _HAS_STRANDS_HOOKS:
+
         def _consent_prompt(text: str) -> str:
             # Keep consent prompts aligned with interactive UX:
             # 1) stop active spinners so prompt doesn't appear inline/garbled
             # 2) render consent context as an explicit line
             # 3) reuse the familiar input prompt style
             callback_handler(force_stop=True)
-            prompt_text = (text or "").strip()
-            if prompt_text:
-                print(f"\n[tool consent] {prompt_text}")
+            _render_tool_consent_message(text)
             return _get_user_input_compat("\n~ consent> ", default="", keyboard_interrupt_return_default=True)
 
         hooks = [
@@ -612,6 +648,9 @@ def main():
     def refresh_system_prompt(welcome_text_local: str) -> None:
         parts: list[str] = [system_prompt]
 
+        if runtime_environment_prompt_section:
+            parts.append(runtime_environment_prompt_section)
+
         if pack_prompt_sections:
             parts.extend(pack_prompt_sections)
 
@@ -655,6 +694,7 @@ def main():
         resolved_state: dict[str, Any] = dict(invocation_state) if isinstance(invocation_state, dict) else {}
         sw_state = resolved_state.setdefault("swarmee", {})
         if isinstance(sw_state, dict):
+            sw_state.setdefault("runtime_environment", dict(runtime_environment))
             sw_state["tier"] = model_manager.current_tier
             profile = settings.harness.tier_profiles.get(model_manager.current_tier)
             if profile is not None:
@@ -683,10 +723,9 @@ def main():
                             exc = context.get("exception")
                             if message.startswith("an error occurred during closing of asynchronous generator"):
                                 return
-                            if isinstance(exc, RuntimeError) and "athrow(): asynchronous generator is already running" in str(
-                                exc
-                            ):
-                                return
+                            if isinstance(exc, RuntimeError):
+                                if "athrow(): asynchronous generator is already running" in str(exc):
+                                    return
                         if previous_handler:
                             previous_handler(loop, context)
                         else:
@@ -696,7 +735,8 @@ def main():
 
                     class _OtelDetachFilter(logging.Filter):
                         def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
-                            if interrupt_event.is_set() and str(record.getMessage()).startswith("Failed to detach context"):
+                            message = str(record.getMessage())
+                            if interrupt_event.is_set() and message.startswith("Failed to detach context"):
                                 return False
                             return True
 
@@ -716,20 +756,28 @@ def main():
                     canceller_task = asyncio.create_task(_canceller())
                     try:
                         invoke_kwargs: dict[str, Any] = {"invocation_state": invocation_state}
+                        invoke_query = query
                         if structured_output_model is not None:
                             invoke_kwargs["structured_output_model"] = structured_output_model
 
                         supports_structured_output_prompt = True
                         try:
                             invoke_sig = inspect.signature(agent.invoke_async)
-                            supports_structured_output_prompt = "structured_output_prompt" in invoke_sig.parameters
+                            params = invoke_sig.parameters
+                            supports_structured_output_prompt = "structured_output_prompt" in params or any(
+                                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                            )
                         except (TypeError, ValueError):
                             supports_structured_output_prompt = True
 
                         if structured_output_prompt is not None and supports_structured_output_prompt:
                             invoke_kwargs["structured_output_prompt"] = structured_output_prompt
+                        elif structured_output_prompt is not None:
+                            prompt_text = structured_output_prompt.strip()
+                            if prompt_text:
+                                invoke_query = f"{prompt_text}\n\nUser request:\n{query}"
 
-                        return await agent.invoke_async(query, **invoke_kwargs)
+                        return await agent.invoke_async(invoke_query, **invoke_kwargs)
                     except asyncio.CancelledError as e:
                         if interrupt_event.is_set():
                             raise AgentInterruptedError("Interrupted by user (Esc)") from e
@@ -843,10 +891,11 @@ def main():
 
         allowed_tools = sorted(tools_expected_from_plan(plan))
         invocation_state = {"swarmee": {"mode": "execute", "enforce_plan": True, "allowed_tools": allowed_tools}}
+        plan_json_for_execution = _plan_json_for_execution(plan)
 
         active_plan_prompt_section = (
             "Approved Plan (execute ONLY this plan; if you need changes, ask to :replan):\n"
-            + plan.model_dump_json(indent=2)
+            + plan_json_for_execution
         )
         refresh_system_prompt(welcome_text_local)
         try:
@@ -862,7 +911,7 @@ def main():
                             agent.tool.store_in_kb(
                                 content=(
                                     f"Approved plan for request:\n{user_request}\n\n"
-                                    f"{plan.model_dump_json(indent=2)}\n"
+                                    f"{plan_json_for_execution}\n"
                                 ),
                                 title=f"Plan: {user_request[:50]}{'...' if len(user_request) > 50 else ''}",
                                 knowledge_base_id=knowledge_base_id,

@@ -4,26 +4,34 @@ repos:
       - id: hatch-format
         name: Format code
         entry: hatch fmt --formatter
-        language: system
+        language: python
+        additional_dependencies:
+          - hatch>=1.0.0,<2.0.0
         pass_filenames: false
         types: [python]
         stages: [pre-commit]
       - id: hatch-lint
         name: Lint code
         entry: hatch fmt --linter
-        language: system
+        language: python
+        additional_dependencies:
+          - hatch>=1.0.0,<2.0.0
         pass_filenames: false
         types: [python]
         stages: [pre-commit]
       - id: hatch-test
         name: Unit tests
         entry: hatch test --cover
-        language: system
+        language: python
+        additional_dependencies:
+          - hatch>=1.0.0,<2.0.0
         pass_filenames: false
         types: [python]
         stages: [pre-commit]
       - id: commitizen-check
         name: Check commit message
-        entry: hatch run cz check --commit-msg-file
-        language: system
+        entry: cz check --commit-msg-file
+        language: python
+        additional_dependencies:
+          - commitizen>=4.4.0,<5.0.0
         stages: [commit-msg]

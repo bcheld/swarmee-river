@@ -3,9 +3,9 @@
 Unit tests for the swarmee.py module using pytest
 """
 
+import asyncio
 import os
 import sys
-import asyncio
 from unittest import mock
 
 import pytest
@@ -163,7 +163,10 @@ class TestInteractiveMode:
     ):
         from swarmee_river.planning import PlanStep, WorkPlan
 
-        plan = WorkPlan(summary="Fix a bug", steps=[PlanStep(description="Inspect failing test", tools_expected=["file_read"])])
+        plan = WorkPlan(
+            summary="Fix a bug",
+            steps=[PlanStep(description="Inspect failing test", tools_expected=["file_read"])],
+        )
         mock_agent.invoke_async = mock.AsyncMock(return_value=mock.MagicMock(structured_output=plan, message=[]))
 
         monkeypatch.setattr(sys, "argv", ["swarmee", "fix", "the", "bug"])
@@ -174,6 +177,43 @@ class TestInteractiveMode:
         sw_state = call.kwargs["invocation_state"]["swarmee"]
         assert sw_state["mode"] == "plan"
         assert "WorkPlan" in sw_state.get("plan_allowed_tools", [])
+
+    def test_plan_generation_fallback_injects_prompt_when_sdk_lacks_structured_output_prompt(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        mock_user_input,
+        mock_welcome_message,
+        mock_goodbye_message,
+        monkeypatch,
+    ):
+        from swarmee_river.planning import WorkPlan
+
+        captured: dict[str, object] = {}
+
+        async def invoke_async_no_structured_prompt(
+            prompt: str,
+            *,
+            invocation_state: dict[str, object],
+            structured_output_model: type[object] | None = None,
+        ):
+            captured["prompt"] = prompt
+            captured["invocation_state"] = invocation_state
+            del structured_output_model
+            return mock.MagicMock(structured_output=WorkPlan(summary="Plan summary", steps=[]), message=[])
+
+        mock_agent.invoke_async = invoke_async_no_structured_prompt
+        mock_user_input.side_effect = ["fix bug in runtime", ":cancel", "exit"]
+        monkeypatch.setattr(sys, "argv", ["swarmee"])
+
+        swarmee.main()
+
+        prompt_text = str(captured.get("prompt", ""))
+        assert "You MUST return a WorkPlan structured output response." in prompt_text
+        assert "User request:\nfix bug in runtime" in prompt_text
+        sw_state = captured["invocation_state"]["swarmee"]  # type: ignore[index]
+        assert sw_state["mode"] == "plan"  # type: ignore[index]
 
     @mock.patch.object(swarmee, "get_user_input")
     @mock.patch.object(swarmee, "Agent")
@@ -255,6 +295,7 @@ class TestCommandLine:
         call = mock_agent.invoke_async.call_args
         assert call.args[0] == "test query"
         assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
+        assert "runtime_environment" in call.kwargs["invocation_state"]["swarmee"]
         assert "structured_output_model" not in call.kwargs
         assert "structured_output_prompt" not in call.kwargs
 
@@ -476,7 +517,8 @@ class TestKnowledgeBaseIntegration:
             swarmee.main()
 
         # Verify agent was called with system prompt that excludes welcome text reference
-        assert mock_agent.system_prompt == base_system_prompt
+        assert base_system_prompt in mock_agent.system_prompt
+        assert "Welcome Text Reference:" not in mock_agent.system_prompt
 
 
 class TestToolConsentPrompt:
@@ -506,14 +548,14 @@ class TestToolConsentPrompt:
         consent_text = "Allow tool 'shell'? [y]es/[n]o/[a]lways/[v]never:"
         with (
             mock.patch.object(swarmee, "callback_handler") as mock_callback_handler,
+            mock.patch.object(swarmee, "_render_tool_consent_message") as mock_render_consent,
             mock.patch.object(swarmee, "get_user_input", return_value="y") as mock_user_input,
-            mock.patch.object(swarmee, "print") as mock_print,
         ):
             response = prompt_fn(consent_text)  # type: ignore[operator]
 
         assert response == "y"
         mock_callback_handler.assert_called_once_with(force_stop=True)
-        mock_print.assert_any_call(f"\n[tool consent] {consent_text}")
+        mock_render_consent.assert_called_once_with(consent_text)
         mock_user_input.assert_called_once_with("\n~ consent> ", default="", keyboard_interrupt_return_default=True)
 
     def test_get_user_input_compat_uses_prompt_toolkit_when_event_loop_running(self):
@@ -534,3 +576,17 @@ class TestToolConsentPrompt:
             return result
 
         assert asyncio.run(_run()) == "y"
+
+    def test_plan_json_for_execution_excludes_confirmation_prompt(self):
+        from swarmee_river.planning import PlanStep, WorkPlan
+
+        plan = WorkPlan(
+            summary="Refactor hooks",
+            steps=[PlanStep(description="Update tests")],
+            confirmation_prompt="Approve with :y",
+        )
+
+        rendered = swarmee._plan_json_for_execution(plan)
+
+        assert "confirmation_prompt" not in rendered
+        assert '"summary": "Refactor hooks"' in rendered
