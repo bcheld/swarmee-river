@@ -61,3 +61,31 @@ def test_windows_powershell_allows_explicit_bash_shell_commands() -> None:
     hook.before_tool_call(event)
 
     assert event.cancel_tool is False
+
+
+def test_execute_mode_blocks_workplan_tool() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "WorkPlan"},
+        invocation_state={"swarmee": {"mode": "execute"}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool
+    assert "only allowed in plan mode" in str(event.cancel_tool)
+
+
+def test_execute_mode_enforce_plan_blocks_when_allowlist_is_empty() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "shell"},
+        invocation_state={"swarmee": {"mode": "execute", "enforce_plan": True, "allowed_tools": []}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool
+    assert "not in approved plan" in str(event.cancel_tool)

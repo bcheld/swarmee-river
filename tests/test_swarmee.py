@@ -6,6 +6,7 @@ Unit tests for the swarmee.py module using pytest
 import asyncio
 import os
 import sys
+import warnings
 from unittest import mock
 
 import pytest
@@ -153,6 +154,42 @@ class TestInteractiveMode:
         monkeypatch.setattr(sys, "argv", ["swarmee"])
 
         swarmee.main()
+
+    def test_suppresses_strands_kwargs_deprecation_warning(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        mock_user_input,
+        mock_welcome_message,
+        mock_goodbye_message,
+        monkeypatch,
+    ):
+        async def invoke_async_with_warning(
+            prompt: str,
+            *,
+            invocation_state: dict[str, object],
+            structured_output_model: type[object] | None = None,
+            structured_output_prompt: str | None = None,
+        ):
+            del prompt
+            del invocation_state
+            del structured_output_model
+            del structured_output_prompt
+            warnings.warn("`**kwargs` parameter is deprecating, use `invocation_state` instead.", UserWarning)
+            return mock.MagicMock(structured_output=None, message=[{"role": "assistant", "content": [{"text": "ok"}]}])
+
+        mock_agent.invoke_async = invoke_async_with_warning
+        mock_user_input.side_effect = ["test query", "exit"]
+        monkeypatch.setattr(sys, "argv", ["swarmee"])
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            swarmee.main()
+
+        assert not any(
+            "`**kwargs` parameter is deprecating, use `invocation_state` instead." in str(w.message) for w in caught
+        )
 
     def test_plan_generation_sets_structured_output_tool_allowlist(
         self,

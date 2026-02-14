@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import threading
+import warnings
 from pathlib import Path
 from typing import Any, Optional
 
@@ -88,6 +89,7 @@ from tools.sop import run_sop
 from tools.welcome import read_welcome_text
 
 os.environ["STRANDS_TOOL_CONSOLE_MODE"] = "enabled"
+_STRANDS_KWARGS_DEPRECATION = r"`\*\*kwargs` parameter is deprecating, use `invocation_state` instead\."
 
 
 _consent_prompt_session: Any | None = None
@@ -778,7 +780,16 @@ def main():
                             if prompt_text:
                                 invoke_query = f"{prompt_text}\n\nUser request:\n{query}"
 
-                        return await agent.invoke_async(invoke_query, **invoke_kwargs)
+                        # Upstream Strands still emits a kwargs deprecation warning from nested paths in some
+                        # versions/tool flows, even when invocation_state is used correctly by callers.
+                        # Suppress only that specific warning to avoid noisy end-user output.
+                        with warnings.catch_warnings():
+                            warnings.filterwarnings(
+                                "ignore",
+                                message=_STRANDS_KWARGS_DEPRECATION,
+                                category=UserWarning,
+                            )
+                            return await agent.invoke_async(invoke_query, **invoke_kwargs)
                     except asyncio.CancelledError as e:
                         if interrupt_event.is_set():
                             raise AgentInterruptedError("Interrupted by user (Esc)") from e
@@ -890,7 +901,8 @@ def main():
     def _execute_with_plan(user_request: str, plan: WorkPlan, *, welcome_text_local: str) -> Any:
         nonlocal active_plan_prompt_section
 
-        allowed_tools = sorted(tools_expected_from_plan(plan))
+        # Explicitly exclude plan-only tooling from execution allowlist.
+        allowed_tools = sorted(tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan")
         invocation_state = {"swarmee": {"mode": "execute", "enforce_plan": True, "allowed_tools": allowed_tools}}
         plan_json_for_execution = _plan_json_for_execution(plan)
 

@@ -139,11 +139,16 @@ class ToolPolicyHooks(HookProvider):
                 event.cancel_tool = f"Tool 'project_context' action '{action}' blocked in plan mode."
                 return
 
+        # Structured-output planning tool should never run during execute mode.
+        if mode == "execute" and name == "WorkPlan":
+            event.cancel_tool = "Tool 'WorkPlan' is only allowed in plan mode."
+            return
+
         if mode == "execute" and sw.get("enforce_plan"):
             allowed_tools = sw.get("allowed_tools")
             if isinstance(allowed_tools, (list, tuple, set)):
                 allowed = {str(x) for x in allowed_tools if str(x).strip()}
-                if allowed and name not in allowed:
+                if name not in allowed:
                     event.cancel_tool = (
                         f"Tool '{name}' not in approved plan. Use :replan to update the plan "
                         "before using additional tools."
