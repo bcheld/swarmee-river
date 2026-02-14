@@ -160,7 +160,8 @@ def load_enabled_pack_tools(settings: SwarmeeSettings) -> dict[str, Any]:
 def with_installed_pack(settings: SwarmeeSettings, entry: PackEntry) -> SwarmeeSettings:
     installed = [p for p in settings.packs.installed if p.name != entry.name]
     installed.append(entry)
-    from swarmee_river.settings import PacksConfig, SwarmeeSettings as Settings
+    from swarmee_river.settings import PacksConfig
+    from swarmee_river.settings import SwarmeeSettings as Settings
 
     return Settings(
         models=settings.models,

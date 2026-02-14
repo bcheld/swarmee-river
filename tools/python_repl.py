@@ -40,4 +40,3 @@ def python_repl(code: str) -> dict[str, Any]:
         combined += f"STDERR:\n{stderr}\n"
 
     return {"status": status, "content": [{"text": combined.strip() or "(no output)"}]}
-

@@ -9,7 +9,6 @@ from strands.models import Model
 from swarmee_river.settings import ModelTier, ProviderModels, SwarmeeSettings
 from swarmee_river.utils import model_utils
 
-
 _TIER_ORDER: list[str] = ["fast", "balanced", "deep", "long"]
 
 
@@ -34,9 +33,7 @@ class SessionModelManager:
 
     def __init__(self, settings: SwarmeeSettings, *, fallback_provider: str | None = None) -> None:
         self._settings = settings
-        chosen_provider = (
-            (fallback_provider or settings.models.provider or "bedrock").strip().lower()
-        )
+        chosen_provider = (fallback_provider or settings.models.provider or "bedrock").strip().lower()
         self._fallback_provider = chosen_provider
         self._default_provider = chosen_provider
         self._fallback_config: dict[str, Any] | None = None
@@ -227,7 +224,9 @@ class SessionModelManager:
         return None
 
     def _merge_tiers(self, base: ModelTier, override: ModelTier, *, default_provider: str) -> ModelTier:
-        provider = override.provider.strip().lower() if override.provider and override.provider.strip() else base.provider
+        provider = (
+            override.provider.strip().lower() if override.provider and override.provider.strip() else base.provider
+        )
         if not provider:
             provider = default_provider
 

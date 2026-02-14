@@ -5,7 +5,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from strands.hooks import HookRegistry, HookProvider
+from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import BeforeToolCallEvent
 
 from swarmee_river.hooks._compat import register_hook_callback

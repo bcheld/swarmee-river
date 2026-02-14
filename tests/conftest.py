@@ -7,7 +7,6 @@ from unittest import mock
 
 import pytest
 
-import swarmee_river
 from swarmee_river import swarmee
 
 
@@ -27,7 +26,9 @@ def mock_agent():
     with mock.patch.object(swarmee, "Agent") as mock_agent_class:
         mock_agent_instance = mock.MagicMock()
         mock_agent_class.return_value = mock_agent_instance
-        mock_agent_instance.invoke_async = mock.AsyncMock(return_value=mock.MagicMock(structured_output=None, message=[]))
+        mock_agent_instance.invoke_async = mock.AsyncMock(
+            return_value=mock.MagicMock(structured_output=None, message=[])
+        )
         yield mock_agent_instance
 
 

@@ -39,11 +39,7 @@ def build_context_snapshot(
     project_map_prompt_section: str | None = None
 
     if _truthy(os.getenv("SWARMEE_PREFLIGHT", "enabled"), True):
-        level = (
-            os.getenv("SWARMEE_PREFLIGHT_LEVEL")
-            or default_preflight_level
-            or "summary"
-        ).strip().lower()
+        level = (os.getenv("SWARMEE_PREFLIGHT_LEVEL") or default_preflight_level or "summary").strip().lower()
         max_chars = int(os.getenv("SWARMEE_PREFLIGHT_MAX_CHARS", "8000"))
         actions = ["summary"]
         if level == "summary+tree":

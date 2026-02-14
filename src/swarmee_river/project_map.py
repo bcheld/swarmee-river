@@ -22,7 +22,7 @@ def _detect_languages(root: Path) -> list[str]:
     skip_dirs = {".git", ".venv", "venv", "dist", "build", "__pycache__", ".mypy_cache", ".ruff_cache", ".pytest_cache"}
     file_limit = 5000
     seen_files = 0
-    for dirpath, dirnames, filenames in os.walk(root):
+    for _dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in skip_dirs]
         for fn in filenames:
             suffix = Path(fn).suffix.lower().lstrip(".")

@@ -135,4 +135,3 @@ def patch_apply(
         summary_lines.append("touched:\n" + "\n".join(f"- {p}" for p in touched))
 
     return {"status": "success", "content": [{"text": "\n".join(summary_lines)}]}
-

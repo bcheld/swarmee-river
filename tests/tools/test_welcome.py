@@ -24,9 +24,10 @@ class TestWelcomeTool:
 
     def test_view_welcome_custom(self):
         """Test viewing welcome text with custom content"""
-        with mock.patch("pathlib.Path.exists", return_value=True), mock.patch(
-            "pathlib.Path.read_text", return_value="Custom welcome text"
-        ) as mock_read:
+        with (
+            mock.patch("pathlib.Path.exists", return_value=True),
+            mock.patch("pathlib.Path.read_text", return_value="Custom welcome text") as mock_read,
+        ):
             tool = {"toolUseId": "test-id", "input": {"action": "view"}}
 
             result = welcome(tool)
@@ -76,8 +77,9 @@ class TestWelcomeTool:
 
     def test_file_operation_error(self):
         """Test error during file operations"""
-        with mock.patch("pathlib.Path.exists", return_value=True), mock.patch(
-            "pathlib.Path.read_text", side_effect=PermissionError("Permission denied")
+        with (
+            mock.patch("pathlib.Path.exists", return_value=True),
+            mock.patch("pathlib.Path.read_text", side_effect=PermissionError("Permission denied")),
         ):
             tool = {"toolUseId": "test-id", "input": {"action": "view"}}
 

@@ -590,3 +590,18 @@ class TestToolConsentPrompt:
 
         assert "confirmation_prompt" not in rendered
         assert '"summary": "Refactor hooks"' in rendered
+
+    def test_render_tool_consent_message_preserves_choice_brackets(self):
+        if swarmee.Console is None:
+            pytest.skip("rich is not available")
+
+        from rich.console import Console
+
+        console = Console(record=True, width=160)
+        consent_text = "Allow tool 'shell'? [y]es/[n]o/[a]lways/[v]never:"
+
+        with mock.patch.object(swarmee, "_consent_console", console):
+            swarmee._render_tool_consent_message(consent_text)
+
+        rendered = console.export_text()
+        assert "[y]es/[n]o/[a]lways/[v]never:" in rendered

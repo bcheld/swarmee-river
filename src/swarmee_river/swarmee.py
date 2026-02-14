@@ -31,9 +31,11 @@ except Exception:
 try:
     from rich.console import Console
     from rich.panel import Panel
+    from rich.text import Text
 except Exception:
     Console = None  # type: ignore[assignment]
     Panel = None  # type: ignore[assignment]
+    Text = None  # type: ignore[assignment]
 
 try:
     from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks
@@ -163,13 +165,14 @@ def _render_tool_consent_message(message: str) -> None:
     if not text:
         return
 
-    if _consent_console is not None and Panel is not None:
+    if _consent_console is not None and Panel is not None and Text is not None:
+        consent_text = Text(text, style="yellow")
         _consent_console.print()
         _consent_console.print(
             Panel(
-                text,
+                consent_text,
                 title="Tool Consent",
-                border_style="cyan",
+                border_style="yellow",
                 expand=False,
                 padding=(0, 1),
             )
@@ -319,9 +322,7 @@ def main():
 
     # Get knowledge_base_id from args or environment variable
     knowledge_base_id = (
-        args.knowledge_base_id
-        or os.getenv("SWARMEE_KNOWLEDGE_BASE_ID")
-        or os.getenv("STRANDS_KNOWLEDGE_BASE_ID")
+        args.knowledge_base_id or os.getenv("SWARMEE_KNOWLEDGE_BASE_ID") or os.getenv("STRANDS_KNOWLEDGE_BASE_ID")
     )
 
     settings = load_settings()
@@ -343,6 +344,7 @@ def main():
                 raw=settings.raw,
             )
             save_settings(new_settings, settings_path)
+
         if not sub or sub[0] in {"list", "ls"}:
             lines = ["# Packs", ""]
             if not settings.packs.installed:
@@ -459,7 +461,7 @@ def main():
         sub = args.query[1:] if len(args.query) > 1 else []
 
         if cmd == "config":
-            subcmd = (sub[0].strip().lower() if sub else "show")
+            subcmd = sub[0].strip().lower() if sub else "show"
             if subcmd != "show":
                 print("Usage: swarmee config show")
                 return
@@ -507,7 +509,7 @@ def main():
             return
 
         if cmd == "artifact":
-            subcmd = (sub[0].strip().lower() if sub else "list")
+            subcmd = sub[0].strip().lower() if sub else "list"
             if subcmd in {"list", "ls"}:
                 print(render_artifact_list(cwd=Path.cwd()))
                 return
@@ -522,7 +524,7 @@ def main():
             return
 
         if cmd == "log":
-            subcmd = (sub[0].strip().lower() if sub else "tail")
+            subcmd = sub[0].strip().lower() if sub else "tail"
             if subcmd != "tail":
                 print("Usage: swarmee log tail [--lines N]")
                 return
@@ -574,9 +576,7 @@ def main():
     if pack_sop_paths:
         pack_paths_str = os.pathsep.join(str(p) for p in pack_sop_paths)
         effective_sop_paths = (
-            pack_paths_str
-            if not effective_sop_paths
-            else os.pathsep.join([effective_sop_paths, pack_paths_str])
+            pack_paths_str if not effective_sop_paths else os.pathsep.join([effective_sop_paths, pack_paths_str])
         )
 
     conversation_manager = _build_conversation_manager(window_size=args.window_size, per_turn=args.context_per_turn)
@@ -713,6 +713,7 @@ def main():
         set_interrupt_event(interrupt_event)
         with interrupt_watcher_from_env(interrupt_event):
             try:
+
                 async def _invoke() -> Any:
                     loop = asyncio.get_running_loop()
                     previous_handler = loop.get_exception_handler()
@@ -894,8 +895,7 @@ def main():
         plan_json_for_execution = _plan_json_for_execution(plan)
 
         active_plan_prompt_section = (
-            "Approved Plan (execute ONLY this plan; if you need changes, ask to :replan):\n"
-            + plan_json_for_execution
+            "Approved Plan (execute ONLY this plan; if you need changes, ask to :replan):\n" + plan_json_for_execution
         )
         refresh_system_prompt(welcome_text_local)
         try:
@@ -909,10 +909,7 @@ def main():
                     if knowledge_base_id:
                         try:
                             agent.tool.store_in_kb(
-                                content=(
-                                    f"Approved plan for request:\n{user_request}\n\n"
-                                    f"{plan_json_for_execution}\n"
-                                ),
+                                content=(f"Approved plan for request:\n{user_request}\n\n{plan_json_for_execution}\n"),
                                 title=f"Plan: {user_request[:50]}{'...' if len(user_request) > 50 else ''}",
                                 knowledge_base_id=knowledge_base_id,
                                 record_direct_tool_call=False,

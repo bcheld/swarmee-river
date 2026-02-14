@@ -164,4 +164,3 @@ class SessionStore:
         if not paths.dir.exists():
             raise FileNotFoundError(f"Session not found: {session_id}")
         shutil.rmtree(paths.dir)
-

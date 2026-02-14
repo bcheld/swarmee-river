@@ -25,4 +25,3 @@ def test_openai_connectivity():
     agent = Agent(model=model, tools=None, system_prompt="Reply with exactly: PONG", callback_handler=None)
     result = agent("PING")
     assert "PONG" in str(result).upper()
-

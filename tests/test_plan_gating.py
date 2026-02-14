@@ -14,7 +14,9 @@ def test_work_prompt_generates_plan_and_waits_for_approval(
     mock_goodbye_message,
     monkeypatch,
 ):
-    plan = WorkPlan(summary="Fix a bug", steps=[PlanStep(description="Inspect failing test", tools_expected=["file_read"])])
+    plan = WorkPlan(
+        summary="Fix a bug", steps=[PlanStep(description="Inspect failing test", tools_expected=["file_read"])]
+    )
     mock_agent.invoke_async = mock.AsyncMock(return_value=mock.MagicMock(structured_output=plan, message=[]))
 
     mock_user_input.side_effect = ["fix the bug in swarmee.py", ":n", "exit"]
@@ -58,4 +60,3 @@ def test_yes_flag_auto_approves_plan_and_executes(
     assert exec_call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
     assert exec_call.kwargs["invocation_state"]["swarmee"]["enforce_plan"] is True
     assert "editor" in exec_call.kwargs["invocation_state"]["swarmee"]["allowed_tools"]
-

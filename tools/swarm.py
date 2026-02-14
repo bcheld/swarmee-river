@@ -40,7 +40,11 @@ def _create_custom_agents(
             else:
                 system_prompt = "You are a helpful AI assistant specializing in collaborative problem solving."
         else:
-            if parent_agent and getattr(parent_agent, "system_prompt", None) and spec.get("inherit_parent_prompt", False):
+            if (
+                parent_agent
+                and getattr(parent_agent, "system_prompt", None)
+                and spec.get("inherit_parent_prompt", False)
+            ):
                 system_prompt = f"{system_prompt}\n\nBase Instructions:\n{parent_agent.system_prompt}"
 
         agent_tools: Any = spec.get("tools")
@@ -148,4 +152,3 @@ async def swarm(
         return {"status": "success", "content": [{"text": "\n".join(response_parts)}]}
     except Exception as e:
         return {"status": "error", "content": [{"text": f"⚠️ Swarm execution failed: {str(e)}"}]}
-

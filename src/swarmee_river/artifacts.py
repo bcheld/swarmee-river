@@ -19,7 +19,7 @@ def _compact_ts() -> str:
 
 def _safe_name(value: str) -> str:
     keep = []
-    for ch in (value or ""):
+    for ch in value or "":
         if ch.isalnum() or ch in {"-", "_", "."}:
             keep.append(ch)
         else:

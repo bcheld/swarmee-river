@@ -50,4 +50,3 @@ def test_plan_approval_counts_as_consent():
     )
     hook.before_tool_call(event)
     assert event.cancel_tool is False
-

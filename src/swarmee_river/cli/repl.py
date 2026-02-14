@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Callable
 
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
 
@@ -100,6 +100,5 @@ def run_repl(
                     )
                 elif ctx.knowledge_base_id:
                     ctx.output(
-                        "Hint: Knowledge Base operations require AWS credentials even when model "
-                        "provider is OpenAI."
+                        "Hint: Knowledge Base operations require AWS credentials even when model provider is OpenAI."
                     )

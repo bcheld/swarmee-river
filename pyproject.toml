@@ -100,10 +100,12 @@ format-fix = [
 ]
 lint-check = [
     "ruff check",
-    "mypy -p src -p tools"
 ]
 lint-fix = [
     "ruff check --fix"
+]
+type-check = [
+    "mypy -p swarmee_river -p tools"
 ]
 
 [tool.hatch.envs.hatch-test]

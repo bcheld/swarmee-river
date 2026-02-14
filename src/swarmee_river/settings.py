@@ -98,11 +98,7 @@ class ProviderModels:
                     continue
                 tiers[tier_name.strip().lower()] = ModelTier.from_dict(tier_value, default_provider=provider)
 
-        extra = {
-            k: v
-            for k, v in raw.items()
-            if k not in {"display_name", "description", "tiers"}
-        }
+        extra = {k: v for k, v in raw.items() if k not in {"display_name", "description", "tiers"}}
         return cls(
             display_name=str(display_name) if isinstance(display_name, str) else None,
             description=str(description) if isinstance(description, str) else None,
@@ -132,7 +128,11 @@ class AutoEscalation:
         max_escalations_per_task = raw.get("max_escalations_per_task")
         triggers = raw.get("triggers")
         return cls(
-            enabled=bool(enabled) if isinstance(enabled, bool) else _truthy(str(enabled)) if enabled is not None else False,
+            enabled=bool(enabled)
+            if isinstance(enabled, bool)
+            else _truthy(str(enabled))
+            if enabled is not None
+            else False,
             max_escalations_per_task=int(max_escalations_per_task)
             if isinstance(max_escalations_per_task, (int, float, str)) and str(max_escalations_per_task).isdigit()
             else 1,
@@ -468,7 +468,9 @@ def default_settings_template() -> SwarmeeSettings:
                             provider="bedrock",
                             model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
                             display_name="Claude Sonnet 4 (fast)",
-                            description="Lower latency / lower cost default (override via SWARMEE_BEDROCK_FAST_MODEL_ID).",
+                            description=(
+                                "Lower latency / lower cost default (override via SWARMEE_BEDROCK_FAST_MODEL_ID)."
+                            ),
                         ),
                         "balanced": ModelTier(
                             provider="bedrock",
@@ -480,7 +482,9 @@ def default_settings_template() -> SwarmeeSettings:
                             provider="bedrock",
                             model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
                             display_name="Claude Sonnet 4 (deep)",
-                            description="Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID).",
+                            description=(
+                                "Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID)."
+                            ),
                             extra={
                                 "additional_request_fields": {
                                     "thinking": {
@@ -494,7 +498,9 @@ def default_settings_template() -> SwarmeeSettings:
                             provider="bedrock",
                             model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
                             display_name="Claude Sonnet 4 (long)",
-                            description="Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID).",
+                            description=(
+                                "Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID)."
+                            ),
                         ),
                     },
                 ),

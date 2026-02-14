@@ -7,7 +7,6 @@ from typing import Any
 from strands import tool
 
 from swarmee_river.artifacts import ArtifactStore
-
 from tools.store_in_kb import store_in_kb as _store_in_kb
 
 
@@ -115,10 +114,12 @@ def artifact(
 
         kb_id = knowledge_base_id or os.getenv("SWARMEE_KNOWLEDGE_BASE_ID") or os.getenv("STRANDS_KNOWLEDGE_BASE_ID")
         if not kb_id:
-            return {"status": "error", "content": [{"text": "Missing knowledge_base_id (or SWARMEE_KNOWLEDGE_BASE_ID)."}]}
+            return {
+                "status": "error",
+                "content": [{"text": "Missing knowledge_base_id (or SWARMEE_KNOWLEDGE_BASE_ID)."}],
+            }
 
         doc_title = title or f"Artifact: {resolved_path.name}"
         return _store_in_kb(content=text, title=doc_title, knowledge_base_id=kb_id)
 
     return {"status": "error", "content": [{"text": f"Unknown action: {action}"}]}
-

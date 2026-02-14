@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from strands import Agent
 
@@ -231,4 +231,3 @@ def load_ipython_extension(ipython: Any) -> None:
 def unload_ipython_extension(_ipython: Any) -> None:
     # No-op: IPython does not provide a stable public API for unregistering magics.
     return None
-

@@ -25,7 +25,7 @@ def load_env_file(path: str | Path = ".env", *, override: bool = False) -> bool:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        value = value.strip().strip("\"").strip("'")
+        value = value.strip().strip('"').strip("'")
         if not key:
             continue
         if not override and key in os.environ:
@@ -33,4 +33,3 @@ def load_env_file(path: str | Path = ".env", *, override: bool = False) -> bool:
         os.environ[key] = value
 
     return True
-

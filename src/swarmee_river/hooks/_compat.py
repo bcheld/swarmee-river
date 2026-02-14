@@ -17,8 +17,7 @@ def register_hook_callback(registry: HookRegistry, event_type: type[Any], callba
         return
 
     raise AttributeError(
-        "HookRegistry does not support callback registration. "
-        "Expected either 'register' or 'add_callback'."
+        "HookRegistry does not support callback registration. Expected either 'register' or 'add_callback'."
     )
 
 

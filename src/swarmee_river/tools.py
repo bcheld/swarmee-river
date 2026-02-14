@@ -4,8 +4,19 @@ import importlib
 from typing import Any, Optional
 
 # Custom tools (packaged + hot-loaded from ./tools)
-from tools import agent_graph, artifact, git, patch_apply, project_context, run_checks, sop, store_in_kb, strand, swarm, welcome
-
+from tools import (
+    agent_graph,
+    artifact,
+    git,
+    patch_apply,
+    project_context,
+    run_checks,
+    sop,
+    store_in_kb,
+    strand,
+    swarm,
+    welcome,
+)
 from tools.python_repl import python_repl as python_repl_fallback
 from tools.shell import shell as shell_fallback
 

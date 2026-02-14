@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from strands.hooks import HookRegistry, HookProvider
+from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import (
     AfterInvocationEvent,
     AfterModelCallEvent,

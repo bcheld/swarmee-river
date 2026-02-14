@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 
-
 _WORK_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\b(implement|fix|refactor|rewrite|add|remove|delete|rename|update|upgrade)\b", re.IGNORECASE),
     re.compile(r"\b(create|generate|scaffold|bootstrap)\b", re.IGNORECASE),
@@ -30,4 +29,3 @@ def classify_intent(prompt: str) -> str:
             return "work"
 
     return "info"
-

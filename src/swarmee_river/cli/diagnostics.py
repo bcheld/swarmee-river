@@ -119,11 +119,11 @@ def render_effective_config(
     model_bits: list[str] = []
     if tier_status is not None:
         if getattr(tier_status, "display_name", None):
-            model_bits.append(str(getattr(tier_status, "display_name")))
+            model_bits.append(str(tier_status.display_name))
         if getattr(tier_status, "model_id", None):
-            model_bits.append(f"model_id={getattr(tier_status, 'model_id')}")
+            model_bits.append(f"model_id={tier_status.model_id}")
         if getattr(tier_status, "provider", None):
-            model_bits.append(f"provider={getattr(tier_status, 'provider')}")
+            model_bits.append(f"provider={tier_status.provider}")
 
     packs = []
     try:
@@ -320,10 +320,13 @@ def render_replay_invocation(
             lines.append(f"[{ts}] before_invocation input_items={e.get('input_items')}")
             continue
         if ev == "after_invocation":
-            lines.append(f"[{ts}] after_invocation duration_s={e.get('duration_s')} result={_truncate(str(e.get('result') or ''), 200)}")
+            result_preview = _truncate(str(e.get("result") or ""), 200)
+            lines.append(f"[{ts}] after_invocation duration_s={e.get('duration_s')} result={result_preview}")
             continue
         if ev == "before_model_call":
-            lines.append(f"[{ts}] before_model_call model_call_id={e.get('model_call_id')} messages={e.get('messages')}")
+            lines.append(
+                f"[{ts}] before_model_call model_call_id={e.get('model_call_id')} messages={e.get('messages')}"
+            )
             continue
         if ev == "after_model_call":
             usage = e.get("usage")
@@ -337,7 +340,9 @@ def render_replay_invocation(
             tool = e.get("tool")
             tool_use_id = e.get("toolUseId")
             inp = e.get("input") or ""
-            lines.append(f"[{ts}] before_tool_call tool={tool} toolUseId={tool_use_id} input={_truncate(str(inp), 200)}")
+            lines.append(
+                f"[{ts}] before_tool_call tool={tool} toolUseId={tool_use_id} input={_truncate(str(inp), 200)}"
+            )
             continue
         if ev == "after_tool_call":
             tool = e.get("tool")

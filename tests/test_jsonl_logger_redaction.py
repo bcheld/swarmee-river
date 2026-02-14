@@ -24,4 +24,3 @@ def test_jsonl_logger_redacts_known_secrets(tmp_path: Path, monkeypatch: pytest.
     assert secret not in raw
     data = json.loads(raw.splitlines()[-1])
     assert "<redacted>" in str(data)
-

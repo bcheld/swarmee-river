@@ -112,4 +112,3 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
                 return
             # Summarize once; re-check and repeat if still over budget.
             self.reduce_context(agent, e=None, **kwargs)
-

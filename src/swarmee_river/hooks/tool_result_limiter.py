@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from strands.hooks import HookRegistry, HookProvider
+from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import AfterToolCallEvent
 
 from swarmee_river.artifacts import ArtifactStore

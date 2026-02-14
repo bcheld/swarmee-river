@@ -21,4 +21,3 @@ def unload_ipython_extension(ipython: Any) -> None:
     from .magic import unload_ipython_extension as _unload
 
     _unload(ipython)
-

@@ -9,7 +9,6 @@ from unittest import mock
 
 from colorama import Fore
 from rich.status import Status
-import pytest
 
 import swarmee_river
 from swarmee_river.handlers.callback_handler import CallbackHandler, ToolSpinner, format_message

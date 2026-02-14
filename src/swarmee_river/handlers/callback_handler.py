@@ -6,8 +6,6 @@ from colorama import Fore, Style, init
 from halo import Halo
 from rich.status import Status
 
-from swarmee_river.interrupts import AgentInterruptedError
-
 # Initialize Colorama
 init(autoreset=True)
 

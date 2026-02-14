@@ -121,4 +121,3 @@ def run_checks(
         "status": "success" if overall_ok else "error",
         "content": [{"text": "\n\n".join(results)}],
     }
-

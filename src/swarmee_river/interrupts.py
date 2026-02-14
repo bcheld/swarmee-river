@@ -114,11 +114,7 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
 
 
 def interrupt_watcher_from_env(interrupt_event: threading.Event) -> EscInterruptWatcher:
-    enabled = (
-        (sys.stdin is not None)
-        and sys.stdin.isatty()
-        and (platform.system() in {"Windows", "Darwin", "Linux"})
-    )
+    enabled = (sys.stdin is not None) and sys.stdin.isatty() and (platform.system() in {"Windows", "Darwin", "Linux"})
     # Allow disabling in automation/CI, or when Esc conflicts with terminal flows.
     if os.getenv("SWARMEE_ESC_INTERRUPT", "enabled").strip().lower() in {
         "0",

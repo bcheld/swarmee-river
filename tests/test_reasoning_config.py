@@ -52,4 +52,3 @@ def test_openai_reasoning_effort_env_applies_to_deep_tier(tmp_path: Path, monkey
     config = captured.get("config")
     assert isinstance(config, dict)
     assert config["params"]["reasoning_effort"] == "high"
-

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import contextlib
+import queue
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,6 +24,77 @@ def _run(cmd: list[str], *, cwd: Path, timeout_s: int) -> tuple[int, str, str]:
     except Exception as e:
         return 1, "", str(e)
     return p.returncode, p.stdout or "", p.stderr or ""
+
+
+def _run_streaming(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    timeout_s: int,
+    heartbeat_s: int = 15,
+) -> tuple[int, str, str]:
+    started = time.monotonic()
+    output_lines: list[str] = []
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as e:
+        return 1, "", str(e)
+
+    line_queue: queue.Queue[str | None] = queue.Queue()
+
+    def _reader() -> None:
+        try:
+            if proc.stdout is None:
+                return
+            for line in proc.stdout:
+                line_queue.put(line)
+        finally:
+            line_queue.put(None)
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+
+    last_heartbeat = started
+    while True:
+        now = time.monotonic()
+        elapsed = now - started
+        if elapsed > timeout_s:
+            with contextlib.suppress(Exception):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
+            return 1, "".join(output_lines), f"Command timed out after {timeout_s}s."
+
+        try:
+            item = line_queue.get(timeout=1.0)
+        except queue.Empty:
+            if now - last_heartbeat >= heartbeat_s:
+                print(f"[git] still running ({int(elapsed)}s elapsed)...")
+                last_heartbeat = now
+            continue
+
+        if item is None:
+            if proc.poll() is not None:
+                break
+            continue
+
+        line = item if item.endswith("\n") else f"{item}\n"
+        print(line, end="")
+        output_lines.append(line)
+        last_heartbeat = time.monotonic()
+
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=5)
+
+    return int(proc.returncode or 0), "".join(output_lines), ""
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -108,7 +183,12 @@ def git(
     if action == "commit":
         if not message or not message.strip():
             return {"status": "error", "content": [{"text": "message is required for action=commit"}]}
-        code, out, err = _run(["git", "commit", "-m", message.strip()], cwd=base, timeout_s=timeout_s)
+        commit_timeout_s = max(int(timeout_s), 1800)
+        print(f"[git] running commit (timeout={commit_timeout_s}s). pre-commit hooks may take a while...")
+        t0 = time.monotonic()
+        code, out, err = _run_streaming(["git", "commit", "-m", message.strip()], cwd=base, timeout_s=commit_timeout_s)
+        duration_s = round(time.monotonic() - t0, 2)
+        print(f"[git] commit finished in {duration_s}s (exit_code={code})")
         text = out.strip() if out.strip() else err.strip()
         return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
 
@@ -139,4 +219,3 @@ def git(
         return {"status": "error", "content": [{"text": "Unknown stash_action. Use list|push|pop."}]}
 
     return {"status": "error", "content": [{"text": f"Unknown action: {action}"}]}
-
