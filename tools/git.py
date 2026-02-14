@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -18,6 +20,7 @@ def _run(cmd: list[str], *, cwd: Path, timeout_s: int) -> tuple[int, str, str]:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout_s,
             check=False,
         )
@@ -37,13 +40,21 @@ def _run_streaming(
     output_lines: list[str] = []
 
     try:
+        popen_kwargs: dict[str, Any] = {
+            "cwd": str(cwd),
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "errors": "replace",
+            "bufsize": 1,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(
             cmd,
-            cwd=str(cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            **popen_kwargs,
         )
     except Exception as e:
         return 1, "", str(e)
@@ -63,38 +74,85 @@ def _run_streaming(
     reader.start()
 
     last_heartbeat = started
-    while True:
-        now = time.monotonic()
-        elapsed = now - started
-        if elapsed > timeout_s:
-            with contextlib.suppress(Exception):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                proc.wait(timeout=5)
-            return 1, "".join(output_lines), f"Command timed out after {timeout_s}s."
+    try:
+        while True:
+            now = time.monotonic()
+            elapsed = now - started
+            if elapsed > timeout_s:
+                _terminate_process_tree(proc)
+                return 1, "".join(output_lines), f"Command timed out after {timeout_s}s."
 
-        try:
-            item = line_queue.get(timeout=1.0)
-        except queue.Empty:
-            if now - last_heartbeat >= heartbeat_s:
-                print(f"[git] still running ({int(elapsed)}s elapsed)...")
-                last_heartbeat = now
-            continue
+            if _interrupt_requested():
+                _terminate_process_tree(proc)
+                return 1, "".join(output_lines), "Command interrupted."
 
-        if item is None:
-            if proc.poll() is not None:
-                break
-            continue
+            try:
+                item = line_queue.get(timeout=1.0)
+            except queue.Empty:
+                # Stop immediately if the command process has exited, even if a descendant still holds stdout open.
+                if proc.poll() is not None:
+                    break
+                if now - last_heartbeat >= heartbeat_s:
+                    print(f"[git] still running ({int(elapsed)}s elapsed)...")
+                    last_heartbeat = now
+                continue
 
-        line = item if item.endswith("\n") else f"{item}\n"
-        print(line, end="")
-        output_lines.append(line)
-        last_heartbeat = time.monotonic()
+            if item is None:
+                if proc.poll() is not None:
+                    break
+                continue
 
-    with contextlib.suppress(Exception):
-        proc.wait(timeout=5)
+            line = item if item.endswith("\n") else f"{item}\n"
+            print(line, end="")
+            output_lines.append(line)
+            last_heartbeat = time.monotonic()
+    except KeyboardInterrupt:
+        _terminate_process_tree(proc)
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+        with contextlib.suppress(Exception):
+            reader.join(timeout=0.2)
 
     return int(proc.returncode or 0), "".join(output_lines), ""
+
+
+def _interrupt_requested() -> bool:
+    try:
+        from swarmee_river.handlers.callback_handler import callback_handler_instance
+
+        event = callback_handler_instance.interrupt_event
+        return bool(event is not None and event.is_set())
+    except Exception:
+        return False
+
+
+def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+            )
+    else:
+        with contextlib.suppress(Exception):
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=2)
+        if proc.poll() is None:
+            with contextlib.suppress(Exception):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+
+    with contextlib.suppress(Exception):
+        if proc.poll() is None:
+            proc.kill()
 
 
 def _truncate(text: str, max_chars: int) -> str:

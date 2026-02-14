@@ -77,6 +77,7 @@ def run_checks(
                 cwd=str(root),
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=timeout_s,
                 check=False,
             )

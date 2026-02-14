@@ -96,6 +96,7 @@ def patch_apply(
             cwd=str(base),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout_s,
             check=False,
         )

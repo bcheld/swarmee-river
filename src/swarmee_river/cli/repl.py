@@ -86,6 +86,15 @@ def run_repl(
             if ctx.knowledge_base_id:
                 ctx.store_conversation(user_input, response)
         except (KeyboardInterrupt, EOFError):
+            # Signal any in-flight invocation/tool loop to stop promptly.
+            try:
+                from swarmee_river.handlers.callback_handler import callback_handler_instance
+
+                if callback_handler_instance.interrupt_event is not None:
+                    callback_handler_instance.interrupt_event.set()
+            except Exception:
+                pass
+            ctx.stop_spinners()
             render_goodbye_message()
             break
         except Exception as e:

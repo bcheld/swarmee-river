@@ -40,6 +40,7 @@ def shell(
             stdin=subprocess.DEVNULL if non_interactive_mode else None,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired as e:

@@ -19,6 +19,7 @@ def _run(cmd: list[str], *, cwd: Path, timeout_s: int = 15) -> tuple[int, str, s
         cwd=str(cwd),
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=timeout_s,
         check=False,
     )

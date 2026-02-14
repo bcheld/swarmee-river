@@ -9,7 +9,15 @@ from typing import Any
 
 def _run(cmd: list[str], *, cwd: Path, timeout_s: int = 5) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_s, check=False)
+        p = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout_s,
+            check=False,
+        )
     except Exception as e:
         return 1, str(e)
     out = (p.stdout or "").strip()

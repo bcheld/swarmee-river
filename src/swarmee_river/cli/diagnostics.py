@@ -29,6 +29,7 @@ def _run_git(args: list[str], *, cwd: Path, timeout_s: int = 10) -> tuple[int, s
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout_s,
             check=False,
         )

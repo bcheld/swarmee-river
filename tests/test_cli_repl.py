@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest import mock
 
 from swarmee_river.cli.builtin_commands import register_builtin_commands
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
 from swarmee_river.cli.repl import _prompt_for_context, run_repl
+from swarmee_river.handlers.callback_handler import callback_handler_instance
 
 
 def _make_ctx(outputs: list[str], *, generate_plan=None) -> CLIContext:
@@ -67,4 +69,32 @@ def test_cancel_clears_pending_plan_and_prompt_returns_to_normal() -> None:
     assert ctx.pending_plan is None
     assert ctx.pending_request is None
     assert outputs[-1] == "Plan canceled."
+    goodbye.assert_called_once()
+
+
+def test_keyboard_interrupt_sets_interrupt_event_and_stops_spinners() -> None:
+    outputs: list[str] = []
+    registry = CommandRegistry()
+    register_builtin_commands(registry)
+    stop_spinners = mock.MagicMock()
+    ctx = _make_ctx(outputs)
+    ctx.stop_spinners = stop_spinners
+    goodbye = mock.MagicMock()
+
+    previous_event = callback_handler_instance.interrupt_event
+    interrupt_event = threading.Event()
+    callback_handler_instance.interrupt_event = interrupt_event
+    try:
+        run_repl(
+            ctx=ctx,
+            registry=registry,
+            get_user_input=lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+            classify_intent=lambda _text: "info",
+            render_goodbye_message=goodbye,
+        )
+    finally:
+        callback_handler_instance.interrupt_event = previous_event
+
+    assert interrupt_event.is_set()
+    stop_spinners.assert_called_once()
     goodbye.assert_called_once()
