@@ -124,9 +124,12 @@ class ToolConsentHooks(HookProvider):
                 return
 
             if remember_allowed:
-                prompt = f"Allow tool '{tool_name}'? [y]es/[n]o/[a]lways/[v]never: "
+                prompt = (
+                    f"Allow tool '{tool_name}'?\n"
+                    "  [y] Yes   [n] No   [a] Always (session)   [v] Never (session): "
+                )
             else:
-                prompt = f"Allow tool '{tool_name}'? [y]es/[n]o: "
+                prompt = f"Allow tool '{tool_name}'?\n  [y] Yes   [n] No: "
 
             choice = (self._prompt(prompt) or "").strip().lower()
             if remember_allowed:

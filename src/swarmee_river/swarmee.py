@@ -10,6 +10,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import threading
 import warnings
 from pathlib import Path
@@ -141,14 +142,36 @@ def _prompt_input_with_prompt_toolkit(
     return str(response or default)
 
 
-def _get_user_input_compat(
+def _prompt_input_with_stdin(
     prompt: str,
     *,
     default: str = "",
     keyboard_interrupt_return_default: bool = True,
 ) -> str:
-    if _event_loop_running():
+    try:
+        response = input(f"{prompt} ")
+    except (KeyboardInterrupt, EOFError):
+        if keyboard_interrupt_return_default:
+            return str(default)
+        raise
+    return str(response or default)
+
+
+def _get_user_input_compat(
+    prompt: str,
+    *,
+    default: str = "",
+    keyboard_interrupt_return_default: bool = True,
+    prefer_prompt_toolkit_in_async: bool = False,
+) -> str:
+    if _event_loop_running() and prefer_prompt_toolkit_in_async:
         return _prompt_input_with_prompt_toolkit(
+            prompt,
+            default=default,
+            keyboard_interrupt_return_default=keyboard_interrupt_return_default,
+        )
+    if _event_loop_running():
+        return _prompt_input_with_stdin(
             prompt,
             default=default,
             keyboard_interrupt_return_default=keyboard_interrupt_return_default,
@@ -162,19 +185,28 @@ def _get_user_input_compat(
     )
 
 
+def _consent_text_with_hotkey_emphasis(message: str) -> Any:
+    if Text is None:
+        return message
+    text = Text(message, style="gold1")
+    for matched in re.finditer(r"\[[ynavYNAV]\]", message):
+        text.stylize("bold underline", matched.start(), matched.end())
+    return text
+
+
 def _render_tool_consent_message(message: str) -> None:
     text = (message or "").strip()
     if not text:
         return
 
     if _consent_console is not None and Panel is not None and Text is not None:
-        consent_text = Text(text, style="yellow")
+        consent_text = _consent_text_with_hotkey_emphasis(text)
         _consent_console.print()
         _consent_console.print(
             Panel(
                 consent_text,
-                title="Tool Consent",
-                border_style="yellow",
+                title=Text("Tool Consent", style="bold blue"),
+                border_style="blue",
                 expand=False,
                 padding=(0, 1),
             )
