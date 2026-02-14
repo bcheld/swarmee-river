@@ -16,6 +16,9 @@ dist
 venv
 .venv
 .env
+.hatch.toml
+.hatch-data/
+.pre-commit-cache/
 
 third_party/opencode/
 
