@@ -21,6 +21,14 @@ from strands.types.exceptions import MaxTokensReachedException
 
 from swarmee_river.handlers.callback_handler import callback_handler, set_interrupt_event
 try:
+    from prompt_toolkit import HTML, PromptSession
+    from prompt_toolkit.patch_stdout import patch_stdout
+except Exception:
+    HTML = None  # type: ignore[assignment]
+    PromptSession = None  # type: ignore[assignment]
+    patch_stdout = None  # type: ignore[assignment]
+
+try:
     from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks
     from swarmee_river.hooks.tool_consent import ToolConsentHooks
     from swarmee_river.hooks.tool_result_limiter import ToolResultLimiterHooks
@@ -72,10 +80,73 @@ from tools.welcome import read_welcome_text
 os.environ["STRANDS_TOOL_CONSOLE_MODE"] = "enabled"
 
 
+_consent_prompt_session: Any | None = None
+_consent_prompt_lock = threading.Lock()
+
+
 def _truthy(value: Optional[str]) -> bool:
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+
+
+def _event_loop_running() -> bool:
+    with contextlib.suppress(RuntimeError):
+        return asyncio.get_running_loop().is_running()
+    return False
+
+
+def _prompt_input_with_prompt_toolkit(
+    prompt: str,
+    *,
+    default: str = "",
+    keyboard_interrupt_return_default: bool = True,
+) -> str:
+    if PromptSession is None or patch_stdout is None or HTML is None:
+        try:
+            response = input(f"{prompt} ")
+        except (KeyboardInterrupt, EOFError):
+            if keyboard_interrupt_return_default:
+                return str(default)
+            raise
+        return str(response or default)
+
+    global _consent_prompt_session
+    with _consent_prompt_lock:
+        if _consent_prompt_session is None:
+            _consent_prompt_session = PromptSession()
+        session = _consent_prompt_session
+
+    try:
+        with patch_stdout(raw=True):
+            response = session.prompt(HTML(f"{prompt} "), in_thread=True)
+    except (KeyboardInterrupt, EOFError):
+        if keyboard_interrupt_return_default:
+            return str(default)
+        raise
+
+    return str(response or default)
+
+
+def _get_user_input_compat(
+    prompt: str,
+    *,
+    default: str = "",
+    keyboard_interrupt_return_default: bool = True,
+) -> str:
+    if _event_loop_running():
+        return _prompt_input_with_prompt_toolkit(
+            prompt,
+            default=default,
+            keyboard_interrupt_return_default=keyboard_interrupt_return_default,
+        )
+    return str(
+        get_user_input(
+            prompt,
+            default=default,
+            keyboard_interrupt_return_default=keyboard_interrupt_return_default,
+        )
+    )
 
 
 def _build_conversation_manager(*, window_size: Optional[int], per_turn: Optional[int]) -> Any:
@@ -484,7 +555,7 @@ def main():
             prompt_text = (text or "").strip()
             if prompt_text:
                 print(f"\n[tool consent] {prompt_text}")
-            return get_user_input("\n~ consent> ", default="", keyboard_interrupt_return_default=True)
+            return _get_user_input_compat("\n~ consent> ", default="", keyboard_interrupt_return_default=True)
 
         hooks = [
             JSONLLoggerHooks(),  # type: ignore[misc]

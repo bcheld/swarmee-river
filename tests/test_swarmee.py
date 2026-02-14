@@ -5,6 +5,7 @@ Unit tests for the swarmee.py module using pytest
 
 import os
 import sys
+import asyncio
 from unittest import mock
 
 import pytest
@@ -514,3 +515,22 @@ class TestToolConsentPrompt:
         mock_callback_handler.assert_called_once_with(force_stop=True)
         mock_print.assert_any_call(f"\n[tool consent] {consent_text}")
         mock_user_input.assert_called_once_with("\n~ consent> ", default="", keyboard_interrupt_return_default=True)
+
+    def test_get_user_input_compat_uses_prompt_toolkit_when_event_loop_running(self):
+        async def _run() -> str:
+            with (
+                mock.patch.object(swarmee, "_prompt_input_with_prompt_toolkit", return_value="y") as mock_prompt,
+                mock.patch.object(swarmee, "get_user_input", side_effect=AssertionError("should not be called")),
+            ):
+                result = swarmee._get_user_input_compat(
+                    "\n~ consent> ", default="", keyboard_interrupt_return_default=True
+                )
+
+            mock_prompt.assert_called_once_with(
+                "\n~ consent> ",
+                default="",
+                keyboard_interrupt_return_default=True,
+            )
+            return result
+
+        assert asyncio.run(_run()) == "y"
