@@ -59,7 +59,11 @@ def run_repl(
                 continue
 
             if ctx.knowledge_base_id:
-                ctx.agent.tool.retrieve(text=user_input, knowledgeBaseId=ctx.knowledge_base_id)
+                try:
+                    ctx.agent.tool.retrieve(text=user_input, knowledgeBaseId=ctx.knowledge_base_id)
+                except Exception:
+                    # Best-effort: missing tool / missing AWS creds shouldn't block REPL flow.
+                    pass
 
             ctx.refresh_system_prompt()
 

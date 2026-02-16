@@ -20,7 +20,7 @@ from typing import Any, Optional
 # Strands
 from strands import Agent
 from strands.types.exceptions import MaxTokensReachedException
-from strands_tools.utils.user_input import get_user_input
+from swarmee_river.utils.user_input import get_user_input
 
 from swarmee_river.handlers.callback_handler import callback_handler, set_interrupt_event
 
@@ -1045,7 +1045,11 @@ def main() -> None:
         query = " ".join(args.query)
         # Use retrieve if knowledge_base_id is defined
         if knowledge_base_id:
-            agent.tool.retrieve(text=query, knowledgeBaseId=knowledge_base_id)
+            try:
+                agent.tool.retrieve(text=query, knowledgeBaseId=knowledge_base_id)
+            except Exception as e:
+                # Retrieval is best-effort; missing tool / missing AWS creds shouldn't block the session.
+                print(f"[warn] retrieve failed: {e}")
 
         profile = settings.harness.tier_profiles.get(model_manager.current_tier)
         snapshot = build_context_snapshot(
