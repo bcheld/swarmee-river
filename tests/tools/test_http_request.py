@@ -1,49 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 
-import pytest
-
-from tools.http_request import http_request
-
-
-class _Handler(BaseHTTPRequestHandler):
-    def do_GET(self):  # noqa: N802
-        payload = {"path": self.path, "method": "GET"}
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_POST(self):  # noqa: N802
-        length = int(self.headers.get("Content-Length") or "0")
-        data = self.rfile.read(length) if length else b""
-        payload = {"path": self.path, "method": "POST", "body": data.decode("utf-8", errors="replace")}
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *_args, **_kwargs):  # pragma: no cover
-        return
-
-
-def _serve_in_thread() -> tuple[HTTPServer, int]:
-    try:
-        server = HTTPServer(("127.0.0.1", 0), _Handler)
-    except PermissionError as exc:
-        pytest.skip(f"Local HTTP server binding not permitted in this environment: {exc}")
-    port = int(server.server_address[1])
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    return server, port
+import tools.http_request as http_request_module
 
 
 def _text(result: dict) -> str:
@@ -59,49 +19,82 @@ def _response_body_json(result: dict) -> dict:
     return json.loads(body.strip())
 
 
-def _ensure_no_proxy_for_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Make tests robust in corporate/proxied environments where HTTP(S)_PROXY can
-    # unintentionally route localhost requests through a proxy.
-    for key in [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-    ]:
-        monkeypatch.delenv(key, raising=False)
+class _FakeResponse:
+    def __init__(self, *, status: int, headers: dict[str, str] | None = None, body: bytes = b"") -> None:
+        self.status = status
+        self.headers = headers or {}
+        self._body = body
 
-    existing = os.getenv("NO_PROXY") or os.getenv("no_proxy") or ""
-    suffix = "127.0.0.1,localhost"
-    combined = f"{existing},{suffix}".strip(",") if existing else suffix
-    monkeypatch.setenv("NO_PROXY", combined)
-    monkeypatch.setenv("no_proxy", combined)
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
 
 
-def test_http_request_get_with_params(monkeypatch: pytest.MonkeyPatch) -> None:
-    _ensure_no_proxy_for_localhost(monkeypatch)
-    server, port = _serve_in_thread()
-    try:
-        result = http_request(method="GET", url=f"http://127.0.0.1:{port}/hello", params={"q": "1"})
-        assert result.get("status") == "success"
-        payload = _response_body_json(result)
-        assert payload["method"] == "GET"
-        assert payload["path"].endswith("/hello?q=1")
-    finally:
-        server.shutdown()
+class _FakeOpener:
+    def __init__(self, response: _FakeResponse) -> None:
+        self.response = response
+        self.last_request: Any | None = None
+        self.last_timeout: int | None = None
+
+    def open(self, req: Any, *, timeout: int) -> _FakeResponse:
+        self.last_request = req
+        self.last_timeout = timeout
+        return self.response
 
 
-def test_http_request_post_json_body(monkeypatch: pytest.MonkeyPatch) -> None:
-    _ensure_no_proxy_for_localhost(monkeypatch)
-    server, port = _serve_in_thread()
-    try:
-        result = http_request(method="POST", url=f"http://127.0.0.1:{port}/submit", json={"a": 1})
-        assert result.get("status") == "success"
-        payload = _response_body_json(result)
-        assert payload["method"] == "POST"
-        assert payload["path"].endswith("/submit")
-        inner = json.loads(payload["body"])
-        assert inner == {"a": 1}
-    finally:
-        server.shutdown()
+def test_http_request_get_with_params(monkeypatch) -> None:
+    response = _FakeResponse(
+        status=200,
+        headers={"Content-Type": "application/json"},
+        body=json.dumps({"ok": True}).encode("utf-8"),
+    )
+    opener = _FakeOpener(response)
+
+    monkeypatch.setattr(http_request_module.urllib.request, "build_opener", lambda *_args, **_kwargs: opener)
+
+    result = http_request_module.http_request(method="GET", url="http://example.com/hello", params={"q": "1"})
+    assert result.get("status") == "success"
+
+    req = opener.last_request
+    assert req is not None
+    assert req.get_method() == "GET"
+    assert req.full_url.endswith("/hello?q=1")
+    assert getattr(req, "data", None) is None
+
+    payload = _response_body_json(result)
+    assert payload == {"ok": True}
+
+
+def test_http_request_post_json_body(monkeypatch) -> None:
+    response = _FakeResponse(
+        status=200,
+        headers={"Content-Type": "application/json"},
+        body=json.dumps({"ok": True}).encode("utf-8"),
+    )
+    opener = _FakeOpener(response)
+
+    monkeypatch.setattr(http_request_module.urllib.request, "build_opener", lambda *_args, **_kwargs: opener)
+
+    result = http_request_module.http_request(method="POST", url="http://example.com/submit", json={"a": 1})
+    assert result.get("status") == "success"
+
+    req = opener.last_request
+    assert req is not None
+    assert req.get_method() == "POST"
+    assert req.full_url.endswith("/submit")
+    assert req.data is not None
+    body = req.data.decode("utf-8", errors="replace")
+    assert json.loads(body) == {"a": 1}
+
+    # Content-Type should be set for JSON bodies.
+    headers = {k.lower(): v for k, v in dict(getattr(req, "headers", {}) or {}).items()}
+    assert "content-type" in headers
+    assert "application/json" in headers["content-type"].lower()
+
+    payload = _response_body_json(result)
+    assert payload == {"ok": True}

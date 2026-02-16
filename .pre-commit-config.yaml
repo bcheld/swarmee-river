@@ -7,6 +7,11 @@ repos:
         language: python
         additional_dependencies:
           - hatch>=1.0.0,<2.0.0
+        env:
+          HATCH_DATA_DIR: .hatch-data/pre-commit
+          HATCH_CACHE_DIR: .hatch-data/pre-commit/cache
+          HATCH_CONFIG: .hatch-home/config.toml
+          UV_CACHE_DIR: .hatch-data/pre-commit/uv-cache
         pass_filenames: false
         types: [python]
         stages: [pre-commit]
@@ -16,6 +21,11 @@ repos:
         language: python
         additional_dependencies:
           - hatch>=1.0.0,<2.0.0
+        env:
+          HATCH_DATA_DIR: .hatch-data/pre-commit
+          HATCH_CACHE_DIR: .hatch-data/pre-commit/cache
+          HATCH_CONFIG: .hatch-home/config.toml
+          UV_CACHE_DIR: .hatch-data/pre-commit/uv-cache
         pass_filenames: false
         types: [python]
         stages: [pre-commit]
@@ -25,6 +35,11 @@ repos:
         language: python
         additional_dependencies:
           - hatch>=1.0.0,<2.0.0
+        env:
+          HATCH_DATA_DIR: .hatch-data/pre-commit
+          HATCH_CACHE_DIR: .hatch-data/pre-commit/cache
+          HATCH_CONFIG: .hatch-home/config.toml
+          UV_CACHE_DIR: .hatch-data/pre-commit/uv-cache
         pass_filenames: false
         types: [python]
         stages: [pre-commit]
