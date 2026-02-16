@@ -86,6 +86,7 @@ Configuration precedence (highest → lowest):
 4) Built-in defaults (packaged)
 
 For a comprehensive list of env vars, see `env.example`.
+For an end-to-end walkthrough of how context is assembled/trimmed/persisted, see `docs/agent_context_lifecycle.md`.
 
 ## Contributing
 
