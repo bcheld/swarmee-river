@@ -134,6 +134,7 @@ class ToolPolicyHooks(HookProvider):
             "grep",
             "list",
             "glob",
+            "todoread",
         }
         self.plan_mode_project_context_actions = {"summary", "files", "tree", "search", "read", "git_status"}
 

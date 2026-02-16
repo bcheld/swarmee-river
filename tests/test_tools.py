@@ -17,6 +17,8 @@ def test_tools_include_core_coding_primitives():
     assert "file_list" in tools
     assert "file_search" in tools
     assert "file_read" in tools
+    assert "todoread" in tools
+    assert "todowrite" in tools
 
 
 def test_tools_include_opencode_aliases():

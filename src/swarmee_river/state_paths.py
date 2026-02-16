@@ -41,3 +41,7 @@ def sessions_dir(*, cwd: Path | None = None) -> Path:
 
 def project_map_path(*, cwd: Path | None = None) -> Path:
     return state_dir(cwd=cwd) / "project_map.json"
+
+
+def todo_path(*, cwd: Path | None = None) -> Path:
+    return state_dir(cwd=cwd) / "todo.md"

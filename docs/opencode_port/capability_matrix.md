@@ -27,5 +27,5 @@ Legend:
 | Web/server UI | n/a | ❌ | Out of scope for this stage. |
 | MCP servers | n/a | ❌ | Pack system covers local tools only (for now). |
 | LSP tool | n/a | ❌ | Not implemented yet. |
-| Todo tool | n/a | ❌ | Not implemented yet. |
+| Todo tool | `todoread` / `todowrite` | ✅ | Project-local persistence under `<state_dir>/todo.md` with plan-mode read-only gating. |
 | Share links | n/a | ❌ | Not implemented yet. |

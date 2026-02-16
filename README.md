@@ -164,6 +164,7 @@ Swarmee River uses Strands Tools and supports hot-loading tools from `./tools`.
 - **python_repl**: Run Python code *(fallback provided for Windows)*
 - **retrieve**: Semantically retrieve data from Amazon Bedrock Knowledge Bases for RAG, memory, and other purposes
 - **shell**: Execute shell commands *(fallback provided for Windows)*
+- **todoread / todowrite**: Read/write a project-local todo list at `.swarmee/todo.md` (or `SWARMEE_STATE_DIR/todo.md`)
 - **OpenCode aliases**: `grep`→`file_search`, `read`→`file_read`, `bash`→`shell`, `patch`→`patch_apply`, `write`→`file_write`, `edit`→`editor`
 - **slack**: Slack integration with real-time events, API access, and message sending
 - **speak**: Generate speech from text using macOS say command or Amazon Polly

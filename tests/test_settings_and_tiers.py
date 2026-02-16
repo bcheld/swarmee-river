@@ -90,5 +90,7 @@ def test_default_safety_rules_include_opencode_alias_entries(tmp_path: Path, mon
         assert rules[alias_name] == "ask"
     for alias_name in ["grep", "read"]:
         assert rules[alias_name] == "allow"
+    assert rules["todoread"] == "allow"
+    assert rules["todowrite"] == "ask"
     assert rules["shell"] == "ask"
     assert rules["patch_apply"] == "ask"

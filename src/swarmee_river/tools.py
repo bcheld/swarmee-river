@@ -20,6 +20,7 @@ from tools import (
     store_in_kb,
     strand,
     swarm,
+    todo,
     welcome,
 )
 from tools.python_repl import python_repl as python_repl_fallback
@@ -109,6 +110,8 @@ def get_tools() -> dict[str, Any]:
         "git": git,
         "patch_apply": patch_apply,
         "run_checks": run_checks,
+        "todoread": todo.todoread,
+        "todowrite": todo.todowrite,
         # Override any `strands_tools.agent_graph` with a cancellable implementation.
         "agent_graph": agent_graph,
         # Override any `strands_tools.swarm` with a cancellable implementation.

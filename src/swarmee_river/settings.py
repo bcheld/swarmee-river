@@ -586,6 +586,8 @@ def default_settings_template() -> SwarmeeSettings:
                 ToolRule(tool="grep", default="allow", remember=True),
                 ToolRule(tool="file_read", default="allow", remember=True),
                 ToolRule(tool="read", default="allow", remember=True),
+                ToolRule(tool="todoread", default="allow", remember=True),
+                ToolRule(tool="todowrite", default="ask", remember=True),
                 ToolRule(tool="run_checks", default="ask", remember=True),
             ],
         ),
