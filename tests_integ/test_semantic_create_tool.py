@@ -6,7 +6,7 @@ from strands.agent import Agent
 from swarmee_river import swarmee
 
 
-@mock.patch("strands_tools.utils.user_input.get_user_input", return_value="y")
+@mock.patch("swarmee_river.swarmee.get_user_input", return_value="y")
 @mock.patch.dict("os.environ", {"STRANDS_TOOL_CONSOLE_MODE": "enabled"})
 def test_interactive_model_create_tool_then_validate(mock_get_user_input, capsys, tmp_file_structure):
     """
