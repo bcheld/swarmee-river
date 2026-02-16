@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -48,18 +49,38 @@ def _serve_in_thread() -> tuple[HTTPServer, int]:
 def _text(result: dict) -> str:
     return (result.get("content") or [{"text": ""}])[0].get("text", "")
 
+
 def _response_body_json(result: dict) -> dict:
     text = _text(result)
     marker = "## Body"
     if marker not in text:
         raise AssertionError("Expected http_request output to include a '## Body' section")
     body = text.split(marker, 1)[1].lstrip()
-    if body.startswith("\n"):
-        body = body[1:]
     return json.loads(body.strip())
 
 
-def test_http_request_get_with_params() -> None:
+def _ensure_no_proxy_for_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Make tests robust in corporate/proxied environments where HTTP(S)_PROXY can
+    # unintentionally route localhost requests through a proxy.
+    for key in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+
+    existing = os.getenv("NO_PROXY") or os.getenv("no_proxy") or ""
+    suffix = "127.0.0.1,localhost"
+    combined = f"{existing},{suffix}".strip(",") if existing else suffix
+    monkeypatch.setenv("NO_PROXY", combined)
+    monkeypatch.setenv("no_proxy", combined)
+
+
+def test_http_request_get_with_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    _ensure_no_proxy_for_localhost(monkeypatch)
     server, port = _serve_in_thread()
     try:
         result = http_request(method="GET", url=f"http://127.0.0.1:{port}/hello", params={"q": "1"})
@@ -71,7 +92,8 @@ def test_http_request_get_with_params() -> None:
         server.shutdown()
 
 
-def test_http_request_post_json_body() -> None:
+def test_http_request_post_json_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    _ensure_no_proxy_for_localhost(monkeypatch)
     server, port = _serve_in_thread()
     try:
         result = http_request(method="POST", url=f"http://127.0.0.1:{port}/submit", json={"a": 1})

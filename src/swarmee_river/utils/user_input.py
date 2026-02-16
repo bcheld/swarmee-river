@@ -26,4 +26,3 @@ def get_user_input(
     if not response.strip() and default:
         return str(default)
     return response
-

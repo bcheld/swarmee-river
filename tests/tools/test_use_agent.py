@@ -44,4 +44,3 @@ def test_use_agent_invokes_toolless_sub_agent(monkeypatch) -> None:
     assert _text(result) == "echo:ping"
     assert seen.get("tools") == []
     assert seen.get("system_prompt") == "sys"
-

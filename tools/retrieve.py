@@ -32,7 +32,13 @@ def retrieve(
     if not query:
         return {"status": "error", "content": [{"text": "text is required"}]}
 
-    kb_id = (knowledgeBaseId or knowledge_base_id or os.getenv("SWARMEE_KNOWLEDGE_BASE_ID") or os.getenv("STRANDS_KNOWLEDGE_BASE_ID") or "").strip()
+    kb_id = (
+        knowledgeBaseId
+        or knowledge_base_id
+        or os.getenv("SWARMEE_KNOWLEDGE_BASE_ID")
+        or os.getenv("STRANDS_KNOWLEDGE_BASE_ID")
+        or ""
+    ).strip()
     if not kb_id:
         return {"status": "error", "content": [{"text": "knowledge_base_id (knowledgeBaseId) is required"}]}
 
@@ -80,5 +86,4 @@ def retrieve(
             lines.append("(empty)")
         lines.append("")
 
-    return {"status": "success", "content": [{"text": _truncate('\n'.join(lines).strip(), max_chars)}]}
-
+    return {"status": "success", "content": [{"text": _truncate("\n".join(lines).strip(), max_chars)}]}

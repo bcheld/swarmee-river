@@ -13,4 +13,3 @@ def test_current_time_returns_iso_timestamp() -> None:
     text = _text(result)
     assert "T" in text
     assert text.endswith("+00:00") or text.endswith("Z")
-

@@ -22,4 +22,3 @@ def test_calculator_math_functions() -> None:
 def test_calculator_rejects_names() -> None:
     result = calculator("__import__('os').system('echo hi')")
     assert result.get("status") == "error"
-

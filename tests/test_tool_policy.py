@@ -34,7 +34,17 @@ def test_plan_mode_allows_structured_output_tool_from_invocation_state() -> None
 
 def test_plan_mode_allows_repo_inspection_tools() -> None:
     hook = ToolPolicyHooks()
-    for name in ["file_read", "file_list", "file_search", "read", "grep", "list", "glob", "project_context", "todoread"]:
+    for name in [
+        "file_read",
+        "file_list",
+        "file_search",
+        "read",
+        "grep",
+        "list",
+        "glob",
+        "project_context",
+        "todoread",
+    ]:
         event = SimpleNamespace(
             tool_use={"name": name},
             invocation_state={"swarmee": {"mode": "plan"}},

@@ -53,4 +53,3 @@ def test_environment_export_formats_shell_lines(monkeypatch) -> None:
     result = environment(action="export", keys=["SWARMEE_ENV_TEST_EXPORT"], redact=False)
     assert result.get("status") == "success"
     assert _text(result).strip() == "export SWARMEE_ENV_TEST_EXPORT=beta"
-

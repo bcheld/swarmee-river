@@ -117,10 +117,6 @@ def environment(
     return {
         "status": "error",
         "content": [
-            {
-                "text": "Unsupported action. Use one of: list, get, set, unset, export/dump "
-                "(action=... or command=...)."
-            }
+            {"text": "Unsupported action. Use one of: list, get, set, unset, export/dump (action=... or command=...)."}
         ],
     }
-

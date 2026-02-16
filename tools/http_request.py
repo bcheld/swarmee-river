@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-import os
+import json as jsonlib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -76,7 +75,7 @@ def http_request(
     if json_body is not None and json is not None:
         return {"status": "error", "content": [{"text": "Provide only one of json or json_body"}]}
     if effective_json is not None:
-        body_bytes = json.dumps(effective_json, ensure_ascii=False).encode("utf-8", errors="replace")
+        body_bytes = jsonlib.dumps(effective_json, ensure_ascii=False).encode("utf-8", errors="replace")
         hdrs.setdefault("Content-Type", "application/json; charset=utf-8")
     elif data is not None:
         body_bytes = str(data).encode("utf-8", errors="replace")
@@ -112,7 +111,7 @@ def http_request(
                     f"- bytes: {summary['bytes']}",
                     "",
                     "## Headers",
-                    json.dumps(resp_headers, indent=2, ensure_ascii=False, sort_keys=True),
+                    jsonlib.dumps(resp_headers, indent=2, ensure_ascii=False, sort_keys=True),
                     "",
                     "## Body",
                     text,

@@ -17,4 +17,3 @@ def test_agent_graph_imports_without_strands_tools(monkeypatch) -> None:
     import tools.agent_graph as agent_graph
 
     importlib.reload(agent_graph)
-

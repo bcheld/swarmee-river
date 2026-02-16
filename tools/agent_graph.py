@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import atexit
 import asyncio
+import atexit
 import queue
 import threading
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 

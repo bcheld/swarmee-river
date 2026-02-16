@@ -15,4 +15,3 @@ def current_time(*, utc: bool = True) -> dict[str, Any]:
     """
     now = datetime.now(timezone.utc) if utc else datetime.now().astimezone()
     return {"status": "success", "content": [{"text": now.isoformat()}]}
-

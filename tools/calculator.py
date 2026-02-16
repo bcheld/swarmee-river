@@ -6,7 +6,6 @@ from typing import Any
 
 from strands import tool
 
-
 _ALLOWED_FUNCS: dict[str, Any] = {
     "abs": abs,
     "round": round,
@@ -114,4 +113,3 @@ def calculator(expression: str) -> dict[str, Any]:
         return {"status": "error", "content": [{"text": f"calculation failed: {e}"}]}
 
     return {"status": "success", "content": [{"text": str(value)}]}
-
