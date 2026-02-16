@@ -8,6 +8,7 @@ from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import BeforeToolCallEvent
 
 from swarmee_river.hooks._compat import register_hook_callback
+from swarmee_river.opencode_aliases import canonical_tool_name, equivalent_tool_names, normalize_tool_name
 
 
 def _truthy_env(name: str, default: bool) -> bool:
@@ -100,6 +101,12 @@ def _looks_file_inspection_shell_command(command: str) -> bool:
     return False
 
 
+def _matches_tool_set(tool_name: str, configured_tools: set[str]) -> bool:
+    if not tool_name or not configured_tools:
+        return False
+    return bool(equivalent_tool_names(tool_name).intersection(configured_tools))
+
+
 class ToolPolicyHooks(HookProvider):
     """
     Simple guardrails for tool use in enterprise environments.
@@ -123,6 +130,8 @@ class ToolPolicyHooks(HookProvider):
             "file_read",
             "file_list",
             "file_search",
+            "read",
+            "grep",
             "list",
             "glob",
         }
@@ -146,15 +155,16 @@ class ToolPolicyHooks(HookProvider):
             return
 
         tool_use = event.tool_use
-        name = tool_use.get("name")
+        name = normalize_tool_name(tool_use.get("name"))
         if not name:
             return
+        canonical_name = canonical_tool_name(name)
 
         sw = event.invocation_state.get("swarmee", {}) if isinstance(event.invocation_state, dict) else {}
         mode = sw.get("mode")
         runtime_env = sw.get("runtime_environment") if isinstance(sw, dict) else {}
 
-        if name == "shell":
+        if canonical_name == "shell":
             tool_input = tool_use.get("input")
             command = tool_input.get("command") if isinstance(tool_input, dict) else None
             os_name = str(runtime_env.get("os") or "").strip().lower() if isinstance(runtime_env, dict) else ""
@@ -180,7 +190,7 @@ class ToolPolicyHooks(HookProvider):
 
         if mode == "plan":
             plan_allowed_tools = self._plan_mode_allowlist(sw if isinstance(sw, dict) else {})
-            if name not in plan_allowed_tools:
+            if not _matches_tool_set(name, plan_allowed_tools):
                 event.cancel_tool = f"Tool '{name}' blocked in plan mode."
                 return
         if mode == "plan" and name == "project_context":
@@ -224,8 +234,8 @@ class ToolPolicyHooks(HookProvider):
         if mode == "execute" and sw.get("enforce_plan"):
             allowed_tools = sw.get("allowed_tools")
             if isinstance(allowed_tools, (list, tuple, set)):
-                allowed = {str(x) for x in allowed_tools if str(x).strip()}
-                if name not in allowed:
+                allowed = {str(x).strip() for x in allowed_tools if str(x).strip()}
+                if not _matches_tool_set(name, allowed):
                     event.cancel_tool = (
                         f"Tool '{name}' not in approved plan. Use :replan to update the plan "
                         "before using additional tools."
@@ -238,23 +248,23 @@ class ToolPolicyHooks(HookProvider):
             if isinstance(profile, dict):
                 allow = profile.get("tool_allowlist")
                 block = profile.get("tool_blocklist")
-                allow_set = {str(x) for x in allow if str(x).strip()} if isinstance(allow, list) else set()
-                block_set = {str(x) for x in block if str(x).strip()} if isinstance(block, list) else set()
+                allow_set = {str(x).strip() for x in allow if str(x).strip()} if isinstance(allow, list) else set()
+                block_set = {str(x).strip() for x in block if str(x).strip()} if isinstance(block, list) else set()
 
-                if allow_set and name not in allow_set:
+                if allow_set and not _matches_tool_set(name, allow_set):
                     suffix = f" (tier={tier})" if tier else ""
                     event.cancel_tool = f"Tool '{name}' blocked by tier tool_allowlist{suffix}."
                     return
-                if block_set and name in block_set:
+                if _matches_tool_set(name, block_set):
                     suffix = f" (tier={tier})" if tier else ""
                     event.cancel_tool = f"Tool '{name}' blocked by tier tool_blocklist{suffix}."
                     return
 
-        if self.enabled_tools and name not in self.enabled_tools:
+        if self.enabled_tools and not _matches_tool_set(name, self.enabled_tools):
             event.cancel_tool = f"Tool '{name}' blocked by SWARMEE_ENABLE_TOOLS policy."
             return
 
-        if name in self.disabled_tools:
+        if _matches_tool_set(name, self.disabled_tools):
             event.cancel_tool = f"Tool '{name}' blocked by SWARMEE_DISABLE_TOOLS policy."
             return
 

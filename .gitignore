@@ -18,6 +18,7 @@ venv
 .env
 .hatch.toml
 .hatch-data/
+.hatch-home/
 .pre-commit-cache/
 
 third_party/opencode/

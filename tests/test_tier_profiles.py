@@ -31,3 +31,30 @@ def test_tier_tool_profile_blocklist_blocks_tools() -> None:
     hook.before_tool_call(event)
     assert event.cancel_tool
     assert "tool_blocklist" in str(event.cancel_tool)
+
+
+def test_tier_tool_profile_blocklist_blocks_alias_for_underlying_tool() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "bash"},
+        invocation_state={
+            "swarmee": {"mode": "execute", "tier": "fast", "tool_profile": {"tool_blocklist": ["shell"]}}
+        },
+        cancel_tool=False,
+    )
+    hook.before_tool_call(event)
+    assert event.cancel_tool
+    assert "tool_blocklist" in str(event.cancel_tool)
+
+
+def test_tier_tool_profile_allowlist_allows_alias_for_underlying_tool() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "bash"},
+        invocation_state={
+            "swarmee": {"mode": "execute", "tier": "fast", "tool_profile": {"tool_allowlist": ["shell"]}}
+        },
+        cancel_tool=False,
+    )
+    hook.before_tool_call(event)
+    assert event.cancel_tool is False

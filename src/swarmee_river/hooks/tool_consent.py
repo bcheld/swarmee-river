@@ -10,6 +10,7 @@ from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import BeforeToolCallEvent
 
 from swarmee_river.hooks._compat import register_hook_callback
+from swarmee_river.opencode_aliases import canonical_tool_name, equivalent_tool_names, normalize_tool_name
 from swarmee_river.settings import SafetyConfig, ToolRule
 
 
@@ -40,7 +41,7 @@ def _tool_prompt_context(tool_name: str, tool_use: Any) -> str:
     if not isinstance(tool_input, dict):
         return ""
 
-    if tool_name == "shell":
+    if canonical_tool_name(tool_name) == "shell":
         command = _truncate(str(tool_input.get("command") or ""))
         cwd = _truncate(str(tool_input.get("cwd") or ""))
         lines = []
@@ -100,7 +101,17 @@ class ToolConsentHooks(HookProvider):
     - http_request
     """
 
-    _HIGH_RISK_TOOLS = {"shell", "file_write", "editor", "http_request"}
+    _HIGH_RISK_TOOLS = {
+        "shell",
+        "bash",
+        "file_write",
+        "write",
+        "editor",
+        "edit",
+        "patch_apply",
+        "patch",
+        "http_request",
+    }
 
     def __init__(
         self,
@@ -125,7 +136,15 @@ class ToolConsentHooks(HookProvider):
         for rule in self._safety.tool_rules:
             if rule.tool == tool_name:
                 return rule
+        equivalent = equivalent_tool_names(tool_name) - {tool_name}
+        for rule in self._safety.tool_rules:
+            if rule.tool in equivalent:
+                return rule
         return None
+
+    def _decision_key(self, tool_name: str) -> str:
+        canonical = canonical_tool_name(tool_name)
+        return canonical or tool_name
 
     def _default_action(self, tool_name: str) -> str:
         rule = self._find_rule(tool_name)
@@ -140,9 +159,10 @@ class ToolConsentHooks(HookProvider):
             return
 
         tool_use = event.tool_use
-        tool_name = tool_use.get("name")
-        if not tool_name or not isinstance(tool_name, str):
+        tool_name = normalize_tool_name(tool_use.get("name"))
+        if not tool_name:
             return
+        decision_key = self._decision_key(tool_name)
 
         sw = event.invocation_state.get("swarmee", {}) if isinstance(event.invocation_state, dict) else {}
         auto_approve = self._auto_approve
@@ -150,7 +170,10 @@ class ToolConsentHooks(HookProvider):
             auto_approve = _truthy(sw.get("auto_approve"))
         if sw.get("mode") == "execute" and sw.get("enforce_plan"):
             allowed_tools = sw.get("allowed_tools")
-            if isinstance(allowed_tools, (list, tuple, set)) and tool_name in {str(x) for x in allowed_tools}:
+            allowed = (
+                {str(x).strip() for x in allowed_tools} if isinstance(allowed_tools, (list, tuple, set)) else set()
+            )
+            if allowed and equivalent_tool_names(tool_name).intersection(allowed):
                 # Plan approval counts as consent for tools explicitly listed in the approved plan.
                 return
 
@@ -179,14 +202,14 @@ class ToolConsentHooks(HookProvider):
             )
             return
 
-        if remember_allowed and tool_name in self._decisions:
-            if not self._decisions[tool_name]:
+        if remember_allowed and decision_key in self._decisions:
+            if not self._decisions[decision_key]:
                 event.cancel_tool = f"Tool '{tool_name}' denied for this session."
             return
 
         with self._lock:
-            if remember_allowed and tool_name in self._decisions:
-                if not self._decisions[tool_name]:
+            if remember_allowed and decision_key in self._decisions:
+                if not self._decisions[decision_key]:
                     event.cancel_tool = f"Tool '{tool_name}' denied for this session."
                 return
 
@@ -202,10 +225,10 @@ class ToolConsentHooks(HookProvider):
             choice = (self._prompt(prompt) or "").strip().lower()
             if remember_allowed:
                 if choice in {"a", "always"}:
-                    self._decisions[tool_name] = True
+                    self._decisions[decision_key] = True
                     return
                 if choice in {"v", "never"}:
-                    self._decisions[tool_name] = False
+                    self._decisions[decision_key] = False
                     event.cancel_tool = f"Tool '{tool_name}' denied for this session."
                     return
             if choice in {"y", "yes"}:

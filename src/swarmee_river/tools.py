@@ -4,6 +4,8 @@ import importlib
 import os
 from typing import Any
 
+from swarmee_river.opencode_aliases import configure_alias_targets, opencode_alias_tools
+
 # Custom tools (packaged + hot-loaded from ./tools)
 from tools import (
     agent_graph,
@@ -115,5 +117,8 @@ def get_tools() -> dict[str, Any]:
     if _truthy_env("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", False):
         custom_tools["project_context"] = project_context
     tools |= custom_tools
+
+    configure_alias_targets(tools)
+    tools |= opencode_alias_tools()
 
     return tools

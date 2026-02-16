@@ -78,3 +78,17 @@ def test_fallback_provider_overrides_settings_provider_for_session(tmp_path: Pat
     tiers = {t.name: t for t in manager.list_tiers()}
 
     assert tiers["balanced"].provider == "openai"
+
+
+def test_default_safety_rules_include_opencode_alias_entries(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+    settings = load_settings(tmp_path / "settings.json")
+
+    rules = {rule.tool: rule.default for rule in settings.safety.tool_rules}
+
+    for alias_name in ["bash", "patch", "write", "edit"]:
+        assert rules[alias_name] == "ask"
+    for alias_name in ["grep", "read"]:
+        assert rules[alias_name] == "allow"
+    assert rules["shell"] == "ask"
+    assert rules["patch_apply"] == "ask"
