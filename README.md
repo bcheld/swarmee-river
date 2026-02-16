@@ -69,6 +69,12 @@ cat agent-spec.txt | swarmee "Build a specialized agent based on these specifica
 swarmee --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with scientific functions"
 ```
 
+Optional: install the upstream Strands Tools pack for additional integrations (Slack, media generation, etc.):
+
+```bash
+pipx install "swarmee-river[strands_tools]"
+```
+
 ## Configuration
 
 Swarmee is designed to work without users editing config files.

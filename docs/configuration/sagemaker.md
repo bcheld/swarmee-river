@@ -10,6 +10,12 @@ This guide focuses on **SageMaker interactive environments** (terminal + Jupyter
 pip install swarmee-river
 ```
 
+Optional (recommended only if you need upstream Strands Tools integrations like Slack, media generation, etc.):
+
+```bash
+pip install "swarmee-river[strands_tools]"
+```
+
 For notebook magic:
 
 ```bash
