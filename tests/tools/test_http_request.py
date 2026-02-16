@@ -48,14 +48,25 @@ def _serve_in_thread() -> tuple[HTTPServer, int]:
 def _text(result: dict) -> str:
     return (result.get("content") or [{"text": ""}])[0].get("text", "")
 
+def _response_body_json(result: dict) -> dict:
+    text = _text(result)
+    marker = "## Body"
+    if marker not in text:
+        raise AssertionError("Expected http_request output to include a '## Body' section")
+    body = text.split(marker, 1)[1].lstrip()
+    if body.startswith("\n"):
+        body = body[1:]
+    return json.loads(body.strip())
+
 
 def test_http_request_get_with_params() -> None:
     server, port = _serve_in_thread()
     try:
         result = http_request(method="GET", url=f"http://127.0.0.1:{port}/hello", params={"q": "1"})
         assert result.get("status") == "success"
-        text = _text(result)
-        assert "/hello?q=1" in text
+        payload = _response_body_json(result)
+        assert payload["method"] == "GET"
+        assert payload["path"].endswith("/hello?q=1")
     finally:
         server.shutdown()
 
@@ -65,8 +76,10 @@ def test_http_request_post_json_body() -> None:
     try:
         result = http_request(method="POST", url=f"http://127.0.0.1:{port}/submit", json={"a": 1})
         assert result.get("status") == "success"
-        text = _text(result)
-        assert "/submit" in text
-        assert "\"a\": 1" in text
+        payload = _response_body_json(result)
+        assert payload["method"] == "POST"
+        assert payload["path"].endswith("/submit")
+        inner = json.loads(payload["body"])
+        assert inner == {"a": 1}
     finally:
         server.shutdown()
