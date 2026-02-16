@@ -32,6 +32,18 @@ def test_plan_mode_allows_structured_output_tool_from_invocation_state() -> None
     assert event.cancel_tool is False
 
 
+def test_plan_mode_allows_repo_inspection_tools() -> None:
+    hook = ToolPolicyHooks()
+    for name in ["file_read", "file_list", "file_search", "list", "glob", "project_context"]:
+        event = SimpleNamespace(
+            tool_use={"name": name},
+            invocation_state={"swarmee": {"mode": "plan"}},
+            cancel_tool=False,
+        )
+        hook.before_tool_call(event)
+        assert event.cancel_tool is False
+
+
 def test_windows_powershell_blocks_posix_shell_commands() -> None:
     hook = ToolPolicyHooks()
     event = SimpleNamespace(
@@ -112,7 +124,7 @@ def test_execute_mode_blocks_shell_file_inspection_commands() -> None:
     hook.before_tool_call(event)
 
     assert event.cancel_tool
-    assert "file_list/file_search/file_read" in str(event.cancel_tool)
+    assert "list/glob/file_list/file_search/file_read" in str(event.cancel_tool)
 
 
 def test_execute_mode_allows_shell_non_file_inspection_commands() -> None:

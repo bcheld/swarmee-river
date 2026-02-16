@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
-from typing import Any, Optional
+from typing import Any
 
 # Custom tools (packaged + hot-loaded from ./tools)
 from tools import (
@@ -11,6 +11,7 @@ from tools import (
     file_ops,
     git,
     patch_apply,
+    path_ops,
     project_context,
     run_checks,
     sop,
@@ -30,7 +31,7 @@ def _truthy_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
 
 
-def _load_strands_tool(name: str) -> Optional[Any]:
+def _load_strands_tool(name: str) -> Any | None:
     """
     Best-effort import of a tool from `strands_tools`.
 
@@ -96,6 +97,8 @@ def get_tools() -> dict[str, Any]:
         "file_list": file_ops.file_list,
         "file_search": file_ops.file_search,
         "file_read": file_ops.file_read,
+        "glob": path_ops.glob,
+        "list": path_ops.list,
         "store_in_kb": store_in_kb,
         "strand": strand,
         "welcome": welcome,

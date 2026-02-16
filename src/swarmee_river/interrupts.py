@@ -5,9 +5,9 @@ import platform
 import sys
 import threading
 import time
-from contextlib import AbstractContextManager
-from contextlib import contextmanager
-from typing import Optional
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
+from typing import Any, Optional
 
 
 class AgentInterruptedError(RuntimeError):
@@ -39,7 +39,7 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
 
         self._is_windows = platform.system() == "Windows"
         self._stdin_fd: Optional[int] = None
-        self._termios_old: Optional[object] = None
+        self._termios_old: Any = None
         self._cbreak_enabled = False
 
     def __enter__(self) -> "EscInterruptWatcher":
@@ -70,7 +70,7 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
             _ACTIVE_WATCHER = self
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any) -> None:
         global _ACTIVE_WATCHER
         if not self._enabled:
             return None
@@ -113,13 +113,18 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
         except Exception:
             return
 
+        kbhit = getattr(msvcrt, "kbhit", None)
+        getwch = getattr(msvcrt, "getwch", None)
+        if not callable(kbhit) or not callable(getwch):
+            return
+
         while not self._stop_event.is_set() and not self._interrupt_event.is_set():
             if self._is_paused():
                 time.sleep(self._poll_interval_s)
                 continue
             try:
-                if msvcrt.kbhit():
-                    ch = msvcrt.getwch()
+                if kbhit():
+                    ch = getwch()
                     if ch == "\x1b":
                         self._interrupt_event.set()
                         return
@@ -192,7 +197,7 @@ class EscInterruptWatcher(AbstractContextManager["EscInterruptWatcher"]):
 
 
 @contextmanager
-def pause_active_interrupt_watcher_for_input():
+def pause_active_interrupt_watcher_for_input() -> Iterator[None]:
     watcher: EscInterruptWatcher | None = None
     with _ACTIVE_WATCHER_LOCK:
         watcher = _ACTIVE_WATCHER

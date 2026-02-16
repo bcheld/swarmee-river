@@ -98,7 +98,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         )
         self.enabled = _truthy_env("SWARMEE_SUMMARIZE_CONTEXT", True)
 
-    def apply_management(self, agent: "Any", **kwargs: Any) -> None:  # type: ignore[override]
+    def apply_management(self, agent: "Any", **kwargs: Any) -> None:
         if not self.enabled:
             return
 

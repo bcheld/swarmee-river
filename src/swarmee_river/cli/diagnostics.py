@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.state_paths import artifacts_dir as _default_artifacts_dir
+from swarmee_river.state_paths import logs_dir as _default_logs_dir
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -212,7 +214,7 @@ def render_effective_config(
 
 
 def render_artifact_list(*, cwd: Path, kind: str | None = None, limit: int = 25) -> str:
-    store = ArtifactStore(artifacts_dir=cwd / ".swarmee" / "artifacts")
+    store = ArtifactStore(artifacts_dir=_default_artifacts_dir(cwd=cwd))
     entries = store.list(limit=limit, kind=kind)
     if not entries:
         return "No artifacts found."
@@ -223,7 +225,7 @@ def render_artifact_list(*, cwd: Path, kind: str | None = None, limit: int = 25)
 
 
 def render_artifact_get(*, cwd: Path, artifact_id: str | None, path: str | None, max_chars: int = 12000) -> str:
-    store = ArtifactStore(artifacts_dir=cwd / ".swarmee" / "artifacts")
+    store = ArtifactStore(artifacts_dir=_default_artifacts_dir(cwd=cwd))
     resolved_path: Path | None = None
 
     if artifact_id:
@@ -254,7 +256,7 @@ def _iter_jsonl_files(log_dir: Path) -> list[Path]:
 
 
 def render_log_tail(*, cwd: Path, lines: int = 50) -> str:
-    log_dir = _resolve_under_cwd(os.getenv("SWARMEE_LOG_DIR", str(Path(".swarmee/logs"))), cwd)
+    log_dir = _resolve_under_cwd(os.getenv("SWARMEE_LOG_DIR", str(_default_logs_dir(cwd=cwd))), cwd)
     files = _iter_jsonl_files(log_dir)
     if not files:
         return f"No logs found in {log_dir}"
@@ -280,7 +282,7 @@ def render_replay_invocation(
     if not inv:
         return "invocation_id is required."
 
-    log_dir = _resolve_under_cwd(os.getenv("SWARMEE_LOG_DIR", str(Path(".swarmee/logs"))), cwd)
+    log_dir = _resolve_under_cwd(os.getenv("SWARMEE_LOG_DIR", str(_default_logs_dir(cwd=cwd))), cwd)
     files = _iter_jsonl_files(log_dir)
     if not files:
         return f"No logs found in {log_dir}"

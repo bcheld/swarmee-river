@@ -2,9 +2,15 @@
 
 import os
 from pathlib import Path
+from typing import Any
 
 
-def store_conversation_in_kb(agent, user_input, response=None, knowledge_base_id=None):
+def store_conversation_in_kb(
+    agent: Any,
+    user_input: str,
+    response: Any | None = None,
+    knowledge_base_id: str | None = None,
+) -> None:
     """
     Store conversation between user and assistant in knowledge base asynchronously
 
@@ -84,7 +90,7 @@ def store_conversation_in_kb(agent, user_input, response=None, knowledge_base_id
         print(f"Error storing conversation in knowledge base: {str(e)}")
 
 
-def load_system_prompt():
+def load_system_prompt() -> str:
     """
     Load system prompt with the following priority:
     1. SWARMEE_SYSTEM_PROMPT environment variable

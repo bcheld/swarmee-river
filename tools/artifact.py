@@ -31,10 +31,10 @@ def artifact(
     title: str | None = None,
 ) -> dict[str, Any]:
     """
-    Manage Swarmee artifacts stored under `.swarmee/artifacts/`.
+    Manage Swarmee artifacts stored under `<state_dir>/artifacts/` (default `.swarmee/artifacts/`).
 
     Actions:
-    - list: show recent artifacts from `.swarmee/artifacts/index.jsonl`
+    - list: show recent artifacts from `<state_dir>/artifacts/index.jsonl`
     - get: read an artifact by id (preferred) or by path
     - upload: upload an artifact to S3 (requires bucket)
     - store_in_kb: store artifact contents in a Bedrock Knowledge Base

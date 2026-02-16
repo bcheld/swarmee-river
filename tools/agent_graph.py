@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from strands import tool
+from strands.types.tools import ToolResult, ToolUse
 
 try:
     from strands_tools.use_llm import use_llm as _use_llm
@@ -23,10 +24,13 @@ def _null_callback_handler(**_kwargs: Any) -> None:
     return None
 
 
-def _extract_use_llm_text(result: dict[str, Any]) -> str:
+def _extract_use_llm_text(result: ToolResult | dict[str, Any]) -> str:
     for item in result.get("content", []) if isinstance(result, dict) else []:
-        if isinstance(item, dict) and isinstance(item.get("text"), str):
-            text = item["text"]
+        if isinstance(item, dict):
+            text_value = item.get("text")
+            if not isinstance(text_value, str):
+                continue
+            text = text_value
             if text.startswith("Response:"):
                 return text[len("Response:") :].strip()
             return text.strip()
@@ -85,9 +89,6 @@ class _AgentNode:
         return self._queue.qsize()
 
     def _run_loop(self, *, parent_agent: Any, poll_interval_s: float) -> None:
-        if not _HAS_USE_LLM:
-            return
-
         while not self._stop.is_set():
             try:
                 message = self._queue.get(timeout=poll_interval_s)
@@ -95,11 +96,12 @@ class _AgentNode:
                 continue
 
             try:
-                tool_use = {
+                tool_use: ToolUse = {
                     "toolUseId": str(uuid.uuid4()),
                     "input": {"system_prompt": self.system_prompt, "prompt": message.content},
+                    "name": "use_llm",
                 }
-                result = _use_llm(  # type: ignore[misc]
+                result = _use_llm(
                     tool_use,
                     agent=parent_agent,
                     callback_handler=_null_callback_handler,

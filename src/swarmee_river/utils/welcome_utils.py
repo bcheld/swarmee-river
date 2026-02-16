@@ -26,7 +26,7 @@ STRANDS_THEME = Theme(
 console = Console(theme=STRANDS_THEME)
 
 
-def render_welcome_message(welcome_text):
+def render_welcome_message(welcome_text: str) -> None:
     """
     Print a beautifully formatted welcome message using Rich.
 
@@ -36,6 +36,7 @@ def render_welcome_message(welcome_text):
     Returns:
         None: Prints the formatted message to the console
     """
+    panel_content: str | Markdown
     try:
         # Try to render as markdown first for rich formatting
         md = Markdown(welcome_text)
@@ -62,7 +63,7 @@ def render_welcome_message(welcome_text):
     console.print()
 
 
-def render_goodbye_message():
+def render_goodbye_message() -> None:
     """Print a goodbye message when Strands is exiting"""
     console.print("\n")
     console.print(

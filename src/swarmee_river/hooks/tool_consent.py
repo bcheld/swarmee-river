@@ -20,6 +20,14 @@ def _truthy_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
 
 
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+
+
 def _truncate(value: str, limit: int = 240) -> str:
     text = str(value or "")
     if len(text) <= limit:
@@ -27,7 +35,7 @@ def _truncate(value: str, limit: int = 240) -> str:
     return text[:limit] + "..."
 
 
-def _tool_prompt_context(tool_name: str, tool_use: dict[str, Any]) -> str:
+def _tool_prompt_context(tool_name: str, tool_use: Any) -> str:
     tool_input = tool_use.get("input")
     if not isinstance(tool_input, dict):
         return ""
@@ -131,12 +139,15 @@ class ToolConsentHooks(HookProvider):
         if event.cancel_tool:
             return
 
-        tool_use = event.tool_use or {}
+        tool_use = event.tool_use
         tool_name = tool_use.get("name")
         if not tool_name or not isinstance(tool_name, str):
             return
 
         sw = event.invocation_state.get("swarmee", {}) if isinstance(event.invocation_state, dict) else {}
+        auto_approve = self._auto_approve
+        if isinstance(sw, dict) and "auto_approve" in sw:
+            auto_approve = _truthy(sw.get("auto_approve"))
         if sw.get("mode") == "execute" and sw.get("enforce_plan"):
             allowed_tools = sw.get("allowed_tools")
             if isinstance(allowed_tools, (list, tuple, set)) and tool_name in {str(x) for x in allowed_tools}:
@@ -157,7 +168,7 @@ class ToolConsentHooks(HookProvider):
             return
 
         # action == "ask"
-        if self._auto_approve:
+        if auto_approve:
             return
 
         # Non-interactive sessions can't prompt; fail closed.

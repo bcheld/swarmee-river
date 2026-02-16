@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from strands import Agent, tool
 from strands.multiagent import Swarm
@@ -60,19 +60,20 @@ def _create_custom_agents(
             callback_handler=getattr(parent_agent, "callback_handler", None) if parent_agent else None,
             trace_attributes=getattr(parent_agent, "trace_attributes", None) if parent_agent else None,
         )
+        swarm_agent_any = cast(Any, swarm_agent)
 
         # Provider/settings-based configuration (used by Strands Tools).
         model_provider = spec.get("model_provider")
         if model_provider:
-            swarm_agent.model_provider = model_provider
+            swarm_agent_any.model_provider = model_provider
         elif parent_agent and hasattr(parent_agent, "model_provider"):
-            swarm_agent.model_provider = parent_agent.model_provider
+            swarm_agent_any.model_provider = cast(Any, parent_agent).model_provider
 
         model_settings = spec.get("model_settings")
         if model_settings:
-            swarm_agent.model_settings = model_settings
+            swarm_agent_any.model_settings = model_settings
         elif parent_agent and hasattr(parent_agent, "model_settings"):
-            swarm_agent.model_settings = parent_agent.model_settings
+            swarm_agent_any.model_settings = cast(Any, parent_agent).model_settings
 
         agents.append(swarm_agent)
 

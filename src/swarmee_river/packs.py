@@ -35,7 +35,8 @@ class Pack:
 
 def _load_json(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
 
@@ -109,7 +110,7 @@ def _extract_tools(module: ModuleType) -> dict[str, Any]:
 
     for value in module.__dict__.values():
         if isinstance(value, AgentTool):
-            tools[value.name] = value
+            tools[value.tool_name] = value
 
     spec = getattr(module, "TOOL_SPEC", None)
     if isinstance(spec, dict):

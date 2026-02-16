@@ -4,13 +4,15 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import AfterToolCallEvent
+from strands.types.tools import ToolResultContent
 
 from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.hooks._compat import register_hook_callback
+from swarmee_river.state_paths import artifacts_dir as _default_artifacts_dir
 
 
 def _truthy_env(name: str, default: bool) -> bool:
@@ -38,8 +40,7 @@ class ToolResultLimiterHooks(HookProvider):
         self.max_text_chars = (
             int(os.getenv("SWARMEE_TOOL_RESULT_MAX_CHARS", "8000")) if max_text_chars is None else max_text_chars
         )
-        default_artifacts_dir = Path.cwd() / ".swarmee" / "artifacts"
-        self.artifacts_dir = default_artifacts_dir if artifacts_dir is None else artifacts_dir
+        self.artifacts_dir = _default_artifacts_dir() if artifacts_dir is None else artifacts_dir
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, AfterToolCallEvent, self.after_tool_call)
@@ -49,23 +50,16 @@ class ToolResultLimiterHooks(HookProvider):
             return
 
         result = event.result
-        if not isinstance(result, dict):
-            return
-
         content = result.get("content")
-        if not isinstance(content, list):
-            return
 
-        tool_use = event.tool_use or {}
+        tool_use = event.tool_use
         tool_use_id = tool_use.get("toolUseId") or result.get("toolUseId") or "unknown_tool_use"
         tool_name = tool_use.get("name") or "unknown_tool"
 
         changed = False
-        new_content: list[dict[str, Any]] = []
+        new_content: list[ToolResultContent] = []
 
         for item in content:
-            if not isinstance(item, dict):
-                continue
             text = item.get("text")
             if not isinstance(text, str):
                 new_content.append(item)
@@ -118,8 +112,7 @@ class ToolResultLimiterHooks(HookProvider):
                 f"[tool result truncated: kept {self.max_text_chars} chars of {len(text)}; "
                 f"full output saved to {artifact_path}]"
             )
-            new_item = dict(item)
-            new_item["text"] = truncated + suffix
+            new_item = cast(ToolResultContent, {**item, "text": truncated + suffix})
             new_content.append(new_item)
             changed = True
 

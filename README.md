@@ -95,7 +95,7 @@ Developer onboarding and contribution workflow: see `CONTRIBUTING.md`.
 - 🧭 Plan-first workflow for “do work” prompts (plan → approve → execute)
 - ✅ Tool consent prompts for high-risk tools (shell/editor/file_write/http_request)
 - ⚡ In-session model tier switching (`:tier set fast|balanced|deep|long`)
-- 📁 Local artifacts + JSONL logs under `.swarmee/` (with optional S3 upload)
+- 📁 Local artifacts + JSONL logs under `.swarmee/` (override via `SWARMEE_STATE_DIR`; optional S3 upload)
 - 📦 User/team extensibility via packs (tools + SOPs + prompts)
 - 🛠️ Powerful integrated tools (12+ tools including shell, editor, HTTP, Python)
 - 🧠 Knowledge base integration for persisting and loading tools
@@ -156,12 +156,14 @@ Swarmee River uses Strands Tools and supports hot-loading tools from `./tools`.
 - **http_request**: Make API calls, fetch web data, and call local HTTP servers
 - **image_reader**: Process and analyze images
 - **journal**: Create structured tasks and logs for agents to manage and work from
+- **list**: List directory contents (cross-platform, no shell)
 - **load_tool**: Dynamically load more tools at runtime
+- **glob**: Find paths by glob pattern (cross-platform, no shell)
 - **memory**: Agent memory persistence in Amazon Bedrock Knowledge Bases
 - **nova_reels**: Create AI generated videos with Nova Reels on Amazon Bedrock
-- **python_repl**: Run Python code *(not available on Windows)*
+- **python_repl**: Run Python code *(fallback provided for Windows)*
 - **retrieve**: Semantically retrieve data from Amazon Bedrock Knowledge Bases for RAG, memory, and other purposes
-- **shell**: Execute shell commands *(not available on Windows)*
+- **shell**: Execute shell commands *(fallback provided for Windows)*
 - **slack**: Slack integration with real-time events, API access, and message sending
 - **speak**: Generate speech from text using macOS say command or Amazon Polly
 - **stop**: Force stop the agent event loop
@@ -194,6 +196,11 @@ Review this notebook and suggest improvements to the code.
 ```
 
 Example notebook: `examples/notebooks/swarmee_magic_demo.ipynb`
+
+Notebook tips:
+- Auto-approve plan + tool consent for a single invocation: `%%swarmee --yes`
+- Force plan mode (even for “info” prompts): `%%swarmee --plan`
+- Disable notebook context injection: `%%swarmee --no-context` (or `SWARMEE_NOTEBOOK_NO_CONTEXT=true`)
 
 ## Knowledge Base Integration
 

@@ -20,6 +20,7 @@ from strands.hooks.events import (
 )
 
 from swarmee_river.hooks._compat import event_messages, model_response_payload, register_hook_callback
+from swarmee_river.state_paths import logs_dir as _default_logs_dir
 
 
 def _truthy_env(name: str, default: bool) -> bool:
@@ -128,7 +129,7 @@ class JSONLLoggerHooks(HookProvider):
     """
     Lightweight JSONL logging of model/tool/invocation events for performance monitoring and replay.
 
-    Writes one JSON object per line to a session log file in `.swarmee/logs/`.
+    Writes one JSON object per line to a session log file in `<state_dir>/logs/` (default `.swarmee/logs/`).
     Optionally uploads the log to S3 if `SWARMEE_LOG_S3_BUCKET` is set.
     """
 
@@ -139,7 +140,7 @@ class JSONLLoggerHooks(HookProvider):
         self.log_dir = Path(
             os.getenv(
                 "SWARMEE_LOG_DIR",
-                str(Path.cwd() / ".swarmee" / "logs"),
+                str(_default_logs_dir()),
             )
         )
         self.session_id = os.getenv("SWARMEE_SESSION_ID", uuid.uuid4().hex)
@@ -223,10 +224,12 @@ class JSONLLoggerHooks(HookProvider):
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
         sw = event.invocation_state.get("swarmee", {})
         inv_id = sw.get("invocation_id")
-        tool_use = event.tool_use or {}
+        tool_use = event.tool_use
         tool_use_id = tool_use.get("toolUseId")
         tool_name = tool_use.get("name")
-        sw.get("tool_t0", {})[tool_use_id] = time.time()
+        tool_t0 = sw.get("tool_t0")
+        if isinstance(tool_t0, dict):
+            tool_t0[tool_use_id] = time.time()
 
         tool_input = tool_use.get("input")
         if tool_input and self.redact:
@@ -240,10 +243,11 @@ class JSONLLoggerHooks(HookProvider):
     def after_tool_call(self, event: AfterToolCallEvent) -> None:
         sw = event.invocation_state.get("swarmee", {})
         inv_id = sw.get("invocation_id")
-        tool_use = event.tool_use or {}
+        tool_use = event.tool_use
         tool_use_id = tool_use.get("toolUseId")
         tool_name = tool_use.get("name")
-        t0 = sw.get("tool_t0", {}).pop(tool_use_id, None)
+        tool_t0 = sw.get("tool_t0")
+        t0 = tool_t0.pop(tool_use_id, None) if isinstance(tool_t0, dict) else None
         duration_s = round(time.time() - t0, 3) if isinstance(t0, (int, float)) else None
 
         result = event.result
@@ -265,7 +269,9 @@ class JSONLLoggerHooks(HookProvider):
         sw = event.invocation_state.get("swarmee", {})
         inv_id = sw.get("invocation_id")
         call_id = uuid.uuid4().hex
-        sw.get("model_t0", {})[call_id] = time.time()
+        model_t0 = sw.get("model_t0")
+        if isinstance(model_t0, dict):
+            model_t0[call_id] = time.time()
 
         messages = event_messages(event)
         msg_count = len(messages) if isinstance(messages, list) else None
@@ -276,7 +282,8 @@ class JSONLLoggerHooks(HookProvider):
         sw = event.invocation_state.get("swarmee", {})
         inv_id = sw.get("invocation_id")
         call_id = event.invocation_state.pop("swarmee_model_call_id", None)
-        t0 = sw.get("model_t0", {}).pop(call_id, None)
+        model_t0 = sw.get("model_t0")
+        t0 = model_t0.pop(call_id, None) if isinstance(model_t0, dict) else None
         duration_s = round(time.time() - t0, 3) if isinstance(t0, (int, float)) else None
 
         response_payload = model_response_payload(event)

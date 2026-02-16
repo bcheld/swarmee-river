@@ -14,7 +14,9 @@ Legend:
 | Session persistence | `.swarmee/sessions/<id>/…` | ✅ | Project-local only. |
 | Model/provider switching | `SessionModelManager` tiers + provider resolution | ✅ | Env + settings precedence. |
 | “Think harder” / deep reasoning | `deep` tier + provider-specific knobs | ✅ | Bedrock deep tier raises thinking budget; OpenAI optional env for `reasoning_effort`. |
-| Read/search primitives | `file_read`, `project_context` | 🟡 | `project_context` covers summary/tree/files/search/read. |
+| Read/search primitives | `file_read`, `file_list`, `file_search`, `project_context` | 🟡 | `file_list`/`file_search` prefer `rg` but fall back to pure Python when `rg` is unavailable. `project_context` covers summary/tree/files/search/read. |
+| Glob search (`glob`) | `glob` tool | ✅ | Pure-Python glob with skip-dirs guardrails. |
+| Directory listing (`list`) | `list` tool | ✅ | Cross-platform, no shell required; hidden entries excluded by default. |
 | Shell execution | `shell` tool (fallback) | ✅ | Consent-gated by default. |
 | Patch apply tool | `patch_apply` tool | ✅ | Uses `git apply`; consent-gated by default. |
 | Git workflows | `git` tool + `:status` / `:diff` | ✅ | Tool supports read + mutating actions; consent-gated. |
@@ -26,4 +28,3 @@ Legend:
 | LSP tool | n/a | ❌ | Not implemented yet. |
 | Todo tool | n/a | ❌ | Not implemented yet. |
 | Share links | n/a | ❌ | Not implemented yet. |
-

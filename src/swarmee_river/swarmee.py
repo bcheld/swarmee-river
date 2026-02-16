@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402, I001
 """
 Swarmee - A minimal CLI interface for Swarmee River (built on Strands)
 """
@@ -24,39 +25,51 @@ from strands_tools.utils.user_input import get_user_input
 from swarmee_river.handlers.callback_handler import callback_handler, set_interrupt_event
 
 try:
-    from prompt_toolkit import HTML, PromptSession
-    from prompt_toolkit.patch_stdout import patch_stdout
+    from prompt_toolkit import HTML as _PromptHTML, PromptSession as _PromptSession
+    from prompt_toolkit.patch_stdout import patch_stdout as _patch_stdout
 except Exception:
-    HTML = None  # type: ignore[assignment]
-    PromptSession = None  # type: ignore[assignment]
-    patch_stdout = None  # type: ignore[assignment]
-try:
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.text import Text
-except Exception:
-    Console = None  # type: ignore[assignment]
-    Panel = None  # type: ignore[assignment]
-    Text = None  # type: ignore[assignment]
+    _PromptHTML = None  # type: ignore[misc,assignment]
+    _PromptSession = None  # type: ignore[misc,assignment]
+    _patch_stdout = None  # type: ignore[assignment]
+HTML: Any = _PromptHTML
+PromptSession: Any = _PromptSession
+patch_stdout: Any = _patch_stdout
 
 try:
-    from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks
-    from swarmee_river.hooks.tool_consent import ToolConsentHooks
-    from swarmee_river.hooks.tool_policy import ToolPolicyHooks
-    from swarmee_river.hooks.tool_result_limiter import ToolResultLimiterHooks
+    from rich.console import Console as _RichConsole
+    from rich.panel import Panel as _RichPanel
+    from rich.text import Text as _RichText
+except Exception:
+    _RichConsole = None  # type: ignore[misc,assignment]
+    _RichPanel = None  # type: ignore[misc,assignment]
+    _RichText = None  # type: ignore[misc,assignment]
+Console: Any = _RichConsole
+Panel: Any = _RichPanel
+Text: Any = _RichText
+
+try:
+    from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks as _JSONLLoggerHooks
+    from swarmee_river.hooks.tool_consent import ToolConsentHooks as _ToolConsentHooks
+    from swarmee_river.hooks.tool_policy import ToolPolicyHooks as _ToolPolicyHooks
+    from swarmee_river.hooks.tool_result_limiter import ToolResultLimiterHooks as _ToolResultLimiterHooks
 
     _HAS_STRANDS_HOOKS = True
 except Exception:
-    JSONLLoggerHooks = None  # type: ignore[assignment]
-    ToolConsentHooks = None  # type: ignore[assignment]
-    ToolResultLimiterHooks = None  # type: ignore[assignment]
-    ToolPolicyHooks = None  # type: ignore[assignment]
+    _JSONLLoggerHooks = None  # type: ignore[misc,assignment]
+    _ToolConsentHooks = None  # type: ignore[misc,assignment]
+    _ToolResultLimiterHooks = None  # type: ignore[misc,assignment]
+    _ToolPolicyHooks = None  # type: ignore[misc,assignment]
     _HAS_STRANDS_HOOKS = False
+JSONLLoggerHooks: Any = _JSONLLoggerHooks
+ToolConsentHooks: Any = _ToolConsentHooks
+ToolResultLimiterHooks: Any = _ToolResultLimiterHooks
+ToolPolicyHooks: Any = _ToolPolicyHooks
 
 try:
-    from swarmee_river.hooks.tool_message_repair import ToolMessageRepairHooks
+    from swarmee_river.hooks.tool_message_repair import ToolMessageRepairHooks as _ToolMessageRepairHooks
 except Exception:
-    ToolMessageRepairHooks = None  # type: ignore[assignment]
+    _ToolMessageRepairHooks = None  # type: ignore[misc,assignment]
+ToolMessageRepairHooks: Any = _ToolMessageRepairHooks
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.cli.builtin_commands import register_builtin_commands
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
@@ -97,7 +110,7 @@ os.environ["STRANDS_TOOL_CONSOLE_MODE"] = "enabled"
 _STRANDS_KWARGS_DEPRECATION = r"`\*\*kwargs` parameter is deprecating, use `invocation_state` instead\."
 _TOOL_USAGE_RULES = (
     "Tool usage rules:\n"
-    "- Use file_list/file_search/file_read for repository exploration and file reading.\n"
+    "- Use list/glob/file_list/file_search/file_read for repository exploration and file reading.\n"
     "- Do not use shell for ls/find/sed/cat/grep/rg when file tools can do it.\n"
     "- Reserve shell for real command execution tasks."
 )
@@ -108,7 +121,7 @@ _consent_prompt_lock = threading.Lock()
 _consent_console: Any | None = Console() if Console is not None else None
 
 
-def _truthy(value: Optional[str]) -> bool:
+def _truthy(value: str | None) -> bool:
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
@@ -275,7 +288,7 @@ def _build_conversation_manager(*, window_size: Optional[int], per_turn: Optiona
     )
 
 
-def main():
+def main() -> None:
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Swarmee - An enterprise analytics + coding assistant")
     parser.add_argument("query", nargs="*", help="Query to process")
@@ -394,9 +407,9 @@ def main():
             if not settings.packs.installed:
                 lines.append("No packs installed.")
             else:
-                for p in settings.packs.installed:
-                    status = "enabled" if p.enabled else "disabled"
-                    lines.append(f"- {p.name} ({status}) -> {p.path}")
+                for pack_entry in settings.packs.installed:
+                    status = "enabled" if pack_entry.enabled else "disabled"
+                    lines.append(f"- {pack_entry.name} ({status}) -> {pack_entry.path}")
             print("\n".join(lines))
             return
 
@@ -405,12 +418,12 @@ def main():
             if pack_path.startswith("s3://"):
                 print("S3 pack install is not implemented yet. Use a local path for now.")
                 return
-            p = Path(pack_path).expanduser()
-            if not p.exists() or not p.is_dir():
-                print(f"Pack path not found: {p}")
+            pack_dir = Path(pack_path).expanduser()
+            if not pack_dir.exists() or not pack_dir.is_dir():
+                print(f"Pack path not found: {pack_dir}")
                 return
-            meta_path = p / "pack.json"
-            name = p.name
+            meta_path = pack_dir / "pack.json"
+            name = pack_dir.name
             if meta_path.exists():
                 try:
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -418,10 +431,10 @@ def main():
                         name = meta["name"].strip()
                 except Exception:
                     pass
-            installed = [e for e in settings.packs.installed if e.name != name]
-            installed.append(PackEntry(name=name, path=str(p.resolve()), enabled=True))
-            _persist_packs(installed)
-            print(f"Installed pack: {name} -> {p.resolve()}")
+            installed_packs = [pack_entry for pack_entry in settings.packs.installed if pack_entry.name != name]
+            installed_packs.append(PackEntry(name=name, path=str(pack_dir.resolve()), enabled=True))
+            _persist_packs(installed_packs)
+            print(f"Installed pack: {name} -> {pack_dir.resolve()}")
             return
 
         if sub[0] in {"enable", "disable"} and len(sub) >= 2:
@@ -431,12 +444,12 @@ def main():
                 return
             updated: list[PackEntry] = []
             found = False
-            for e in settings.packs.installed:
-                if e.name == target:
-                    updated.append(PackEntry(name=e.name, path=e.path, enabled=(sub[0] == "enable")))
+            for pack_entry in settings.packs.installed:
+                if pack_entry.name == target:
+                    updated.append(PackEntry(name=pack_entry.name, path=pack_entry.path, enabled=(sub[0] == "enable")))
                     found = True
                 else:
-                    updated.append(e)
+                    updated.append(pack_entry)
             if not found:
                 print(f"Pack not found: {target}")
                 return
@@ -458,12 +471,12 @@ def main():
                 print("No sessions found.")
                 return
             lines = ["# Sessions", ""]
-            for e in entries:
-                sid = str(e.get("id") or "")
-                updated = str(e.get("updated_at") or e.get("created_at") or "")
-                provider = str(e.get("provider") or "")
-                tier = str(e.get("tier") or "")
-                suffix = " ".join([p for p in [updated, provider, tier] if p]).strip()
+            for entry in entries:
+                sid = str(entry.get("id") or "")
+                updated_at = str(entry.get("updated_at") or entry.get("created_at") or "")
+                provider = str(entry.get("provider") or "")
+                tier = str(entry.get("tier") or "")
+                suffix = " ".join([part for part in [updated_at, provider, tier] if part]).strip()
                 lines.append(f"- {sid}" + (f" ({suffix})" if suffix else ""))
             print("\n".join(lines))
             return
@@ -644,15 +657,15 @@ def main():
                 )
 
         hooks = [
-            JSONLLoggerHooks(),  # type: ignore[misc]
-            ToolPolicyHooks(),  # type: ignore[misc]
-            ToolConsentHooks(  # type: ignore[misc]
+            JSONLLoggerHooks(),
+            ToolPolicyHooks(),
+            ToolConsentHooks(
                 settings.safety,
                 interactive=not bool(args.query),
                 auto_approve=auto_approve,
                 prompt=_consent_prompt,
             ),
-            ToolResultLimiterHooks(),  # type: ignore[misc]
+            ToolResultLimiterHooks(),
         ]
         if ToolMessageRepairHooks is not None:
             hooks.insert(2, ToolMessageRepairHooks())

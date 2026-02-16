@@ -94,8 +94,8 @@ def _sanitize_unmatched_tool_uses(messages: list[Any]) -> tuple[list[Any], list[
                 continue
             tool_use = item.get("toolUse")
             if isinstance(tool_use, dict):
-                tool_use_id = tool_use.get("toolUseId")
-                if isinstance(tool_use_id, str) and tool_use_id.strip() in unresolved:
+                raw_tool_use_id = tool_use.get("toolUseId")
+                if isinstance(raw_tool_use_id, str) and raw_tool_use_id.strip() in unresolved:
                     continue
             new_content.append(item)
 

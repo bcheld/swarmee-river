@@ -48,7 +48,7 @@ _SHELL_FILE_INSPECTION_TOKENS = {
 }
 
 
-def _project_context_signature(tool_use: dict[str, Any]) -> str:
+def _project_context_signature(tool_use: Any) -> str:
     tool_input = tool_use.get("input")
     if not isinstance(tool_input, dict):
         return "project_context"
@@ -116,7 +116,16 @@ class ToolPolicyHooks(HookProvider):
         self.swarm_enabled = _truthy_env("SWARMEE_SWARM_ENABLED", True)
         # Plan mode should stay read-only to prevent the model from mutating the repo while planning.
         # We allow repo inspection tools so plans can be grounded in reality.
-        self.plan_mode_allowed_tools = {"retrieve", "sop", "project_context", "file_read"}
+        self.plan_mode_allowed_tools = {
+            "retrieve",
+            "sop",
+            "project_context",
+            "file_read",
+            "file_list",
+            "file_search",
+            "list",
+            "glob",
+        }
         self.plan_mode_project_context_actions = {"summary", "files", "tree", "search", "read", "git_status"}
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
@@ -136,7 +145,7 @@ class ToolPolicyHooks(HookProvider):
         if event.cancel_tool:
             return
 
-        tool_use = event.tool_use or {}
+        tool_use = event.tool_use
         name = tool_use.get("name")
         if not name:
             return
@@ -165,7 +174,7 @@ class ToolPolicyHooks(HookProvider):
                 return
             if mode == "execute" and isinstance(command, str) and _looks_file_inspection_shell_command(command):
                 event.cancel_tool = (
-                    "Use file_list/file_search/file_read for repository inspection instead of shell."
+                    "Use list/glob/file_list/file_search/file_read for repository inspection instead of shell."
                 )
                 return
 

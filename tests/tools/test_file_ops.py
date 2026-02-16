@@ -33,3 +33,28 @@ def test_file_read_reads_with_line_numbers(tmp_path: Path) -> None:
     assert result.get("status") == "success"
     text = (result.get("content") or [{"text": ""}])[0].get("text", "")
     assert "2 | line2" in text
+
+
+def test_file_search_falls_back_without_rg(tmp_path: Path, monkeypatch) -> None:
+    import tools.file_ops as file_ops
+
+    (tmp_path / "a.txt").write_text("needle\n", encoding="utf-8")
+
+    monkeypatch.setattr(file_ops, "_run_rg", lambda *_args, **_kwargs: (None, "", "rg not found"))
+    result = file_ops.file_search("needle", cwd=str(tmp_path))
+
+    assert result.get("status") == "success"
+    text = (result.get("content") or [{"text": ""}])[0].get("text", "")
+    assert "a.txt" in text
+    assert "needle" in text
+
+
+def test_file_search_invalid_regex_returns_error(tmp_path: Path, monkeypatch) -> None:
+    import tools.file_ops as file_ops
+
+    (tmp_path / "a.txt").write_text("anything\n", encoding="utf-8")
+
+    monkeypatch.setattr(file_ops, "_run_rg", lambda *_args, **_kwargs: (None, "", "rg not found"))
+    result = file_ops.file_search("[", cwd=str(tmp_path))
+
+    assert result.get("status") == "error"

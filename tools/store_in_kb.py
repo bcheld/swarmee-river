@@ -118,7 +118,7 @@ def _store_in_kb_background(content: str, title: str, kb_id: str, region_name: s
 
 
 @tool
-def store_in_kb(content: str, title: str = None, knowledge_base_id: str = None) -> Dict[str, Any]:
+def store_in_kb(content: str, title: str | None = None, knowledge_base_id: str | None = None) -> Dict[str, Any]:
     """
     Store content in a Bedrock Knowledge Base using real-time ingestion.
 

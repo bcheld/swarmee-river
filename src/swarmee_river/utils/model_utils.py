@@ -4,7 +4,7 @@ import importlib
 import json
 import os
 import pathlib
-from typing import Any
+from typing import Any, cast
 
 from botocore.config import Config
 from strands.models import Model
@@ -108,10 +108,12 @@ def load_config(config: str) -> dict[str, Any] | None:
         return None
 
     if config.endswith(".json"):
-        with open(config) as fp:
-            return json.load(fp)
+        with open(config, encoding="utf-8") as fp:
+            payload = json.load(fp)
+        return payload if isinstance(payload, dict) else None
 
-    return json.loads(config)
+    payload = json.loads(config)
+    return payload if isinstance(payload, dict) else None
 
 
 def load_model(path: pathlib.Path, config: dict[str, Any]) -> Model:
@@ -128,6 +130,13 @@ def load_model(path: pathlib.Path, config: dict[str, Any]) -> Model:
         An instantiated model provider.
     """
     spec = importlib.util.spec_from_file_location(path.stem, str(path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load model provider module from path: {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.instance(**config)
+
+    instance = getattr(module, "instance", None)
+    if not callable(instance):
+        raise AttributeError(f"Model provider module {path} has no callable 'instance'")
+
+    return cast(Model, instance(**config))

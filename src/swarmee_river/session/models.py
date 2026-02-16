@@ -144,8 +144,9 @@ class SessionModelManager:
                 config["client_args"] = tier.client_args
 
         for k, v in (tier.extra or {}).items():
-            if isinstance(v, dict) and isinstance(config.get(k), dict):
-                config[k] = self._deep_merge_dict(config[k], v)  # type: ignore[arg-type]
+            config_value = config.get(k)
+            if isinstance(v, dict) and isinstance(config_value, dict):
+                config[k] = self._deep_merge_dict(config_value, v)
             else:
                 config[k] = v
 
@@ -276,8 +277,9 @@ class SessionModelManager:
     def _deep_merge_dict(self, base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = dict(base)
         for k, v in override.items():
-            if isinstance(v, dict) and isinstance(out.get(k), dict):
-                out[k] = self._deep_merge_dict(out[k], v)  # type: ignore[arg-type]
+            out_value = out.get(k)
+            if isinstance(v, dict) and isinstance(out_value, dict):
+                out[k] = self._deep_merge_dict(out_value, v)
             else:
                 out[k] = v
         return out

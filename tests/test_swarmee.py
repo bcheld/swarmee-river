@@ -177,7 +177,11 @@ class TestInteractiveMode:
             del invocation_state
             del structured_output_model
             del structured_output_prompt
-            warnings.warn("`**kwargs` parameter is deprecating, use `invocation_state` instead.", UserWarning)
+            warnings.warn(
+                "`**kwargs` parameter is deprecating, use `invocation_state` instead.",
+                UserWarning,
+                stacklevel=2,
+            )
             return mock.MagicMock(structured_output=None, message=[{"role": "assistant", "content": [{"text": "ok"}]}])
 
         mock_agent.invoke_async = invoke_async_with_warning
@@ -632,7 +636,9 @@ class TestToolConsentPrompt:
                 mock.patch.object(
                     swarmee, "_prompt_input_with_prompt_toolkit", return_value="y"
                 ) as mock_prompt_toolkit,
-                mock.patch.object(swarmee, "_prompt_input_with_stdin", side_effect=AssertionError("should not be called")),
+                mock.patch.object(
+                    swarmee, "_prompt_input_with_stdin", side_effect=AssertionError("should not be called")
+                ),
             ):
                 result = swarmee._get_user_input_compat(
                     "\n~ consent> ",

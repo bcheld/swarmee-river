@@ -4,8 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from swarmee_river.cli import diagnostics
 from swarmee_river import project_map
+from swarmee_river.cli import diagnostics
 from tools import git as git_tool
 from tools.patch_apply import patch_apply
 from tools.project_context import _run as project_context_run

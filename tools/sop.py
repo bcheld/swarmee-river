@@ -100,7 +100,7 @@ def _is_sop_allowed(sop_name: str) -> tuple[bool, str | None]:
 
 def _load_builtin_sops() -> dict[str, SOPRecord]:
     try:
-        import strands_agents_sops as sops  # type: ignore
+        import strands_agents_sops as sops
     except Exception:
         return {}
 

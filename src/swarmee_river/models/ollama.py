@@ -1,16 +1,15 @@
 """Create instance of Strands SDK Ollama model provider."""
 
-from typing import Optional
+from typing import Any
 
 from strands.models import Model
 from strands.models.ollama import OllamaModel
-from typing_extensions import Unpack
 
 
 def instance(
-    host: Optional[str] = None,
+    host: str | None = None,
     model_id: str = "llama3.1",
-    **model_config: Unpack[OllamaModel.OllamaConfig],
+    **model_config: Any,
 ) -> Model:
     """Create instance of SDK's Ollama model provider.
 

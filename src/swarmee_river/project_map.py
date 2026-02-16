@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.state_paths import project_map_path as _default_project_map_path
+
 
 def _run(cmd: list[str], *, cwd: Path, timeout_s: int = 5) -> tuple[int, str]:
     try:
@@ -127,7 +129,7 @@ def build_project_map(cwd: Path | None = None) -> dict[str, Any]:
 
 
 def save_project_map(project_map: dict[str, Any], path: Path | None = None) -> Path:
-    out_path = path or (Path.cwd() / ".swarmee" / "project_map.json")
+    out_path = path or _default_project_map_path()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(project_map, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out_path

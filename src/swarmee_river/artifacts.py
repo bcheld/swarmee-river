@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from swarmee_river.state_paths import artifacts_dir as _default_artifacts_dir
+
 
 def _iso_ts() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -39,7 +41,7 @@ class ArtifactRef:
 
 class ArtifactStore:
     def __init__(self, artifacts_dir: Path | None = None) -> None:
-        self.artifacts_dir = artifacts_dir or (Path.cwd() / ".swarmee" / "artifacts")
+        self.artifacts_dir = artifacts_dir or _default_artifacts_dir()
         self.index_path = self.artifacts_dir / "index.jsonl"
         self._lock = _INDEX_LOCK
 
@@ -113,7 +115,7 @@ class ArtifactStore:
                     data = json.loads(line)
                 except Exception:
                     continue
-                if str(data.get("id")) == artifact_id:
+                if isinstance(data, dict) and str(data.get("id")) == artifact_id:
                     return data
         return None
 

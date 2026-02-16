@@ -26,7 +26,7 @@ TOOL_COLORS = {
 }
 
 
-def format_message(message: str, color: str = None, max_length: int = 50) -> str:
+def format_message(message: str, color: str | None = None, max_length: int = 50) -> str:
     """Format message with color and length control."""
     if len(message) > max_length:
         message = message[:max_length] + "..."
@@ -34,7 +34,7 @@ def format_message(message: str, color: str = None, max_length: int = 50) -> str
 
 
 class ToolSpinner:
-    def __init__(self, text: str = "", color: str = TOOL_COLORS["running"]):
+    def __init__(self, text: str = "", color: str | int = TOOL_COLORS["running"]) -> None:
         self.spinner = Halo(
             text=text,
             spinner=SPINNERS["dots"],
@@ -45,46 +45,46 @@ class ToolSpinner:
         self.color = color
         self.current_text = text
 
-    def start(self, text: str = None):
+    def start(self, text: str | None = None) -> None:
         if text:
             self.current_text = text
         print()  # Move to new line before starting spinner, prevents spinner from eating the previous line
         self.spinner.start(f"{self.color}{self.current_text}{Style.RESET_ALL}")
 
-    def update(self, text: str):
+    def update(self, text: str) -> None:
         self.current_text = text
         self.spinner.text = f"{self.color}{text}{Style.RESET_ALL}"
 
-    def succeed(self, text: str = None):
+    def succeed(self, text: str | None = None) -> None:
         if text:
             self.current_text = text
         self.spinner.succeed(f"{TOOL_COLORS['success']}{self.current_text}{Style.RESET_ALL}")
 
-    def fail(self, text: str = None):
+    def fail(self, text: str | None = None) -> None:
         if text:
             self.current_text = text
         self.spinner.fail(f"{TOOL_COLORS['error']}{self.current_text}{Style.RESET_ALL}")
 
-    def info(self, text: str = None):
+    def info(self, text: str | None = None) -> None:
         if text:
             self.current_text = text
         self.spinner.info(f"{TOOL_COLORS['info']}{self.current_text}{Style.RESET_ALL}")
 
-    def stop(self):
+    def stop(self) -> None:
         self.spinner.stop()
 
 
 class CallbackHandler:
-    def __init__(self):
-        self.thinking_spinner = None
+    def __init__(self) -> None:
+        self.thinking_spinner: Status | None = None
 
         # Tool tracking
-        self.current_spinner = None
-        self.current_tool = None
-        self.tool_histories = {}
+        self.current_spinner: ToolSpinner | None = None
+        self.current_tool: str | None = None
+        self.tool_histories: dict[str, dict[str, Any]] = {}
         self.interrupt_event: Event | None = None
 
-    def notify(self, title: str, message: str, sound: bool = True):
+    def notify(self, title: str, message: str, sound: bool = True) -> None:
         """Send a native notification using mac_automation tool."""
         print(f"Notification: {title} - {message}")
 
@@ -152,7 +152,7 @@ class CallbackHandler:
             if reasoningText:
                 print(reasoningText, end="")
 
-            if start_event_loop:
+            if start_event_loop and self.thinking_spinner is not None:
                 self.thinking_spinner.update("[blue] thinking...[/blue]")
         except BaseException:
             pass
@@ -174,35 +174,37 @@ class CallbackHandler:
 
         # Handle tool input streaming
         if current_tool_use and current_tool_use.get("input"):
-            tool_id = current_tool_use.get("toolUseId")
+            raw_tool_id = current_tool_use.get("toolUseId")
+            tool_id = raw_tool_id if isinstance(raw_tool_id, str) else None
             tool_name = current_tool_use.get("name")
             tool_input = current_tool_use.get("input", "")
 
-            # Check if this is a new tool execution
-            if tool_id != self.current_tool:
-                # Stop previous spinner if exists
-                if self.current_spinner:
-                    self.current_spinner.stop()
-
-                self.current_tool = tool_id
-
-                self.current_spinner = ToolSpinner(f"🛠️  {tool_name}: Preparing...", TOOL_COLORS["running"])
-                self.current_spinner.start()
-
-                # Record tool start
-                self.tool_histories[tool_id] = {
-                    "name": tool_name,
-                    "start_time": time.time(),
-                    "input_size": 0,
-                }
-
-            # Update tool progress
-            if tool_id in self.tool_histories:
-                current_size = len(tool_input)
-                if current_size > self.tool_histories[tool_id]["input_size"]:
-                    self.tool_histories[tool_id]["input_size"] = current_size
+            if tool_id is not None:
+                # Check if this is a new tool execution
+                if tool_id != self.current_tool:
+                    # Stop previous spinner if exists
                     if self.current_spinner:
-                        self.current_spinner.update(f"🛠️  {tool_name}: {current_size} chars")
+                        self.current_spinner.stop()
+
+                    self.current_tool = tool_id
+
+                    self.current_spinner = ToolSpinner(f"🛠️  {tool_name}: Preparing...", TOOL_COLORS["running"])
+                    self.current_spinner.start()
+
+                    # Record tool start
+                    self.tool_histories[tool_id] = {
+                        "name": tool_name,
+                        "start_time": time.time(),
+                        "input_size": 0,
+                    }
+
+                # Update tool progress
+                if tool_id in self.tool_histories:
+                    current_size = len(tool_input)
+                    if current_size > self.tool_histories[tool_id]["input_size"]:
+                        self.tool_histories[tool_id]["input_size"] = current_size
+                        if self.current_spinner:
+                            self.current_spinner.update(f"🛠️  {tool_name}: {current_size} chars")
 
         # Process messages
         if isinstance(message, dict):
@@ -225,22 +227,22 @@ class CallbackHandler:
                             tool_id = tool_result.get("toolUseId")
                             status = tool_result.get("status")
 
-                            if tool_id in self.tool_histories:
+                            if isinstance(tool_id, str) and tool_id in self.tool_histories:
                                 tool_info = self.tool_histories[tool_id]
                                 duration = round(time.time() - tool_info["start_time"], 2)
 
                                 # Prepare notification message
                                 if status == "success":
-                                    message = f"{tool_info['name']} completed in {duration}s"
+                                    status_message = f"{tool_info['name']} completed in {duration}s"
                                 else:
-                                    message = f"{tool_info['name']} failed after {duration}s"
+                                    status_message = f"{tool_info['name']} failed after {duration}s"
 
                                 # Update spinner only if not in Lambda
                                 if self.current_spinner:
                                     if status == "success":
-                                        self.current_spinner.succeed(message)
+                                        self.current_spinner.succeed(status_message)
                                     else:
-                                        self.current_spinner.fail(message)
+                                        self.current_spinner.fail(status_message)
 
                                 # Send notification
                                 # Uncomment for enabling notifications.

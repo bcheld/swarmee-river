@@ -21,8 +21,9 @@ def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str
     """Deep merge two dicts (override wins). Lists are replaced, not merged."""
     out: dict[str, Any] = dict(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge_dict(out[key], value)  # type: ignore[arg-type]
+        out_value = out.get(key)
+        if isinstance(value, dict) and isinstance(out_value, dict):
+            out[key] = _deep_merge_dict(out_value, value)
         else:
             out[key] = value
     return out

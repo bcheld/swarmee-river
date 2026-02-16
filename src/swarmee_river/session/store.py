@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.state_paths import sessions_dir as _default_sessions_dir
+
 
 def _iso_ts() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -29,7 +31,9 @@ class SessionPaths:
 
 class SessionStore:
     """
-    Project-local session persistence under `.swarmee/sessions/<session_id>/`.
+    Project-local session persistence under `<state_dir>/sessions/<session_id>/`.
+
+    Default state dir is `.swarmee/` in the current working directory; override via `SWARMEE_STATE_DIR`.
 
     Files:
     - meta.json
@@ -39,7 +43,7 @@ class SessionStore:
     """
 
     def __init__(self, root_dir: Path | None = None) -> None:
-        self.root_dir = root_dir or (Path.cwd() / ".swarmee" / "sessions")
+        self.root_dir = root_dir or _default_sessions_dir()
 
     def _paths(self, session_id: str) -> SessionPaths:
         sid = (session_id or "").strip()
@@ -95,7 +99,10 @@ class SessionStore:
         paths = self._paths(session_id)
         if not paths.meta.exists():
             raise FileNotFoundError(f"Session meta not found: {session_id}")
-        return json.loads(paths.meta.read_text(encoding="utf-8"))
+        payload = json.loads(paths.meta.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Invalid session meta payload for: {session_id}")
+        return payload
 
     def load(self, session_id: str) -> tuple[dict[str, Any], Any | None, Any | None, Any | None]:
         paths = self._paths(session_id)
