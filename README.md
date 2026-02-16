@@ -150,20 +150,21 @@ Swarmee River uses Strands Tools and supports hot-loading tools from `./tools`.
 - **calculator**: Perform mathematical operations
 - **cron**: Task scheduling with cron jobs *(not available on Windows)*
 - **current_time**: Get the current date and time
-- **editor**: File editing operations like line edits, search, and undo
+- **editor**: File editing operations like line edits, search, and undo *(fallback provided for minimal environments)*
 - **environment**: Manage environment variables
 - **generate_image**: Create AI generated images with Amazon Bedrock
 - **http_request**: Make API calls, fetch web data, and call local HTTP servers
 - **image_reader**: Process and analyze images
 - **journal**: Create structured tasks and logs for agents to manage and work from
+- **file_write**: Write text to files *(fallback provided for minimal environments)*
 - **list**: List directory contents (cross-platform, no shell)
 - **load_tool**: Dynamically load more tools at runtime
 - **glob**: Find paths by glob pattern (cross-platform, no shell)
 - **memory**: Agent memory persistence in Amazon Bedrock Knowledge Bases
 - **nova_reels**: Create AI generated videos with Nova Reels on Amazon Bedrock
-- **python_repl**: Run Python code *(fallback provided for Windows)*
+- **python_repl**: Run Python code *(fallback provided for minimal environments)*
 - **retrieve**: Semantically retrieve data from Amazon Bedrock Knowledge Bases for RAG, memory, and other purposes
-- **shell**: Execute shell commands *(fallback provided for Windows)*
+- **shell**: Execute shell commands *(fallback provided for minimal environments)*
 - **todoread / todowrite**: Read/write a project-local todo list at `.swarmee/todo.md` (or `SWARMEE_STATE_DIR/todo.md`)
 - **OpenCode aliases**: `grep`→`file_search`, `read`→`file_read`, `bash`→`shell`, `patch`→`patch_apply`, `write`→`file_write`, `edit`→`editor`
 - **slack**: Slack integration with real-time events, API access, and message sending

@@ -23,6 +23,8 @@ from tools import (
     todo,
     welcome,
 )
+from tools.editor import editor as editor_fallback
+from tools.file_write import file_write as file_write_fallback
 from tools.python_repl import python_repl as python_repl_fallback
 from tools.shell import shell as shell_fallback
 
@@ -93,6 +95,8 @@ def get_tools() -> dict[str, Any]:
     # Cross-platform fallbacks (only if the Strands Tools variant isn't available)
     tools.setdefault("shell", shell_fallback)
     tools.setdefault("python_repl", python_repl_fallback)
+    tools.setdefault("file_write", file_write_fallback)
+    tools.setdefault("editor", editor_fallback)
 
     # Packaged custom tools
     custom_tools: dict[str, Any] = {
