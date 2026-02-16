@@ -150,6 +150,10 @@ swarmee pack disable my-pack
 
 Swarmee River uses Strands Tools and supports hot-loading tools from `./tools`.
 
+Note: some integrations are available only when you install the optional upstream tools pack via
+`pip install "swarmee-river[strands_tools]"` (for example: `slack`, `generate_image`, `image_reader`, `nova_reels`,
+`memory`, `workflow`, and `cron`).
+
 - **agent_graph**: Create and manage graphs of agents
 - **artifact**: List/read/upload/store artifacts under `.swarmee/artifacts/`
 - **project_context**: Explore the project in the current working directory (files/search/git status)
