@@ -75,6 +75,12 @@ def test_get_tools_includes_editor_and_file_write_fallbacks_without_strands_tool
     assert "file_write" in tools
     assert "editor" in tools
     assert "retrieve" in tools
+    assert "http_request" in tools
+    assert "calculator" in tools
+    assert "current_time" in tools
+    assert "environment" in tools
+    assert "use_agent" in tools
+    assert "use_llm" in tools
 
 
 def test_opencode_write_and_edit_aliases_work_without_strands_tools(tmp_path: Path, monkeypatch) -> None:

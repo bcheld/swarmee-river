@@ -23,11 +23,17 @@ from tools import (
     todo,
     welcome,
 )
+from tools.calculator import calculator as calculator_fallback
+from tools.current_time import current_time as current_time_fallback
 from tools.editor import editor as editor_fallback
+from tools.environment import environment as environment_fallback
 from tools.file_write import file_write as file_write_fallback
+from tools.http_request import http_request as http_request_fallback
 from tools.python_repl import python_repl as python_repl_fallback
 from tools.retrieve import retrieve as retrieve_fallback
 from tools.shell import shell as shell_fallback
+from tools.use_agent import use_agent as use_agent_fallback
+from tools.use_agent import use_llm as use_llm_fallback
 
 
 def _truthy_env(name: str, default: bool) -> bool:
@@ -82,6 +88,8 @@ def get_tools() -> dict[str, Any]:
         "swarm",
         "think",
         "use_aws",
+        # `use_llm` was deprecated in some Strands Tools versions in favor of `use_agent`.
+        "use_agent",
         "use_llm",
         "workflow",
         # Optional / platform-dependent:
@@ -99,6 +107,12 @@ def get_tools() -> dict[str, Any]:
     tools.setdefault("file_write", file_write_fallback)
     tools.setdefault("editor", editor_fallback)
     tools.setdefault("retrieve", retrieve_fallback)
+    tools.setdefault("http_request", http_request_fallback)
+    tools.setdefault("calculator", calculator_fallback)
+    tools.setdefault("current_time", current_time_fallback)
+    tools.setdefault("environment", environment_fallback)
+    tools.setdefault("use_agent", use_agent_fallback)
+    tools.setdefault("use_llm", use_llm_fallback)
 
     # Packaged custom tools
     custom_tools: dict[str, Any] = {
