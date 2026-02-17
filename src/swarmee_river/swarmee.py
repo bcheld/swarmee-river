@@ -381,6 +381,12 @@ def main() -> None:
     settings_path_for_project = Path.cwd() / ".swarmee" / "settings.json"
     auto_approve = args.yes or _truthy(os.getenv("SWARMEE_AUTO_APPROVE", "false"))
 
+    # Optional full-screen Textual UI (keep normal CLI path unchanged unless explicitly requested).
+    if args.query and args.query[0].strip().lower() == "tui":
+        from swarmee_river.tui.app import run_tui
+
+        raise SystemExit(run_tui())
+
     # Pack management is intentionally CLI-first: treat `swarmee pack ...` as a command.
     if args.query and args.query[0].strip().lower() == "pack":
         sub = args.query[1:] if len(args.query) > 1 else []

@@ -58,6 +58,9 @@ Documentation = "https://strandsagents.com"
 strands_tools = [
     "strands-agents-tools>=0.1.0,<1.0.0",
 ]
+tui = [
+    "textual>=0.70.0",
+]
 dev = [
     "commitizen>=4.4.0,<5.0.0",
     "hatch>=1.0.0,<2.0.0",
