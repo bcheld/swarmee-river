@@ -140,6 +140,25 @@ def test_detect_consent_prompt_matches_cli_prompt():
     assert tui_app.detect_consent_prompt("normal output line") is None
 
 
+def test_parse_output_line_extracts_artifact_from_truncation_line():
+    line = "[tool result truncated: kept 2000 chars of 9000; full output saved to .swarmee/artifacts/abc123.txt]"
+    event = tui_app.parse_output_line(line)
+    assert event is not None
+    assert event.kind == "artifact"
+    assert event.meta == {"path": ".swarmee/artifacts/abc123.txt"}
+
+
+def test_parse_output_line_extracts_patch_path():
+    event = tui_app.parse_output_line("patch: /tmp/swarmee/patches/plan.patch")
+    assert event is not None
+    assert event.kind == "artifact"
+    assert event.meta == {"path": "/tmp/swarmee/patches/plan.patch"}
+
+
+def test_parse_output_line_returns_none_for_unmatched_line():
+    assert tui_app.parse_output_line("regular assistant output") is None
+
+
 def test_update_consent_capture_collects_recent_lines():
     consent_active = False
     consent_buffer: list[str] = []
@@ -160,6 +179,12 @@ def test_update_consent_capture_collects_recent_lines():
 
     assert consent_active is True
     assert consent_buffer == ["context line 1", "~ consent> ", "context line 2"]
+
+
+def test_add_recent_artifacts_dedupes_and_caps():
+    existing = ["a.txt", "b.txt", "c.txt"]
+    updated = tui_app.add_recent_artifacts(existing, ["b.txt", "d.txt", "e.txt"], max_items=4)
+    assert updated == ["c.txt", "b.txt", "d.txt", "e.txt"]
 
 
 def test_stop_process_escalates(monkeypatch):

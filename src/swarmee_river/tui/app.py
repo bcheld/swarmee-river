@@ -5,13 +5,24 @@ from __future__ import annotations
 import contextlib
 import importlib
 import os
+import re
 import signal
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
+_TRUNCATED_ARTIFACT_RE = re.compile(r"full output saved to (?P<path>[^\]]+)")
+_PATH_TOKEN_RE = re.compile(r"[A-Za-z]:\\[^\s,;]+|/(?:[^\s,;]+)|\./[^\s,;]+|\.\./[^\s,;]+")
+
+
+@dataclass(frozen=True)
+class ParsedEvent:
+    kind: str
+    text: str
+    meta: dict[str, str] | None = None
 
 
 def build_swarmee_cmd(prompt: str, *, auto_approve: bool) -> list[str]:
@@ -60,6 +71,86 @@ def looks_like_plan_output(text: str) -> bool:
 def render_tui_hint_after_plan() -> str:
     """Hint shown when a plan-only run is detected."""
     return "Plan detected. Type /approve to execute, /replan to regenerate, /clearplan to clear."
+
+
+def _extract_paths_from_text(text: str) -> list[str]:
+    return [match.strip() for match in _PATH_TOKEN_RE.findall(text) if match.strip()]
+
+
+def parse_output_line(line: str) -> ParsedEvent | None:
+    """Best-effort parser for notable subprocess output events."""
+    text = line.rstrip("\n")
+    stripped = text.strip()
+    lower = stripped.lower()
+
+    if "~ consent>" in lower:
+        return ParsedEvent(kind="consent_prompt", text=text)
+
+    if stripped.startswith("Proposed plan:"):
+        return ParsedEvent(kind="plan_header", text=text)
+
+    if "[tool result truncated:" in lower:
+        match = _TRUNCATED_ARTIFACT_RE.search(text)
+        if match:
+            path = match.group("path").strip()
+            return ParsedEvent(kind="artifact", text=text, meta={"path": path})
+        return ParsedEvent(kind="tool_truncated", text=text)
+
+    if lower.startswith("patch:"):
+        path = stripped.split(":", 1)[1].strip()
+        if path:
+            return ParsedEvent(kind="artifact", text=text, meta={"path": path})
+        return ParsedEvent(kind="patch", text=text)
+
+    if lower.startswith("backups:"):
+        rest = stripped.split(":", 1)[1].strip()
+        paths = _extract_paths_from_text(rest)
+        if paths:
+            return ParsedEvent(kind="artifact", text=text, meta={"paths": ",".join(paths)})
+        return ParsedEvent(kind="backups", text=text)
+
+    if stripped.startswith("Error:") or stripped.startswith("ERROR:"):
+        return ParsedEvent(kind="error", text=text)
+
+    if lower.startswith("[tool ") and any(token in lower for token in {" start", " started", " running"}):
+        return ParsedEvent(kind="tool_start", text=text)
+
+    if lower.startswith("[tool ") and any(token in lower for token in {" done", " end", " finished", " stopped"}):
+        return ParsedEvent(kind="tool_stop", text=text)
+
+    return None
+
+
+def artifact_paths_from_event(event: ParsedEvent) -> list[str]:
+    """Extract artifact paths from a parsed event."""
+    if event.meta is None:
+        return []
+    result: list[str] = []
+    path = event.meta.get("path")
+    if path:
+        result.append(path)
+    paths = event.meta.get("paths")
+    if paths:
+        for item in paths.split(","):
+            token = item.strip()
+            if token:
+                result.append(token)
+    return result
+
+
+def add_recent_artifacts(existing: list[str], new_paths: list[str], *, max_items: int = 20) -> list[str]:
+    """Dedupe and cap artifact paths while preserving recency."""
+    updated = list(existing)
+    for item in new_paths:
+        path = item.strip()
+        if not path:
+            continue
+        if path in updated:
+            updated.remove(path)
+        updated.append(path)
+    if len(updated) > max_items:
+        updated = updated[-max_items:]
+    return updated
 
 
 def detect_consent_prompt(line: str) -> str | None:
@@ -199,6 +290,12 @@ def run_tui() -> int:
             padding: 0 1;
         }
 
+        #artifacts {
+            height: 1fr;
+            border: round $accent;
+            padding: 0 1;
+        }
+
         #consent {
             height: 1fr;
             border: round $warning;
@@ -223,6 +320,7 @@ def run_tui() -> int:
         _last_run_auto_approve: bool = False
         _consent_active: bool = False
         _consent_buffer: list[str] = []
+        _artifacts: list[str] = []
 
         def compose(self) -> Any:
             yield Header()
@@ -230,6 +328,7 @@ def run_tui() -> int:
                 yield RichLog(id="transcript", auto_scroll=True, wrap=True)
                 with Vertical(id="side"):
                     yield RichLog(id="plan", auto_scroll=True, wrap=True)
+                    yield RichLog(id="artifacts", auto_scroll=True, wrap=True)
                     yield RichLog(id="consent", auto_scroll=True, wrap=True)
             yield Input(placeholder="Type prompt (default plan-first; /run to execute)", id="prompt")
             yield Footer()
@@ -237,6 +336,7 @@ def run_tui() -> int:
         def on_mount(self) -> None:
             self.query_one("#prompt", Input).focus()
             self._reset_plan_panel()
+            self._reset_artifacts_panel()
             self._reset_consent_panel()
             self._write_transcript("Swarmee TUI ready. Enter a prompt to run Swarmee.")
             self._write_transcript(
@@ -256,6 +356,25 @@ def run_tui() -> int:
 
         def _reset_plan_panel(self) -> None:
             self._set_plan_panel("(no plan)")
+
+        def _render_artifacts_panel(self) -> None:
+            panel = self.query_one("#artifacts", RichLog)
+            panel.clear()
+            if not self._artifacts:
+                panel.write("(no artifacts)")
+                return
+            for item in self._artifacts:
+                panel.write(item)
+
+        def _reset_artifacts_panel(self) -> None:
+            self._artifacts = []
+            self._render_artifacts_panel()
+
+        def _add_artifact_paths(self, paths: list[str]) -> None:
+            updated = add_recent_artifacts(self._artifacts, paths, max_items=20)
+            if updated != self._artifacts:
+                self._artifacts = updated
+                self._render_artifacts_panel()
 
         def _render_consent_panel(self) -> None:
             consent_panel = self.query_one("#consent", RichLog)
@@ -306,7 +425,25 @@ def run_tui() -> int:
             self.query_one("#prompt", Input).focus()
 
         def _handle_output_line(self, line: str) -> None:
-            self._write_transcript(line)
+            event = parse_output_line(line)
+            if event is None:
+                self._write_transcript(line)
+                self._apply_consent_capture(line)
+                return
+
+            if event.kind == "error":
+                text = event.text
+                if not text.startswith("ERROR:"):
+                    text = f"ERROR: {text}"
+                self._write_transcript(text)
+            else:
+                self._write_transcript(event.text)
+
+            artifact_paths = artifact_paths_from_event(event)
+            if artifact_paths:
+                self._add_artifact_paths(artifact_paths)
+                self._write_transcript(f"artifact: {', '.join(artifact_paths)}")
+
             self._apply_consent_capture(line)
 
         def _finalize_run(
@@ -363,6 +500,7 @@ def run_tui() -> int:
 
         def _start_run(self, prompt: str, *, auto_approve: bool) -> None:
             self._pending_plan_prompt = None
+            self._reset_artifacts_panel()
             self._reset_consent_panel()
             try:
                 proc = spawn_swarmee(prompt, auto_approve=auto_approve)
