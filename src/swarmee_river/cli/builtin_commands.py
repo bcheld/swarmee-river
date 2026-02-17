@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from swarmee_river.cli.commands import CLIContext, CommandDispatchResult, CommandInvocation, CommandRegistry
@@ -242,6 +243,51 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
         ctx.output(text)
         return CommandDispatchResult(handled=True)
 
+    def _permissions(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
+        subcmd = (inv.args[0].lower() if inv.args else "show").strip()
+        if subcmd != "show":
+            ctx.output("Usage: :permissions show")
+            return CommandDispatchResult(handled=True)
+
+        safety = getattr(ctx.settings, "safety", None)
+        tool_consent = getattr(safety, "tool_consent", "(unknown)") if safety is not None else "(unknown)"
+        tool_rules = list(getattr(safety, "tool_rules", []) or []) if safety is not None else []
+        permission_rules = list(getattr(safety, "permission_rules", []) or []) if safety is not None else []
+
+        lines: list[str] = ["# Permissions", "", f"- tool_consent: {tool_consent}"]
+        if tool_rules:
+            lines.append("- tool_rules:")
+            for r in tool_rules:
+                try:
+                    lines.append(
+                        f"  - {getattr(r, 'tool', '')}: {getattr(r, 'default', '')} "
+                        f"(remember={bool(getattr(r, 'remember', True))})"
+                    )
+                except Exception:
+                    continue
+        if permission_rules:
+            lines.append("- permission_rules:")
+            for r in permission_rules:
+                try:
+                    when = getattr(r, "when", {}) or {}
+                    when_text = json.dumps(when, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                    if len(when_text) > 160:
+                        when_text = when_text[:160] + "…"
+                    lines.append(
+                        f"  - {getattr(r, 'tool', '')}: {getattr(r, 'action', '')} "
+                        f"(remember={bool(getattr(r, 'remember', True))}) when={when_text}"
+                    )
+                except Exception:
+                    continue
+
+        lines.append("- env:")
+        for key in ["SWARMEE_ENABLE_TOOLS", "SWARMEE_DISABLE_TOOLS", "BYPASS_TOOL_CONSENT"]:
+            value = os.getenv(key)
+            lines.append(f"  - {key}: {value if value is not None else '<unset>'}")
+
+        ctx.output("\n".join(lines))
+        return CommandDispatchResult(handled=True)
+
     def _status(ctx: CLIContext, _inv: CommandInvocation) -> CommandDispatchResult:
         ctx.output(render_git_status(cwd=Path.cwd()))
         return CommandDispatchResult(handled=True)
@@ -310,6 +356,7 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     registry.register("sop", _sop, help="Manage SOPs", usage="list | use <name> | clear | show")
     registry.register("session", _session, help="Manage sessions", usage="new|save|load|list|rm|info")
     registry.register("config", _config, help="Show effective config", usage="show")
+    registry.register("permissions", _permissions, help="Show effective permissions", usage="show")
     registry.register("status", _status, help="Show git status summary")
     registry.register("diff", _diff, help="Show git diff", usage="[--staged] [paths...]")
     registry.register("artifact", _artifact, help="List/get artifacts", usage="list|get")

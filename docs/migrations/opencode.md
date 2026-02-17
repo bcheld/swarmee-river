@@ -10,7 +10,7 @@ This guide maps common OpenCode workflows/config into the Swarmee River harness.
 | `opencode run "…"` | `swarmee "…"` |
 | `/connect` | provider env vars (`OPENAI_API_KEY`, AWS credentials) |
 | `opencode.json(c)` | `.swarmee/settings.json` + `.env` |
-| `permission` | `safety.tool_consent` + `safety.tool_rules` |
+| `permission` | `safety.permission_rules` (`safety.tool_consent` + `safety.tool_rules` remain as simpler legacy defaults) |
 | built-in tools (`bash`, `edit`, `read`, …) | `shell`, `editor`/`file_write`/`file_read`, `patch_apply`, `project_context`, `git`, `run_checks` |
 
 ## Commands
@@ -36,9 +36,9 @@ Swarmee River equivalents:
 - Plan gating: “work” requests generate a plan; execution requires `:y`/`:approve` (or `--yes`)
 - Tool consent: interactive prompts per tool (session-scoped decisions)
 - Tool policy: hard blocks in plan-mode and optional allowlists/denylists
+- Declarative permissions: `safety.permission_rules` supports `allow`/`ask`/`deny` with basic pattern matching (`command_*`, `path_*`, `host_*`, `method`)
 
 ### Recommended baseline
 
 - Keep tool consent default `ask` for `shell`, `editor`, `file_write`, `http_request`, `git`, `patch_apply`, `run_checks`
 - Use `deep` tier for harder reasoning and richer preflight context
-

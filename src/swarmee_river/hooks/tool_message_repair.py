@@ -1,19 +1,12 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import BeforeModelCallEvent
 
 from swarmee_river.hooks._compat import event_messages, register_hook_callback
-
-
-def _truthy_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+from swarmee_river.utils.env_utils import truthy_env
 
 
 def _extract_tool_use_ids(message: Any) -> list[str]:
@@ -118,7 +111,7 @@ class ToolMessageRepairHooks(HookProvider):
     """
 
     def __init__(self, *, enabled: bool | None = None) -> None:
-        self.enabled = _truthy_env("SWARMEE_REPAIR_TOOL_MESSAGES", True) if enabled is None else enabled
+        self.enabled = truthy_env("SWARMEE_REPAIR_TOOL_MESSAGES", True) if enabled is None else enabled
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, BeforeModelCallEvent, self.before_model_call)

@@ -1,4 +1,4 @@
-from swarmee_river.intent import classify_intent
+from swarmee_river.planning import classify_intent
 
 
 def test_classify_intent_work():

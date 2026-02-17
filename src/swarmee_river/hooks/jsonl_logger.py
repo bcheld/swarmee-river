@@ -21,13 +21,7 @@ from strands.hooks.events import (
 
 from swarmee_river.hooks._compat import event_messages, model_response_payload, register_hook_callback
 from swarmee_river.state_paths import logs_dir as _default_logs_dir
-
-
-def _truthy_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+from swarmee_river.utils.env_utils import truthy_env
 
 
 def _iso_ts() -> str:
@@ -134,8 +128,8 @@ class JSONLLoggerHooks(HookProvider):
     """
 
     def __init__(self) -> None:
-        self.enabled = _truthy_env("SWARMEE_LOG_EVENTS", True)
-        self.redact = _truthy_env("SWARMEE_LOG_REDACT", True)
+        self.enabled = truthy_env("SWARMEE_LOG_EVENTS", True)
+        self.redact = truthy_env("SWARMEE_LOG_REDACT", True)
         self._secrets = _secret_values_from_env()
         self.log_dir = Path(
             os.getenv(

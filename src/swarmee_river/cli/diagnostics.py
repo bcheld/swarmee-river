@@ -95,6 +95,16 @@ def _format_env_value(key: str, value: str) -> str:
     return value
 
 
+def _compact_json(value: Any, *, max_chars: int = 160) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        text = str(value)
+    if max_chars > 0 and len(text) > max_chars:
+        return text[:max_chars] + "..."
+    return text
+
+
 def render_effective_config(
     *,
     cwd: Path,
@@ -176,12 +186,29 @@ def render_effective_config(
                     lines.append(f"    - {tool_name}: {default} (remember={bool(remember)})")
                 except Exception:
                     continue
+        permission_rules: Iterable[Any] = getattr(safety, "permission_rules", []) or []
+        if permission_rules:
+            lines.append("  - permission_rules:")
+            for r in permission_rules:
+                try:
+                    tool_name = getattr(r, "tool", None) or ""
+                    action = getattr(r, "action", None) or ""
+                    remember = getattr(r, "remember", None)
+                    when = getattr(r, "when", None)
+                    lines.append(
+                        f"    - {tool_name}: {action} (remember={bool(remember)}) when={_compact_json(when or {})}"
+                    )
+                except Exception:
+                    continue
 
     env_keys = [
         "SWARMEE_MODEL_PROVIDER",
         "SWARMEE_MODEL_TIER",
         "SWARMEE_TIER_AUTO",
         "SWARMEE_AUTO_APPROVE",
+        "SWARMEE_ENABLE_TOOLS",
+        "SWARMEE_DISABLE_TOOLS",
+        "BYPASS_TOOL_CONSENT",
         "SWARMEE_PREFLIGHT",
         "SWARMEE_PREFLIGHT_LEVEL",
         "SWARMEE_PREFLIGHT_MAX_CHARS",

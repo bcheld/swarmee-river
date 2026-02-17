@@ -7,13 +7,10 @@ Swarmee - A minimal CLI interface for Swarmee River (built on Strands)
 import argparse
 import asyncio
 import contextlib
-import inspect
 import json
-import logging
 import os
 import re
 import threading
-import warnings
 from pathlib import Path
 from typing import Any, Optional
 
@@ -70,6 +67,7 @@ try:
 except Exception:
     _ToolMessageRepairHooks = None  # type: ignore[misc,assignment]
 ToolMessageRepairHooks: Any = _ToolMessageRepairHooks
+from swarmee_river.agent_runner import invoke_agent
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.cli.builtin_commands import register_builtin_commands
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
@@ -83,16 +81,14 @@ from swarmee_river.cli.diagnostics import (
     render_replay_invocation,
 )
 from swarmee_river.cli.repl import run_repl
-from swarmee_river.harness.context_snapshot import build_context_snapshot
-from swarmee_river.intent import classify_intent
 from swarmee_river.interrupts import (
     AgentInterruptedError,
     interrupt_watcher_from_env,
     pause_active_interrupt_watcher_for_input,
 )
 from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
-from swarmee_river.planning import WorkPlan, structured_plan_prompt
-from swarmee_river.project_map import build_project_map
+from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
+from swarmee_river.project_map import build_context_snapshot, build_project_map
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.session.store import SessionStore
@@ -107,7 +103,6 @@ from tools.sop import run_sop
 from tools.welcome import read_welcome_text
 
 os.environ["STRANDS_TOOL_CONSOLE_MODE"] = "enabled"
-_STRANDS_KWARGS_DEPRECATION = r"`\*\*kwargs` parameter is deprecating, use `invocation_state` instead\."
 _TOOL_USAGE_RULES = (
     "Tool usage rules:\n"
     "- Use list/glob/file_list/file_search/file_read for repository exploration and file reading.\n"
@@ -658,7 +653,7 @@ def main() -> None:
 
         hooks = [
             JSONLLoggerHooks(),
-            ToolPolicyHooks(),
+            ToolPolicyHooks(settings.safety),
             ToolConsentHooks(
                 settings.safety,
                 interactive=not bool(args.query),
@@ -776,93 +771,15 @@ def main() -> None:
         set_interrupt_event(interrupt_event)
         with interrupt_watcher_from_env(interrupt_event):
             try:
-
-                async def _invoke() -> Any:
-                    loop = asyncio.get_running_loop()
-                    previous_handler = loop.get_exception_handler()
-
-                    def _exception_handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
-                        if interrupt_event.is_set():
-                            message = str(context.get("message") or "")
-                            exc = context.get("exception")
-                            if message.startswith("an error occurred during closing of asynchronous generator"):
-                                return
-                            if isinstance(exc, RuntimeError):
-                                if "athrow(): asynchronous generator is already running" in str(exc):
-                                    return
-                        if previous_handler:
-                            previous_handler(loop, context)
-                        else:
-                            loop.default_exception_handler(context)
-
-                    loop.set_exception_handler(_exception_handler)
-
-                    class _OtelDetachFilter(logging.Filter):
-                        def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
-                            message = str(record.getMessage())
-                            if interrupt_event.is_set() and message.startswith("Failed to detach context"):
-                                return False
-                            return True
-
-                    otel_logger = logging.getLogger("opentelemetry.context")
-                    otel_filter = _OtelDetachFilter()
-                    otel_logger.addFilter(otel_filter)
-
-                    current_task = asyncio.current_task()
-
-                    async def _canceller() -> None:
-                        while not interrupt_event.is_set():
-                            await asyncio.sleep(0.05)
-                        callback_handler(force_stop=True)
-                        if current_task:
-                            current_task.cancel()
-
-                    canceller_task = asyncio.create_task(_canceller())
-                    try:
-                        invoke_kwargs: dict[str, Any] = {"invocation_state": invocation_state}
-                        invoke_query = query
-                        if structured_output_model is not None:
-                            invoke_kwargs["structured_output_model"] = structured_output_model
-
-                        supports_structured_output_prompt = True
-                        try:
-                            invoke_sig = inspect.signature(agent.invoke_async)
-                            params = invoke_sig.parameters
-                            supports_structured_output_prompt = "structured_output_prompt" in params or any(
-                                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-                            )
-                        except (TypeError, ValueError):
-                            supports_structured_output_prompt = True
-
-                        if structured_output_prompt is not None and supports_structured_output_prompt:
-                            invoke_kwargs["structured_output_prompt"] = structured_output_prompt
-                        elif structured_output_prompt is not None:
-                            prompt_text = structured_output_prompt.strip()
-                            if prompt_text:
-                                invoke_query = f"{prompt_text}\n\nUser request:\n{query}"
-
-                        # Upstream Strands still emits a kwargs deprecation warning from nested paths in some
-                        # versions/tool flows, even when invocation_state is used correctly by callers.
-                        # Suppress only that specific warning to avoid noisy end-user output.
-                        with warnings.catch_warnings():
-                            warnings.filterwarnings(
-                                "ignore",
-                                message=_STRANDS_KWARGS_DEPRECATION,
-                                category=UserWarning,
-                            )
-                            return await agent.invoke_async(invoke_query, **invoke_kwargs)
-                    except asyncio.CancelledError as e:
-                        if interrupt_event.is_set():
-                            raise AgentInterruptedError("Interrupted by user (Esc)") from e
-                        raise
-                    finally:
-                        canceller_task.cancel()
-                        with contextlib.suppress(BaseException):
-                            await canceller_task
-                        otel_logger.removeFilter(otel_filter)
-                        loop.set_exception_handler(previous_handler)
-
-                return asyncio.run(_invoke())
+                return invoke_agent(
+                    agent,
+                    query,
+                    callback_handler=callback_handler,
+                    interrupt_event=interrupt_event,
+                    invocation_state=invocation_state,
+                    structured_output_model=structured_output_model,
+                    structured_output_prompt=structured_output_prompt,
+                )
             except MaxTokensReachedException:
                 callback_handler(force_stop=True)
                 configured = os.getenv("SWARMEE_MAX_TOKENS") or os.getenv("STRANDS_MAX_TOKENS") or "(unset)"

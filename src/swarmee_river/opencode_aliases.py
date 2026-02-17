@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import importlib
 import inspect
 from collections.abc import Mapping
 from typing import Any, Callable
 
 from strands import tool
 
+from swarmee_river.utils.import_utils import load_optional_attr
 from tools import file_ops
 from tools.patch_apply import patch_apply as patch_apply_fallback
 from tools.shell import shell as shell_fallback
@@ -67,15 +67,6 @@ def configure_alias_targets(tools: Mapping[str, Any]) -> None:
     _ALIAS_TARGETS.update(resolved_targets)
 
 
-def _load_strands_tool(name: str) -> Callable[..., Any] | None:
-    try:
-        strands_tools = importlib.import_module("strands_tools")
-        loaded = getattr(strands_tools, name)
-    except Exception:
-        return None
-    return loaded if callable(loaded) else None
-
-
 def _resolve_alias_target(alias_name: str) -> tuple[str, Callable[..., Any] | None]:
     target_name = OPENCODE_TOOL_ALIASES.get(alias_name, "")
     if not target_name:
@@ -85,7 +76,7 @@ def _resolve_alias_target(alias_name: str) -> tuple[str, Callable[..., Any] | No
     if callable(configured):
         return target_name, configured
 
-    loaded = _load_strands_tool(target_name)
+    loaded = load_optional_attr("strands_tools", target_name)
     if callable(loaded):
         return target_name, loaded
 

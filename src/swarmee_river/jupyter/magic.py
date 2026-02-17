@@ -13,10 +13,9 @@ from typing import Any
 from strands import Agent
 
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
-from swarmee_river.harness.context_snapshot import build_context_snapshot
-from swarmee_river.intent import classify_intent
 from swarmee_river.packs import enabled_system_prompts, load_enabled_pack_tools
-from swarmee_river.planning import WorkPlan, structured_plan_prompt
+from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
+from swarmee_river.project_map import build_context_snapshot
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
@@ -229,7 +228,7 @@ def _build_hooks(settings: Any) -> list[Any]:
 
     hooks: list[Any] = [
         JSONLLoggerHooks(),
-        ToolPolicyHooks(),
+        ToolPolicyHooks(settings.safety),
         ToolConsentHooks(
             settings.safety,
             interactive=False,

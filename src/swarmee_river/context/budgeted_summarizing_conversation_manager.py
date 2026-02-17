@@ -7,12 +7,7 @@ from typing import Any
 
 from strands.agent.conversation_manager import SummarizingConversationManager
 
-
-def _truthy_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+from swarmee_river.utils.env_utils import truthy_env
 
 
 def _extract_message_text(message: dict[str, Any]) -> str:
@@ -96,7 +91,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         self.max_reduce_passes = (
             int(os.getenv("SWARMEE_MAX_SUMMARY_PASSES", "4")) if max_reduce_passes is None else max_reduce_passes
         )
-        self.enabled = _truthy_env("SWARMEE_SUMMARIZE_CONTEXT", True)
+        self.enabled = truthy_env("SWARMEE_SUMMARIZE_CONTEXT", True)
 
     def apply_management(self, agent: "Any", **kwargs: Any) -> None:
         if not self.enabled:

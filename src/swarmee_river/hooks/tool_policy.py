@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 from typing import Any
 
@@ -9,21 +8,9 @@ from strands.hooks.events import BeforeToolCallEvent
 
 from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.opencode_aliases import canonical_tool_name, equivalent_tool_names, normalize_tool_name
-
-
-def _truthy_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
-
-
-def _csv_env(name: str) -> set[str]:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return set()
-    return {part.strip() for part in raw.split(",") if part.strip()}
-
+from swarmee_river.permissions import evaluate_declarative_rule_action
+from swarmee_river.settings import SafetyConfig
+from swarmee_river.utils.env_utils import csv_env, truthy_env
 
 _WINDOWS_POSIX_BIASED_TOKENS = {
     "awk",
@@ -117,10 +104,11 @@ class ToolPolicyHooks(HookProvider):
     - Gate swarms via `SWARMEE_SWARM_ENABLED` (default: enabled)
     """
 
-    def __init__(self) -> None:
-        self.enabled_tools = _csv_env("SWARMEE_ENABLE_TOOLS")
-        self.disabled_tools = _csv_env("SWARMEE_DISABLE_TOOLS")
-        self.swarm_enabled = _truthy_env("SWARMEE_SWARM_ENABLED", True)
+    def __init__(self, safety: SafetyConfig | None = None) -> None:
+        self.enabled_tools = csv_env("SWARMEE_ENABLE_TOOLS")
+        self.disabled_tools = csv_env("SWARMEE_DISABLE_TOOLS")
+        self.swarm_enabled = truthy_env("SWARMEE_SWARM_ENABLED", True)
+        self._safety = safety
         # Plan mode should stay read-only to prevent the model from mutating the repo while planning.
         # We allow repo inspection tools so plans can be grounded in reality.
         self.plan_mode_allowed_tools = {
@@ -268,6 +256,16 @@ class ToolPolicyHooks(HookProvider):
         if _matches_tool_set(name, self.disabled_tools):
             event.cancel_tool = f"Tool '{name}' blocked by SWARMEE_DISABLE_TOOLS policy."
             return
+
+        if self._safety is not None:
+            declarative_action = evaluate_declarative_rule_action(
+                safety=self._safety,
+                tool_name=name,
+                tool_use=tool_use,
+            )
+            if declarative_action == "deny":
+                event.cancel_tool = f"Tool '{name}' blocked by permission_rules safety policy."
+                return
 
         if name == "swarm" and not self.swarm_enabled:
             event.cancel_tool = "Tool 'swarm' is disabled (set SWARMEE_SWARM_ENABLED=true to enable)."

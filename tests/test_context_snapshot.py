@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest import mock
 
-from swarmee_river.harness.context_snapshot import build_context_snapshot
+from swarmee_river.project_map import build_context_snapshot
 
 
 def test_interactive_preflight_is_silent_by_default(monkeypatch) -> None:
@@ -13,7 +13,7 @@ def test_interactive_preflight_is_silent_by_default(monkeypatch) -> None:
     artifact_store = mock.MagicMock()
 
     with (
-        mock.patch("swarmee_river.harness.context_snapshot.run_project_context") as run_project_context,
+        mock.patch("swarmee_river.project_map.run_project_context") as run_project_context,
         mock.patch("builtins.print") as print_mock,
     ):
         run_project_context.return_value = {"status": "success", "content": [{"text": "snapshot"}]}
@@ -36,7 +36,7 @@ def test_interactive_preflight_prints_when_enabled(monkeypatch) -> None:
     artifact_store = mock.MagicMock()
 
     with (
-        mock.patch("swarmee_river.harness.context_snapshot.run_project_context") as run_project_context,
+        mock.patch("swarmee_river.project_map.run_project_context") as run_project_context,
         mock.patch("builtins.print") as print_mock,
     ):
         run_project_context.return_value = {"status": "success", "content": [{"text": "snapshot"}]}

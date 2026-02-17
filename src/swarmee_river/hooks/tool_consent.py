@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -11,22 +10,9 @@ from strands.hooks.events import BeforeToolCallEvent
 
 from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.opencode_aliases import canonical_tool_name, equivalent_tool_names, normalize_tool_name
-from swarmee_river.settings import SafetyConfig, ToolRule
-
-
-def _truthy_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
-
-
-def _truthy(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+from swarmee_river.permissions import evaluate_permission_action
+from swarmee_river.settings import SafetyConfig
+from swarmee_river.utils.env_utils import truthy, truthy_env
 
 
 def _truncate(value: str, limit: int = 240) -> str:
@@ -101,18 +87,6 @@ class ToolConsentHooks(HookProvider):
     - http_request
     """
 
-    _HIGH_RISK_TOOLS = {
-        "shell",
-        "bash",
-        "file_write",
-        "write",
-        "editor",
-        "edit",
-        "patch_apply",
-        "patch",
-        "http_request",
-    }
-
     def __init__(
         self,
         safety: SafetyConfig,
@@ -132,27 +106,9 @@ class ToolConsentHooks(HookProvider):
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, BeforeToolCallEvent, self.before_tool_call)
 
-    def _find_rule(self, tool_name: str) -> ToolRule | None:
-        for rule in self._safety.tool_rules:
-            if rule.tool == tool_name:
-                return rule
-        equivalent = equivalent_tool_names(tool_name) - {tool_name}
-        for rule in self._safety.tool_rules:
-            if rule.tool in equivalent:
-                return rule
-        return None
-
     def _decision_key(self, tool_name: str) -> str:
         canonical = canonical_tool_name(tool_name)
         return canonical or tool_name
-
-    def _default_action(self, tool_name: str) -> str:
-        rule = self._find_rule(tool_name)
-        if rule:
-            return rule.default
-        if tool_name in self._HIGH_RISK_TOOLS:
-            return self._safety.tool_consent
-        return "allow"
 
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
         if event.cancel_tool:
@@ -167,7 +123,7 @@ class ToolConsentHooks(HookProvider):
         sw = event.invocation_state.get("swarmee", {}) if isinstance(event.invocation_state, dict) else {}
         auto_approve = self._auto_approve
         if isinstance(sw, dict) and "auto_approve" in sw:
-            auto_approve = _truthy(sw.get("auto_approve"))
+            auto_approve = truthy(sw.get("auto_approve"))
         if sw.get("mode") == "execute" and sw.get("enforce_plan"):
             allowed_tools = sw.get("allowed_tools")
             allowed = (
@@ -177,13 +133,15 @@ class ToolConsentHooks(HookProvider):
                 # Plan approval counts as consent for tools explicitly listed in the approved plan.
                 return
 
-        if _truthy_env("BYPASS_TOOL_CONSENT", False):
+        if truthy_env("BYPASS_TOOL_CONSENT", False):
             return
 
-        rule = self._find_rule(tool_name)
-        remember_allowed = bool(rule.remember) if rule is not None else True
-
-        action = (self._default_action(tool_name) or "ask").strip().lower()
+        action, remember_allowed = evaluate_permission_action(
+            safety=self._safety,
+            tool_name=tool_name,
+            tool_use=tool_use,
+        )
+        action = (action or "ask").strip().lower()
         if action == "allow":
             return
         if action == "deny":

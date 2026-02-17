@@ -3,6 +3,30 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+_TRUTHY_VALUES = {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+
+
+def truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in _TRUTHY_VALUES
+
+
+def truthy_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return truthy(value)
+
+
+def csv_env(name: str) -> set[str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
 
 def load_env_file(path: str | Path = ".env", *, override: bool = False) -> bool:
     """

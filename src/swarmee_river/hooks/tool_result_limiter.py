@@ -13,13 +13,7 @@ from strands.types.tools import ToolResultContent
 from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.state_paths import artifacts_dir as _default_artifacts_dir
-
-
-def _truthy_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+from swarmee_river.utils.env_utils import truthy_env
 
 
 class ToolResultLimiterHooks(HookProvider):
@@ -36,7 +30,7 @@ class ToolResultLimiterHooks(HookProvider):
         max_text_chars: int | None = None,
         artifacts_dir: Path | None = None,
     ) -> None:
-        self.enabled = _truthy_env("SWARMEE_LIMIT_TOOL_RESULTS", True) if enabled is None else enabled
+        self.enabled = truthy_env("SWARMEE_LIMIT_TOOL_RESULTS", True) if enabled is None else enabled
         self.max_text_chars = (
             int(os.getenv("SWARMEE_TOOL_RESULT_MAX_CHARS", "8000")) if max_text_chars is None else max_text_chars
         )

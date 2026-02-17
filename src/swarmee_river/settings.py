@@ -221,23 +221,63 @@ class ToolRule:
 
 
 @dataclass(frozen=True)
+class PermissionRule:
+    tool: str
+    action: str = "ask"  # allow|ask|deny
+    remember: bool = True
+    when: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "PermissionRule":
+        tool_name = str(raw.get("tool") or "").strip()
+        action = str(raw.get("action") or "ask").strip().lower()
+        remember = raw.get("remember")
+        when = raw.get("when")
+        return cls(
+            tool=tool_name,
+            action=action,
+            remember=bool(remember) if isinstance(remember, bool) else True,
+            when=when if isinstance(when, dict) else {},
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool": self.tool,
+            "action": self.action,
+            "remember": self.remember,
+            "when": self.when,
+        }
+
+
+@dataclass(frozen=True)
 class SafetyConfig:
     tool_consent: str = "ask"  # ask|allow|deny
     tool_rules: list[ToolRule] = field(default_factory=list)
+    permission_rules: list[PermissionRule] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "SafetyConfig":
         tool_consent = str(raw.get("tool_consent") or "ask").strip().lower()
         rules_raw = raw.get("tool_rules")
+        permission_rules_raw = raw.get("permission_rules")
         tool_rules: list[ToolRule] = []
+        permission_rules: list[PermissionRule] = []
         if isinstance(rules_raw, list):
             for item in rules_raw:
                 if isinstance(item, dict):
                     tool_rules.append(ToolRule.from_dict(item))
-        return cls(tool_consent=tool_consent, tool_rules=tool_rules)
+        if isinstance(permission_rules_raw, list):
+            for item in permission_rules_raw:
+                if isinstance(item, dict):
+                    permission_rules.append(PermissionRule.from_dict(item))
+        return cls(tool_consent=tool_consent, tool_rules=tool_rules, permission_rules=permission_rules)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tool_consent": self.tool_consent, "tool_rules": [r.to_dict() for r in self.tool_rules]}
+        return {
+            "tool_consent": self.tool_consent,
+            "tool_rules": [r.to_dict() for r in self.tool_rules],
+            "permission_rules": [r.to_dict() for r in self.permission_rules],
+        }
 
 
 @dataclass(frozen=True)

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import importlib
-import os
 from typing import Any
 
 from swarmee_river.opencode_aliases import configure_alias_targets, opencode_alias_tools
+from swarmee_river.utils.env_utils import truthy_env
+from swarmee_river.utils.import_utils import load_optional_attr
 
 # Custom tools (packaged + hot-loaded from ./tools)
 from tools import (
@@ -34,26 +35,6 @@ from tools.retrieve import retrieve as retrieve_fallback
 from tools.shell import shell as shell_fallback
 from tools.use_agent import use_agent as use_agent_fallback
 from tools.use_agent import use_llm as use_llm_fallback
-
-
-def _truthy_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
-
-
-def _load_strands_tool(name: str) -> Any | None:
-    """
-    Best-effort import of a tool from `strands_tools`.
-
-    Some tools may be unavailable depending on platform and optional dependencies.
-    """
-    try:
-        strands_tools = importlib.import_module("strands_tools")
-        return getattr(strands_tools, name)
-    except Exception:
-        return None
 
 
 def get_tools() -> dict[str, Any]:
@@ -97,7 +78,7 @@ def get_tools() -> dict[str, Any]:
         "python_repl",
         "shell",
     ]:
-        loaded = _load_strands_tool(tool_name)
+        loaded = load_optional_attr("strands_tools", tool_name, import_module=importlib.import_module)
         if loaded is not None:
             tools[tool_name] = loaded
 
@@ -137,7 +118,7 @@ def get_tools() -> dict[str, Any]:
         # Override any `strands_tools.swarm` with a cancellable implementation.
         "swarm": swarm,
     }
-    if _truthy_env("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", False):
+    if truthy_env("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", False):
         custom_tools["project_context"] = project_context
     tools |= custom_tools
 
