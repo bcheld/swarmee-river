@@ -68,6 +68,7 @@ def test_spawn_swarmee_configures_subprocess_run_mode(monkeypatch):
     assert command[1:4] == ["-u", "-m", "swarmee_river.swarmee"]
     assert "--yes" in command
     assert "hello from tui" in command
+    assert kwargs["stdin"] is tui_app.subprocess.PIPE
     assert kwargs["stdout"] is tui_app.subprocess.PIPE
     assert kwargs["stderr"] is tui_app.subprocess.STDOUT
     assert kwargs["text"] is True
@@ -99,8 +100,66 @@ def test_spawn_swarmee_configures_subprocess_plan_mode(monkeypatch):
     assert command[1:4] == ["-u", "-m", "swarmee_river.swarmee"]
     assert "--yes" not in command
     assert "hello from tui" in command
+    assert kwargs["stdin"] is tui_app.subprocess.PIPE
     assert kwargs["stderr"] is tui_app.subprocess.STDOUT
     assert kwargs["errors"] == "replace"
+
+
+def test_write_to_proc_writes_newline_and_flushes():
+    class FakeStdin:
+        def __init__(self) -> None:
+            self.payload = ""
+            self.flush_calls = 0
+
+        def write(self, text: str) -> None:
+            self.payload += text
+
+        def flush(self) -> None:
+            self.flush_calls += 1
+
+    class FakeProc:
+        def __init__(self) -> None:
+            self.stdin = FakeStdin()
+
+    proc = FakeProc()
+    assert tui_app.write_to_proc(proc, "y") is True
+    assert proc.stdin.payload == "y\n"
+    assert proc.stdin.flush_calls == 1
+
+
+def test_write_to_proc_returns_false_when_stdin_missing():
+    class FakeProc:
+        stdin = None
+
+    assert tui_app.write_to_proc(FakeProc(), "n") is False
+
+
+def test_detect_consent_prompt_matches_cli_prompt():
+    assert tui_app.detect_consent_prompt("~ consent> ") is not None
+    assert tui_app.detect_consent_prompt("Allow tool 'shell'? [y/n]") is not None
+    assert tui_app.detect_consent_prompt("normal output line") is None
+
+
+def test_update_consent_capture_collects_recent_lines():
+    consent_active = False
+    consent_buffer: list[str] = []
+    lines = [
+        "some normal line",
+        "Allow tool 'shell'? [y/n/a/v]",
+        "context line 1",
+        "~ consent> ",
+        "context line 2",
+    ]
+    for line in lines:
+        consent_active, consent_buffer = tui_app.update_consent_capture(
+            consent_active,
+            consent_buffer,
+            line,
+            max_lines=3,
+        )
+
+    assert consent_active is True
+    assert consent_buffer == ["context line 1", "~ consent> ", "context line 2"]
 
 
 def test_stop_process_escalates(monkeypatch):

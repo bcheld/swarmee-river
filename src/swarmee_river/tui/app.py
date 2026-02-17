@@ -11,6 +11,8 @@ import sys
 import threading
 from typing import Any
 
+_CONSENT_CHOICES = {"y", "n", "a", "v"}
+
 
 def build_swarmee_cmd(prompt: str, *, auto_approve: bool) -> list[str]:
     """Build a subprocess command for a one-shot Swarmee run."""
@@ -60,12 +62,56 @@ def render_tui_hint_after_plan() -> str:
     return "Plan detected. Type /approve to execute, /replan to regenerate, /clearplan to clear."
 
 
+def detect_consent_prompt(line: str) -> str | None:
+    """Detect consent-related subprocess output lines."""
+    normalized = line.strip().lower()
+    if "~ consent>" in normalized:
+        return "prompt"
+    if "allow tool '" in normalized:
+        return "header"
+    return None
+
+
+def update_consent_capture(
+    consent_active: bool,
+    consent_buffer: list[str],
+    line: str,
+    *,
+    max_lines: int = 20,
+) -> tuple[bool, list[str]]:
+    """Update consent capture state from a single output line."""
+    kind = detect_consent_prompt(line)
+    if kind is None and not consent_active:
+        return consent_active, consent_buffer
+
+    updated = list(consent_buffer)
+    updated.append(line.rstrip("\n"))
+    if len(updated) > max_lines:
+        updated = updated[-max_lines:]
+    return True, updated
+
+
+def write_to_proc(proc: subprocess.Popen[str], text: str) -> bool:
+    """Write a response line to a subprocess stdin."""
+    if proc.stdin is None:
+        return False
+
+    payload = text if text.endswith("\n") else f"{text}\n"
+    try:
+        proc.stdin.write(payload)
+        proc.stdin.flush()
+    except Exception:
+        return False
+    return True
+
+
 def spawn_swarmee(prompt: str, *, auto_approve: bool) -> subprocess.Popen[str]:
     """Spawn Swarmee as a subprocess with line-buffered merged output."""
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
     return subprocess.Popen(
         build_swarmee_cmd(prompt, auto_approve=auto_approve),
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -122,6 +168,7 @@ def run_tui() -> int:
 
     AppBase = textual_app.App
     Horizontal = textual_containers.Horizontal
+    Vertical = textual_containers.Vertical
     Header = textual_widgets.Header
     Footer = textual_widgets.Footer
     Input = textual_widgets.Input
@@ -147,10 +194,21 @@ def run_tui() -> int:
         }
 
         #plan {
-            width: 1fr;
             height: 1fr;
             border: round $accent;
             padding: 0 1;
+        }
+
+        #consent {
+            height: 1fr;
+            border: round $warning;
+            padding: 0 1;
+        }
+
+        #side {
+            width: 1fr;
+            height: 1fr;
+            layout: vertical;
         }
 
         #prompt {
@@ -163,20 +221,27 @@ def run_tui() -> int:
         _last_prompt: str | None = None
         _pending_plan_prompt: str | None = None
         _last_run_auto_approve: bool = False
+        _consent_active: bool = False
+        _consent_buffer: list[str] = []
 
         def compose(self) -> Any:
             yield Header()
             with Horizontal(id="panes"):
                 yield RichLog(id="transcript", auto_scroll=True, wrap=True)
-                yield RichLog(id="plan", auto_scroll=True, wrap=True)
+                with Vertical(id="side"):
+                    yield RichLog(id="plan", auto_scroll=True, wrap=True)
+                    yield RichLog(id="consent", auto_scroll=True, wrap=True)
             yield Input(placeholder="Type prompt (default plan-first; /run to execute)", id="prompt")
             yield Footer()
 
         def on_mount(self) -> None:
             self.query_one("#prompt", Input).focus()
             self._reset_plan_panel()
+            self._reset_consent_panel()
             self._write_transcript("Swarmee TUI ready. Enter a prompt to run Swarmee.")
-            self._write_transcript("Commands: /plan, /run, /approve, /replan, /clearplan, /stop, /exit.")
+            self._write_transcript(
+                "Commands: /plan, /run, /approve, /replan, /clearplan, /consent <y|n|a|v>, /stop, /exit."
+            )
 
         def _write_transcript(self, line: str) -> None:
             self.query_one("#transcript", RichLog).write(line)
@@ -191,6 +256,58 @@ def run_tui() -> int:
 
         def _reset_plan_panel(self) -> None:
             self._set_plan_panel("(no plan)")
+
+        def _render_consent_panel(self) -> None:
+            consent_panel = self.query_one("#consent", RichLog)
+            consent_panel.clear()
+            if not self._consent_active:
+                consent_panel.write("(no active consent prompt)")
+                return
+            for line in self._consent_buffer[-10:]:
+                consent_panel.write(line)
+            consent_panel.write("")
+            consent_panel.write("[y] yes  [n] no  [a] always(session)  [v] never(session)")
+
+        def _reset_consent_panel(self) -> None:
+            self._consent_active = False
+            self._consent_buffer = []
+            self._render_consent_panel()
+
+        def _apply_consent_capture(self, line: str) -> None:
+            next_active, next_buffer = update_consent_capture(
+                self._consent_active,
+                self._consent_buffer,
+                line,
+                max_lines=20,
+            )
+            if next_active != self._consent_active or next_buffer != self._consent_buffer:
+                self._consent_active = next_active
+                self._consent_buffer = next_buffer
+                self._render_consent_panel()
+
+        def _submit_consent_choice(self, choice: str) -> None:
+            normalized_choice = choice.strip().lower()
+            if normalized_choice not in _CONSENT_CHOICES:
+                self._write_transcript("Usage: /consent <y|n|a|v>")
+                return
+            if not self._consent_active:
+                self._write_transcript("[consent] no active prompt.")
+                return
+            if self._proc is None or self._proc.poll() is not None:
+                self._write_transcript("[consent] process is not running.")
+                self._reset_consent_panel()
+                return
+            if not write_to_proc(self._proc, normalized_choice):
+                self._write_transcript("[consent] failed to send response (stdin unavailable).")
+                self._reset_consent_panel()
+                return
+            self._write_transcript(f"[consent] sent '{normalized_choice}'.")
+            self._reset_consent_panel()
+            self.query_one("#prompt", Input).focus()
+
+        def _handle_output_line(self, line: str) -> None:
+            self._write_transcript(line)
+            self._apply_consent_capture(line)
 
         def _finalize_run(
             self,
@@ -208,6 +325,7 @@ def run_tui() -> int:
                 self._pending_plan_prompt = prompt
                 self._set_plan_panel(extracted_plan)
                 self._write_transcript(render_tui_hint_after_plan())
+            self._reset_consent_panel()
             self._proc = None
             self._runner_thread = None
 
@@ -228,7 +346,7 @@ def run_tui() -> int:
             try:
                 for raw_line in proc.stdout:
                     output_chunks.append(raw_line)
-                    self.call_from_thread(self._write_transcript, raw_line.rstrip("\n"))
+                    self.call_from_thread(self._handle_output_line, raw_line.rstrip("\n"))
             except Exception as exc:
                 self.call_from_thread(self._write_transcript, f"[run] output stream error: {exc}")
             finally:
@@ -245,6 +363,7 @@ def run_tui() -> int:
 
         def _start_run(self, prompt: str, *, auto_approve: bool) -> None:
             self._pending_plan_prompt = None
+            self._reset_consent_panel()
             try:
                 proc = spawn_swarmee(prompt, auto_approve=auto_approve)
             except Exception as exc:
@@ -275,6 +394,15 @@ def run_tui() -> int:
             stop_process(proc)
             self._write_transcript("[run] stopped.")
 
+        def on_key(self, event: Any) -> None:
+            if not self._consent_active:
+                return
+            key = str(getattr(event, "key", "")).lower()
+            if key in _CONSENT_CHOICES:
+                event.stop()
+                event.prevent_default()
+                self._submit_consent_choice(key)
+
         def on_input_submitted(self, event: Any) -> None:
             text = event.value.strip()
             event.input.value = ""
@@ -293,6 +421,15 @@ def run_tui() -> int:
                     stop_process(self._proc)
                     self._write_transcript("[run] stopped.")
                 self.exit(return_code=0)
+                return
+
+            if normalized == "/consent":
+                self._write_transcript("Usage: /consent <y|n|a|v>")
+                return
+
+            if normalized.startswith("/consent "):
+                choice = normalized.split(maxsplit=1)[1].strip()
+                self._submit_consent_choice(choice)
                 return
 
             if self._proc is not None and self._proc.poll() is None:
