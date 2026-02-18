@@ -96,6 +96,24 @@ def test_extract_plan_section_returns_none_when_missing_marker():
     assert tui_app.extract_plan_section("plain execution output") is None
 
 
+def test_extract_plan_section_from_output_ignores_jsonl_event_lines():
+    output = '{"event":"plan","rendered":"Proposed plan:\\n- Summary: Json only"}\n'
+    assert tui_app.extract_plan_section_from_output(output) is None
+
+
+def test_extract_plan_section_from_output_extracts_plain_plan_lines():
+    output = (
+        '{"event":"thinking","text":"planning"}\n'
+        "Proposed plan:\n"
+        "- Summary: Fix issue\n"
+        "- Steps:\n"
+        "  1. Reproduce\n"
+        "Plan generated. Re-run with --yes (or set SWARMEE_AUTO_APPROVE=true) to execute.\n"
+    )
+    extracted = tui_app.extract_plan_section_from_output(output)
+    assert extracted == "Proposed plan:\n- Summary: Fix issue\n- Steps:\n  1. Reproduce"
+
+
 def test_is_multiline_newline_key_detects_shift_enter():
     class _Event:
         key = "shift+enter"
@@ -374,6 +392,11 @@ def test_parse_tui_event_non_json_returns_none():
 def test_parse_tui_event_malformed_json_returns_none():
     assert tui_app.parse_tui_event('{"event": "text_delta"') is None
     assert tui_app.parse_tui_event("{bad json}") is None
+
+
+def test_parse_tui_event_rejects_non_object_json():
+    assert tui_app.parse_tui_event("[]") is None
+    assert tui_app.parse_tui_event('"event"') is None
 
 
 def test_parse_tui_event_strips_whitespace():

@@ -307,7 +307,7 @@ class CommandPalette(Static):
         if not self._filtered:
             return
         self._selected_index = (self._selected_index + delta) % len(self._filtered)
-        self._render()
+        self._render_items()
 
     def get_selected(self) -> str | None:
         if not self._filtered:

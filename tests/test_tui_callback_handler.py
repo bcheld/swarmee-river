@@ -67,6 +67,41 @@ def test_tool_start_and_result():
     assert "duration_s" in result_event
 
 
+def test_tool_start_and_result_for_empty_input_tool():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(current_tool_use={"toolUseId": "t-empty", "name": "noop", "input": {}})
+        h.callback_handler(message={
+            "role": "user",
+            "content": [{"toolResult": {"toolUseId": "t-empty", "status": "success"}}],
+        })
+
+    events = _capture_events(h, run)
+    assert any(event.get("event") == "tool_start" and event.get("tool_use_id") == "t-empty" for event in events)
+    assert any(event.get("event") == "tool_result" and event.get("tool_use_id") == "t-empty" for event in events)
+
+
+def test_tool_result_emitted_even_without_tool_history():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(message={
+            "role": "user",
+            "content": [{"toolResult": {"toolUseId": "unknown", "status": "error"}}],
+        }),
+    )
+    assert events == [
+        {
+            "event": "tool_result",
+            "tool_use_id": "unknown",
+            "tool": "unknown",
+            "status": "error",
+            "duration_s": 0.0,
+        }
+    ]
+
+
 def test_force_stop_no_output():
     h = TuiCallbackHandler()
     events = _capture_events(h, lambda: h.callback_handler(force_stop=True))

@@ -337,19 +337,20 @@ class TuiCallbackHandler:
         if complete:
             self._emit({"event": "text_complete"})
 
-        if current_tool_use and current_tool_use.get("input"):
+        if current_tool_use:
             raw_tool_id = current_tool_use.get("toolUseId")
             tool_id = raw_tool_id if isinstance(raw_tool_id, str) else None
             tool_name = current_tool_use.get("name")
-            tool_input = current_tool_use.get("input", "")
+            tool_input = current_tool_use.get("input")
 
             if tool_id is not None:
-                if tool_id != self.current_tool:
+                if tool_id not in self.tool_histories:
+                    initial_size = len(str(tool_input)) if tool_input is not None else 0
                     self.current_tool = tool_id
                     self.tool_histories[tool_id] = {
                         "name": tool_name,
                         "start_time": time.time(),
-                        "input_size": 0,
+                        "input_size": initial_size,
                     }
                     self._emit({
                         "event": "tool_start",
@@ -358,7 +359,7 @@ class TuiCallbackHandler:
                         "input": tool_input if isinstance(tool_input, dict) else {},
                     })
 
-                if tool_id in self.tool_histories:
+                if tool_input is not None and tool_id in self.tool_histories:
                     current_size = len(str(tool_input))
                     if current_size > self.tool_histories[tool_id]["input_size"]:
                         self.tool_histories[tool_id]["input_size"] = current_size
@@ -390,18 +391,21 @@ class TuiCallbackHandler:
                         if tool_result:
                             tid = tool_result.get("toolUseId")
                             status = tool_result.get("status", "unknown")
-                            if isinstance(tid, str) and tid in self.tool_histories:
-                                info = self.tool_histories[tid]
-                                duration = round(time.time() - info["start_time"], 2)
+                            if isinstance(tid, str):
+                                info = self.tool_histories.get(tid)
+                                duration = round(time.time() - info["start_time"], 2) if info is not None else 0.0
+                                tool_label = info["name"] if info is not None else tool_result.get("name", "unknown")
                                 self._emit({
                                     "event": "tool_result",
                                     "tool_use_id": tid,
-                                    "tool": info["name"],
+                                    "tool": tool_label,
                                     "status": status,
                                     "duration_s": duration,
                                 })
-                                del self.tool_histories[tid]
-                                self.current_tool = None
+                                if info is not None:
+                                    del self.tool_histories[tid]
+                                if self.current_tool == tid:
+                                    self.current_tool = None
 
         if event_loop_throttled_delay:
             self._emit({

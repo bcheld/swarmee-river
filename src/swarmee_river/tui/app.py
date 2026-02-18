@@ -334,9 +334,18 @@ def parse_tui_event(line: str) -> dict[str, Any] | None:
     if not stripped.startswith("{"):
         return None
     try:
-        return _json.loads(stripped)
+        parsed = _json.loads(stripped)
+        return parsed if isinstance(parsed, dict) else None
     except (ValueError, _json.JSONDecodeError):
         return None
+
+
+def extract_plan_section_from_output(output: str) -> str | None:
+    """Extract plan text from mixed output by ignoring structured JSONL event lines."""
+    plain_lines = [line for line in output.splitlines() if parse_tui_event(line) is None]
+    if not plain_lines:
+        return None
+    return extract_plan_section("\n".join(plain_lines))
 
 
 def artifact_paths_from_event(event: ParsedEvent) -> list[str]:
@@ -774,6 +783,7 @@ def run_tui() -> int:
         _plan_step_counter: int = 0
         _transcript_widget_count: int = 0
         _MAX_TRANSCRIPT_WIDGETS: int = 500
+        _received_structured_plan: bool = False
 
         def compose(self) -> Any:
             yield Header()
@@ -1249,6 +1259,9 @@ def run_tui() -> int:
                 if plan_json and not rendered:
                     rendered = _json.dumps(plan_json, indent=2)
                 self._set_plan_panel(rendered)
+                self._received_structured_plan = True
+                if not self._last_run_auto_approve and self._last_prompt:
+                    self._pending_plan_prompt = self._last_prompt
                 if plan_json and isinstance(plan_json, dict):
                     card = PlanCard(plan_json=plan_json)
                     self._current_plan_card = card
@@ -1367,15 +1380,17 @@ def run_tui() -> int:
             if log_path:
                 self._add_artifact_paths([log_path])
 
-            extracted_plan = extract_plan_section(sanitize_output_text(output_text))
-            if extracted_plan:
-                self._pending_plan_prompt = prompt
-                self._set_plan_panel(extracted_plan)
-                self._write_transcript_line(render_tui_hint_after_plan())
+            if not self._received_structured_plan:
+                extracted_plan = extract_plan_section_from_output(sanitize_output_text(output_text))
+                if extracted_plan:
+                    self._pending_plan_prompt = prompt
+                    self._set_plan_panel(extracted_plan)
+                    self._write_transcript_line(render_tui_hint_after_plan())
             self._reset_consent_panel()
             self._proc = None
             self._runner_thread = None
             self._run_session_id = None
+            self._received_structured_plan = False
             self._save_session()
 
         def _stream_output(self, proc: subprocess.Popen[str], prompt: str) -> None:
@@ -1429,6 +1444,7 @@ def run_tui() -> int:
             self._run_tool_count = 0
             self._run_start_time = time.time()
             self._plan_step_counter = 0
+            self._received_structured_plan = False
             if self._status_bar is not None:
                 self._status_bar.set_state("running")
                 self._status_bar.set_tool_count(0)
@@ -1447,6 +1463,14 @@ def run_tui() -> int:
                     env_overrides=self._model_env_overrides(),
                 )
             except Exception as exc:
+                if self._status_timer is not None:
+                    self._status_timer.stop()
+                    self._status_timer = None
+                self._run_start_time = None
+                self._run_session_id = None
+                if self._status_bar is not None:
+                    self._status_bar.set_state("idle")
+                    self._status_bar.set_elapsed(0.0)
                 self._write_transcript_line(f"[run] failed to start: {exc}")
                 return
 
