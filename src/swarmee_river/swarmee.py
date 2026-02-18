@@ -10,6 +10,7 @@ import contextlib
 import json
 import os
 import re
+import sys
 import threading
 import warnings
 from pathlib import Path
@@ -124,6 +125,38 @@ _consent_prompt_lock = threading.Lock()
 _consent_console: Any | None = Console() if Console is not None else None
 
 
+def _configure_stdio_for_utf8() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            with contextlib.suppress(Exception):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
+def _write_stdout_jsonl(event: dict[str, Any]) -> None:
+    line = json.dumps(event, ensure_ascii=False) + "\n"
+    try:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        return
+    except UnicodeEncodeError:
+        pass
+
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        with contextlib.suppress(Exception):
+            buffer.write(line.encode("utf-8", errors="replace"))
+            buffer.flush()
+            return
+
+    with contextlib.suppress(Exception):
+        sys.stdout.write(line.encode("ascii", errors="replace").decode("ascii"))
+        sys.stdout.flush()
+
+
+_configure_stdio_for_utf8()
+
+
 def _truthy(value: str | None) -> bool:
     if value is None:
         return False
@@ -138,10 +171,7 @@ def _tui_events_enabled() -> bool:
 def _emit_tui_event(event: dict[str, Any]) -> None:
     """Emit a structured JSONL event to stdout for TUI consumption."""
     if _tui_events_enabled():
-        import sys as _sys
-
-        _sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
-        _sys.stdout.flush()
+        _write_stdout_jsonl(event)
 
 
 def _event_loop_running() -> bool:

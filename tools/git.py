@@ -20,6 +20,7 @@ def _run(cmd: list[str], *, cwd: Path, timeout_s: int) -> tuple[int, str, str]:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=timeout_s,
             check=False,
@@ -45,6 +46,7 @@ def _run_streaming(
             "stdout": subprocess.PIPE,
             "stderr": subprocess.STDOUT,
             "text": True,
+            "encoding": "utf-8",
             "errors": "replace",
             "bufsize": 1,
         }
@@ -138,6 +140,7 @@ def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 errors="replace",
                 check=False,
             )

@@ -107,7 +107,7 @@ def load_system_prompt() -> str:
     prompt_file = Path(os.getcwd()) / ".prompt"
     if prompt_file.exists() and prompt_file.is_file():
         try:
-            return prompt_file.read_text().strip()
+            return prompt_file.read_text(encoding="utf-8", errors="replace").strip()
         except Exception:
             pass
 

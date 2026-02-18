@@ -186,11 +186,13 @@ def test_spawn_swarmee_configures_subprocess_run_mode(monkeypatch):
     assert kwargs["stdout"] is tui_app.subprocess.PIPE
     assert kwargs["stderr"] is tui_app.subprocess.STDOUT
     assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
     assert kwargs["bufsize"] == 1
     env = kwargs["env"]
     assert isinstance(env, dict)
     assert env["PYTHONUNBUFFERED"] == "1"
+    assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["SWARMEE_SPINNERS"] == "0"
     assert "PYTHONWARNINGS" in env
     assert "Http_requestTool" in str(env["PYTHONWARNINGS"])
@@ -219,9 +221,11 @@ def test_spawn_swarmee_configures_subprocess_plan_mode(monkeypatch):
     assert "hello from tui" in command
     assert kwargs["stdin"] is tui_app.subprocess.PIPE
     assert kwargs["stderr"] is tui_app.subprocess.STDOUT
+    assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
     env = kwargs["env"]
     assert isinstance(env, dict)
+    assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["SWARMEE_SPINNERS"] == "0"
     assert "PYTHONWARNINGS" in env
     assert "Http_requestTool" in str(env["PYTHONWARNINGS"])

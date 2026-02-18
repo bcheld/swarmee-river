@@ -416,6 +416,7 @@ def spawn_swarmee(
     """Spawn Swarmee as a subprocess with line-buffered merged output."""
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     # The CLI callback handler prints spinners using ANSI + carriage returns; disable for TUI subprocess capture.
     env["SWARMEE_SPINNERS"] = "0"
     # Enable structured JSONL event output for TUI consumption.
@@ -440,6 +441,7 @@ def spawn_swarmee(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
         errors="replace",
         bufsize=1,
         env=env,
@@ -1051,19 +1053,25 @@ def run_tui() -> int:
             # Prefer native clipboard commands in terminal contexts (more reliable than Textual clipboard bridges).
             try:
                 if sys.platform == "darwin" and shutil.which("pbcopy"):
-                    subprocess.run(["pbcopy"], input=payload, text=True, check=True)
+                    subprocess.run(["pbcopy"], input=payload, text=True, encoding="utf-8", check=True)
                     self._notify(f"{label}: copied to clipboard.")
                     return
                 if os.name == "nt" and shutil.which("clip"):
-                    subprocess.run(["clip"], input=payload, text=True, check=True)
+                    subprocess.run(["clip"], input=payload, text=True, encoding="utf-8", check=True)
                     self._notify(f"{label}: copied to clipboard.")
                     return
                 if shutil.which("wl-copy"):
-                    subprocess.run(["wl-copy"], input=payload, text=True, check=True)
+                    subprocess.run(["wl-copy"], input=payload, text=True, encoding="utf-8", check=True)
                     self._notify(f"{label}: copied to clipboard.")
                     return
                 if shutil.which("xclip"):
-                    subprocess.run(["xclip", "-selection", "clipboard"], input=payload, text=True, check=True)
+                    subprocess.run(
+                        ["xclip", "-selection", "clipboard"],
+                        input=payload,
+                        text=True,
+                        encoding="utf-8",
+                        check=True,
+                    )
                     self._notify(f"{label}: copied to clipboard.")
                     return
             except Exception:
@@ -1683,7 +1691,7 @@ def run_tui() -> int:
                     "default_auto_approve": self._default_auto_approve,
                     "split_ratio": self._split_ratio,
                 }
-                session_path.write_text(_json.dumps(data, indent=2))
+                session_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
             except Exception:
                 pass
 
@@ -1692,7 +1700,7 @@ def run_tui() -> int:
                 session_path = sessions_dir() / "tui_session.json"
                 if not session_path.exists():
                     return
-                data = _json.loads(session_path.read_text())
+                data = _json.loads(session_path.read_text(encoding="utf-8", errors="replace"))
                 self._prompt_history = data.get("prompt_history", [])[-self._MAX_PROMPT_HISTORY:]
                 self._last_prompt = data.get("last_prompt")
                 plan_text = data.get("plan_text", "")

@@ -63,7 +63,7 @@ def strand(
                     prompt_file = Path(os.getcwd()) / ".prompt"
                     if prompt_file.exists() and prompt_file.is_file():
                         try:
-                            system_prompt = prompt_file.read_text().strip()
+                            system_prompt = prompt_file.read_text(encoding="utf-8", errors="replace").strip()
                         except Exception:
                             pass
                 if not system_prompt:

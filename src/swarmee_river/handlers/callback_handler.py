@@ -13,7 +13,59 @@ from rich.status import Status
 
 from swarmee_river.utils.env_utils import truthy_env
 
+
+def _configure_stdio_for_utf8() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            with contextlib.suppress(Exception):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
+def _safe_print(*parts: Any, end: str = "\n") -> None:
+    try:
+        print(*parts, end=end)
+        return
+    except UnicodeEncodeError:
+        pass
+
+    payload = f"{' '.join(str(part) for part in parts)}{end}"
+    stream = sys.stdout
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        with contextlib.suppress(Exception):
+            buffer.write(payload.encode("utf-8", errors="replace"))
+            buffer.flush()
+            return
+
+    with contextlib.suppress(Exception):
+        stream.write(payload.encode("ascii", errors="replace").decode("ascii"))
+        stream.flush()
+
+
+def _write_stdout_jsonl(event: dict[str, Any]) -> None:
+    line = json.dumps(event, ensure_ascii=False) + "\n"
+    try:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        return
+    except UnicodeEncodeError:
+        pass
+
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        with contextlib.suppress(Exception):
+            buffer.write(line.encode("utf-8", errors="replace"))
+            buffer.flush()
+            return
+
+    with contextlib.suppress(Exception):
+        sys.stdout.write(line.encode("ascii", errors="replace").decode("ascii"))
+        sys.stdout.flush()
+
+
 # Initialize Colorama
+_configure_stdio_for_utf8()
 init(autoreset=True)
 
 # Configure spinner templates
@@ -63,7 +115,7 @@ class ToolSpinner:
             return
         if text:
             self.current_text = text
-        print()  # Move to new line before starting spinner, prevents spinner from eating the previous line
+        _safe_print()  # Move to new line before starting spinner, prevents spinner from eating the previous line
         self.spinner.start(f"{self.color}{self.current_text}{Style.RESET_ALL}")
 
     def update(self, text: str) -> None:
@@ -118,7 +170,7 @@ class CallbackHandler:
 
     def notify(self, title: str, message: str, sound: bool = True) -> None:
         """Send a native notification using mac_automation tool."""
-        print(f"Notification: {title} - {message}")
+        _safe_print(f"Notification: {title} - {message}")
 
     def callback_handler(
         self,
@@ -182,7 +234,7 @@ class CallbackHandler:
                 self.thinking_spinner.start()
 
             if reasoningText:
-                print(reasoningText, end="")
+                _safe_print(reasoningText, end="")
 
             if start_event_loop and self.thinking_spinner is not None and truthy_env("SWARMEE_SPINNERS", True):
                 self.thinking_spinner.update("[blue] thinking...[/blue]")
@@ -200,9 +252,9 @@ class CallbackHandler:
         if data:
             # Print to stdout
             if complete:
-                print(f"{Fore.WHITE}{data}{Style.RESET_ALL}")
+                _safe_print(f"{Fore.WHITE}{data}{Style.RESET_ALL}")
             else:
-                print(f"{Fore.WHITE}{data}{Style.RESET_ALL}", end="")
+                _safe_print(f"{Fore.WHITE}{data}{Style.RESET_ALL}", end="")
 
         # Handle tool input streaming
         if current_tool_use and current_tool_use.get("input"):
@@ -296,8 +348,7 @@ class TuiCallbackHandler:
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Write a single JSONL event to stdout."""
-        sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        _write_stdout_jsonl(event)
 
     def callback_handler(
         self,
