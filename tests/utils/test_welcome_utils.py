@@ -10,8 +10,9 @@ def test_render_welcome_message():
         # Call the function
         render_welcome_message("Test welcome message")
 
-        # Verify console.print was called twice (once for the panel, once for newline)
-        assert mock_console.print.call_count == 2
+        # Verify console.print was called three times:
+        # 1. banner, 2. welcome panel, 3. newline
+        assert mock_console.print.call_count == 3
 
 
 def test_render_welcome_message_with_invalid_markdown():

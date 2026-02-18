@@ -507,22 +507,22 @@ def default_settings_template() -> SwarmeeSettings:
                     tiers={
                         "fast": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-                            display_name="Claude Sonnet 4 (fast)",
+                            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                            display_name="Claude Haiku 4.5 (fast)",
                             description=(
                                 "Lower latency / lower cost default (override via SWARMEE_BEDROCK_FAST_MODEL_ID)."
                             ),
                         ),
                         "balanced": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-                            display_name="Claude Sonnet 4 (balanced)",
+                            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                            display_name="Claude Haiku 4.5 (fast)",
                             description="Default tier for most coding and analysis work.",
                         ),
                         "deep": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-                            display_name="Claude Sonnet 4 (deep)",
+                            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                            display_name="Claude Sonnet 4.5 (deep)",
                             description=(
                                 "Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID)."
                             ),
@@ -537,8 +537,8 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "long": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-                            display_name="Claude Sonnet 4 (long)",
+                            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                            display_name="Claude Sonnet 4.5 (long)",
                             description=(
                                 "Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID)."
                             ),

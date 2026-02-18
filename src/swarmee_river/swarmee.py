@@ -1023,7 +1023,13 @@ def main() -> None:
 
         intent = classify_intent(query)
         if intent == "work":
-            plan = _generate_plan(query)
+            try:
+                plan = _generate_plan(query)
+            except AgentInterruptedError as e:
+                callback_handler(force_stop=True)
+                if not _tui_events_enabled():
+                    print(f"\n{str(e)}")
+                return
             ctx.last_plan = plan
             rendered_plan = _render_plan(plan)
             _emit_tui_event({

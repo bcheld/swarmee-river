@@ -43,7 +43,7 @@ def test_model_select_options_only_includes_configured_provider_tiers(monkeypatc
             self.default_tier = "balanced"
             self.providers = {
                 "openai": _Provider({"balanced": _Tier("gpt-5-mini")}),
-                "bedrock": _Provider({}),
+                "bedrock": _Provider({"balanced": _Tier("anthropic.claude-sonnet")}),
             }
             self.tiers = {"balanced": _Tier("global-balanced"), "fast": _Tier("global-fast")}
 

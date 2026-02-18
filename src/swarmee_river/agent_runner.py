@@ -105,4 +105,7 @@ def invoke_agent(
             otel_logger.removeFilter(otel_filter)
             loop.set_exception_handler(previous_handler)
 
-    return asyncio.run(_invoke())
+    try:
+        return asyncio.run(_invoke())
+    except KeyboardInterrupt:
+        raise AgentInterruptedError("Interrupted by user") from None

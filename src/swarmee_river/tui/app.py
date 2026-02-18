@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import inspect
 import json as _json
 import os
 import re
@@ -85,32 +86,23 @@ def render_tui_hint_after_plan() -> str:
 
 
 def is_multiline_newline_key(event: Any) -> bool:
-    """Best-effort detection for newline intent in terminal key events."""
+    """Detect Shift+Enter, Alt+Enter, or Ctrl+J — NOT plain Enter."""
     key = str(getattr(event, "key", "")).lower()
-    aliases = [str(alias).lower() for alias in getattr(event, "aliases", [])]
-    character = getattr(event, "character", None)
+    aliases = [str(a).lower() for a in getattr(event, "aliases", [])]
     event_name = str(getattr(event, "name", "")).lower()
-    shifted_newline_suffixes = {"enter", "return", "ctrl+m", "newline"}
 
-    if any(key == f"shift+{suffix}" for suffix in shifted_newline_suffixes):
+    # Explicit modifier+enter combinations only.
+    # Plain Enter must NOT match — it submits the prompt.
+    modifier_enter_keys = {
+        "shift+enter", "shift+return", "shift+ctrl+m",
+        "alt+enter", "alt+return",
+        "ctrl+j",
+    }
+    if key in modifier_enter_keys:
         return True
     if event_name in {"shift_enter", "shift_return"}:
         return True
-    if any(alias == f"shift+{suffix}" for alias in aliases for suffix in shifted_newline_suffixes):
-        return True
-
-    if key in {
-        "shift+enter",
-        "shift+return",
-        "alt+enter",
-        "alt+return",
-        "ctrl+j",
-        "newline",
-    }:
-        return True
-    if "newline" in aliases:
-        return True
-    if character == "\n":
+    if any(alias in modifier_enter_keys for alias in aliases):
         return True
     return False
 
@@ -246,25 +238,16 @@ def model_select_options(
     selected_provider = (selected_provider or "").strip().lower()
     selected_tier = (selected_tier or "").strip().lower()
 
-    providers = sorted(settings.models.providers.keys())
+    provider_cfg = settings.models.providers.get(selected_provider)
+    tier_names = sorted(provider_cfg.tiers.keys()) if provider_cfg and provider_cfg.tiers else []
 
-    seen_values: set[str] = set()
-    for provider_name in providers:
-        provider_cfg = settings.models.providers.get(provider_name)
-        tier_names = sorted(provider_cfg.tiers.keys()) if provider_cfg and provider_cfg.tiers else []
-        if not tier_names:
-            continue
-
-        for tier_name in tier_names:
-            value = f"{provider_name}|{tier_name}"
-            if value in seen_values:
-                continue
-            seen_values.add(value)
-            model_id = _model_option_model_id(settings=settings, provider_name=provider_name, tier_name=tier_name)
-            suffix = f" ({model_id})" if model_id else ""
-            options.append((f"{provider_name}/{tier_name}{suffix}", value))
-            if provider_name == selected_provider and tier_name == selected_tier:
-                selected_value = value
+    for tier_name in tier_names:
+        value = f"{selected_provider}|{tier_name}"
+        model_id = _model_option_model_id(settings=settings, provider_name=selected_provider, tier_name=tier_name)
+        suffix = f" ({model_id})" if model_id else ""
+        options.append((f"{selected_provider}/{tier_name}{suffix}", value))
+        if tier_name == selected_tier:
+            selected_value = value
 
     if provider_override is None and tier_override is None:
         selected_value = _MODEL_AUTO_VALUE
@@ -497,6 +480,7 @@ def run_tui() -> int:
     """Run the full-screen TUI if Textual is installed."""
     try:
         textual_app = importlib.import_module("textual.app")
+        textual_binding = importlib.import_module("textual.binding")
         textual_containers = importlib.import_module("textual.containers")
         textual_widgets = importlib.import_module("textual.widgets")
     except ImportError:
@@ -509,6 +493,7 @@ def run_tui() -> int:
         return 1
 
     AppBase = textual_app.App
+    Binding = textual_binding.Binding
     Horizontal = textual_containers.Horizontal
     Vertical = textual_containers.Vertical
     VerticalScroll = textual_containers.VerticalScroll
@@ -533,7 +518,9 @@ def run_tui() -> int:
     )
 
     class PromptTextArea(TextArea):
-        """Prompt editor that submits on Enter and inserts newline on Shift+Enter."""
+        """Prompt editor that submits on Enter and inserts newline on Shift+Enter/Ctrl+J."""
+
+        _ENTER_KEYS = {"enter", "return", "ctrl+m"}
 
         def _insert_newline(self) -> None:
             for method_name, args in (
@@ -551,8 +538,9 @@ def run_tui() -> int:
 
         def _adjust_height(self) -> None:
             line_count = self.text.count("\n") + 1
-            # +4 accounts for border (2) + visual padding (2)
-            target = max(5, min(12, line_count + 4))
+            # Height controls the input area only. The prompt container provides the
+            # border and a one-line footer row (model selector).
+            target = max(4, min(11, line_count))
             if getattr(self, "_last_height", None) != target:
                 self._last_height = target
                 self.styles.height = target
@@ -563,15 +551,27 @@ def run_tui() -> int:
             if app is not None and hasattr(app, "_update_command_palette"):
                 app._update_command_palette(self.text)
 
-        def on_key(self, event: Any) -> None:
+        async def _on_key(self, event: Any) -> None:
+            """Override TextArea._on_key to control Enter behaviour and route
+            special keys (palette, history) before falling back to TextArea's
+            default character-insertion handler.
+
+            Textual 8's dispatch uses ``cls.__dict__.get("_on_key") or
+            cls.__dict__.get("on_key")`` per MRO class, so defining *both*
+            ``_on_key`` and ``on_key`` on the same class causes ``on_key`` to
+            be silently skipped.  Therefore ALL key logic lives here.
+            """
             key = str(getattr(event, "key", "")).lower()
+            app = getattr(self, "app", None)
+
+            # ── Shift+Enter / Alt+Enter / Ctrl+J → insert newline ──
             if is_multiline_newline_key(event):
                 event.stop()
                 event.prevent_default()
                 self._insert_newline()
                 return
-            app = getattr(self, "app", None)
-            # Arrow keys: palette nav first, then prompt history
+
+            # ── Arrow keys: palette navigation (when visible) ──
             if key in {"up", "down"} and app is not None and hasattr(app, "_command_palette"):
                 palette = app._command_palette
                 if palette is not None and palette.is_visible:
@@ -579,7 +579,8 @@ def run_tui() -> int:
                     event.prevent_default()
                     palette.move_selection(-1 if key == "up" else 1)
                     return
-            # Up/down for prompt history when palette is NOT visible
+
+            # ── Arrow keys: prompt history (when palette hidden) ──
             if key == "up" and app is not None and hasattr(app, "_prompt_history"):
                 history = app._prompt_history
                 if history and app._history_index < len(history) - 1:
@@ -615,24 +616,21 @@ def run_tui() -> int:
                     app._history_index = -1
                     self.clear()
                     return
-            # Enter selects from palette when visible (instead of submitting)
-            if key in {"enter", "return", "ctrl+m"} and app is not None and hasattr(app, "_command_palette"):
+
+            # ── Enter with palette visible → submit ──
+            # The palette is suggestions/autocomplete; Enter should still execute the
+            # current prompt text (otherwise slash commands never run because the
+            # palette reopens on every change).
+            if key in self._ENTER_KEYS and app is not None and hasattr(app, "_command_palette"):
                 palette = app._command_palette
                 if palette is not None and palette.is_visible:
                     event.stop()
                     event.prevent_default()
-                    selected = palette.get_selected()
-                    if selected:
-                        self.clear()
-                        for method_name in ("insert", "insert_text_at_cursor"):
-                            method = getattr(self, method_name, None)
-                            if callable(method):
-                                with contextlib.suppress(Exception):
-                                    method(selected + " ")
-                                    break
                     palette.hide()
+                    app.action_submit_prompt()
                     return
-            # Tab to select from command palette
+
+            # ── Tab with palette visible → select command ──
             if key == "tab" and app is not None and hasattr(app, "_command_palette"):
                 palette = app._command_palette
                 if palette is not None and palette.is_visible:
@@ -649,7 +647,8 @@ def run_tui() -> int:
                                     break
                     palette.hide()
                     return
-            # Escape to dismiss palette
+
+            # ── Escape → dismiss palette ──
             if key == "escape" and app is not None and hasattr(app, "_command_palette"):
                 palette = app._command_palette
                 if palette is not None and palette.is_visible:
@@ -657,13 +656,39 @@ def run_tui() -> int:
                     event.prevent_default()
                     palette.hide()
                     return
-            if key in {"enter", "return", "ctrl+m"}:
+
+            # ── Plain Enter → submit prompt ──
+            # Do NOT call super() — TextArea would insert a newline.
+            if key in self._ENTER_KEYS:
                 event.stop()
                 event.prevent_default()
                 if app is not None:
-                    with contextlib.suppress(Exception):
-                        app.action_submit_prompt()
+                    app.action_submit_prompt()
                 return
+
+            # ── Space: explicit insert ──
+            # Some terminal / Textual 8.0.0 combinations appear to drop space insertion
+            # when overriding `_on_key`. Handle it directly to keep typing reliable.
+            if key == "space":
+                event.stop()
+                event.prevent_default()
+                with contextlib.suppress(Exception):
+                    self.insert(" ")
+                    return
+                with contextlib.suppress(Exception):
+                    self.insert_text_at_cursor(" ")
+                    return
+
+            # ── Everything else: delegate to TextArea (space, printable, etc.) ──
+            # Textual has changed `TextArea._on_key` between releases (sync vs async),
+            # and some versions route default behavior via `on_key` instead.
+            # Call what exists, and only await if it returns an awaitable.
+            handler = getattr(super(), "_on_key", None) or getattr(super(), "on_key", None)
+            if handler is None:
+                return
+            result = handler(event)
+            if inspect.isawaitable(result):
+                await result
 
     class SwarmeeTUI(AppBase):
         CSS = """
@@ -691,22 +716,6 @@ def run_tui() -> int:
             layout: vertical;
         }
 
-        #model_row {
-            height: auto;
-            layout: horizontal;
-            padding: 0 0 1 0;
-            align: left middle;
-        }
-
-        #model_label {
-            width: 7;
-            content-align: left middle;
-        }
-
-        #model_select {
-            width: 1fr;
-        }
-
         #side_tabs {
             height: 1fr;
         }
@@ -723,13 +732,34 @@ def run_tui() -> int:
             padding: 0 1;
         }
 
-        #prompt {
-            dock: bottom;
+        #prompt_box {
             min-height: 5;
             max-height: 12;
             height: auto;
+            width: 1fr;
             border: round $accent;
             padding: 0 1;
+        }
+
+        #prompt {
+            border: none;
+            padding: 0;
+            height: auto;
+        }
+
+        #prompt_bottom {
+            height: 1;
+            layout: horizontal;
+            align: right middle;
+        }
+
+        #prompt_spacer {
+            width: 1fr;
+        }
+
+        #model_select {
+            width: 34;
+            min-width: 24;
         }
         """
         BINDINGS = [
@@ -740,8 +770,12 @@ def run_tui() -> int:
             ("super+c", "copy_selection", "Copy selection"),
             ("ctrl+d", "quit", "Quit"),
             ("tab", "focus_prompt", "Focus prompt"),
-            ("ctrl+left", "widen_side", "Widen side"),
-            ("ctrl+right", "widen_transcript", "Widen transcript"),
+            Binding("ctrl+left", "widen_side", "Widen side", priority=True),
+            Binding("ctrl+right", "widen_transcript", "Widen transcript", priority=True),
+            Binding("ctrl+shift+left", "widen_side", "Widen side", priority=True),
+            Binding("ctrl+shift+right", "widen_transcript", "Widen transcript", priority=True),
+            ("f6", "widen_side", "Widen side"),
+            ("f7", "widen_transcript", "Widen transcript"),
             ("ctrl+f", "search_transcript", "Search"),
         ]
 
@@ -790,9 +824,6 @@ def run_tui() -> int:
             with Horizontal(id="panes"):
                 yield VerticalScroll(id="transcript")
                 with Vertical(id="side"):
-                    with Horizontal(id="model_row"):
-                        yield Static("Model:", id="model_label")
-                        yield Select(options=[("Auto", _MODEL_AUTO_VALUE)], allow_blank=False, id="model_select")
                     with TabbedContent(id="side_tabs"):
                         with TabPane("Plan", id="tab_plan"):
                             yield TextArea(
@@ -822,12 +853,21 @@ def run_tui() -> int:
                     yield TextArea(text="", read_only=True, show_cursor=False, id="consent", soft_wrap=True)
             yield CommandPalette(id="command_palette")
             yield StatusBar(id="status_bar")
-            yield PromptTextArea(
-                text="",
-                placeholder="Type prompt. Enter submits, Shift+Enter inserts newline.",
-                id="prompt",
-                soft_wrap=True,
-            )
+            with Vertical(id="prompt_box"):
+                yield PromptTextArea(
+                    text="",
+                    placeholder="Type prompt. Enter submits, Shift+Enter inserts newline.",
+                    id="prompt",
+                    soft_wrap=True,
+                )
+                with Horizontal(id="prompt_bottom"):
+                    yield Static("", id="prompt_spacer")
+                    yield Select(
+                        options=[("Auto", _MODEL_AUTO_VALUE)],
+                        allow_blank=False,
+                        id="model_select",
+                        compact=True,
+                    )
             yield Footer()
 
         def on_mount(self) -> None:
@@ -843,6 +883,12 @@ def run_tui() -> int:
             self.title = "Swarmee"
             self.sub_title = self._current_model_summary()
             self._update_prompt_placeholder()
+            # Show ASCII art banner at the top of the transcript.
+            # Use plain Static widgets to avoid Rich markup interpretation
+            # (the banner contains / characters that break [dim]...[/dim] wrapping).
+            from swarmee_river.utils.welcome_utils import SWARMEE_BANNER
+            for banner_line in SWARMEE_BANNER.strip().splitlines():
+                self._mount_transcript_widget(Static(banner_line))
             self._write_transcript("Swarmee TUI ready. Enter a prompt to run Swarmee.")
             self._write_transcript(self.sub_title)
             self._write_transcript(
@@ -850,9 +896,10 @@ def run_tui() -> int:
             )
             self._write_transcript("Consent: /consent <y|n|a|v> (or press y/n/a/v when prompted).")
             self._write_transcript(
-                "Keys: Enter submit, Shift+Enter newline (Ctrl+J/Alt+Enter fallback), F5 submit, Esc interrupt run, Ctrl+C/Cmd+C copy selection."
+                "Keys: Enter submit, Shift+Enter newline (Ctrl+J/Alt+Enter fallback), "
+                "Ctrl+Left/Right (or F6/F7) resize panes, F5 submit, Esc interrupt run, Ctrl+C/Cmd+C copy selection."
             )
-            self._write_transcript("Model selector: right pane header dropdown (or /model commands).")
+            self._write_transcript("Model selector: prompt box footer dropdown (or /model commands).")
             self._write_transcript("Text is selectable in all panes.")
             self._write_transcript("Optional export: /copy, /copy plan, /copy issues, /copy all.")
             self._load_session()
@@ -1556,11 +1603,10 @@ def run_tui() -> int:
                 self._apply_split_ratio()
 
         def _apply_split_ratio(self) -> None:
-            from textual.css.scalar import Scalar, Unit
             transcript = self.query_one("#transcript", VerticalScroll)
             side = self.query_one("#side", Vertical)
-            transcript.styles.width = Scalar(float(self._split_ratio), Unit.FRACTION, Unit.CELLS)
-            side.styles.width = Scalar(1.0, Unit.FRACTION, Unit.CELLS)
+            transcript.styles.width = f"{self._split_ratio}fr"
+            side.styles.width = "1fr"
             self.refresh(layout=True)
 
         def action_search_transcript(self) -> None:
@@ -1707,7 +1753,7 @@ def run_tui() -> int:
             self._update_prompt_placeholder()
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
-            self._notify(self._current_model_summary())
+            # The model selector is always visible; avoid transient notifications.
 
         def _handle_user_input(self, text: str) -> None:
             self._write_user_input(text)

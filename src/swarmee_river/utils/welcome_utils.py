@@ -8,6 +8,23 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.theme import Theme
 
+# ASCII art banner — beehive + figlet "Swarmee" (~65 cols wide)
+SWARMEE_BANNER = r"""
+  ^^    .-=-=-=-.  ^^
+^^    (`-=-=-=-=-`)      ^^
+    (`-=-=-=-=-=-=-`)  ^^
+^^  (`-=-=-=-=-=-=-=-`)   ^^
+  ( `-=-=-=-(@)-=-=-` )    ^^
+  (`-=-=-=- ____  =-`) ^^
+  (`-=-=- / ___|_      ____ _ _ __ _ __ ___   ___  ___
+  (`-=-=- \___ \ \ /\ / / _` | '__| '_ ` _ \ / _ \/ _ \
+  (`-=-=-  ___) \ V  V / (_| | |  | | | | | |  __/  __/
+   (`-=- |____/ \_/\_/ \__,_|_|  |_| |_| |_|\___|\___|
+    (`-=-=-=-=-=-=-`)
+      (`-=-=-=-=-`)
+       `-=-=-=-=-`
+"""
+
 # Create a custom theme for consistent styling
 STRANDS_THEME = Theme(
     {
@@ -55,6 +72,9 @@ def render_welcome_message(welcome_text: str) -> None:
         expand=False,
         padding=(1, 2),
     )
+
+    # Print the ASCII art banner
+    console.print(SWARMEE_BANNER, style="bold cyan", highlight=False)
 
     # Print the welcome panel
     console.print(welcome_panel)
