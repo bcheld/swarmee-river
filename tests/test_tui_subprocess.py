@@ -470,9 +470,48 @@ def test_command_palette_move_selection():
 
     palette = CommandPalette()
     palette.filter("/co")
-    assert len(palette._filtered) == 5  # /copy, /copy plan, /copy issues, /copy all, /consent
+    assert len(palette._filtered) == 6  # /copy, /copy plan, /copy issues, /copy last, /copy all, /consent
     palette.move_selection(1)
     assert palette._selected_index == 1
+
+
+def test_status_bar_refresh_display():
+    from swarmee_river.tui.widgets import StatusBar
+
+    bar = StatusBar()
+    # Access internal content set by update()
+    def _get_text(widget):
+        return widget._Static__content  # type: ignore[attr-defined]
+
+    assert "idle" in _get_text(bar)
+
+    bar.set_state("running")
+    bar.set_model("Model: openai/balanced")
+    bar.set_tool_count(3)
+    bar.set_elapsed(12.4)
+    text = _get_text(bar)
+    assert "running" in text
+    assert "Tools: 3" in text
+    assert "12.4s" in text
+
+
+def test_status_bar_counts():
+    from swarmee_river.tui.widgets import StatusBar
+
+    bar = StatusBar()
+    bar.set_counts(warnings=2, errors=1)
+    text = bar._Static__content  # type: ignore[attr-defined]
+    assert "warn=2" in text
+    assert "err=1" in text
+
+
+def test_command_palette_includes_copy_last():
+    from swarmee_river.tui.widgets import CommandPalette
+
+    palette = CommandPalette()
+    palette.filter("/copy l")
+    assert len(palette._filtered) == 1
+    assert palette._filtered[0][0] == "/copy last"
 
 
 def test_stop_process_escalates(monkeypatch):

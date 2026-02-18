@@ -266,6 +266,7 @@ class CommandPalette(Static):
         ("/copy", "Copy transcript"),
         ("/copy plan", "Copy plan text"),
         ("/copy issues", "Copy issues"),
+        ("/copy last", "Copy last response"),
         ("/copy all", "Copy everything"),
         ("/consent", "Respond to consent"),
         ("/stop", "Stop current run"),
@@ -314,6 +315,65 @@ class CommandPalette(Static):
             marker = "[bold]>[/bold] " if i == self._selected_index else "  "
             lines.append(f"{marker}{cmd:<14} [dim]{desc}[/dim]")
         self.update("\n".join(lines))
+
+
+class StatusBar(Static):
+    """One-line bar showing run state, model, tool count, elapsed time."""
+
+    DEFAULT_CSS = """
+    StatusBar {
+        dock: bottom;
+        height: 1;
+        padding: 0 1;
+        background: $surface;
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__("", **kwargs)
+        self._state: str = "idle"
+        self._model: str = ""
+        self._tool_count: int = 0
+        self._elapsed: float = 0.0
+        self._warning_count: int = 0
+        self._error_count: int = 0
+        self.refresh_display()
+
+    def set_state(self, state: str) -> None:
+        self._state = state
+        self.refresh_display()
+
+    def set_tool_count(self, n: int) -> None:
+        self._tool_count = n
+        self.refresh_display()
+
+    def set_elapsed(self, secs: float) -> None:
+        self._elapsed = secs
+        self.refresh_display()
+
+    def set_model(self, summary: str) -> None:
+        self._model = summary
+        self.refresh_display()
+
+    def set_counts(self, *, warnings: int = 0, errors: int = 0) -> None:
+        self._warning_count = warnings
+        self._error_count = errors
+        self.refresh_display()
+
+    def refresh_display(self) -> None:
+        icon = "\u25b6" if self._state == "running" else "\u23f8"  # ▶ / ⏸
+        parts = [
+            f"{icon} {self._state}",
+            self._model or "Model: ?",
+            f"Tools: {self._tool_count}",
+            f"{self._elapsed:.1f}s",
+        ]
+        if self._warning_count:
+            parts.append(f"warn={self._warning_count}")
+        if self._error_count:
+            parts.append(f"err={self._error_count}")
+        self.update(" | ".join(parts))
 
 
 class SystemMessage(Static):

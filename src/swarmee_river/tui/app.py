@@ -10,6 +10,7 @@ import re
 import shutil
 import signal
 import subprocess
+import time
 import sys
 import threading
 import uuid
@@ -515,6 +516,7 @@ def run_tui() -> int:
         CommandPalette,
         ConsentCard,
         PlanCard,
+        StatusBar,
         SystemMessage,
         ThinkingIndicator,
         ToolCallBlock,
@@ -557,6 +559,31 @@ def run_tui() -> int:
                 self._insert_newline()
                 return
             app = getattr(self, "app", None)
+            # Arrow keys to navigate command palette
+            if key in {"up", "down"} and app is not None and hasattr(app, "_command_palette"):
+                palette = app._command_palette
+                if palette is not None and palette.is_visible:
+                    event.stop()
+                    event.prevent_default()
+                    palette.move_selection(-1 if key == "up" else 1)
+                    return
+            # Enter selects from palette when visible (instead of submitting)
+            if key in {"enter", "return", "ctrl+m"} and app is not None and hasattr(app, "_command_palette"):
+                palette = app._command_palette
+                if palette is not None and palette.is_visible:
+                    event.stop()
+                    event.prevent_default()
+                    selected = palette.get_selected()
+                    if selected:
+                        self.clear()
+                        for method_name in ("insert", "insert_text_at_cursor"):
+                            method = getattr(self, method_name, None)
+                            if callable(method):
+                                with contextlib.suppress(Exception):
+                                    method(selected + " ")
+                                    break
+                    palette.hide()
+                    return
             # Tab to select from command palette
             if key == "tab" and app is not None and hasattr(app, "_command_palette"):
                 palette = app._command_palette
@@ -692,6 +719,11 @@ def run_tui() -> int:
         _tool_blocks: dict[str, Any] = {}  # tool_use_id → ToolCallBlock
         _current_plan_card: Any = None  # PlanCard | None
         _command_palette: Any = None  # CommandPalette | None
+        _status_bar: Any = None  # StatusBar | None
+        _run_tool_count: int = 0
+        _run_start_time: float | None = None
+        _status_timer: Any = None
+        _last_assistant_text: str = ""
         _transcript_widget_count: int = 0
         _MAX_TRANSCRIPT_WIDGETS: int = 500
 
@@ -731,6 +763,7 @@ def run_tui() -> int:
                             )
                     yield TextArea(text="", read_only=True, show_cursor=False, id="consent", soft_wrap=True)
             yield CommandPalette(id="command_palette")
+            yield StatusBar(id="status_bar")
             yield PromptTextArea(
                 text="",
                 placeholder="Type prompt. Enter submits, Shift+Enter inserts newline.",
@@ -741,6 +774,8 @@ def run_tui() -> int:
 
         def on_mount(self) -> None:
             self._command_palette = self.query_one("#command_palette", CommandPalette)
+            self._status_bar = self.query_one("#status_bar", StatusBar)
+            self._status_bar.set_model(self._current_model_summary())
             self.query_one("#prompt", PromptTextArea).focus()
             self._reset_plan_panel()
             self._reset_issues_panel()
@@ -852,6 +887,8 @@ def run_tui() -> int:
                 counts.append(f"err={self._error_count}")
             suffix = (" | " + " ".join(counts)) if counts else ""
             self.sub_title = f"{self._current_model_summary()}{suffix}"
+            if self._status_bar is not None:
+                self._status_bar.set_counts(warnings=self._warning_count, errors=self._error_count)
 
         def _current_model_summary(self) -> str:
             return resolve_model_config_summary(
@@ -1106,7 +1143,7 @@ def run_tui() -> int:
 
             elif etype == "text_complete":
                 if self._current_assistant_msg is not None:
-                    self._current_assistant_msg.finalize()
+                    self._last_assistant_text = self._current_assistant_msg.finalize()
                     self._current_assistant_msg = None
 
             elif etype == "thinking":
@@ -1120,6 +1157,9 @@ def run_tui() -> int:
                 block = ToolCallBlock(tool_name=tool_name, tool_use_id=tid)
                 self._tool_blocks[tid] = block
                 self._mount_transcript_widget(block)
+                self._run_tool_count += 1
+                if self._status_bar is not None:
+                    self._status_bar.set_tool_count(self._run_tool_count)
 
             elif etype == "tool_progress":
                 tid = event.get("tool_use_id", "")
@@ -1235,9 +1275,24 @@ def run_tui() -> int:
             if self._proc is not proc:
                 return
 
+            # Stop status timer and update status bar.
+            if self._status_timer is not None:
+                self._status_timer.stop()
+                self._status_timer = None
+            elapsed = time.time() - self._run_start_time if self._run_start_time is not None else 0.0
+            if self._status_bar is not None:
+                self._status_bar.set_state("idle")
+                self._status_bar.set_elapsed(elapsed)
+            self._run_start_time = None
+
+            # Write run completion summary.
+            self._write_transcript(
+                f"[run] completed in {elapsed:.1f}s ({self._run_tool_count} tool calls, exit code {return_code})"
+            )
+
             # Finalize any in-progress assistant message.
             if self._current_assistant_msg is not None:
-                self._current_assistant_msg.finalize()
+                self._last_assistant_text = self._current_assistant_msg.finalize()
                 self._current_assistant_msg = None
             if self._current_thinking is not None:
                 self._current_thinking.remove()
@@ -1304,6 +1359,10 @@ def run_tui() -> int:
                     session_id=self._run_session_id,
                 )
 
+        def _tick_status(self) -> None:
+            if self._run_start_time is not None and self._status_bar is not None:
+                self._status_bar.set_elapsed(time.time() - self._run_start_time)
+
         def _start_run(self, prompt: str, *, auto_approve: bool) -> None:
             self._pending_plan_prompt = None
             self._reset_artifacts_panel()
@@ -1312,6 +1371,16 @@ def run_tui() -> int:
             self._current_assistant_msg = None
             self._current_thinking = None
             self._tool_blocks = {}
+            self._run_tool_count = 0
+            self._run_start_time = time.time()
+            if self._status_bar is not None:
+                self._status_bar.set_state("running")
+                self._status_bar.set_tool_count(0)
+                self._status_bar.set_elapsed(0.0)
+                self._status_bar.set_model(self._current_model_summary())
+            if self._status_timer is not None:
+                self._status_timer.stop()
+            self._status_timer = self.set_interval(1.0, self._tick_status)
             run_prompt = prompt if auto_approve else build_plan_mode_prompt(prompt)
             try:
                 self._run_session_id = uuid.uuid4().hex
@@ -1425,6 +1494,8 @@ def run_tui() -> int:
                 self._model_tier_override = tier.strip().lower() or None
             self._update_header_status()
             self._update_prompt_placeholder()
+            if self._status_bar is not None:
+                self._status_bar.set_model(self._current_model_summary())
             self._notify(self._current_model_summary())
 
         def _handle_user_input(self, text: str) -> None:
@@ -1442,6 +1513,10 @@ def run_tui() -> int:
 
             if normalized in {"/copy issues", ":copy issues"}:
                 self.action_copy_issues()
+                return
+
+            if normalized in {"/copy last", ":copy last"}:
+                self._copy_text(self._last_assistant_text, label="last response")
                 return
 
             if normalized in {"/copy all", ":copy all"}:
