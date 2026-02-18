@@ -4,18 +4,28 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import json as _json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import threading
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.state_paths import logs_dir
+
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
+_MODEL_AUTO_VALUE = "__auto__"
 _TRUNCATED_ARTIFACT_RE = re.compile(r"full output saved to (?P<path>[^\]]+)")
 _PATH_TOKEN_RE = re.compile(r"[A-Za-z]:\\[^\s,;]+|/(?:[^\s,;]+)|\./[^\s,;]+|\.\./[^\s,;]+")
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_PROVIDER_NOISE_PREFIX = "[provider]"
+_PROVIDER_FALLBACK_PHRASE = "falling back to"
 
 
 @dataclass(frozen=True)
@@ -73,8 +83,195 @@ def render_tui_hint_after_plan() -> str:
     return "Plan detected. Type /approve to execute, /replan to regenerate, /clearplan to clear."
 
 
+def is_multiline_newline_key(event: Any) -> bool:
+    """Best-effort detection for newline intent in terminal key events."""
+    key = str(getattr(event, "key", "")).lower()
+    aliases = [str(alias).lower() for alias in getattr(event, "aliases", [])]
+    character = getattr(event, "character", None)
+    event_name = str(getattr(event, "name", "")).lower()
+    shifted_newline_suffixes = {"enter", "return", "ctrl+m", "newline"}
+
+    if any(key == f"shift+{suffix}" for suffix in shifted_newline_suffixes):
+        return True
+    if event_name in {"shift_enter", "shift_return"}:
+        return True
+    if any(alias == f"shift+{suffix}" for alias in aliases for suffix in shifted_newline_suffixes):
+        return True
+
+    if key in {
+        "shift+enter",
+        "shift+return",
+        "alt+enter",
+        "alt+return",
+        "ctrl+j",
+        "newline",
+    }:
+        return True
+    if "newline" in aliases:
+        return True
+    if character == "\n":
+        return True
+    return False
+
+
+def build_plan_mode_prompt(prompt: str) -> str:
+    """Wrap user input so `/plan` consistently routes through plan generation."""
+    cleaned = prompt.strip()
+    if not cleaned:
+        return cleaned
+    return (
+        "Create a concrete work plan for the following request. "
+        "Return only the plan details.\n\n"
+        f"Request:\n{cleaned}"
+    )
+
+
 def _extract_paths_from_text(text: str) -> list[str]:
     return [match.strip() for match in _PATH_TOKEN_RE.findall(text) if match.strip()]
+
+
+def sanitize_output_text(text: str) -> str:
+    """Remove common control sequences that render poorly in a TUI transcript."""
+    cleaned = text.replace("\r", "")
+    return _ANSI_ESCAPE_RE.sub("", cleaned)
+
+
+def resolve_model_config_summary(*, provider_override: str | None = None, tier_override: str | None = None) -> str:
+    """
+    Best-effort summary of the configured model selection (provider/tier/model_id) for display in the TUI.
+
+    This is intentionally approximate: final provider/model can still vary at runtime based on CLI args,
+    environment variables, and credential availability.
+    """
+    try:
+        from swarmee_river.settings import load_settings
+        from swarmee_river.utils.provider_utils import resolve_model_provider
+    except Exception:
+        return "Model: (unavailable)"
+
+    try:
+        settings = load_settings()
+    except Exception:
+        return "Model: (unavailable)"
+
+    selected_provider, notice = resolve_model_provider(
+        cli_provider=None,
+        env_provider=provider_override if provider_override is not None else os.getenv("SWARMEE_MODEL_PROVIDER"),
+        settings_provider=settings.models.provider,
+    )
+    tier = (
+        tier_override
+        if tier_override is not None
+        else (os.getenv("SWARMEE_MODEL_TIER") or settings.models.default_tier)
+    )
+    tier = (tier or "balanced").strip().lower()
+
+    model_id: str | None = None
+    try:
+        # Provider-specific tiers are the primary source.
+        provider_cfg = settings.models.providers.get(selected_provider)
+        if provider_cfg:
+            tier_cfg = provider_cfg.tiers.get(tier)
+            if tier_cfg and tier_cfg.model_id:
+                model_id = tier_cfg.model_id
+        # Global tier overrides.
+        if model_id is None:
+            global_tier_cfg = settings.models.tiers.get(tier)
+            if global_tier_cfg and global_tier_cfg.model_id:
+                model_id = global_tier_cfg.model_id
+    except Exception:
+        model_id = None
+
+    suffix = f" ({model_id})" if model_id else ""
+    fallback = " (fallback)" if notice else ""
+    return f"Model: {selected_provider}/{tier}{suffix}{fallback}"
+
+
+def _model_option_model_id(
+    *,
+    settings: Any,
+    provider_name: str,
+    tier_name: str,
+) -> str | None:
+    model_id: str | None = None
+    provider_cfg = settings.models.providers.get(provider_name)
+    if provider_cfg is not None:
+        provider_tier_cfg = provider_cfg.tiers.get(tier_name)
+        if provider_tier_cfg is not None and provider_tier_cfg.model_id:
+            model_id = provider_tier_cfg.model_id
+    if model_id is None:
+        global_tier_cfg = settings.models.tiers.get(tier_name)
+        if global_tier_cfg is not None and global_tier_cfg.model_id:
+            model_id = global_tier_cfg.model_id
+    return model_id
+
+
+def model_select_options(
+    *,
+    provider_override: str | None = None,
+    tier_override: str | None = None,
+) -> tuple[list[tuple[str, str]], str]:
+    """
+    Build model selector dropdown options and the currently selected option value.
+
+    Returns:
+        (options, selected_value)
+    """
+    auto_summary = resolve_model_config_summary().removeprefix("Model: ").strip()
+    options: list[tuple[str, str]] = [(f"Auto ({auto_summary})", _MODEL_AUTO_VALUE)]
+    selected_value = _MODEL_AUTO_VALUE
+
+    try:
+        from swarmee_river.settings import load_settings
+        from swarmee_river.utils.provider_utils import resolve_model_provider
+    except Exception:
+        return options, selected_value
+
+    try:
+        settings = load_settings()
+    except Exception:
+        return options, selected_value
+
+    selected_provider, _ = resolve_model_provider(
+        cli_provider=None,
+        env_provider=provider_override if provider_override is not None else os.getenv("SWARMEE_MODEL_PROVIDER"),
+        settings_provider=settings.models.provider,
+    )
+    selected_tier = (
+        tier_override
+        if tier_override is not None
+        else (os.getenv("SWARMEE_MODEL_TIER") or settings.models.default_tier)
+    )
+    selected_provider = (selected_provider or "").strip().lower()
+    selected_tier = (selected_tier or "").strip().lower()
+
+    providers = sorted(settings.models.providers.keys())
+
+    seen_values: set[str] = set()
+    for provider_name in providers:
+        provider_cfg = settings.models.providers.get(provider_name)
+        tier_names = sorted(provider_cfg.tiers.keys()) if provider_cfg and provider_cfg.tiers else []
+        if not tier_names:
+            continue
+
+        for tier_name in tier_names:
+            value = f"{provider_name}|{tier_name}"
+            if value in seen_values:
+                continue
+            seen_values.add(value)
+            model_id = _model_option_model_id(settings=settings, provider_name=provider_name, tier_name=tier_name)
+            suffix = f" ({model_id})" if model_id else ""
+            options.append((f"{provider_name}/{tier_name}{suffix}", value))
+            if provider_name == selected_provider and tier_name == selected_tier:
+                selected_value = value
+
+    if provider_override is None and tier_override is None:
+        selected_value = _MODEL_AUTO_VALUE
+
+    available_values = {value for _, value in options}
+    if selected_value not in available_values:
+        selected_value = _MODEL_AUTO_VALUE
+    return options, selected_value
 
 
 def parse_output_line(line: str) -> ParsedEvent | None:
@@ -82,6 +279,9 @@ def parse_output_line(line: str) -> ParsedEvent | None:
     text = line.rstrip("\n")
     stripped = text.strip()
     lower = stripped.lower()
+
+    if stripped.startswith(_PROVIDER_NOISE_PREFIX) and _PROVIDER_FALLBACK_PHRASE in lower:
+        return ParsedEvent(kind="noise", text=text)
 
     if "~ consent>" in lower:
         return ParsedEvent(kind="consent_prompt", text=text)
@@ -112,6 +312,12 @@ def parse_output_line(line: str) -> ParsedEvent | None:
     if stripped.startswith("Error:") or stripped.startswith("ERROR:"):
         return ParsedEvent(kind="error", text=text)
 
+    if "operation not permitted" in lower and "/bin/ps" in lower:
+        return ParsedEvent(kind="warning", text=text)
+
+    if "warning" in lower or "deprecationwarning" in lower or "runtimewarning" in lower or "userwarning" in lower:
+        return ParsedEvent(kind="warning", text=text)
+
     if lower.startswith("[tool ") and any(token in lower for token in {" start", " started", " running"}):
         return ParsedEvent(kind="tool_start", text=text)
 
@@ -119,6 +325,17 @@ def parse_output_line(line: str) -> ParsedEvent | None:
         return ParsedEvent(kind="tool_stop", text=text)
 
     return None
+
+
+def parse_tui_event(line: str) -> dict[str, Any] | None:
+    """Parse a JSONL event line emitted by TuiCallbackHandler. Returns None for non-JSON lines."""
+    stripped = line.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        return _json.loads(stripped)
+    except (ValueError, _json.JSONDecodeError):
+        return None
 
 
 def artifact_paths_from_event(event: ParsedEvent) -> list[str]:
@@ -196,10 +413,34 @@ def write_to_proc(proc: subprocess.Popen[str], text: str) -> bool:
     return True
 
 
-def spawn_swarmee(prompt: str, *, auto_approve: bool) -> subprocess.Popen[str]:
+def spawn_swarmee(
+    prompt: str,
+    *,
+    auto_approve: bool,
+    session_id: str | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
     """Spawn Swarmee as a subprocess with line-buffered merged output."""
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    # The CLI callback handler prints spinners using ANSI + carriage returns; disable for TUI subprocess capture.
+    env["SWARMEE_SPINNERS"] = "0"
+    # Enable structured JSONL event output for TUI consumption.
+    env["SWARMEE_TUI_EVENTS"] = "1"
+    existing_warning_filters = env.get("PYTHONWARNINGS", "").strip()
+    tui_warning_filters = [
+        # `PYTHONWARNINGS` is parsed via `warnings._setoption`, which `re.escape`s message+module.
+        # Use exact (literal) values, not regex patterns.
+        'ignore:Field name "json" in "Http_requestTool" shadows an attribute in parent "BaseModel"'
+        ":UserWarning:pydantic.main",
+    ]
+    env["PYTHONWARNINGS"] = ",".join(
+        [item for item in [*tui_warning_filters, existing_warning_filters] if isinstance(item, str) and item.strip()]
+    )
+    if env_overrides:
+        env.update(env_overrides)
+    if session_id:
+        env["SWARMEE_SESSION_ID"] = session_id
     return subprocess.Popen(
         build_swarmee_cmd(prompt, auto_approve=auto_approve),
         stdin=subprocess.PIPE,
@@ -260,10 +501,56 @@ def run_tui() -> int:
     AppBase = textual_app.App
     Horizontal = textual_containers.Horizontal
     Vertical = textual_containers.Vertical
+    VerticalScroll = textual_containers.VerticalScroll
     Header = textual_widgets.Header
     Footer = textual_widgets.Footer
-    Input = textual_widgets.Input
-    RichLog = textual_widgets.RichLog
+    Select = textual_widgets.Select
+    Static = textual_widgets.Static
+    TabbedContent = textual_widgets.TabbedContent
+    TabPane = textual_widgets.TabPane
+    TextArea = textual_widgets.TextArea
+
+    from swarmee_river.tui.widgets import (
+        AssistantMessage,
+        ConsentCard,
+        SystemMessage,
+        ThinkingIndicator,
+        ToolCallBlock,
+        UserMessage,
+    )
+
+    class PromptTextArea(TextArea):
+        """Prompt editor that submits on Enter and inserts newline on Shift+Enter."""
+
+        def _insert_newline(self) -> None:
+            for method_name, args in (
+                ("insert", ("\n",)),
+                ("insert_text_at_cursor", ("\n",)),
+                ("action_newline", ()),
+                ("action_insert_newline", ()),
+            ):
+                method = getattr(self, method_name, None)
+                if not callable(method):
+                    continue
+                with contextlib.suppress(Exception):
+                    method(*args)
+                    return
+
+        def on_key(self, event: Any) -> None:
+            key = str(getattr(event, "key", "")).lower()
+            if is_multiline_newline_key(event):
+                event.stop()
+                event.prevent_default()
+                self._insert_newline()
+                return
+            if key in {"enter", "return", "ctrl+m"}:
+                event.stop()
+                event.prevent_default()
+                app = getattr(self, "app", None)
+                if app is not None:
+                    with contextlib.suppress(Exception):
+                        app.action_submit_prompt()
+                return
 
     class SwarmeeTUI(AppBase):
         CSS = """
@@ -282,24 +569,7 @@ def run_tui() -> int:
             height: 1fr;
             border: round $accent;
             padding: 0 1;
-        }
-
-        #plan {
-            height: 1fr;
-            border: round $accent;
-            padding: 0 1;
-        }
-
-        #artifacts {
-            height: 1fr;
-            border: round $accent;
-            padding: 0 1;
-        }
-
-        #consent {
-            height: 1fr;
-            border: round $warning;
-            padding: 0 1;
+            overflow-y: auto;
         }
 
         #side {
@@ -308,63 +578,363 @@ def run_tui() -> int:
             layout: vertical;
         }
 
+        #model_row {
+            height: auto;
+            layout: horizontal;
+            padding: 0 0 1 0;
+            align: left middle;
+        }
+
+        #model_label {
+            width: 7;
+            content-align: left middle;
+        }
+
+        #model_select {
+            width: 1fr;
+        }
+
+        #side_tabs {
+            height: 1fr;
+        }
+
+        #plan, #issues, #artifacts {
+            height: 1fr;
+            border: round $accent;
+            padding: 0 1;
+        }
+
+        #consent {
+            height: 8;
+            border: round $warning;
+            padding: 0 1;
+        }
+
         #prompt {
             dock: bottom;
+            height: 7;
+            border: round $accent;
+            padding: 0 1;
         }
         """
+        BINDINGS = [
+            ("f5", "submit_prompt", "Send prompt"),
+            ("escape", "interrupt_run", "Interrupt run"),
+            ("ctrl+c", "copy_selection", "Copy selection"),
+            ("meta+c", "copy_selection", "Copy selection"),
+            ("super+c", "copy_selection", "Copy selection"),
+            ("ctrl+d", "quit", "Quit"),
+            ("tab", "focus_prompt", "Focus prompt"),
+        ]
 
         _proc: subprocess.Popen[str] | None = None
         _runner_thread: threading.Thread | None = None
         _last_prompt: str | None = None
         _pending_plan_prompt: str | None = None
         _last_run_auto_approve: bool = False
+        _default_auto_approve: bool = False
+        _run_session_id: str | None = None
         _consent_active: bool = False
         _consent_buffer: list[str] = []
         _artifacts: list[str] = []
+        _plan_text: str = ""
+        _issues_lines: list[str] = []
+        _issues_repeat_line: str | None = None
+        _issues_repeat_count: int = 0
+        _warning_count: int = 0
+        _error_count: int = 0
+        _model_provider_override: str | None = None
+        _model_tier_override: str | None = None
+        _model_select_syncing: bool = False
+        # Conversation view state
+        _current_assistant_msg: Any = None  # AssistantMessage | None
+        _current_thinking: Any = None  # ThinkingIndicator | None
+        _tool_blocks: dict[str, Any] = {}  # tool_use_id → ToolCallBlock
+        _transcript_widget_count: int = 0
+        _MAX_TRANSCRIPT_WIDGETS: int = 500
 
         def compose(self) -> Any:
             yield Header()
             with Horizontal(id="panes"):
-                yield RichLog(id="transcript", auto_scroll=True, wrap=True)
+                yield VerticalScroll(id="transcript")
                 with Vertical(id="side"):
-                    yield RichLog(id="plan", auto_scroll=True, wrap=True)
-                    yield RichLog(id="artifacts", auto_scroll=True, wrap=True)
-                    yield RichLog(id="consent", auto_scroll=True, wrap=True)
-            yield Input(placeholder="Type prompt (default plan-first; /run to execute)", id="prompt")
+                    with Horizontal(id="model_row"):
+                        yield Static("Model:", id="model_label")
+                        yield Select(options=[("Auto", _MODEL_AUTO_VALUE)], allow_blank=False, id="model_select")
+                    with TabbedContent(id="side_tabs"):
+                        with TabPane("Plan", id="tab_plan"):
+                            yield TextArea(
+                                text="",
+                                language="markdown",
+                                read_only=True,
+                                show_cursor=False,
+                                id="plan",
+                                soft_wrap=True,
+                            )
+                        with TabPane("Issues", id="tab_issues"):
+                            yield TextArea(
+                                text="",
+                                read_only=True,
+                                show_cursor=False,
+                                id="issues",
+                                soft_wrap=True,
+                            )
+                        with TabPane("Artifacts", id="tab_artifacts"):
+                            yield TextArea(
+                                text="",
+                                read_only=True,
+                                show_cursor=False,
+                                id="artifacts",
+                                soft_wrap=True,
+                            )
+                    yield TextArea(text="", read_only=True, show_cursor=False, id="consent", soft_wrap=True)
+            yield PromptTextArea(
+                text="",
+                placeholder="Type prompt. Enter submits, Shift+Enter inserts newline.",
+                id="prompt",
+                soft_wrap=True,
+            )
             yield Footer()
 
         def on_mount(self) -> None:
-            self.query_one("#prompt", Input).focus()
+            self.query_one("#prompt", PromptTextArea).focus()
             self._reset_plan_panel()
+            self._reset_issues_panel()
             self._reset_artifacts_panel()
             self._reset_consent_panel()
+            self._refresh_model_select()
+            self.title = "Swarmee"
+            self.sub_title = self._current_model_summary()
+            self._update_prompt_placeholder()
             self._write_transcript("Swarmee TUI ready. Enter a prompt to run Swarmee.")
+            self._write_transcript(self.sub_title)
             self._write_transcript(
-                "Commands: /plan, /run, /approve, /replan, /clearplan, /consent <y|n|a|v>, /stop, /exit."
+                "Commands: /plan <prompt>, /run <prompt>, /approve, /replan, /clearplan, /model, /stop, /exit."
             )
+            self._write_transcript("Consent: /consent <y|n|a|v> (or press y/n/a/v when prompted).")
+            self._write_transcript(
+                "Keys: Enter submit, Shift+Enter newline (Ctrl+J/Alt+Enter fallback), F5 submit, Esc interrupt run, Ctrl+C/Cmd+C copy selection."
+            )
+            self._write_transcript("Model selector: right pane header dropdown (or /model commands).")
+            self._write_transcript("Text is selectable in all panes.")
+            self._write_transcript("Optional export: /copy, /copy plan, /copy issues, /copy all.")
+
+        def _mount_transcript_widget(self, widget: Any) -> None:
+            """Mount a widget into the transcript VerticalScroll and prune if needed."""
+            transcript = self.query_one("#transcript", VerticalScroll)
+            transcript.mount(widget)
+            self._transcript_widget_count += 1
+            if self._transcript_widget_count > self._MAX_TRANSCRIPT_WIDGETS:
+                children = list(transcript.children)
+                prune = len(children) - self._MAX_TRANSCRIPT_WIDGETS
+                for child in children[:prune]:
+                    child.remove()
+                self._transcript_widget_count = len(list(transcript.children))
+            transcript.scroll_end(animate=False)
 
         def _write_transcript(self, line: str) -> None:
-            self.query_one("#transcript", RichLog).write(line)
+            """Write a system/info message to the transcript."""
+            self._mount_transcript_widget(SystemMessage(line))
+
+        def _write_transcript_line(self, line: str) -> None:
+            """Write a plain text line to the transcript (used for TUI-internal messages)."""
+            self._write_transcript(line)
+
+        def _write_user_input(self, text: str) -> None:
+            self._mount_transcript_widget(UserMessage(text))
+
+        def _append_plain_text(self, text: str) -> None:
+            """Mount a plain Static widget for non-event output lines (legacy fallback)."""
+            if not text.strip():
+                return
+            self._mount_transcript_widget(Static(text))
 
         def _set_plan_panel(self, content: str) -> None:
-            plan_panel = self.query_one("#plan", RichLog)
-            plan_panel.clear()
-            for line in content.splitlines():
-                plan_panel.write(line)
-            if not content.strip():
-                plan_panel.write("(no plan)")
+            self._plan_text = content
+            plan_panel = self.query_one("#plan", TextArea)
+            text = content if content.strip() else "(no plan)"
+            plan_panel.load_text(text)
+            plan_panel.scroll_end(animate=False)
 
         def _reset_plan_panel(self) -> None:
             self._set_plan_panel("(no plan)")
 
-        def _render_artifacts_panel(self) -> None:
-            panel = self.query_one("#artifacts", RichLog)
-            panel.clear()
-            if not self._artifacts:
-                panel.write("(no artifacts)")
+        def _reset_issues_panel(self) -> None:
+            self._issues_lines = []
+            self._issues_repeat_line = None
+            self._issues_repeat_count = 0
+            self._warning_count = 0
+            self._error_count = 0
+            panel = self.query_one("#issues", TextArea)
+            panel.load_text("(no issues yet)")
+            self._update_header_status()
+
+        def _write_issue(self, line: str) -> None:
+            if self._issues_repeat_line == line:
+                self._issues_repeat_count += 1
                 return
-            for item in self._artifacts:
-                panel.write(item)
+            if self._issues_repeat_line is not None and self._issues_repeat_count > 0:
+                repeated = f"… repeated {self._issues_repeat_count} more time(s): {self._issues_repeat_line}"
+                self._issues_lines.append(repeated)
+            self._issues_repeat_line = line
+            self._issues_repeat_count = 0
+            self._issues_lines.append(line)
+            if len(self._issues_lines) > 2000:
+                self._issues_lines = self._issues_lines[-2000:]
+            self._render_issues_panel()
+
+        def _render_issues_panel(self) -> None:
+            issues_panel = self.query_one("#issues", TextArea)
+            text = "\n".join(self._issues_lines) if self._issues_lines else "(no issues yet)"
+            issues_panel.load_text(text)
+            issues_panel.scroll_end(animate=False)
+
+        def _flush_issue_repeats(self) -> None:
+            if self._issues_repeat_line is None or self._issues_repeat_count <= 0:
+                self._issues_repeat_line = None
+                self._issues_repeat_count = 0
+                return
+            repeated = f"… repeated {self._issues_repeat_count} more time(s): {self._issues_repeat_line}"
+            self._issues_lines.append(repeated)
+            self._issues_repeat_line = None
+            self._issues_repeat_count = 0
+            self._render_issues_panel()
+
+        def _update_header_status(self) -> None:
+            counts = []
+            if self._warning_count:
+                counts.append(f"warn={self._warning_count}")
+            if self._error_count:
+                counts.append(f"err={self._error_count}")
+            suffix = (" | " + " ".join(counts)) if counts else ""
+            self.sub_title = f"{self._current_model_summary()}{suffix}"
+
+        def _current_model_summary(self) -> str:
+            return resolve_model_config_summary(
+                provider_override=self._model_provider_override,
+                tier_override=self._model_tier_override,
+            )
+
+        def _model_env_overrides(self) -> dict[str, str]:
+            overrides: dict[str, str] = {}
+            if self._model_provider_override:
+                overrides["SWARMEE_MODEL_PROVIDER"] = self._model_provider_override
+            if self._model_tier_override:
+                overrides["SWARMEE_MODEL_TIER"] = self._model_tier_override
+            return overrides
+
+        def _refresh_model_select(self) -> None:
+            selector = self.query_one("#model_select", Select)
+            options, selected_value = model_select_options(
+                provider_override=self._model_provider_override,
+                tier_override=self._model_tier_override,
+            )
+            self._model_select_syncing = True
+            try:
+                selector.set_options(options)
+                with contextlib.suppress(Exception):
+                    selector.value = selected_value
+            finally:
+                self._model_select_syncing = False
+
+        def _update_prompt_placeholder(self) -> None:
+            input_widget = self.query_one("#prompt", PromptTextArea)
+            mode = "execute" if self._default_auto_approve else "plan"
+            input_widget.placeholder = f"Mode: {mode}. Enter submits. Shift+Enter/Ctrl+J adds newline."
+
+        def _notify(self, message: str, *, severity: str = "information") -> None:
+            with contextlib.suppress(Exception):
+                self.notify(message, severity=severity, timeout=2.5)
+
+        def _copy_text(self, text: str, *, label: str) -> None:
+            payload = text or ""
+            if not payload.strip():
+                self._notify(f"{label}: nothing to copy.", severity="warning")
+                return
+
+            # Prefer native clipboard commands in terminal contexts (more reliable than Textual clipboard bridges).
+            try:
+                if sys.platform == "darwin" and shutil.which("pbcopy"):
+                    subprocess.run(["pbcopy"], input=payload, text=True, check=True)
+                    self._notify(f"{label}: copied to clipboard.")
+                    return
+                if os.name == "nt" and shutil.which("clip"):
+                    subprocess.run(["clip"], input=payload, text=True, check=True)
+                    self._notify(f"{label}: copied to clipboard.")
+                    return
+                if shutil.which("wl-copy"):
+                    subprocess.run(["wl-copy"], input=payload, text=True, check=True)
+                    self._notify(f"{label}: copied to clipboard.")
+                    return
+                if shutil.which("xclip"):
+                    subprocess.run(["xclip", "-selection", "clipboard"], input=payload, text=True, check=True)
+                    self._notify(f"{label}: copied to clipboard.")
+                    return
+            except Exception:
+                pass
+
+            try:
+                self.copy_to_clipboard(payload)
+                self._notify(f"{label}: copied to clipboard.")
+                return
+            except Exception:
+                pass
+
+            artifact_path = self._persist_run_transcript(
+                pid=(self._proc.pid if self._proc is not None else None),
+                session_id=self._run_session_id,
+                prompt=f"(copy) {label}",
+                auto_approve=False,
+                exit_code=0,
+                output_text=payload,
+            )
+            if artifact_path:
+                self._add_artifact_paths([artifact_path])
+                self._write_transcript_line(
+                    f"[copy] {label}: clipboard unavailable. Saved to artifact: {artifact_path}"
+                )
+            else:
+                self._write_transcript_line(f"[copy] {label}: clipboard unavailable.")
+
+        def _get_transcript_text(self) -> str:
+            transcript = self.query_one("#transcript", VerticalScroll)
+            lines: list[str] = []
+            for child in transcript.children:
+                if isinstance(child, AssistantMessage):
+                    lines.append(child.full_text)
+                elif isinstance(child, UserMessage):
+                    lines.append(str(child.renderable))
+                else:
+                    lines.append(str(child.renderable))
+            return "\n".join(lines).rstrip() + "\n"
+
+        def _get_all_text(self) -> str:
+            parts = [
+                "# Transcript",
+                self._get_transcript_text().rstrip(),
+                "",
+                "# Plan",
+                (self._plan_text or "").rstrip() or "(no plan)",
+                "",
+                "# Issues",
+                "\n".join(self._issues_lines).rstrip() or "(no issues)",
+                "",
+                "# Artifacts",
+                "\n".join(self._artifacts).rstrip() or "(no artifacts)",
+                "",
+                "# Consent",
+                "\n".join(self._consent_buffer).rstrip() or "(no consent buffer)",
+                "",
+            ]
+            return "\n".join(parts).rstrip() + "\n"
+
+        def _render_artifacts_panel(self) -> None:
+            panel = self.query_one("#artifacts", TextArea)
+            if not self._artifacts:
+                panel.load_text("(no artifacts yet)")
+            else:
+                panel.load_text("\n".join(self._artifacts))
+            panel.scroll_end(animate=False)
 
         def _reset_artifacts_panel(self) -> None:
             self._artifacts = []
@@ -377,15 +947,16 @@ def run_tui() -> int:
                 self._render_artifacts_panel()
 
         def _render_consent_panel(self) -> None:
-            consent_panel = self.query_one("#consent", RichLog)
-            consent_panel.clear()
+            consent_panel = self.query_one("#consent", TextArea)
             if not self._consent_active:
-                consent_panel.write("(no active consent prompt)")
+                consent_panel.load_text("(no active consent prompt)")
                 return
-            for line in self._consent_buffer[-10:]:
-                consent_panel.write(line)
-            consent_panel.write("")
-            consent_panel.write("[y] yes  [n] no  [a] always(session)  [v] never(session)")
+            lines = self._consent_buffer[-10:] + [
+                "",
+                "[y] yes  [n] no  [a] always(session)  [v] never(session)",
+            ]
+            consent_panel.load_text("\n".join(lines))
+            consent_panel.scroll_end(animate=False)
 
         def _reset_consent_panel(self) -> None:
             self._consent_active = False
@@ -407,44 +978,186 @@ def run_tui() -> int:
         def _submit_consent_choice(self, choice: str) -> None:
             normalized_choice = choice.strip().lower()
             if normalized_choice not in _CONSENT_CHOICES:
-                self._write_transcript("Usage: /consent <y|n|a|v>")
+                self._write_transcript_line("Usage: /consent <y|n|a|v>")
                 return
             if not self._consent_active:
-                self._write_transcript("[consent] no active prompt.")
+                self._write_transcript_line("[consent] no active prompt.")
                 return
             if self._proc is None or self._proc.poll() is not None:
-                self._write_transcript("[consent] process is not running.")
+                self._write_transcript_line("[consent] process is not running.")
                 self._reset_consent_panel()
                 return
             if not write_to_proc(self._proc, normalized_choice):
-                self._write_transcript("[consent] failed to send response (stdin unavailable).")
+                self._write_transcript_line("[consent] failed to send response (stdin unavailable).")
                 self._reset_consent_panel()
                 return
-            self._write_transcript(f"[consent] sent '{normalized_choice}'.")
             self._reset_consent_panel()
-            self.query_one("#prompt", Input).focus()
+            self.query_one("#prompt", TextArea).focus()
 
         def _handle_output_line(self, line: str) -> None:
-            event = parse_output_line(line)
+            # Try structured JSONL first (emitted by TuiCallbackHandler).
+            tui_event = parse_tui_event(line)
+            if tui_event is not None:
+                self._handle_tui_event(tui_event)
+                return
+
+            # Legacy fallback for non-JSON lines (stderr leakage, library warnings, etc.).
+            sanitized = sanitize_output_text(line)
+            event = parse_output_line(sanitized)
             if event is None:
-                self._write_transcript(line)
-                self._apply_consent_capture(line)
+                if sanitized.strip() == "return meta(":
+                    return
+                self._append_plain_text(sanitized)
+                self._apply_consent_capture(sanitized)
+                return
+
+            if event.kind == "noise":
                 return
 
             if event.kind == "error":
                 text = event.text
                 if not text.startswith("ERROR:"):
                     text = f"ERROR: {text}"
-                self._write_transcript(text)
+                self._error_count += 1
+                self._write_issue(text)
+                self._update_header_status()
+            elif event.kind == "warning":
+                text = event.text
+                if not text.startswith("WARN:"):
+                    text = f"WARN: {text}"
+                self._warning_count += 1
+                self._write_issue(text)
+                self._update_header_status()
             else:
-                self._write_transcript(event.text)
+                self._append_plain_text(event.text)
 
             artifact_paths = artifact_paths_from_event(event)
             if artifact_paths:
                 self._add_artifact_paths(artifact_paths)
-                self._write_transcript(f"artifact: {', '.join(artifact_paths)}")
 
-            self._apply_consent_capture(line)
+            self._apply_consent_capture(sanitized)
+
+        def _handle_tui_event(self, event: dict[str, Any]) -> None:
+            """Process a structured JSONL event from the subprocess."""
+            etype = event.get("event", "")
+
+            if etype == "text_delta":
+                if self._current_thinking is not None:
+                    self._current_thinking.remove()
+                    self._current_thinking = None
+                if self._current_assistant_msg is None:
+                    self._current_assistant_msg = AssistantMessage()
+                    self._mount_transcript_widget(self._current_assistant_msg)
+                self._current_assistant_msg.append_delta(event.get("data", ""))
+                self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+
+            elif etype == "text_complete":
+                if self._current_assistant_msg is not None:
+                    self._current_assistant_msg.finalize()
+                    self._current_assistant_msg = None
+
+            elif etype == "thinking":
+                if self._current_thinking is None:
+                    self._current_thinking = ThinkingIndicator()
+                    self._mount_transcript_widget(self._current_thinking)
+
+            elif etype == "tool_start":
+                tid = event.get("tool_use_id", "")
+                tool_name = event.get("tool", "unknown")
+                block = ToolCallBlock(tool_name=tool_name, tool_use_id=tid)
+                self._tool_blocks[tid] = block
+                self._mount_transcript_widget(block)
+
+            elif etype == "tool_progress":
+                tid = event.get("tool_use_id", "")
+                block = self._tool_blocks.get(tid)
+                if block is not None:
+                    block.update_progress(event.get("chars", 0))
+
+            elif etype == "tool_result":
+                tid = event.get("tool_use_id", "")
+                block = self._tool_blocks.get(tid)
+                if block is not None:
+                    block.set_result(event.get("status", "unknown"), event.get("duration_s", 0))
+
+            elif etype == "consent_prompt":
+                self._consent_active = True
+                self._consent_buffer = [event.get("context", "")]
+                card = ConsentCard(
+                    context=event.get("context", ""),
+                    options=event.get("options", ["y", "n", "a", "v"]),
+                )
+                self._mount_transcript_widget(card)
+                self._render_consent_panel()
+
+            elif etype == "plan":
+                rendered = event.get("rendered", "")
+                plan_json = event.get("plan_json")
+                if plan_json and not rendered:
+                    rendered = _json.dumps(plan_json, indent=2)
+                self._set_plan_panel(rendered)
+
+            elif etype == "artifact":
+                paths = event.get("paths", [])
+                if paths:
+                    self._add_artifact_paths(paths)
+
+            elif etype == "error":
+                error_text = event.get("text", "")
+                if not error_text.startswith("ERROR:"):
+                    error_text = f"ERROR: {error_text}"
+                self._error_count += 1
+                self._write_issue(error_text)
+                self._update_header_status()
+
+            elif etype == "warning":
+                warn_text = event.get("text", "")
+                if not warn_text.startswith("WARN:"):
+                    warn_text = f"WARN: {warn_text}"
+                self._warning_count += 1
+                self._write_issue(warn_text)
+                self._update_header_status()
+
+        def _discover_session_log_path(self, session_id: str | None) -> str | None:
+            if not session_id:
+                return None
+            try:
+                matches = list(logs_dir().glob(f"*_{session_id}.jsonl"))
+            except Exception:
+                return None
+            if not matches:
+                return None
+            matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return str(matches[0])
+
+        def _persist_run_transcript(
+            self,
+            *,
+            pid: int | None,
+            session_id: str | None,
+            prompt: str,
+            auto_approve: bool,
+            exit_code: int,
+            output_text: str,
+        ) -> str | None:
+            if not output_text:
+                return None
+            try:
+                store = ArtifactStore()
+                ref = store.write_text(
+                    kind="tui_transcript",
+                    text=output_text,
+                    metadata={
+                        "pid": pid,
+                        "session_id": session_id,
+                        "prompt": prompt,
+                        "auto_approve": auto_approve,
+                        "exit_code": exit_code,
+                    },
+                )
+                return str(ref.path)
+            except Exception:
+                return None
 
         def _finalize_run(
             self,
@@ -453,23 +1166,49 @@ def run_tui() -> int:
             return_code: int,
             prompt: str,
             output_text: str,
+            auto_approve: bool,
+            session_id: str | None,
         ) -> None:
             if self._proc is not proc:
                 return
-            self._write_transcript(f"[run] exited with code {return_code}.")
-            extracted_plan = extract_plan_section(output_text)
+
+            # Finalize any in-progress assistant message.
+            if self._current_assistant_msg is not None:
+                self._current_assistant_msg.finalize()
+                self._current_assistant_msg = None
+            if self._current_thinking is not None:
+                self._current_thinking.remove()
+                self._current_thinking = None
+
+            transcript_path = self._persist_run_transcript(
+                pid=proc.pid,
+                session_id=session_id,
+                prompt=prompt,
+                auto_approve=auto_approve,
+                exit_code=return_code,
+                output_text=output_text,
+            )
+            if transcript_path:
+                self._add_artifact_paths([transcript_path])
+
+            log_path = self._discover_session_log_path(session_id)
+            if log_path:
+                self._add_artifact_paths([log_path])
+
+            extracted_plan = extract_plan_section(sanitize_output_text(output_text))
             if extracted_plan:
                 self._pending_plan_prompt = prompt
                 self._set_plan_panel(extracted_plan)
-                self._write_transcript(render_tui_hint_after_plan())
+                self._write_transcript_line(render_tui_hint_after_plan())
             self._reset_consent_panel()
             self._proc = None
             self._runner_thread = None
+            self._run_session_id = None
 
         def _stream_output(self, proc: subprocess.Popen[str], prompt: str) -> None:
             output_chunks: list[str] = []
             if proc.stdout is None:
-                self.call_from_thread(self._write_transcript, "[run] error: subprocess stdout unavailable.")
+                self.call_from_thread(self._write_transcript_line, "[run] error: subprocess stdout unavailable.")
                 return_code = proc.poll()
                 self.call_from_thread(
                     self._finalize_run,
@@ -477,6 +1216,8 @@ def run_tui() -> int:
                     return_code=(return_code if return_code is not None else 1),
                     prompt=prompt,
                     output_text="",
+                    auto_approve=self._last_run_auto_approve,
+                    session_id=self._run_session_id,
                 )
                 return
 
@@ -485,7 +1226,7 @@ def run_tui() -> int:
                     output_chunks.append(raw_line)
                     self.call_from_thread(self._handle_output_line, raw_line.rstrip("\n"))
             except Exception as exc:
-                self.call_from_thread(self._write_transcript, f"[run] output stream error: {exc}")
+                self.call_from_thread(self._write_transcript_line, f"[run] output stream error: {exc}")
             finally:
                 with contextlib.suppress(Exception):
                     proc.stdout.close()
@@ -496,24 +1237,34 @@ def run_tui() -> int:
                     return_code=return_code,
                     prompt=prompt,
                     output_text="".join(output_chunks),
+                    auto_approve=self._last_run_auto_approve,
+                    session_id=self._run_session_id,
                 )
 
         def _start_run(self, prompt: str, *, auto_approve: bool) -> None:
             self._pending_plan_prompt = None
             self._reset_artifacts_panel()
             self._reset_consent_panel()
+            self._reset_issues_panel()
+            self._current_assistant_msg = None
+            self._current_thinking = None
+            self._tool_blocks = {}
+            run_prompt = prompt if auto_approve else build_plan_mode_prompt(prompt)
             try:
-                proc = spawn_swarmee(prompt, auto_approve=auto_approve)
+                self._run_session_id = uuid.uuid4().hex
+                proc = spawn_swarmee(
+                    run_prompt,
+                    auto_approve=auto_approve,
+                    session_id=self._run_session_id,
+                    env_overrides=self._model_env_overrides(),
+                )
             except Exception as exc:
-                self._write_transcript(f"[run] failed to start: {exc}")
+                self._write_transcript_line(f"[run] failed to start: {exc}")
                 return
 
             self._proc = proc
             self._last_prompt = prompt
             self._last_run_auto_approve = auto_approve
-            pid = proc.pid if proc.pid is not None else "unknown"
-            mode = "execute" if auto_approve else "plan"
-            self._write_transcript(f"[run] started ({mode}) pid={pid}.")
             self._runner_thread = threading.Thread(
                 target=self._stream_output,
                 args=(proc, prompt),
@@ -525,30 +1276,114 @@ def run_tui() -> int:
         def _stop_run(self) -> None:
             proc = self._proc
             if proc is None or proc.poll() is not None:
-                self._write_transcript("[run] no active run.")
+                self._write_transcript_line("[run] no active run.")
                 if proc is not None and proc.poll() is not None:
                     self._proc = None
                 return
             stop_process(proc)
-            self._write_transcript("[run] stopped.")
+            self._write_transcript_line("[run] stopped.")
+
+        def action_quit(self) -> None:
+            if self._proc is not None and self._proc.poll() is None:
+                stop_process(self._proc)
+                self._write_transcript_line("[run] stopped.")
+            self.exit(return_code=0)
+
+        def action_copy_transcript(self) -> None:
+            self._copy_text(self._get_transcript_text(), label="transcript")
+
+        def action_copy_plan(self) -> None:
+            self._copy_text((self._plan_text or "").rstrip() + "\n", label="plan")
+
+        def action_copy_issues(self) -> None:
+            self._flush_issue_repeats()
+            payload = ("\n".join(self._issues_lines).rstrip() + "\n") if self._issues_lines else ""
+            self._copy_text(payload, label="issues")
+
+        def action_focus_prompt(self) -> None:
+            self.query_one("#prompt", PromptTextArea).focus()
+
+        def action_submit_prompt(self) -> None:
+            prompt_widget = self.query_one("#prompt", PromptTextArea)
+            text = (prompt_widget.text or "").strip()
+            prompt_widget.clear()
+            if text:
+                self._handle_user_input(text)
+
+        def action_interrupt_run(self) -> None:
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                return
+            stop_process(proc)
+            self._write_transcript_line("[run] interrupted.")
+
+        def action_copy_selection(self) -> None:
+            focused = getattr(self, "focused", None)
+            if not isinstance(focused, TextArea):
+                self._notify("No text area focused.", severity="warning")
+                return
+            selected_text = focused.selected_text or ""
+            if not selected_text.strip():
+                self._notify("Select text first.", severity="warning")
+                return
+            self._copy_text(selected_text, label="selection")
 
         def on_key(self, event: Any) -> None:
-            if not self._consent_active:
-                return
             key = str(getattr(event, "key", "")).lower()
-            if key in _CONSENT_CHOICES:
+
+            if self._consent_active and key in _CONSENT_CHOICES:
                 event.stop()
                 event.prevent_default()
                 self._submit_consent_choice(key)
-
-        def on_input_submitted(self, event: Any) -> None:
-            text = event.value.strip()
-            event.input.value = ""
-            if not text:
                 return
 
-            self._write_transcript(f"> {text}")
+            if key in {"ctrl+c", "meta+c", "super+c", "cmd+c", "command+c"}:
+                event.stop()
+                event.prevent_default()
+                self.action_copy_selection()
+                return
+
+        def on_select_changed(self, event: Any) -> None:
+            if self._model_select_syncing:
+                return
+            select_widget = getattr(event, "select", None)
+            if getattr(select_widget, "id", None) != "model_select":
+                return
+
+            value = str(getattr(event, "value", "")).strip()
+            if not value:
+                return
+            if value == _MODEL_AUTO_VALUE:
+                self._model_provider_override = None
+                self._model_tier_override = None
+            elif "|" in value:
+                provider, tier = value.split("|", 1)
+                self._model_provider_override = provider.strip().lower() or None
+                self._model_tier_override = tier.strip().lower() or None
+            self._update_header_status()
+            self._update_prompt_placeholder()
+            self._notify(self._current_model_summary())
+
+        def _handle_user_input(self, text: str) -> None:
+            self._write_user_input(text)
+
             normalized = text.lower()
+
+            if normalized in {"/copy", ":copy"}:
+                self.action_copy_transcript()
+                return
+
+            if normalized in {"/copy plan", ":copy plan"}:
+                self.action_copy_plan()
+                return
+
+            if normalized in {"/copy issues", ":copy issues"}:
+                self.action_copy_issues()
+                return
+
+            if normalized in {"/copy all", ":copy all"}:
+                self._copy_text(self._get_all_text(), label="all")
+                return
 
             if normalized in {"/stop", ":stop"}:
                 self._stop_run()
@@ -557,12 +1392,12 @@ def run_tui() -> int:
             if normalized in {"/exit", ":exit"}:
                 if self._proc is not None and self._proc.poll() is None:
                     stop_process(self._proc)
-                    self._write_transcript("[run] stopped.")
+                    self._write_transcript_line("[run] stopped.")
                 self.exit(return_code=0)
                 return
 
             if normalized == "/consent":
-                self._write_transcript("Usage: /consent <y|n|a|v>")
+                self._write_transcript_line("Usage: /consent <y|n|a|v>")
                 return
 
             if normalized.startswith("/consent "):
@@ -570,20 +1405,72 @@ def run_tui() -> int:
                 self._submit_consent_choice(choice)
                 return
 
+            if normalized == "/model":
+                self._write_transcript_line(self._current_model_summary())
+                self._write_transcript_line(
+                    "Usage: /model show | /model list | /model provider <name> | /model tier <name> | /model reset"
+                )
+                return
+
+            if normalized == "/model show":
+                self._write_transcript_line(self._current_model_summary())
+                return
+
+            if normalized == "/model list":
+                options, _ = model_select_options(
+                    provider_override=self._model_provider_override,
+                    tier_override=self._model_tier_override,
+                )
+                for label, _value in options:
+                    self._write_transcript_line(f"- {label}")
+                return
+
+            if normalized == "/model reset":
+                self._model_provider_override = None
+                self._model_tier_override = None
+                self._refresh_model_select()
+                self._update_header_status()
+                self._write_transcript_line(f"[model] reset. {self._current_model_summary()}")
+                return
+
+            if normalized.startswith("/model provider "):
+                provider = normalized.split(maxsplit=2)[2].strip()
+                if not provider:
+                    self._write_transcript_line("Usage: /model provider <name>")
+                    return
+                self._model_provider_override = provider
+                self._refresh_model_select()
+                self._update_header_status()
+                self._write_transcript_line(f"[model] provider set to {provider}.")
+                self._write_transcript_line(self._current_model_summary())
+                return
+
+            if normalized.startswith("/model tier "):
+                tier = normalized.split(maxsplit=2)[2].strip()
+                if not tier:
+                    self._write_transcript_line("Usage: /model tier <name>")
+                    return
+                self._model_tier_override = tier
+                self._refresh_model_select()
+                self._update_header_status()
+                self._write_transcript_line(f"[model] tier set to {tier}.")
+                self._write_transcript_line(self._current_model_summary())
+                return
+
             if self._proc is not None and self._proc.poll() is None:
-                self._write_transcript("[run] already running; use /stop.")
+                self._write_transcript_line("[run] already running; use /stop.")
                 return
 
             if normalized == "/approve":
                 if not self._pending_plan_prompt:
-                    self._write_transcript("[run] no pending plan.")
+                    self._write_transcript_line("[run] no pending plan.")
                     return
                 self._start_run(self._pending_plan_prompt, auto_approve=True)
                 return
 
             if normalized == "/replan":
                 if not self._last_prompt:
-                    self._write_transcript("[run] no previous prompt to replan.")
+                    self._write_transcript_line("[run] no previous prompt to replan.")
                     return
                 self._start_run(self._last_prompt, auto_approve=False)
                 return
@@ -591,38 +1478,42 @@ def run_tui() -> int:
             if normalized == "/clearplan":
                 self._pending_plan_prompt = None
                 self._reset_plan_panel()
-                self._write_transcript("[run] plan cleared.")
+                self._write_transcript_line("[run] plan cleared.")
                 return
 
             if normalized == "/plan":
-                self._write_transcript("Usage: /plan <prompt>")
+                self._default_auto_approve = False
+                self._update_prompt_placeholder()
+                self._write_transcript_line("[mode] default set to plan. Type a prompt to generate a plan.")
                 return
 
             if text.startswith("/plan "):
                 prompt = text[len("/plan ") :].strip()
                 if not prompt:
-                    self._write_transcript("Usage: /plan <prompt>")
+                    self._write_transcript_line("Usage: /plan <prompt>")
                     return
                 self._start_run(prompt, auto_approve=False)
                 return
 
             if normalized == "/run":
-                self._write_transcript("Usage: /run <prompt>")
+                self._default_auto_approve = True
+                self._update_prompt_placeholder()
+                self._write_transcript_line("[mode] default set to execute. Type a prompt to run immediately.")
                 return
 
             if text.startswith("/run "):
                 prompt = text[len("/run ") :].strip()
                 if not prompt:
-                    self._write_transcript("Usage: /run <prompt>")
+                    self._write_transcript_line("Usage: /run <prompt>")
                     return
                 self._start_run(prompt, auto_approve=True)
                 return
 
             if text.startswith("/") or text.startswith(":"):
-                self._write_transcript(f"[run] unknown command: {text}")
+                self._write_transcript_line(f"[run] unknown command: {text}")
                 return
 
-            self._start_run(text, auto_approve=False)
+            self._start_run(text, auto_approve=self._default_auto_approve)
 
     try:
         SwarmeeTUI().run()

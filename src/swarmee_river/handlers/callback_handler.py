@@ -1,10 +1,17 @@
+import atexit
+import contextlib
+import json
+import sys
 import time
+import weakref
 from threading import Event
 from typing import Any
 
 from colorama import Fore, Style, init
 from halo import Halo
 from rich.status import Status
+
+from swarmee_river.utils.env_utils import truthy_env
 
 # Initialize Colorama
 init(autoreset=True)
@@ -25,6 +32,8 @@ TOOL_COLORS = {
     "info": Fore.CYAN,
 }
 
+_ACTIVE_TOOL_SPINNERS: weakref.WeakSet["ToolSpinner"] = weakref.WeakSet()
+
 
 def format_message(message: str, color: str | None = None, max_length: int = 50) -> str:
     """Format message with color and length control."""
@@ -35,43 +44,66 @@ def format_message(message: str, color: str | None = None, max_length: int = 50)
 
 class ToolSpinner:
     def __init__(self, text: str = "", color: str | int = TOOL_COLORS["running"]) -> None:
+        self.enabled = truthy_env("SWARMEE_SPINNERS", True)
         self.spinner = Halo(
             text=text,
             spinner=SPINNERS["dots"],
             color="green",
             text_color="green",
             interval=80,
+            enabled=self.enabled,
         )
         self.color = color
         self.current_text = text
+        if self.enabled:
+            _ACTIVE_TOOL_SPINNERS.add(self)
 
     def start(self, text: str | None = None) -> None:
+        if not self.enabled:
+            return
         if text:
             self.current_text = text
         print()  # Move to new line before starting spinner, prevents spinner from eating the previous line
         self.spinner.start(f"{self.color}{self.current_text}{Style.RESET_ALL}")
 
     def update(self, text: str) -> None:
+        if not self.enabled:
+            return
         self.current_text = text
         self.spinner.text = f"{self.color}{text}{Style.RESET_ALL}"
 
     def succeed(self, text: str | None = None) -> None:
+        if not self.enabled:
+            return
         if text:
             self.current_text = text
         self.spinner.succeed(f"{TOOL_COLORS['success']}{self.current_text}{Style.RESET_ALL}")
 
     def fail(self, text: str | None = None) -> None:
+        if not self.enabled:
+            return
         if text:
             self.current_text = text
         self.spinner.fail(f"{TOOL_COLORS['error']}{self.current_text}{Style.RESET_ALL}")
 
     def info(self, text: str | None = None) -> None:
+        if not self.enabled:
+            return
         if text:
             self.current_text = text
         self.spinner.info(f"{TOOL_COLORS['info']}{self.current_text}{Style.RESET_ALL}")
 
     def stop(self) -> None:
-        self.spinner.stop()
+        if not self.enabled:
+            return
+        with contextlib.suppress(Exception):
+            self.spinner.stop()
+        thread = getattr(self.spinner, "_spinner_thread", None)
+        if thread is not None and hasattr(thread, "join"):
+            with contextlib.suppress(Exception):
+                thread.join(timeout=0.2)
+        with contextlib.suppress(Exception):
+            _ACTIVE_TOOL_SPINNERS.discard(self)
 
 
 class CallbackHandler:
@@ -141,7 +173,7 @@ class CallbackHandler:
             if self.thinking_spinner and (data or current_tool_use):
                 self.thinking_spinner.stop()
 
-            if init_event_loop:
+            if init_event_loop and truthy_env("SWARMEE_SPINNERS", True):
                 self.thinking_spinner = Status(
                     "[blue] retrieving memories...[/blue]",
                     spinner="dots",
@@ -152,7 +184,7 @@ class CallbackHandler:
             if reasoningText:
                 print(reasoningText, end="")
 
-            if start_event_loop and self.thinking_spinner is not None:
+            if start_event_loop and self.thinking_spinner is not None and truthy_env("SWARMEE_SPINNERS", True):
                 self.thinking_spinner.update("[blue] thinking...[/blue]")
         except BaseException:
             pass
@@ -254,9 +286,140 @@ class CallbackHandler:
                                 self.current_tool = None
 
 
-callback_handler_instance = CallbackHandler()
+class TuiCallbackHandler:
+    """Callback handler that emits structured JSONL events to stdout for TUI consumption."""
+
+    def __init__(self) -> None:
+        self.current_tool: str | None = None
+        self.tool_histories: dict[str, dict[str, Any]] = {}
+        self.interrupt_event: Event | None = None
+
+    def _emit(self, event: dict[str, Any]) -> None:
+        """Write a single JSONL event to stdout."""
+        sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+
+    def callback_handler(
+        self,
+        reasoningText: str | bool = False,
+        data: str = "",
+        complete: bool = False,
+        force_stop: bool = False,
+        message: dict[str, Any] | None = None,
+        current_tool_use: dict[str, Any] | None = None,
+        init_event_loop: bool = False,
+        start_event_loop: bool = False,
+        event_loop_throttled_delay: int | None = None,
+        console: Any = None,
+        invocation_state: dict[str, Any] | None = None,
+        structured_output_model: type[Any] | None = None,
+        structured_output_prompt: str | None = None,
+        result: Any = None,
+        **extra_event_fields: Any,
+    ) -> None:
+        del invocation_state, structured_output_model, structured_output_prompt
+        del result, extra_event_fields, console
+        del init_event_loop, start_event_loop
+        message = message or {}
+        current_tool_use = current_tool_use or {}
+
+        if force_stop:
+            return
+
+        if self.interrupt_event is not None and self.interrupt_event.is_set():
+            return
+
+        if reasoningText:
+            self._emit({"event": "thinking", "text": str(reasoningText)})
+
+        if data:
+            self._emit({"event": "text_delta", "data": data})
+            if complete:
+                self._emit({"event": "text_complete"})
+
+        if current_tool_use and current_tool_use.get("input"):
+            raw_tool_id = current_tool_use.get("toolUseId")
+            tool_id = raw_tool_id if isinstance(raw_tool_id, str) else None
+            tool_name = current_tool_use.get("name")
+            tool_input = current_tool_use.get("input", "")
+
+            if tool_id is not None:
+                if tool_id != self.current_tool:
+                    self.current_tool = tool_id
+                    self.tool_histories[tool_id] = {
+                        "name": tool_name,
+                        "start_time": time.time(),
+                        "input_size": 0,
+                    }
+                    self._emit({
+                        "event": "tool_start",
+                        "tool_use_id": tool_id,
+                        "tool": tool_name,
+                        "input": tool_input if isinstance(tool_input, dict) else {},
+                    })
+
+                if tool_id in self.tool_histories:
+                    current_size = len(str(tool_input))
+                    if current_size > self.tool_histories[tool_id]["input_size"]:
+                        self.tool_histories[tool_id]["input_size"] = current_size
+                        self._emit({
+                            "event": "tool_progress",
+                            "tool_use_id": tool_id,
+                            "chars": current_size,
+                        })
+
+        if isinstance(message, dict):
+            if message.get("role") == "user":
+                for content in message.get("content", []):
+                    if isinstance(content, dict):
+                        tool_result = content.get("toolResult")
+                        if tool_result:
+                            tid = tool_result.get("toolUseId")
+                            status = tool_result.get("status", "unknown")
+                            if isinstance(tid, str) and tid in self.tool_histories:
+                                info = self.tool_histories[tid]
+                                duration = round(time.time() - info["start_time"], 2)
+                                self._emit({
+                                    "event": "tool_result",
+                                    "tool_use_id": tid,
+                                    "tool": info["name"],
+                                    "status": status,
+                                    "duration_s": duration,
+                                })
+                                del self.tool_histories[tid]
+                                self.current_tool = None
+
+        if event_loop_throttled_delay:
+            self._emit({
+                "event": "warning",
+                "text": f"Throttled! Waiting {event_loop_throttled_delay}s before retrying...",
+            })
+
+
+# ---------------------------------------------------------------------------
+# Module-level handler selection: TuiCallbackHandler when SWARMEE_TUI_EVENTS
+# is set (subprocess launched by the TUI), otherwise the standard CLI handler.
+# ---------------------------------------------------------------------------
+
+if truthy_env("SWARMEE_TUI_EVENTS", False):
+    callback_handler_instance: CallbackHandler | TuiCallbackHandler = TuiCallbackHandler()
+else:
+    callback_handler_instance = CallbackHandler()
+
 callback_handler = callback_handler_instance.callback_handler
 
 
 def set_interrupt_event(event: Event | None) -> None:
     callback_handler_instance.interrupt_event = event
+
+
+def _cleanup_spinners_at_exit() -> None:
+    if isinstance(callback_handler_instance, CallbackHandler):
+        with contextlib.suppress(Exception):
+            callback_handler_instance.callback_handler(force_stop=True)
+        for spinner in list(_ACTIVE_TOOL_SPINNERS):
+            with contextlib.suppress(Exception):
+                spinner.stop()
+
+
+atexit.register(_cleanup_spinners_at_exit)

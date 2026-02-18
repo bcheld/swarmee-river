@@ -22,6 +22,55 @@ def test_build_swarmee_cmd_plan_mode():
     assert command == [sys.executable, "-u", "-m", "swarmee_river.swarmee", prompt]
 
 
+def test_build_plan_mode_prompt_wraps_user_request():
+    wrapped = tui_app.build_plan_mode_prompt("  fix the failing tests  ")
+    assert wrapped.startswith("Create a concrete work plan")
+    assert wrapped.endswith("Request:\nfix the failing tests")
+
+
+def test_model_select_options_only_includes_configured_provider_tiers(monkeypatch):
+    class _Tier:
+        def __init__(self, model_id: str) -> None:
+            self.model_id = model_id
+
+    class _Provider:
+        def __init__(self, tiers: dict[str, _Tier]) -> None:
+            self.tiers = tiers
+
+    class _Models:
+        def __init__(self) -> None:
+            self.provider = "openai"
+            self.default_tier = "balanced"
+            self.providers = {
+                "openai": _Provider({"balanced": _Tier("gpt-5-mini")}),
+                "bedrock": _Provider({}),
+            }
+            self.tiers = {"balanced": _Tier("global-balanced"), "fast": _Tier("global-fast")}
+
+    class _Settings:
+        def __init__(self) -> None:
+            self.models = _Models()
+
+    import swarmee_river.settings as settings_module
+    import swarmee_river.utils.provider_utils as provider_utils_module
+
+    monkeypatch.setattr(settings_module, "load_settings", lambda: _Settings())
+    monkeypatch.setattr(
+        provider_utils_module,
+        "resolve_model_provider",
+        lambda **_kwargs: ("openai", None),
+    )
+
+    options, selected = tui_app.model_select_options()
+    values = [value for _label, value in options]
+
+    assert "__auto__" in values
+    assert "openai|balanced" in values
+    assert "openai|fast" not in values
+    assert "bedrock|balanced" not in values
+    assert selected == "__auto__"
+
+
 def test_looks_like_plan_output():
     text = "Some output\nProposed plan:\n- Step 1\n- Step 2\nPlan generated. Re-run with --yes to execute."
     assert tui_app.looks_like_plan_output(text) is True
@@ -45,6 +94,53 @@ def test_extract_plan_section_returns_only_plan_block():
 
 def test_extract_plan_section_returns_none_when_missing_marker():
     assert tui_app.extract_plan_section("plain execution output") is None
+
+
+def test_is_multiline_newline_key_detects_shift_enter():
+    class _Event:
+        key = "shift+enter"
+        character = None
+        aliases: list[str] = []
+
+    assert tui_app.is_multiline_newline_key(_Event()) is True
+
+
+def test_is_multiline_newline_key_detects_newline_alias():
+    class _Event:
+        key = "ctrl+j"
+        character = "\n"
+        aliases = ["ctrl+j", "newline"]
+
+    assert tui_app.is_multiline_newline_key(_Event()) is True
+
+
+def test_is_multiline_newline_key_rejects_plain_enter():
+    class _Event:
+        key = "enter"
+        character = "\r"
+        aliases = ["enter", "ctrl+m"]
+
+    assert tui_app.is_multiline_newline_key(_Event()) is False
+
+
+def test_is_multiline_newline_key_detects_shift_ctrl_m_variant():
+    class _Event:
+        key = "shift+ctrl+m"
+        name = "shift_ctrl_m"
+        character = "\r"
+        aliases = ["shift+ctrl+m"]
+
+    assert tui_app.is_multiline_newline_key(_Event()) is True
+
+
+def test_is_multiline_newline_key_detects_shift_enter_alias():
+    class _Event:
+        key = "enter"
+        name = "enter"
+        character = "\r"
+        aliases = ["enter", "ctrl+m", "shift+enter"]
+
+    assert tui_app.is_multiline_newline_key(_Event()) is True
 
 
 def test_spawn_swarmee_configures_subprocess_run_mode(monkeypatch):
@@ -77,6 +173,9 @@ def test_spawn_swarmee_configures_subprocess_run_mode(monkeypatch):
     env = kwargs["env"]
     assert isinstance(env, dict)
     assert env["PYTHONUNBUFFERED"] == "1"
+    assert env["SWARMEE_SPINNERS"] == "0"
+    assert "PYTHONWARNINGS" in env
+    assert "Http_requestTool" in str(env["PYTHONWARNINGS"])
 
 
 def test_spawn_swarmee_configures_subprocess_plan_mode(monkeypatch):
@@ -103,6 +202,54 @@ def test_spawn_swarmee_configures_subprocess_plan_mode(monkeypatch):
     assert kwargs["stdin"] is tui_app.subprocess.PIPE
     assert kwargs["stderr"] is tui_app.subprocess.STDOUT
     assert kwargs["errors"] == "replace"
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["SWARMEE_SPINNERS"] == "0"
+    assert "PYTHONWARNINGS" in env
+    assert "Http_requestTool" in str(env["PYTHONWARNINGS"])
+
+
+def test_spawn_swarmee_sets_session_id_env_when_provided(monkeypatch):
+    captured: dict[str, object] = {}
+    fake_proc = object()
+
+    def _fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return fake_proc
+
+    monkeypatch.setattr(tui_app.subprocess, "Popen", _fake_popen)
+
+    proc = tui_app.spawn_swarmee("hello", auto_approve=False, session_id="abc123")
+
+    assert proc is fake_proc
+    env = captured["kwargs"]["env"]
+    assert isinstance(env, dict)
+    assert env["SWARMEE_SESSION_ID"] == "abc123"
+
+
+def test_spawn_swarmee_applies_env_overrides(monkeypatch):
+    captured: dict[str, object] = {}
+    fake_proc = object()
+
+    def _fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return fake_proc
+
+    monkeypatch.setattr(tui_app.subprocess, "Popen", _fake_popen)
+
+    proc = tui_app.spawn_swarmee(
+        "hello",
+        auto_approve=False,
+        env_overrides={"SWARMEE_MODEL_PROVIDER": "openai", "SWARMEE_MODEL_TIER": "fast"},
+    )
+
+    assert proc is fake_proc
+    env = captured["kwargs"]["env"]
+    assert isinstance(env, dict)
+    assert env["SWARMEE_MODEL_PROVIDER"] == "openai"
+    assert env["SWARMEE_MODEL_TIER"] == "fast"
 
 
 def test_write_to_proc_writes_newline_and_flushes():
@@ -159,6 +306,27 @@ def test_parse_output_line_returns_none_for_unmatched_line():
     assert tui_app.parse_output_line("regular assistant output") is None
 
 
+def test_parse_output_line_classifies_provider_fallback_as_noise():
+    event = tui_app.parse_output_line(
+        "[provider] No AWS credentials detected for Bedrock; falling back to OpenAI because OPENAI_API_KEY is set."
+    )
+    assert event is not None
+    assert event.kind == "noise"
+
+
+def test_parse_output_line_classifies_homebrew_ps_warning():
+    event = tui_app.parse_output_line(
+        "/opt/homebrew/Library/Homebrew/cmd/shellenv.sh: line 18: /bin/ps: Operation not permitted"
+    )
+    assert event is not None
+    assert event.kind == "warning"
+
+
+def test_sanitize_output_text_strips_ansi_and_carriage_returns():
+    text = "hello\r\n\x1b[31mred\x1b[0m"
+    assert tui_app.sanitize_output_text(text) == "hello\nred"
+
+
 def test_update_consent_capture_collects_recent_lines():
     consent_active = False
     consent_buffer: list[str] = []
@@ -185,6 +353,56 @@ def test_add_recent_artifacts_dedupes_and_caps():
     existing = ["a.txt", "b.txt", "c.txt"]
     updated = tui_app.add_recent_artifacts(existing, ["b.txt", "d.txt", "e.txt"], max_items=4)
     assert updated == ["c.txt", "b.txt", "d.txt", "e.txt"]
+
+
+# ---------------------------------------------------------------------------
+# parse_tui_event tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_tui_event_valid_json():
+    result = tui_app.parse_tui_event('{"event":"text_delta","data":"hello"}')
+    assert result == {"event": "text_delta", "data": "hello"}
+
+
+def test_parse_tui_event_non_json_returns_none():
+    assert tui_app.parse_tui_event("plain text output") is None
+    assert tui_app.parse_tui_event("") is None
+    assert tui_app.parse_tui_event("Error: something failed") is None
+
+
+def test_parse_tui_event_malformed_json_returns_none():
+    assert tui_app.parse_tui_event('{"event": "text_delta"') is None
+    assert tui_app.parse_tui_event("{bad json}") is None
+
+
+def test_parse_tui_event_strips_whitespace():
+    result = tui_app.parse_tui_event('  {"event":"thinking","text":"hmm"}  ')
+    assert result == {"event": "thinking", "text": "hmm"}
+
+
+def test_spawn_swarmee_sets_tui_events_env(monkeypatch):
+    """spawn_swarmee should set SWARMEE_TUI_EVENTS=1 in the subprocess env."""
+    captured_env = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+
+        class FakeProc:
+            pid = 12345
+            stdin = None
+            stdout = None
+            stderr = None
+
+            def poll(self):
+                return 0
+
+        return FakeProc()
+
+    monkeypatch.setattr(tui_app.subprocess, "Popen", fake_popen)
+    tui_app.spawn_swarmee("test prompt", auto_approve=True, session_id="abc123")
+    assert captured_env.get("SWARMEE_TUI_EVENTS") == "1"
+    assert captured_env.get("SWARMEE_SPINNERS") == "0"
 
 
 def test_stop_process_escalates(monkeypatch):

@@ -11,8 +11,16 @@ import json
 import os
 import re
 import threading
+import warnings
 from pathlib import Path
 from typing import Any, Optional
+
+warnings.filterwarnings(
+    "ignore",
+    message='Field name "json" in "Http_requestTool" shadows an attribute in parent "BaseModel"',
+    category=UserWarning,
+    module=r"pydantic\.main",
+)
 
 # Strands
 from strands import Agent
@@ -120,6 +128,20 @@ def _truthy(value: str | None) -> bool:
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+
+
+def _tui_events_enabled() -> bool:
+    """True when running as a subprocess spawned by the TUI."""
+    return _truthy(os.getenv("SWARMEE_TUI_EVENTS"))
+
+
+def _emit_tui_event(event: dict[str, Any]) -> None:
+    """Emit a structured JSONL event to stdout for TUI consumption."""
+    if _tui_events_enabled():
+        import sys as _sys
+
+        _sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
+        _sys.stdout.flush()
 
 
 def _event_loop_running() -> bool:
@@ -643,6 +665,17 @@ def main() -> None:
     if _HAS_STRANDS_HOOKS:
 
         def _consent_prompt(text: str) -> str:
+            if _tui_events_enabled():
+                # Emit structured consent event for TUI, then block on stdin.
+                _emit_tui_event({
+                    "event": "consent_prompt",
+                    "context": text,
+                    "options": ["y", "n", "a", "v"],
+                })
+                try:
+                    return input().strip()
+                except (KeyboardInterrupt, EOFError):
+                    return ""
             # Keep consent prompts aligned with interactive UX:
             # 1) stop active spinners so prompt doesn't appear inline/garbled
             # 2) render consent context as an explicit line
@@ -789,12 +822,14 @@ def main() -> None:
             except MaxTokensReachedException:
                 callback_handler(force_stop=True)
                 configured = os.getenv("SWARMEE_MAX_TOKENS") or os.getenv("STRANDS_MAX_TOKENS") or "(unset)"
-                print(
-                    "\nError: Response hit the max output token limit.\n"
+                error_msg = (
+                    "Error: Response hit the max output token limit.\n"
                     f"- Current max: {configured}\n"
                     "- Fix: increase SWARMEE_MAX_TOKENS (or pass --max-output-tokens), or ask for a shorter response.\n"
                     "- Resetting agent loop so you can continue."
                 )
+                _emit_tui_event({"event": "error", "text": error_msg})
+                print(f"\n{error_msg}")
                 agent = create_agent()
                 raise
 
@@ -988,7 +1023,13 @@ def main() -> None:
         if intent == "work":
             plan = _generate_plan(query)
             ctx.last_plan = plan
-            print(_render_plan(plan))
+            rendered_plan = _render_plan(plan)
+            _emit_tui_event({
+                "event": "plan",
+                "plan_json": plan.model_dump(),
+                "rendered": rendered_plan,
+            })
+            print(rendered_plan)
             if not auto_approve:
                 print("\nPlan generated. Re-run with --yes (or set SWARMEE_AUTO_APPROVE=true) to execute.")
                 return
