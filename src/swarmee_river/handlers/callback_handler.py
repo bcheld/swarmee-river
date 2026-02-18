@@ -369,7 +369,21 @@ class TuiCallbackHandler:
                         })
 
         if isinstance(message, dict):
-            if message.get("role") == "user":
+            if message.get("role") == "assistant":
+                for content in message.get("content", []):
+                    if isinstance(content, dict):
+                        tool_use = content.get("toolUse")
+                        if tool_use:
+                            tid = tool_use.get("toolUseId")
+                            tool_input = tool_use.get("input")
+                            if isinstance(tid, str) and isinstance(tool_input, dict):
+                                self._emit({
+                                    "event": "tool_input",
+                                    "tool_use_id": tid,
+                                    "input": tool_input,
+                                })
+
+            elif message.get("role") == "user":
                 for content in message.get("content", []):
                     if isinstance(content, dict):
                         tool_result = content.get("toolResult")

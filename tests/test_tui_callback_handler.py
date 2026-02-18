@@ -88,3 +88,38 @@ def test_throttle_warning():
     assert len(events) == 1
     assert events[0]["event"] == "warning"
     assert "30" in events[0]["text"]
+
+
+def test_tool_input_emitted_from_assistant_message():
+    """tool_input event is emitted when assistant message contains toolUse with dict input."""
+    h = TuiCallbackHandler()
+
+    def run():
+        # First trigger tool_start via current_tool_use
+        h.callback_handler(current_tool_use={"toolUseId": "t1", "name": "shell", "input": {"command": "ls"}})
+        # Then simulate assistant message with finalized toolUse
+        h.callback_handler(message={
+            "role": "assistant",
+            "content": [{"toolUse": {"toolUseId": "t1", "name": "shell", "input": {"command": "ls -la", "cwd": "/tmp"}}}],
+        })
+
+    events = _capture_events(h, run)
+    tool_input_events = [e for e in events if e["event"] == "tool_input"]
+    assert len(tool_input_events) == 1
+    assert tool_input_events[0]["tool_use_id"] == "t1"
+    assert tool_input_events[0]["input"] == {"command": "ls -la", "cwd": "/tmp"}
+
+
+def test_tool_input_not_emitted_for_non_dict_input():
+    """tool_input event should not be emitted when toolUse input is not a dict."""
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(message={
+            "role": "assistant",
+            "content": [{"toolUse": {"toolUseId": "t2", "name": "shell", "input": "partial string"}}],
+        })
+
+    events = _capture_events(h, run)
+    tool_input_events = [e for e in events if e["event"] == "tool_input"]
+    assert len(tool_input_events) == 0

@@ -512,7 +512,9 @@ def run_tui() -> int:
 
     from swarmee_river.tui.widgets import (
         AssistantMessage,
+        CommandPalette,
         ConsentCard,
+        PlanCard,
         SystemMessage,
         ThinkingIndicator,
         ToolCallBlock,
@@ -536,6 +538,17 @@ def run_tui() -> int:
                     method(*args)
                     return
 
+        def _adjust_height(self) -> None:
+            line_count = self.text.count("\n") + 1
+            target = max(3, min(10, line_count + 2))
+            self.styles.height = target
+
+        def on_text_area_changed(self, event: Any) -> None:
+            self._adjust_height()
+            app = getattr(self, "app", None)
+            if app is not None and hasattr(app, "_update_command_palette"):
+                app._update_command_palette(self.text)
+
         def on_key(self, event: Any) -> None:
             key = str(getattr(event, "key", "")).lower()
             if is_multiline_newline_key(event):
@@ -543,10 +556,35 @@ def run_tui() -> int:
                 event.prevent_default()
                 self._insert_newline()
                 return
+            app = getattr(self, "app", None)
+            # Tab to select from command palette
+            if key == "tab" and app is not None and hasattr(app, "_command_palette"):
+                palette = app._command_palette
+                if palette is not None and palette.is_visible:
+                    event.stop()
+                    event.prevent_default()
+                    selected = palette.get_selected()
+                    if selected:
+                        self.clear()
+                        for method_name in ("insert", "insert_text_at_cursor"):
+                            method = getattr(self, method_name, None)
+                            if callable(method):
+                                with contextlib.suppress(Exception):
+                                    method(selected + " ")
+                                    break
+                    palette.hide()
+                    return
+            # Escape to dismiss palette
+            if key == "escape" and app is not None and hasattr(app, "_command_palette"):
+                palette = app._command_palette
+                if palette is not None and palette.is_visible:
+                    event.stop()
+                    event.prevent_default()
+                    palette.hide()
+                    return
             if key in {"enter", "return", "ctrl+m"}:
                 event.stop()
                 event.prevent_default()
-                app = getattr(self, "app", None)
                 if app is not None:
                     with contextlib.suppress(Exception):
                         app.action_submit_prompt()
@@ -612,7 +650,9 @@ def run_tui() -> int:
 
         #prompt {
             dock: bottom;
-            height: 7;
+            min-height: 3;
+            max-height: 10;
+            height: auto;
             border: round $accent;
             padding: 0 1;
         }
@@ -650,6 +690,8 @@ def run_tui() -> int:
         _current_assistant_msg: Any = None  # AssistantMessage | None
         _current_thinking: Any = None  # ThinkingIndicator | None
         _tool_blocks: dict[str, Any] = {}  # tool_use_id → ToolCallBlock
+        _current_plan_card: Any = None  # PlanCard | None
+        _command_palette: Any = None  # CommandPalette | None
         _transcript_widget_count: int = 0
         _MAX_TRANSCRIPT_WIDGETS: int = 500
 
@@ -688,6 +730,7 @@ def run_tui() -> int:
                                 soft_wrap=True,
                             )
                     yield TextArea(text="", read_only=True, show_cursor=False, id="consent", soft_wrap=True)
+            yield CommandPalette(id="command_palette")
             yield PromptTextArea(
                 text="",
                 placeholder="Type prompt. Enter submits, Shift+Enter inserts newline.",
@@ -697,6 +740,7 @@ def run_tui() -> int:
             yield Footer()
 
         def on_mount(self) -> None:
+            self._command_palette = self.query_one("#command_palette", CommandPalette)
             self.query_one("#prompt", PromptTextArea).focus()
             self._reset_plan_panel()
             self._reset_issues_panel()
@@ -841,6 +885,15 @@ def run_tui() -> int:
             input_widget = self.query_one("#prompt", PromptTextArea)
             mode = "execute" if self._default_auto_approve else "plan"
             input_widget.placeholder = f"Mode: {mode}. Enter submits. Shift+Enter/Ctrl+J adds newline."
+
+        def _update_command_palette(self, text: str) -> None:
+            if self._command_palette is None:
+                return
+            stripped = text.strip()
+            if stripped.startswith("/") and "\n" not in stripped:
+                self._command_palette.filter(stripped)
+            else:
+                self._command_palette.hide()
 
         def _notify(self, message: str, *, severity: str = "information") -> None:
             with contextlib.suppress(Exception):
@@ -1074,6 +1127,12 @@ def run_tui() -> int:
                 if block is not None:
                     block.update_progress(event.get("chars", 0))
 
+            elif etype == "tool_input":
+                tid = event.get("tool_use_id", "")
+                block = self._tool_blocks.get(tid)
+                if block is not None:
+                    block.set_input(event.get("input", {}))
+
             elif etype == "tool_result":
                 tid = event.get("tool_use_id", "")
                 block = self._tool_blocks.get(tid)
@@ -1096,6 +1155,10 @@ def run_tui() -> int:
                 if plan_json and not rendered:
                     rendered = _json.dumps(plan_json, indent=2)
                 self._set_plan_panel(rendered)
+                if plan_json and isinstance(plan_json, dict):
+                    card = PlanCard(plan_json=plan_json)
+                    self._current_plan_card = card
+                    self._mount_transcript_widget(card)
 
             elif etype == "artifact":
                 paths = event.get("paths", [])

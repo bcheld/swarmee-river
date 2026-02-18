@@ -405,6 +405,76 @@ def test_spawn_swarmee_sets_tui_events_env(monkeypatch):
     assert captured_env.get("SWARMEE_SPINNERS") == "0"
 
 
+def test_format_tool_input_shell():
+    from swarmee_river.tui.widgets import _format_tool_input
+
+    result = _format_tool_input("shell", {"command": "git status", "cwd": "/tmp"})
+    assert "Command: git status" in result
+    assert "CWD: /tmp" in result
+
+
+def test_format_tool_input_generic():
+    from swarmee_river.tui.widgets import _format_tool_input
+
+    result = _format_tool_input("custom_tool", {"key": "value"})
+    assert '"key"' in result
+    assert '"value"' in result
+
+
+def test_plan_card_renders_steps():
+    from swarmee_river.tui.widgets import PlanCard
+
+    card = PlanCard(plan_json={
+        "summary": "Fix login",
+        "steps": ["Read auth module", "Add validation", "Update tests"],
+    })
+    rendered = card._render_from_status()
+    assert "Fix login" in rendered
+    assert "1." in rendered
+    assert "Read auth module" in rendered
+    assert "/approve" in rendered
+
+
+def test_plan_card_mark_step_complete():
+    from swarmee_river.tui.widgets import PlanCard
+
+    card = PlanCard(plan_json={
+        "summary": "Test",
+        "steps": ["Step A", "Step B"],
+    })
+    assert card._step_status == [False, False]
+    card.mark_step_complete(0)
+    assert card._step_status == [True, False]
+
+
+def test_command_palette_filter():
+    from swarmee_river.tui.widgets import CommandPalette
+
+    palette = CommandPalette()
+    palette.filter("/pl")
+    assert len(palette._filtered) == 1
+    assert palette._filtered[0][0] == "/plan"
+
+
+def test_command_palette_filter_no_match():
+    from swarmee_river.tui.widgets import CommandPalette
+
+    palette = CommandPalette()
+    palette.filter("/zzz")
+    assert len(palette._filtered) == 0
+    assert palette.get_selected() is None
+
+
+def test_command_palette_move_selection():
+    from swarmee_river.tui.widgets import CommandPalette
+
+    palette = CommandPalette()
+    palette.filter("/co")
+    assert len(palette._filtered) == 5  # /copy, /copy plan, /copy issues, /copy all, /consent
+    palette.move_selection(1)
+    assert palette._selected_index == 1
+
+
 def test_stop_process_escalates(monkeypatch):
     class FakeProc:
         def __init__(self) -> None:
