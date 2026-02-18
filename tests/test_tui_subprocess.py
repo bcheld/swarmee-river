@@ -475,6 +475,16 @@ def test_command_palette_move_selection():
     assert palette._selected_index == 1
 
 
+def test_assistant_message_accumulates_deltas():
+    from swarmee_river.tui.widgets import AssistantMessage
+
+    msg = AssistantMessage()
+    msg._buffer.append("Hello ")
+    msg._buffer.append("**world**")
+    assert msg.full_text == "Hello **world**"
+    assert msg.finalize() == "Hello **world**"
+
+
 def test_status_bar_refresh_display():
     from swarmee_river.tui.widgets import StatusBar
 
@@ -512,6 +522,46 @@ def test_command_palette_includes_copy_last():
     palette.filter("/copy l")
     assert len(palette._filtered) == 1
     assert palette._filtered[0][0] == "/copy last"
+
+
+def test_command_palette_includes_open_and_search():
+    from swarmee_river.tui.widgets import CommandPalette
+
+    palette = CommandPalette()
+    palette.filter("/op")
+    assert len(palette._filtered) == 1
+    assert palette._filtered[0][0] == "/open"
+
+    palette.filter("/se")
+    assert len(palette._filtered) == 1
+    assert palette._filtered[0][0] == "/search"
+
+
+def test_session_save_load(tmp_path, monkeypatch):
+    """Session save/load round-trips prompt history and settings."""
+    import swarmee_river.tui.app as app_mod
+
+    monkeypatch.setattr(app_mod, "sessions_dir", lambda: tmp_path)
+
+    session_file = tmp_path / "tui_session.json"
+    import json
+
+    data = {
+        "prompt_history": ["hello", "world"],
+        "last_prompt": "world",
+        "plan_text": "my plan",
+        "artifacts": ["/tmp/a.txt"],
+        "model_provider_override": "openai",
+        "model_tier_override": "fast",
+        "default_auto_approve": True,
+        "split_ratio": 3,
+    }
+    session_file.write_text(json.dumps(data))
+
+    loaded = json.loads(session_file.read_text())
+    assert loaded["prompt_history"] == ["hello", "world"]
+    assert loaded["split_ratio"] == 3
+    assert loaded["model_provider_override"] == "openai"
 
 
 def test_stop_process_escalates(monkeypatch):

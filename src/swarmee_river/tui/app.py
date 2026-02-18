@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
-from swarmee_river.state_paths import logs_dir
+from swarmee_river.state_paths import logs_dir, sessions_dir
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
 _MODEL_AUTO_VALUE = "__auto__"
@@ -542,8 +542,11 @@ def run_tui() -> int:
 
         def _adjust_height(self) -> None:
             line_count = self.text.count("\n") + 1
-            target = max(3, min(10, line_count + 2))
-            self.styles.height = target
+            # +4 accounts for border (2) + visual padding (2)
+            target = max(5, min(12, line_count + 4))
+            if getattr(self, "_last_height", None) != target:
+                self._last_height = target
+                self.styles.height = target
 
         def on_text_area_changed(self, event: Any) -> None:
             self._adjust_height()
@@ -559,13 +562,49 @@ def run_tui() -> int:
                 self._insert_newline()
                 return
             app = getattr(self, "app", None)
-            # Arrow keys to navigate command palette
+            # Arrow keys: palette nav first, then prompt history
             if key in {"up", "down"} and app is not None and hasattr(app, "_command_palette"):
                 palette = app._command_palette
                 if palette is not None and palette.is_visible:
                     event.stop()
                     event.prevent_default()
                     palette.move_selection(-1 if key == "up" else 1)
+                    return
+            # Up/down for prompt history when palette is NOT visible
+            if key == "up" and app is not None and hasattr(app, "_prompt_history"):
+                history = app._prompt_history
+                if history and app._history_index < len(history) - 1:
+                    event.stop()
+                    event.prevent_default()
+                    app._history_index += 1
+                    self.clear()
+                    entry = history[-(app._history_index + 1)]
+                    for method_name in ("insert", "insert_text_at_cursor"):
+                        method = getattr(self, method_name, None)
+                        if callable(method):
+                            with contextlib.suppress(Exception):
+                                method(entry)
+                                break
+                    return
+            if key == "down" and app is not None and hasattr(app, "_prompt_history"):
+                if app._history_index > 0:
+                    event.stop()
+                    event.prevent_default()
+                    app._history_index -= 1
+                    self.clear()
+                    entry = app._prompt_history[-(app._history_index + 1)]
+                    for method_name in ("insert", "insert_text_at_cursor"):
+                        method = getattr(self, method_name, None)
+                        if callable(method):
+                            with contextlib.suppress(Exception):
+                                method(entry)
+                                break
+                    return
+                elif app._history_index == 0:
+                    event.stop()
+                    event.prevent_default()
+                    app._history_index = -1
+                    self.clear()
                     return
             # Enter selects from palette when visible (instead of submitting)
             if key in {"enter", "return", "ctrl+m"} and app is not None and hasattr(app, "_command_palette"):
@@ -677,8 +716,8 @@ def run_tui() -> int:
 
         #prompt {
             dock: bottom;
-            min-height: 3;
-            max-height: 10;
+            min-height: 5;
+            max-height: 12;
             height: auto;
             border: round $accent;
             padding: 0 1;
@@ -692,6 +731,9 @@ def run_tui() -> int:
             ("super+c", "copy_selection", "Copy selection"),
             ("ctrl+d", "quit", "Quit"),
             ("tab", "focus_prompt", "Focus prompt"),
+            ("ctrl+left", "widen_side", "Widen side"),
+            ("ctrl+right", "widen_transcript", "Widen transcript"),
+            ("ctrl+f", "search_transcript", "Search"),
         ]
 
         _proc: subprocess.Popen[str] | None = None
@@ -724,6 +766,12 @@ def run_tui() -> int:
         _run_start_time: float | None = None
         _status_timer: Any = None
         _last_assistant_text: str = ""
+        _prompt_history: list[str] = []
+        _history_index: int = -1
+        _MAX_PROMPT_HISTORY: int = 50
+        _split_ratio: int = 2
+        _search_active: bool = False
+        _plan_step_counter: int = 0
         _transcript_widget_count: int = 0
         _MAX_TRANSCRIPT_WIDGETS: int = 500
 
@@ -797,6 +845,7 @@ def run_tui() -> int:
             self._write_transcript("Model selector: right pane header dropdown (or /model commands).")
             self._write_transcript("Text is selectable in all panes.")
             self._write_transcript("Optional export: /copy, /copy plan, /copy issues, /copy all.")
+            self._load_session()
 
         def _mount_transcript_widget(self, widget: Any) -> None:
             """Mount a widget into the transcript VerticalScroll and prune if needed."""
@@ -1023,7 +1072,8 @@ def run_tui() -> int:
             if not self._artifacts:
                 panel.load_text("(no artifacts yet)")
             else:
-                panel.load_text("\n".join(self._artifacts))
+                lines = [f"{i + 1}. {path}" for i, path in enumerate(self._artifacts)]
+                panel.load_text("\n".join(lines))
             panel.scroll_end(animate=False)
 
         def _reset_artifacts_panel(self) -> None:
@@ -1178,6 +1228,10 @@ def run_tui() -> int:
                 block = self._tool_blocks.get(tid)
                 if block is not None:
                     block.set_result(event.get("status", "unknown"), event.get("duration_s", 0))
+                # Auto-check plan steps sequentially
+                if self._current_plan_card is not None:
+                    self._current_plan_card.mark_step_complete(self._plan_step_counter)
+                    self._plan_step_counter += 1
 
             elif etype == "consent_prompt":
                 self._consent_active = True
@@ -1322,6 +1376,7 @@ def run_tui() -> int:
             self._proc = None
             self._runner_thread = None
             self._run_session_id = None
+            self._save_session()
 
         def _stream_output(self, proc: subprocess.Popen[str], prompt: str) -> None:
             output_chunks: list[str] = []
@@ -1373,6 +1428,7 @@ def run_tui() -> int:
             self._tool_blocks = {}
             self._run_tool_count = 0
             self._run_start_time = time.time()
+            self._plan_step_counter = 0
             if self._status_bar is not None:
                 self._status_bar.set_state("running")
                 self._status_bar.set_tool_count(0)
@@ -1419,6 +1475,7 @@ def run_tui() -> int:
             if self._proc is not None and self._proc.poll() is None:
                 stop_process(self._proc)
                 self._write_transcript_line("[run] stopped.")
+            self._save_session()
             self.exit(return_code=0)
 
         def action_copy_transcript(self) -> None:
@@ -1440,6 +1497,10 @@ def run_tui() -> int:
             text = (prompt_widget.text or "").strip()
             prompt_widget.clear()
             if text:
+                self._prompt_history.append(text)
+                if len(self._prompt_history) > self._MAX_PROMPT_HISTORY:
+                    self._prompt_history = self._prompt_history[-self._MAX_PROMPT_HISTORY:]
+                self._history_index = -1
                 self._handle_user_input(text)
 
         def action_interrupt_run(self) -> None:
@@ -1459,6 +1520,132 @@ def run_tui() -> int:
                 self._notify("Select text first.", severity="warning")
                 return
             self._copy_text(selected_text, label="selection")
+
+        def action_widen_side(self) -> None:
+            if self._split_ratio > 1:
+                self._split_ratio -= 1
+                self._apply_split_ratio()
+
+        def action_widen_transcript(self) -> None:
+            if self._split_ratio < 4:
+                self._split_ratio += 1
+                self._apply_split_ratio()
+
+        def _apply_split_ratio(self) -> None:
+            from textual.css.scalar import Scalar, Unit
+            transcript = self.query_one("#transcript", VerticalScroll)
+            side = self.query_one("#side", Vertical)
+            transcript.styles.width = Scalar(float(self._split_ratio), Unit.FRACTION, Unit.CELLS)
+            side.styles.width = Scalar(1.0, Unit.FRACTION, Unit.CELLS)
+            self.refresh(layout=True)
+
+        def action_search_transcript(self) -> None:
+            prompt_widget = self.query_one("#prompt", PromptTextArea)
+            prompt_widget.clear()
+            # Hide palette first to avoid rendering issues
+            if self._command_palette is not None:
+                self._command_palette.hide()
+            for method_name in ("insert", "insert_text_at_cursor"):
+                method = getattr(prompt_widget, method_name, None)
+                if callable(method):
+                    with contextlib.suppress(Exception):
+                        method("/search ")
+                        break
+            # Hide palette again after insert (on_text_area_changed may re-show it)
+            if self._command_palette is not None:
+                self._command_palette.hide()
+            prompt_widget.focus()
+
+        def _search_transcript(self, term: str) -> None:
+            if not term.strip():
+                self._write_transcript_line("Usage: /search <term>")
+                return
+            transcript = self.query_one("#transcript", VerticalScroll)
+            term_lower = term.lower()
+            for child in transcript.children:
+                text = ""
+                if isinstance(child, AssistantMessage):
+                    text = child.full_text
+                elif hasattr(child, "renderable"):
+                    text = str(child.renderable)
+                if term_lower in text.lower():
+                    child.scroll_visible(animate=True)
+                    self._write_transcript_line(f"[search] found match in transcript.")
+                    return
+            self._write_transcript_line(f"[search] no match for '{term}'.")
+
+        def _open_artifact(self, index_str: str) -> None:
+            try:
+                index = int(index_str.strip()) - 1
+            except ValueError:
+                self._write_transcript_line("Usage: /open <number>")
+                return
+            if index < 0 or index >= len(self._artifacts):
+                self._write_transcript_line(f"[open] invalid index. {len(self._artifacts)} artifacts available.")
+                return
+            path = self._artifacts[index]
+            editor = os.environ.get("EDITOR", "")
+            try:
+                if editor:
+                    subprocess.Popen([editor, path])
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", path])
+                elif shutil.which("xdg-open"):
+                    subprocess.Popen(["xdg-open", path])
+                else:
+                    self._write_transcript_line(f"[open] set $EDITOR. Path: {path}")
+                    return
+                self._write_transcript_line(f"[open] opened: {path}")
+            except Exception as exc:
+                self._write_transcript_line(f"[open] failed: {exc}")
+
+        def _save_session(self) -> None:
+            try:
+                session_path = sessions_dir() / "tui_session.json"
+                session_path.parent.mkdir(parents=True, exist_ok=True)
+                data = {
+                    "prompt_history": self._prompt_history[-self._MAX_PROMPT_HISTORY:],
+                    "last_prompt": self._last_prompt,
+                    "plan_text": self._plan_text,
+                    "artifacts": self._artifacts,
+                    "model_provider_override": self._model_provider_override,
+                    "model_tier_override": self._model_tier_override,
+                    "default_auto_approve": self._default_auto_approve,
+                    "split_ratio": self._split_ratio,
+                }
+                session_path.write_text(_json.dumps(data, indent=2))
+            except Exception:
+                pass
+
+        def _load_session(self) -> None:
+            try:
+                session_path = sessions_dir() / "tui_session.json"
+                if not session_path.exists():
+                    return
+                data = _json.loads(session_path.read_text())
+                self._prompt_history = data.get("prompt_history", [])[-self._MAX_PROMPT_HISTORY:]
+                self._last_prompt = data.get("last_prompt")
+                plan_text = data.get("plan_text", "")
+                if plan_text and plan_text != "(no plan)":
+                    self._set_plan_panel(plan_text)
+                artifacts = data.get("artifacts", [])
+                if artifacts:
+                    self._artifacts = artifacts
+                    self._render_artifacts_panel()
+                self._model_provider_override = data.get("model_provider_override")
+                self._model_tier_override = data.get("model_tier_override")
+                self._default_auto_approve = data.get("default_auto_approve", False)
+                self._split_ratio = data.get("split_ratio", 2)
+                self._apply_split_ratio()
+                self._refresh_model_select()
+                self._update_header_status()
+                self._update_prompt_placeholder()
+                if self._status_bar is not None:
+                    self._status_bar.set_model(self._current_model_summary())
+                if self._prompt_history:
+                    self._write_transcript(f"[session] restored ({len(self._prompt_history)} history entries).")
+            except Exception:
+                pass
 
         def on_key(self, event: Any) -> None:
             key = str(getattr(event, "key", "")).lower()
@@ -1523,6 +1710,22 @@ def run_tui() -> int:
                 self._copy_text(self._get_all_text(), label="all")
                 return
 
+            if normalized.startswith("/open "):
+                self._open_artifact(text[len("/open "):])
+                return
+
+            if normalized == "/open":
+                self._write_transcript_line("Usage: /open <number>")
+                return
+
+            if normalized.startswith("/search "):
+                self._search_transcript(text[len("/search "):])
+                return
+
+            if normalized == "/search":
+                self._write_transcript_line("Usage: /search <term>")
+                return
+
             if normalized in {"/stop", ":stop"}:
                 self._stop_run()
                 return
@@ -1531,6 +1734,7 @@ def run_tui() -> int:
                 if self._proc is not None and self._proc.poll() is None:
                     stop_process(self._proc)
                     self._write_transcript_line("[run] stopped.")
+                self._save_session()
                 self.exit(return_code=0)
                 return
 

@@ -829,7 +829,8 @@ def main() -> None:
                     "- Resetting agent loop so you can continue."
                 )
                 _emit_tui_event({"event": "error", "text": error_msg})
-                print(f"\n{error_msg}")
+                if not _tui_events_enabled():
+                    print(f"\n{error_msg}")
                 agent = create_agent()
                 raise
 
@@ -886,7 +887,7 @@ def main() -> None:
             prev = model_manager.current_tier
             if not model_manager.maybe_escalate(agent, attempted=attempted):
                 break
-            if model_manager.current_tier != prev:
+            if model_manager.current_tier != prev and not _tui_events_enabled():
                 print(f"\n[auto-escalation] tier: {prev} -> {model_manager.current_tier}")
             agent_kwargs["model"] = agent.model
 
@@ -958,7 +959,7 @@ def main() -> None:
                 prev = model_manager.current_tier
                 if not model_manager.maybe_escalate(agent, attempted=attempted):
                     break
-                if model_manager.current_tier != prev:
+                if model_manager.current_tier != prev and not _tui_events_enabled():
                     print(f"\n[auto-escalation] tier: {prev} -> {model_manager.current_tier}")
                 agent_kwargs["model"] = agent.model
 
@@ -1007,7 +1008,8 @@ def main() -> None:
                 agent.tool.retrieve(text=query, knowledgeBaseId=knowledge_base_id)
             except Exception as e:
                 # Retrieval is best-effort; missing tool / missing AWS creds shouldn't block the session.
-                print(f"[warn] retrieve failed: {e}")
+                if not _tui_events_enabled():
+                    print(f"[warn] retrieve failed: {e}")
 
         profile = settings.harness.tier_profiles.get(model_manager.current_tier)
         snapshot = build_context_snapshot(
@@ -1029,15 +1031,18 @@ def main() -> None:
                 "plan_json": plan.model_dump(),
                 "rendered": rendered_plan,
             })
-            print(rendered_plan)
+            if not _tui_events_enabled():
+                print(rendered_plan)
             if not auto_approve:
-                print("\nPlan generated. Re-run with --yes (or set SWARMEE_AUTO_APPROVE=true) to execute.")
+                if not _tui_events_enabled():
+                    print("\nPlan generated. Re-run with --yes (or set SWARMEE_AUTO_APPROVE=true) to execute.")
                 return
             try:
                 response = _execute_with_plan(query, plan, welcome_text_local="")
             except AgentInterruptedError as e:
                 callback_handler(force_stop=True)
-                print(f"\n{str(e)}")
+                if not _tui_events_enabled():
+                    print(f"\n{str(e)}")
                 return
             except MaxTokensReachedException:
                 return
@@ -1046,7 +1051,8 @@ def main() -> None:
                 response = run_agent(query, invocation_state={"swarmee": {"mode": "execute"}})
             except AgentInterruptedError as e:
                 callback_handler(force_stop=True)
-                print(f"\n{str(e)}")
+                if not _tui_events_enabled():
+                    print(f"\n{str(e)}")
                 return
             except MaxTokensReachedException:
                 return

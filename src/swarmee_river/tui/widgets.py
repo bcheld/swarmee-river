@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json as _json
 
+from rich.markdown import Markdown as RichMarkdown
 from textual.widgets import Collapsible, Static
 
 
@@ -24,7 +25,7 @@ class UserMessage(Static):
 
 
 class AssistantMessage(Static):
-    """Accumulates text_delta events and renders as rich text."""
+    """Accumulates text_delta events and renders as markdown via Rich."""
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -39,13 +40,12 @@ class AssistantMessage(Static):
 
     def append_delta(self, text: str) -> None:
         self._buffer.append(text)
-        self.update("".join(self._buffer))
+        full = "".join(self._buffer)
+        self.update(RichMarkdown(full))
 
     def finalize(self) -> str:
-        """Called on text_complete. Returns the full text."""
-        full_text = "".join(self._buffer)
-        self.update(full_text)
-        return full_text
+        """Called on text_complete. Returns the full raw text."""
+        return "".join(self._buffer)
 
     @property
     def full_text(self) -> str:
@@ -161,8 +161,18 @@ class ThinkingIndicator(Static):
     }
     """
 
+    _FRAMES = ["thinking.", "thinking..", "thinking..."]
+
     def __init__(self, **kwargs: object) -> None:
         super().__init__("[dim]thinking...[/dim]", **kwargs)
+
+    def on_mount(self) -> None:
+        self._frame_index = 0
+        self._timer = self.set_interval(0.4, self._animate)
+
+    def _animate(self) -> None:
+        self._frame_index = (self._frame_index + 1) % len(self._FRAMES)
+        self.update(f"[dim]{self._FRAMES[self._frame_index]}[/dim]")
 
 
 class ConsentCard(Static):
@@ -268,6 +278,8 @@ class CommandPalette(Static):
         ("/copy issues", "Copy issues"),
         ("/copy last", "Copy last response"),
         ("/copy all", "Copy everything"),
+        ("/open", "Open artifact by number"),
+        ("/search", "Search transcript"),
         ("/consent", "Respond to consent"),
         ("/stop", "Stop current run"),
         ("/exit", "Quit TUI"),
@@ -286,7 +298,7 @@ class CommandPalette(Static):
         ]
         self._selected_index = 0
         if self._filtered:
-            self._render()
+            self._render_items()
             self.styles.display = "block"
         else:
             self.styles.display = "none"
@@ -309,7 +321,7 @@ class CommandPalette(Static):
     def is_visible(self) -> bool:
         return str(self.styles.display) != "none"
 
-    def _render(self) -> None:
+    def _render_items(self) -> None:
         lines: list[str] = []
         for i, (cmd, desc) in enumerate(self._filtered):
             marker = "[bold]>[/bold] " if i == self._selected_index else "  "

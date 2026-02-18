@@ -334,8 +334,8 @@ class TuiCallbackHandler:
 
         if data:
             self._emit({"event": "text_delta", "data": data})
-            if complete:
-                self._emit({"event": "text_complete"})
+        if complete:
+            self._emit({"event": "text_complete"})
 
         if current_tool_use and current_tool_use.get("input"):
             raw_tool_id = current_tool_use.get("toolUseId")
