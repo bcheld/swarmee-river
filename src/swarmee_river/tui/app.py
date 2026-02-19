@@ -820,8 +820,6 @@ def run_tui() -> int:
         _transcript_widget_count: int = 0
         _MAX_TRANSCRIPT_WIDGETS: int = 500
         _received_structured_plan: bool = False
-        _run_saw_text_delta: bool = False
-        _completed_tool_ids: set[str] = set()
 
         def compose(self) -> Any:
             yield Header()
@@ -1256,7 +1254,6 @@ def run_tui() -> int:
                     self._current_assistant_msg = AssistantMessage()
                     self._mount_transcript_widget(self._current_assistant_msg)
                 self._current_assistant_msg.append_delta(event.get("data", ""))
-                self._run_saw_text_delta = True
                 self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
             elif etype == "text_complete":
@@ -1272,18 +1269,10 @@ def run_tui() -> int:
             elif etype == "tool_start":
                 tid = event.get("tool_use_id", "")
                 tool_name = event.get("tool", "unknown")
-                if self._current_thinking is not None:
-                    self._current_thinking.remove()
-                    self._current_thinking = None
-                block = self._tool_blocks.get(tid)
-                if block is None:
-                    block = ToolCallBlock(tool_name=tool_name, tool_use_id=tid)
-                    self._tool_blocks[tid] = block
-                    self._mount_transcript_widget(block)
-                    self._run_tool_count += 1
-                tool_input = event.get("input")
-                if isinstance(tool_input, dict) and tool_input:
-                    block.set_input(tool_input)
+                block = ToolCallBlock(tool_name=tool_name, tool_use_id=tid)
+                self._tool_blocks[tid] = block
+                self._mount_transcript_widget(block)
+                self._run_tool_count += 1
                 if self._status_bar is not None:
                     self._status_bar.set_tool_count(self._run_tool_count)
 
@@ -1301,9 +1290,6 @@ def run_tui() -> int:
 
             elif etype == "tool_result":
                 tid = event.get("tool_use_id", "")
-                if tid in self._completed_tool_ids:
-                    return
-                self._completed_tool_ids.add(tid)
                 block = self._tool_blocks.get(tid)
                 if block is not None:
                     block.set_result(event.get("status", "unknown"), event.get("duration_s", 0))
@@ -1356,21 +1342,6 @@ def run_tui() -> int:
                 self._warning_count += 1
                 self._write_issue(warn_text)
                 self._update_header_status()
-
-            elif etype == "final_result":
-                text = event.get("text", "")
-                if isinstance(text, str) and text and not self._run_saw_text_delta:
-                    if self._current_thinking is not None:
-                        self._current_thinking.remove()
-                        self._current_thinking = None
-                    if self._current_assistant_msg is None:
-                        self._current_assistant_msg = AssistantMessage()
-                        self._mount_transcript_widget(self._current_assistant_msg)
-                    self._current_assistant_msg.append_delta(text)
-                    self._run_saw_text_delta = True
-                if self._current_assistant_msg is not None:
-                    self._last_assistant_text = self._current_assistant_msg.finalize()
-                    self._current_assistant_msg = None
 
         def _discover_session_log_path(self, session_id: str | None) -> str | None:
             if not session_id:
@@ -1523,18 +1494,12 @@ def run_tui() -> int:
             self._reset_consent_panel()
             self._reset_issues_panel()
             self._current_assistant_msg = None
-            if self._current_thinking is not None:
-                with contextlib.suppress(Exception):
-                    self._current_thinking.remove()
-            self._current_thinking = ThinkingIndicator()
-            self._mount_transcript_widget(self._current_thinking)
+            self._current_thinking = None
             self._tool_blocks = {}
             self._run_tool_count = 0
             self._run_start_time = time.time()
             self._plan_step_counter = 0
             self._received_structured_plan = False
-            self._run_saw_text_delta = False
-            self._completed_tool_ids = set()
             if self._status_bar is not None:
                 self._status_bar.set_state("running")
                 self._status_bar.set_tool_count(0)
@@ -1574,10 +1539,6 @@ def run_tui() -> int:
                 name="swarmee-tui-runner",
             )
             self._runner_thread.start()
-
-        def _start_run_deferred(self, prompt: str, *, auto_approve: bool) -> None:
-            # Yield one UI frame so the submitted prompt renders before subprocess startup work.
-            self.set_timer(0, lambda: self._start_run(prompt, auto_approve=auto_approve))
 
         def _stop_run(self) -> None:
             proc = self._proc
@@ -1924,14 +1885,14 @@ def run_tui() -> int:
                 if not self._pending_plan_prompt:
                     self._write_transcript_line("[run] no pending plan.")
                     return
-                self._start_run_deferred(self._pending_plan_prompt, auto_approve=True)
+                self._start_run(self._pending_plan_prompt, auto_approve=True)
                 return
 
             if normalized == "/replan":
                 if not self._last_prompt:
                     self._write_transcript_line("[run] no previous prompt to replan.")
                     return
-                self._start_run_deferred(self._last_prompt, auto_approve=False)
+                self._start_run(self._last_prompt, auto_approve=False)
                 return
 
             if normalized == "/clearplan":
@@ -1951,7 +1912,7 @@ def run_tui() -> int:
                 if not prompt:
                     self._write_transcript_line("Usage: /plan <prompt>")
                     return
-                self._start_run_deferred(prompt, auto_approve=False)
+                self._start_run(prompt, auto_approve=False)
                 return
 
             if normalized == "/run":
@@ -1965,14 +1926,14 @@ def run_tui() -> int:
                 if not prompt:
                     self._write_transcript_line("Usage: /run <prompt>")
                     return
-                self._start_run_deferred(prompt, auto_approve=True)
+                self._start_run(prompt, auto_approve=True)
                 return
 
             if text.startswith("/") or text.startswith(":"):
                 self._write_transcript_line(f"[run] unknown command: {text}")
                 return
 
-            self._start_run_deferred(text, auto_approve=self._default_auto_approve)
+            self._start_run(text, auto_approve=self._default_auto_approve)
 
     try:
         SwarmeeTUI().run()
