@@ -102,6 +102,42 @@ def test_tool_result_emitted_even_without_tool_history():
     ]
 
 
+def test_tool_result_emitted_from_result_payload():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(current_tool_use={"toolUseId": "t1", "name": "shell", "input": {"command": "ls"}})
+        h.callback_handler(result={"toolUseId": "t1", "status": "success"})
+
+    events = _capture_events(h, run)
+    assert any(event.get("event") == "tool_start" and event.get("tool_use_id") == "t1" for event in events)
+    assert any(event.get("event") == "tool_result" and event.get("tool_use_id") == "t1" for event in events)
+
+
+def test_result_string_emits_text_when_no_stream_deltas():
+    h = TuiCallbackHandler()
+    events = _capture_events(h, lambda: h.callback_handler(result="final response"))
+    assert events == [
+        {"event": "text_delta", "data": "final response"},
+        {"event": "text_complete"},
+    ]
+
+
+def test_result_fallback_does_not_duplicate_streamed_text():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(data="hello")
+        h.callback_handler(complete=True)
+        h.callback_handler(result="hello")
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "hello"},
+        {"event": "text_complete"},
+    ]
+
+
 def test_force_stop_no_output():
     h = TuiCallbackHandler()
     events = _capture_events(h, lambda: h.callback_handler(force_stop=True))

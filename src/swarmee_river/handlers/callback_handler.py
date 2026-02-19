@@ -345,10 +345,64 @@ class TuiCallbackHandler:
         self.current_tool: str | None = None
         self.tool_histories: dict[str, dict[str, Any]] = {}
         self.interrupt_event: Event | None = None
+        self._saw_text_delta: bool = False
+        self._emitted_tool_results: set[str] = set()
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Write a single JSONL event to stdout."""
         _write_stdout_jsonl(event)
+
+    def _emit_tool_result(self, tool_use_id: str, status: str, *, tool_name: str | None = None) -> None:
+        if tool_use_id in self._emitted_tool_results:
+            return
+        info = self.tool_histories.get(tool_use_id)
+        duration = round(time.time() - info["start_time"], 2) if info is not None else 0.0
+        label = tool_name or (info["name"] if info is not None else "unknown")
+        self._emit({
+            "event": "tool_result",
+            "tool_use_id": tool_use_id,
+            "tool": label,
+            "status": status,
+            "duration_s": duration,
+        })
+        self._emitted_tool_results.add(tool_use_id)
+        if info is not None:
+            del self.tool_histories[tool_use_id]
+        if self.current_tool == tool_use_id:
+            self.current_tool = None
+
+    def _emit_text_fallback_if_needed(self, text: str | None) -> None:
+        if self._saw_text_delta:
+            return
+        if not isinstance(text, str):
+            return
+        if not text:
+            return
+        self._emit({"event": "text_delta", "data": text})
+        self._emit({"event": "text_complete"})
+        self._saw_text_delta = True
+
+    def _extract_text_from_result(self, result: Any) -> str | None:
+        if isinstance(result, str):
+            return result
+        if isinstance(result, dict):
+            text_value = result.get("text")
+            if isinstance(text_value, str):
+                return text_value
+            message = result.get("message")
+            if isinstance(message, dict):
+                return self._extract_text_from_result(message)
+            content = result.get("content")
+            if isinstance(content, list):
+                chunks: list[str] = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if isinstance(text, str):
+                            chunks.append(text)
+                if chunks:
+                    return "".join(chunks)
+        return None
 
     def callback_handler(
         self,
@@ -369,7 +423,7 @@ class TuiCallbackHandler:
         **extra_event_fields: Any,
     ) -> None:
         del invocation_state, structured_output_model, structured_output_prompt
-        del result, extra_event_fields, console
+        del extra_event_fields, console
         del init_event_loop, start_event_loop
         message = message or {}
         current_tool_use = current_tool_use or {}
@@ -385,6 +439,7 @@ class TuiCallbackHandler:
 
         if data:
             self._emit({"event": "text_delta", "data": data})
+            self._saw_text_delta = True
         if complete:
             self._emit({"event": "text_complete"})
 
@@ -443,26 +498,25 @@ class TuiCallbackHandler:
                             tid = tool_result.get("toolUseId")
                             status = tool_result.get("status", "unknown")
                             if isinstance(tid, str):
-                                info = self.tool_histories.get(tid)
-                                duration = round(time.time() - info["start_time"], 2) if info is not None else 0.0
-                                tool_label = info["name"] if info is not None else tool_result.get("name", "unknown")
-                                self._emit({
-                                    "event": "tool_result",
-                                    "tool_use_id": tid,
-                                    "tool": tool_label,
-                                    "status": status,
-                                    "duration_s": duration,
-                                })
-                                if info is not None:
-                                    del self.tool_histories[tid]
-                                if self.current_tool == tid:
-                                    self.current_tool = None
+                                tool_label = tool_result.get("name")
+                                self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
 
         if event_loop_throttled_delay:
             self._emit({
                 "event": "warning",
                 "text": f"Throttled! Waiting {event_loop_throttled_delay}s before retrying...",
             })
+
+        if isinstance(result, dict):
+            tid = result.get("toolUseId")
+            status = result.get("status")
+            if isinstance(tid, str) and status is not None:
+                tool_label = result.get("name")
+                self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
+            else:
+                self._emit_text_fallback_if_needed(self._extract_text_from_result(result))
+        elif result is not None:
+            self._emit_text_fallback_if_needed(self._extract_text_from_result(result))
 
 
 # ---------------------------------------------------------------------------
