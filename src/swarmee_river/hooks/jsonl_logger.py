@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -41,6 +42,51 @@ def _safe_json(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False)
     except Exception:
         return str(value)
+
+
+def _write_stdout_jsonl(event: dict[str, Any]) -> None:
+    try:
+        sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _result_status(result: Any) -> str:
+    if isinstance(result, dict):
+        status = result.get("status")
+        if isinstance(status, str) and status.strip():
+            return status.strip()
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, dict):
+                status = parsed.get("status")
+                if isinstance(status, str) and status.strip():
+                    return status.strip()
+        except Exception:
+            pass
+    return "unknown"
+
+
+def _result_text(result: Any) -> str | None:
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        text_value = result.get("text")
+        if isinstance(text_value, str):
+            return text_value
+        content = result.get("content")
+        if isinstance(content, list):
+            chunks: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    chunk = item.get("text")
+                    if isinstance(chunk, str):
+                        chunks.append(chunk)
+            if chunks:
+                return "".join(chunks)
+    return None
 
 
 def _secret_values_from_env() -> list[str]:
@@ -142,9 +188,14 @@ class JSONLLoggerHooks(HookProvider):
 
         self.s3_bucket = os.getenv("SWARMEE_LOG_S3_BUCKET")
         self.s3_prefix = os.getenv("SWARMEE_LOG_S3_PREFIX", "swarmee/logs").strip("/")
+        self.emit_tui_events = truthy_env("SWARMEE_TUI_EVENTS", False)
 
         self._lock = threading.Lock()
         self._log_path = self.log_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{self.session_id}.jsonl"
+
+    def _emit_tui_event(self, event: dict[str, Any]) -> None:
+        if self.emit_tui_events:
+            _write_stdout_jsonl(event)
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, BeforeInvocationEvent, self.before_invocation)
@@ -211,6 +262,8 @@ class JSONLLoggerHooks(HookProvider):
                 "tier": sw_state.get("tier") if isinstance(sw_state, dict) else None,
             },
         )
+        if isinstance(result_text, str) and result_text:
+            self._emit_tui_event({"event": "final_result", "text": result_text})
 
         if self.s3_bucket:
             threading.Thread(target=self._upload_to_s3, daemon=True).start()
@@ -233,6 +286,12 @@ class JSONLLoggerHooks(HookProvider):
             "before_tool_call",
             {"invocation_id": inv_id, "toolUseId": tool_use_id, "tool": tool_name, "input": tool_input_repr},
         )
+        self._emit_tui_event({
+            "event": "tool_start",
+            "tool_use_id": tool_use_id,
+            "tool": tool_name,
+            "input": tool_use.get("input") if isinstance(tool_use.get("input"), dict) else {},
+        })
 
     def after_tool_call(self, event: AfterToolCallEvent) -> None:
         sw = event.invocation_state.get("swarmee", {})
@@ -258,6 +317,18 @@ class JSONLLoggerHooks(HookProvider):
                 "result": result_repr,
             },
         )
+        status = _result_status(event.result)
+        self._emit_tui_event({
+            "event": "tool_result",
+            "tool_use_id": tool_use_id,
+            "tool": tool_name,
+            "status": status,
+            "duration_s": duration_s if duration_s is not None else 0.0,
+        })
+        if status != "success":
+            text = _result_text(event.result)
+            if isinstance(text, str) and text.strip():
+                self._emit_tui_event({"event": "error", "text": text.strip()})
 
     def before_model_call(self, event: BeforeModelCallEvent) -> None:
         sw = event.invocation_state.get("swarmee", {})
@@ -271,6 +342,7 @@ class JSONLLoggerHooks(HookProvider):
         msg_count = len(messages) if isinstance(messages, list) else None
         self._log("before_model_call", {"invocation_id": inv_id, "model_call_id": call_id, "messages": msg_count})
         event.invocation_state["swarmee_model_call_id"] = call_id
+        self._emit_tui_event({"event": "thinking", "text": "thinking..."})
 
     def after_model_call(self, event: AfterModelCallEvent) -> None:
         sw = event.invocation_state.get("swarmee", {})
