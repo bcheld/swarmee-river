@@ -5,6 +5,8 @@ Unit tests for the swarmee.py module using pytest
 
 import asyncio
 import contextlib
+import io
+import json
 import os
 import sys
 import warnings
@@ -317,9 +319,56 @@ class TestInteractiveMode:
 
         # Verify error was printed
         mock_print.assert_any_call("\nError: Test error")
-
-        # Verify callback_handler was called to stop spinners
         mock_callback_handler.assert_called_once_with(force_stop=True)
+
+
+class TestTuiDaemonMode:
+    """Daemon mode tests for long-running TUI subprocess protocol."""
+
+    def test_tui_daemon_emits_ready_and_model_info_on_startup(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert len(events) >= 2
+        assert events[0]["event"] == "ready"
+        assert isinstance(events[0].get("session_id"), str)
+        assert events[1]["event"] == "model_info"
+        assert "provider" in events[1]
+        assert "tier" in events[1]
+        assert "tiers" in events[1]
+        assert isinstance(events[1]["tiers"], list)
+
+    def test_tui_daemon_set_tier_emits_updated_model_info(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"set_tier","tier":"deep"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        model_events = [event for event in events if event.get("event") == "model_info"]
+        assert len(model_events) >= 2
+        assert any(event.get("tier") == "deep" for event in model_events)
 
 
 class TestCommandLine:

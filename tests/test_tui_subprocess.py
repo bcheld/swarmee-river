@@ -22,6 +22,11 @@ def test_build_swarmee_cmd_plan_mode():
     assert command == [sys.executable, "-u", "-m", "swarmee_river.swarmee", prompt]
 
 
+def test_build_swarmee_daemon_cmd():
+    command = tui_app.build_swarmee_daemon_cmd()
+    assert command == [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
+
+
 def test_build_plan_mode_prompt_wraps_user_request():
     wrapped = tui_app.build_plan_mode_prompt("  fix the failing tests  ")
     assert wrapped.startswith("Create a concrete work plan")
@@ -303,6 +308,28 @@ def test_write_to_proc_returns_false_when_stdin_missing():
     assert tui_app.write_to_proc(FakeProc(), "n") is False
 
 
+def test_send_daemon_command_writes_jsonl_and_flushes():
+    class FakeStdin:
+        def __init__(self) -> None:
+            self.payload = ""
+            self.flush_calls = 0
+
+        def write(self, text: str) -> None:
+            self.payload += text
+
+        def flush(self) -> None:
+            self.flush_calls += 1
+
+    class FakeProc:
+        def __init__(self) -> None:
+            self.stdin = FakeStdin()
+
+    proc = FakeProc()
+    assert tui_app.send_daemon_command(proc, {"cmd": "interrupt"}) is True
+    assert proc.stdin.payload == '{"cmd": "interrupt"}\n'
+    assert proc.stdin.flush_calls == 1
+
+
 def test_detect_consent_prompt_matches_cli_prompt():
     assert tui_app.detect_consent_prompt("~ consent> ") is not None
     assert tui_app.detect_consent_prompt("Allow tool 'shell'? [y/n]") is not None
@@ -430,6 +457,34 @@ def test_spawn_swarmee_sets_tui_events_env(monkeypatch):
     tui_app.spawn_swarmee("test prompt", auto_approve=True, session_id="abc123")
     assert captured_env.get("SWARMEE_TUI_EVENTS") == "1"
     assert captured_env.get("SWARMEE_SPINNERS") == "0"
+
+
+def test_spawn_swarmee_daemon_configures_subprocess(monkeypatch):
+    captured: dict[str, object] = {}
+    fake_proc = object()
+
+    def _fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return fake_proc
+
+    monkeypatch.setattr(tui_app.subprocess, "Popen", _fake_popen)
+
+    proc = tui_app.spawn_swarmee_daemon(session_id="abc123", env_overrides={"SWARMEE_MODEL_TIER": "fast"})
+
+    assert proc is fake_proc
+    command = captured["command"]
+    kwargs = captured["kwargs"]
+    assert command == [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
+    assert kwargs["stdin"] is tui_app.subprocess.PIPE
+    assert kwargs["stdout"] is tui_app.subprocess.PIPE
+    assert kwargs["stderr"] is tui_app.subprocess.STDOUT
+    assert kwargs["text"] is True
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["SWARMEE_SESSION_ID"] == "abc123"
+    assert env["SWARMEE_MODEL_TIER"] == "fast"
+    assert env["SWARMEE_TUI_EVENTS"] == "1"
 
 
 def test_format_tool_input_shell():

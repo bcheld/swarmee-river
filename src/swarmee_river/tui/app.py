@@ -11,9 +11,9 @@ import re
 import shutil
 import signal
 import subprocess
-import time
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -44,6 +44,11 @@ def build_swarmee_cmd(prompt: str, *, auto_approve: bool) -> list[str]:
         command.append("--yes")
     command.append(prompt)
     return command
+
+
+def build_swarmee_daemon_cmd() -> list[str]:
+    """Build a subprocess command for a long-running Swarmee daemon."""
+    return [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
 
 
 def extract_plan_section(output: str) -> str | None:
@@ -406,6 +411,19 @@ def write_to_proc(proc: subprocess.Popen[str], text: str) -> bool:
     return True
 
 
+def send_daemon_command(proc: subprocess.Popen[str], cmd_dict: dict[str, Any]) -> bool:
+    """Serialize and send a daemon command as JSONL."""
+    if proc.stdin is None:
+        return False
+    try:
+        payload = _json.dumps(cmd_dict, ensure_ascii=False) + "\n"
+        proc.stdin.write(payload)
+        proc.stdin.flush()
+    except Exception:
+        return False
+    return True
+
+
 def spawn_swarmee(
     prompt: str,
     *,
@@ -437,6 +455,42 @@ def spawn_swarmee(
         env["SWARMEE_SESSION_ID"] = session_id
     return subprocess.Popen(
         build_swarmee_cmd(prompt, auto_approve=auto_approve),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        env=env,
+    )
+
+
+def spawn_swarmee_daemon(
+    *,
+    session_id: str | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
+    """Spawn Swarmee daemon with line-buffered merged output."""
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env["SWARMEE_SPINNERS"] = "0"
+    env["SWARMEE_TUI_EVENTS"] = "1"
+    existing_warning_filters = env.get("PYTHONWARNINGS", "").strip()
+    tui_warning_filters = [
+        'ignore:Field name "json" in "Http_requestTool" shadows an attribute in parent "BaseModel"'
+        ":UserWarning:pydantic.main",
+    ]
+    env["PYTHONWARNINGS"] = ",".join(
+        [item for item in [*tui_warning_filters, existing_warning_filters] if isinstance(item, str) and item.strip()]
+    )
+    if env_overrides:
+        env.update(env_overrides)
+    if session_id:
+        env["SWARMEE_SESSION_ID"] = session_id
+    return subprocess.Popen(
+        build_swarmee_daemon_cmd(),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -787,7 +841,6 @@ def run_tui() -> int:
         _pending_plan_prompt: str | None = None
         _last_run_auto_approve: bool = False
         _default_auto_approve: bool = False
-        _run_session_id: str | None = None
         _consent_active: bool = False
         _consent_buffer: list[str] = []
         _artifacts: list[str] = []
@@ -820,6 +873,14 @@ def run_tui() -> int:
         _transcript_widget_count: int = 0
         _MAX_TRANSCRIPT_WIDGETS: int = 500
         _received_structured_plan: bool = False
+        _daemon_ready: bool = False
+        _query_active: bool = False
+        _daemon_tiers: list[dict[str, Any]] = []
+        _daemon_provider: str | None = None
+        _daemon_tier: str | None = None
+        _daemon_model_id: str | None = None
+        _turn_output_chunks: list[str] = []
+        _daemon_session_id: str | None = None
 
         def compose(self) -> Any:
             yield Header()
@@ -891,10 +952,11 @@ def run_tui() -> int:
             from swarmee_river.utils.welcome_utils import SWARMEE_BANNER
             for banner_line in SWARMEE_BANNER.strip().splitlines():
                 self._mount_transcript_widget(Static(banner_line))
-            self._write_transcript("Swarmee TUI ready. Enter a prompt to run Swarmee.")
+            self._write_transcript("Starting Swarmee daemon...")
             self._write_transcript(self.sub_title)
             self._write_transcript(
-                "Commands: /plan <prompt>, /run <prompt>, /approve, /replan, /clearplan, /model, /stop, /exit."
+                "Commands: /plan <prompt>, /run <prompt>, /approve, /replan, "
+                "/clearplan, /model, /stop, /daemon restart, /exit."
             )
             self._write_transcript("Consent: /consent <y|n|a|v> (or press y/n/a/v when prompted).")
             self._write_transcript(
@@ -905,6 +967,7 @@ def run_tui() -> int:
             self._write_transcript("Text is selectable in all panes.")
             self._write_transcript("Optional export: /copy, /copy plan, /copy issues, /copy all.")
             self._load_session()
+            self._spawn_daemon()
 
         def _mount_transcript_widget(self, widget: Any) -> None:
             """Mount a widget into the transcript VerticalScroll and prune if needed."""
@@ -999,6 +1062,9 @@ def run_tui() -> int:
                 self._status_bar.set_counts(warnings=self._warning_count, errors=self._error_count)
 
         def _current_model_summary(self) -> str:
+            if self._daemon_provider and self._daemon_tier:
+                suffix = f" ({self._daemon_model_id})" if self._daemon_model_id else ""
+                return f"Model: {self._daemon_provider}/{self._daemon_tier}{suffix}"
             return resolve_model_config_summary(
                 provider_override=self._model_provider_override,
                 tier_override=self._model_tier_override,
@@ -1014,10 +1080,7 @@ def run_tui() -> int:
 
         def _refresh_model_select(self) -> None:
             selector = self.query_one("#model_select", Select)
-            options, selected_value = model_select_options(
-                provider_override=self._model_provider_override,
-                tier_override=self._model_tier_override,
-            )
+            options, selected_value = self._model_select_options()
             self._model_select_syncing = True
             try:
                 selector.set_options(options)
@@ -1025,6 +1088,28 @@ def run_tui() -> int:
                     selector.value = selected_value
             finally:
                 self._model_select_syncing = False
+
+        def _model_select_options(self) -> tuple[list[tuple[str, str]], str]:
+            if self._daemon_tiers and self._daemon_provider:
+                auto_summary = self._current_model_summary().removeprefix("Model: ").strip()
+                options: list[tuple[str, str]] = [(f"Auto ({auto_summary})", _MODEL_AUTO_VALUE)]
+                selected_value = _MODEL_AUTO_VALUE
+                for tier in self._daemon_tiers:
+                    tier_name = str(tier.get("name", "")).strip().lower()
+                    provider_name = str(tier.get("provider", "")).strip().lower()
+                    if not tier_name or provider_name != self._daemon_provider:
+                        continue
+                    model_id = str(tier.get("model_id", "")).strip()
+                    suffix = f" ({model_id})" if model_id else ""
+                    value = f"{provider_name}|{tier_name}"
+                    options.append((f"{provider_name}/{tier_name}{suffix}", value))
+                    if tier_name == (self._daemon_tier or ""):
+                        selected_value = value
+                return options, selected_value
+            return model_select_options(
+                provider_override=self._model_provider_override,
+                tier_override=self._model_tier_override,
+            )
 
         def _update_prompt_placeholder(self) -> None:
             input_widget = self.query_one("#prompt", PromptTextArea)
@@ -1086,7 +1171,7 @@ def run_tui() -> int:
 
             artifact_path = self._persist_run_transcript(
                 pid=(self._proc.pid if self._proc is not None else None),
-                session_id=self._run_session_id,
+                session_id=self._daemon_session_id,
                 prompt=f"(copy) {label}",
                 auto_approve=False,
                 exit_code=0,
@@ -1189,17 +1274,19 @@ def run_tui() -> int:
                 self._write_transcript_line("[consent] no active prompt.")
                 return
             if self._proc is None or self._proc.poll() is not None:
-                self._write_transcript_line("[consent] process is not running.")
+                self._write_transcript_line("[consent] daemon is not running.")
                 self._reset_consent_panel()
                 return
-            if not write_to_proc(self._proc, normalized_choice):
+            if not send_daemon_command(self._proc, {"cmd": "consent_response", "choice": normalized_choice}):
                 self._write_transcript_line("[consent] failed to send response (stdin unavailable).")
                 self._reset_consent_panel()
                 return
             self._reset_consent_panel()
             self.query_one("#prompt", TextArea).focus()
 
-        def _handle_output_line(self, line: str) -> None:
+        def _handle_output_line(self, line: str, raw_line: str | None = None) -> None:
+            if self._query_active:
+                self._turn_output_chunks.append(raw_line if raw_line is not None else (line + "\n"))
             # Try structured JSONL first (emitted by TuiCallbackHandler).
             tui_event = parse_tui_event(line)
             if tui_event is not None:
@@ -1246,7 +1333,33 @@ def run_tui() -> int:
             """Process a structured JSONL event from the subprocess."""
             etype = event.get("event", "")
 
-            if etype == "text_delta":
+            if etype == "ready":
+                self._daemon_ready = True
+                session_id = str(event.get("session_id", "")).strip()
+                if session_id:
+                    self._daemon_session_id = session_id
+                self._write_transcript("Swarmee daemon ready. Enter a prompt to run Swarmee.")
+
+            elif etype == "turn_complete":
+                self._finalize_turn(exit_status=str(event.get("exit_status", "ok")))
+
+            elif etype == "model_info":
+                provider = str(event.get("provider", "")).strip().lower()
+                tier = str(event.get("tier", "")).strip().lower()
+                model_id = event.get("model_id")
+                self._daemon_provider = provider or None
+                self._daemon_tier = tier or None
+                self._daemon_model_id = (
+                    str(model_id).strip() if model_id is not None and str(model_id).strip() else None
+                )
+                tiers = event.get("tiers")
+                self._daemon_tiers = tiers if isinstance(tiers, list) else []
+                self._refresh_model_select()
+                self._update_header_status()
+                if self._status_bar is not None:
+                    self._status_bar.set_model(self._current_model_summary())
+
+            elif etype == "text_delta":
                 if self._current_thinking is not None:
                     self._current_thinking.remove()
                     self._current_thinking = None
@@ -1384,20 +1497,7 @@ def run_tui() -> int:
             except Exception:
                 return None
 
-        def _finalize_run(
-            self,
-            proc: subprocess.Popen[str],
-            *,
-            return_code: int,
-            prompt: str,
-            output_text: str,
-            auto_approve: bool,
-            session_id: str | None,
-        ) -> None:
-            if self._proc is not proc:
-                return
-
-            # Stop status timer and update status bar.
+        def _finalize_turn(self, *, exit_status: str) -> None:
             if self._status_timer is not None:
                 self._status_timer.stop()
                 self._status_timer = None
@@ -1406,13 +1506,12 @@ def run_tui() -> int:
                 self._status_bar.set_state("idle")
                 self._status_bar.set_elapsed(elapsed)
             self._run_start_time = None
+            self._query_active = False
 
-            # Write run completion summary.
             self._write_transcript(
-                f"[run] completed in {elapsed:.1f}s ({self._run_tool_count} tool calls, exit code {return_code})"
+                f"[run] completed in {elapsed:.1f}s ({self._run_tool_count} tool calls, status={exit_status})"
             )
 
-            # Finalize any in-progress assistant message.
             if self._current_assistant_msg is not None:
                 self._last_assistant_text = self._current_assistant_msg.finalize()
                 self._current_assistant_msg = None
@@ -1420,75 +1519,128 @@ def run_tui() -> int:
                 self._current_thinking.remove()
                 self._current_thinking = None
 
+            output_text = "".join(self._turn_output_chunks)
+            self._turn_output_chunks = []
             transcript_path = self._persist_run_transcript(
-                pid=proc.pid,
-                session_id=session_id,
-                prompt=prompt,
-                auto_approve=auto_approve,
-                exit_code=return_code,
+                pid=(self._proc.pid if self._proc is not None else None),
+                session_id=self._daemon_session_id,
+                prompt=self._last_prompt or "",
+                auto_approve=self._last_run_auto_approve,
+                exit_code=0 if exit_status == "ok" else 1,
                 output_text=output_text,
             )
             if transcript_path:
                 self._add_artifact_paths([transcript_path])
 
-            log_path = self._discover_session_log_path(session_id)
+            log_path = self._discover_session_log_path(self._daemon_session_id)
             if log_path:
                 self._add_artifact_paths([log_path])
 
             if not self._received_structured_plan:
                 extracted_plan = extract_plan_section_from_output(sanitize_output_text(output_text))
                 if extracted_plan:
-                    self._pending_plan_prompt = prompt
+                    self._pending_plan_prompt = self._last_prompt
                     self._set_plan_panel(extracted_plan)
                     self._write_transcript_line(render_tui_hint_after_plan())
+
             self._reset_consent_panel()
-            self._proc = None
-            self._runner_thread = None
-            self._run_session_id = None
             self._received_structured_plan = False
             self._save_session()
 
-        def _stream_output(self, proc: subprocess.Popen[str], prompt: str) -> None:
-            output_chunks: list[str] = []
+        def _handle_daemon_exit(self, proc: subprocess.Popen[str], *, return_code: int) -> None:
+            if self._proc is not proc:
+                return
+            was_query_active = self._query_active
+            self._daemon_ready = False
+            self._query_active = False
+            self._proc = None
+            self._runner_thread = None
+
+            if self._status_timer is not None:
+                self._status_timer.stop()
+                self._status_timer = None
+            if self._status_bar is not None:
+                self._status_bar.set_state("idle")
+
+            if was_query_active:
+                self._finalize_turn(exit_status="error")
+            self._write_transcript_line(f"[daemon] exited unexpectedly (code {return_code}).")
+            self._write_transcript_line("[daemon] run /daemon restart to restart the background agent.")
+
+        def _stream_daemon_output(self, proc: subprocess.Popen[str]) -> None:
             if proc.stdout is None:
-                self.call_from_thread(self._write_transcript_line, "[run] error: subprocess stdout unavailable.")
+                self.call_from_thread(self._write_transcript_line, "[daemon] error: subprocess stdout unavailable.")
                 return_code = proc.poll()
                 self.call_from_thread(
-                    self._finalize_run,
+                    self._handle_daemon_exit,
                     proc,
                     return_code=(return_code if return_code is not None else 1),
-                    prompt=prompt,
-                    output_text="",
-                    auto_approve=self._last_run_auto_approve,
-                    session_id=self._run_session_id,
                 )
                 return
 
             try:
                 for raw_line in proc.stdout:
-                    output_chunks.append(raw_line)
-                    self.call_from_thread(self._handle_output_line, raw_line.rstrip("\n"))
+                    self.call_from_thread(self._handle_output_line, raw_line.rstrip("\n"), raw_line)
             except Exception as exc:
-                self.call_from_thread(self._write_transcript_line, f"[run] output stream error: {exc}")
+                self.call_from_thread(self._write_transcript_line, f"[daemon] output stream error: {exc}")
             finally:
                 with contextlib.suppress(Exception):
                     proc.stdout.close()
                 return_code = proc.wait()
-                self.call_from_thread(
-                    self._finalize_run,
-                    proc,
-                    return_code=return_code,
-                    prompt=prompt,
-                    output_text="".join(output_chunks),
-                    auto_approve=self._last_run_auto_approve,
-                    session_id=self._run_session_id,
+                self.call_from_thread(self._handle_daemon_exit, proc, return_code=return_code)
+
+        def _spawn_daemon(self, *, restart: bool = False) -> None:
+            proc = self._proc
+            if proc is not None and proc.poll() is None:
+                if restart:
+                    send_daemon_command(proc, {"cmd": "shutdown"})
+                    with contextlib.suppress(Exception):
+                        proc.wait(timeout=3.0)
+                    if proc.poll() is None:
+                        stop_process(proc)
+                    self._proc = None
+                else:
+                    return
+
+            try:
+                self._daemon_session_id = uuid.uuid4().hex
+                daemon = spawn_swarmee_daemon(
+                    session_id=self._daemon_session_id,
+                    env_overrides=self._model_env_overrides(),
                 )
+            except Exception as exc:
+                self._daemon_ready = False
+                self._write_transcript_line(f"[daemon] failed to start: {exc}")
+                return
+
+            self._proc = daemon
+            self._daemon_ready = False
+            self._runner_thread = threading.Thread(
+                target=self._stream_daemon_output,
+                args=(daemon,),
+                daemon=True,
+                name="swarmee-tui-daemon-stream",
+            )
+            self._runner_thread.start()
+            self._write_transcript_line("[daemon] started, waiting for ready event.")
 
         def _tick_status(self) -> None:
             if self._run_start_time is not None and self._status_bar is not None:
                 self._status_bar.set_elapsed(time.time() - self._run_start_time)
 
-        def _start_run(self, prompt: str, *, auto_approve: bool) -> None:
+        def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
+            if not self._daemon_ready:
+                self._write_transcript_line("[run] daemon is not ready. Use /daemon restart.")
+                return
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                self._write_transcript_line("[run] daemon is not running. Use /daemon restart.")
+                self._daemon_ready = False
+                return
+            if self._query_active:
+                self._write_transcript_line("[run] already running; use /stop.")
+                return
+
             self._pending_plan_prompt = None
             self._reset_artifacts_panel()
             self._reset_consent_panel()
@@ -1500,6 +1652,7 @@ def run_tui() -> int:
             self._run_start_time = time.time()
             self._plan_step_counter = 0
             self._received_structured_plan = False
+            self._turn_output_chunks = []
             if self._status_bar is not None:
                 self._status_bar.set_state("running")
                 self._status_bar.set_tool_count(0)
@@ -1508,52 +1661,46 @@ def run_tui() -> int:
             if self._status_timer is not None:
                 self._status_timer.stop()
             self._status_timer = self.set_interval(1.0, self._tick_status)
-            run_prompt = prompt if auto_approve else build_plan_mode_prompt(prompt)
-            try:
-                self._run_session_id = uuid.uuid4().hex
-                proc = spawn_swarmee(
-                    run_prompt,
-                    auto_approve=auto_approve,
-                    session_id=self._run_session_id,
-                    env_overrides=self._model_env_overrides(),
-                )
-            except Exception as exc:
+            self._last_prompt = prompt
+            self._last_run_auto_approve = auto_approve
+            self._query_active = True
+            command: dict[str, Any] = {
+                "cmd": "query",
+                "text": prompt,
+                "auto_approve": bool(auto_approve),
+            }
+            if mode:
+                command["mode"] = mode
+            if not send_daemon_command(proc, command):
+                self._query_active = False
                 if self._status_timer is not None:
                     self._status_timer.stop()
                     self._status_timer = None
-                self._run_start_time = None
-                self._run_session_id = None
                 if self._status_bar is not None:
                     self._status_bar.set_state("idle")
-                    self._status_bar.set_elapsed(0.0)
-                self._write_transcript_line(f"[run] failed to start: {exc}")
-                return
-
-            self._proc = proc
-            self._last_prompt = prompt
-            self._last_run_auto_approve = auto_approve
-            self._runner_thread = threading.Thread(
-                target=self._stream_output,
-                args=(proc, prompt),
-                daemon=True,
-                name="swarmee-tui-runner",
-            )
-            self._runner_thread.start()
+                self._write_transcript_line("[run] failed to send query to daemon.")
 
         def _stop_run(self) -> None:
             proc = self._proc
             if proc is None or proc.poll() is not None:
                 self._write_transcript_line("[run] no active run.")
-                if proc is not None and proc.poll() is not None:
-                    self._proc = None
+                self._daemon_ready = False
                 return
-            stop_process(proc)
-            self._write_transcript_line("[run] stopped.")
+            if not self._query_active:
+                self._write_transcript_line("[run] no active run.")
+                return
+            if send_daemon_command(proc, {"cmd": "interrupt"}):
+                self._write_transcript_line("[run] interrupt requested.")
+            else:
+                self._write_transcript_line("[run] failed to send interrupt.")
 
         def action_quit(self) -> None:
             if self._proc is not None and self._proc.poll() is None:
-                stop_process(self._proc)
-                self._write_transcript_line("[run] stopped.")
+                send_daemon_command(self._proc, {"cmd": "shutdown"})
+                with contextlib.suppress(Exception):
+                    self._proc.wait(timeout=3.0)
+                if self._proc.poll() is None:
+                    stop_process(self._proc)
             self._save_session()
             self.exit(return_code=0)
 
@@ -1584,9 +1731,9 @@ def run_tui() -> int:
 
         def action_interrupt_run(self) -> None:
             proc = self._proc
-            if proc is None or proc.poll() is not None:
+            if proc is None or proc.poll() is not None or not self._query_active:
                 return
-            stop_process(proc)
+            send_daemon_command(proc, {"cmd": "interrupt"})
             self._write_transcript_line("[run] interrupted.")
 
         def action_copy_selection(self) -> None:
@@ -1648,7 +1795,7 @@ def run_tui() -> int:
                     text = str(child.renderable)
                 if term_lower in text.lower():
                     child.scroll_visible(animate=True)
-                    self._write_transcript_line(f"[search] found match in transcript.")
+                    self._write_transcript_line("[search] found match in transcript.")
                     return
             self._write_transcript_line(f"[search] no match for '{term}'.")
 
@@ -1757,6 +1904,15 @@ def run_tui() -> int:
                 provider, tier = value.split("|", 1)
                 self._model_provider_override = provider.strip().lower() or None
                 self._model_tier_override = tier.strip().lower() or None
+                if self._daemon_ready and self._proc is not None and self._proc.poll() is None:
+                    requested_tier = tier.strip().lower()
+                    current_tier = (self._daemon_tier or "").strip().lower()
+                    if self._query_active:
+                        if requested_tier != current_tier:
+                            self._write_transcript_line("[model] cannot change tier while a run is active.")
+                    else:
+                        if not send_daemon_command(self._proc, {"cmd": "set_tier", "tier": requested_tier}):
+                            self._write_transcript_line("[model] failed to send tier change to daemon.")
             self._update_header_status()
             self._update_prompt_placeholder()
             if self._status_bar is not None:
@@ -1809,11 +1965,11 @@ def run_tui() -> int:
                 return
 
             if normalized in {"/exit", ":exit"}:
-                if self._proc is not None and self._proc.poll() is None:
-                    stop_process(self._proc)
-                    self._write_transcript_line("[run] stopped.")
-                self._save_session()
-                self.exit(return_code=0)
+                self.action_quit()
+                return
+
+            if normalized in {"/daemon restart", "/restart-daemon"}:
+                self._spawn_daemon(restart=True)
                 return
 
             if normalized == "/consent":
@@ -1837,10 +1993,7 @@ def run_tui() -> int:
                 return
 
             if normalized == "/model list":
-                options, _ = model_select_options(
-                    provider_override=self._model_provider_override,
-                    tier_override=self._model_tier_override,
-                )
+                options, _ = self._model_select_options()
                 for label, _value in options:
                     self._write_transcript_line(f"- {label}")
                 return
@@ -1862,6 +2015,8 @@ def run_tui() -> int:
                 self._refresh_model_select()
                 self._update_header_status()
                 self._write_transcript_line(f"[model] provider set to {provider}.")
+                if self._daemon_ready:
+                    self._write_transcript_line("[model] restart daemon to apply provider changes.")
                 self._write_transcript_line(self._current_model_summary())
                 return
 
@@ -1874,10 +2029,18 @@ def run_tui() -> int:
                 self._refresh_model_select()
                 self._update_header_status()
                 self._write_transcript_line(f"[model] tier set to {tier}.")
+                if (
+                    self._daemon_ready
+                    and self._proc is not None
+                    and self._proc.poll() is None
+                    and not self._query_active
+                ):
+                    if not send_daemon_command(self._proc, {"cmd": "set_tier", "tier": tier}):
+                        self._write_transcript_line("[model] failed to send tier change to daemon.")
                 self._write_transcript_line(self._current_model_summary())
                 return
 
-            if self._proc is not None and self._proc.poll() is None:
+            if self._query_active:
                 self._write_transcript_line("[run] already running; use /stop.")
                 return
 
@@ -1892,7 +2055,7 @@ def run_tui() -> int:
                 if not self._last_prompt:
                     self._write_transcript_line("[run] no previous prompt to replan.")
                     return
-                self._start_run(self._last_prompt, auto_approve=False)
+                self._start_run(self._last_prompt, auto_approve=False, mode="plan")
                 return
 
             if normalized == "/clearplan":
@@ -1912,7 +2075,7 @@ def run_tui() -> int:
                 if not prompt:
                     self._write_transcript_line("Usage: /plan <prompt>")
                     return
-                self._start_run(prompt, auto_approve=False)
+                self._start_run(prompt, auto_approve=False, mode="plan")
                 return
 
             if normalized == "/run":
@@ -1926,7 +2089,7 @@ def run_tui() -> int:
                 if not prompt:
                     self._write_transcript_line("Usage: /run <prompt>")
                     return
-                self._start_run(prompt, auto_approve=True)
+                self._start_run(prompt, auto_approve=True, mode="execute")
                 return
 
             if text.startswith("/") or text.startswith(":"):
