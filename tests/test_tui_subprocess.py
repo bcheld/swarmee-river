@@ -529,6 +529,15 @@ def test_plan_card_mark_step_complete():
     assert card._step_status == [True, False]
 
 
+def test_plan_actions_exposes_approve_replan_clear_buttons():
+    from swarmee_river.tui.widgets import PlanActions
+
+    actions = PlanActions()
+    buttons = list(actions.compose())
+    ids = [getattr(button, "id", None) for button in buttons]
+    assert ids == ["plan_action_approve", "plan_action_replan", "plan_action_clear"]
+
+
 def test_command_palette_filter():
     from swarmee_river.tui.widgets import CommandPalette
 
@@ -565,6 +574,26 @@ def test_assistant_message_accumulates_deltas():
     msg._buffer.append("**world**")
     assert msg.full_text == "Hello **world**"
     assert msg.finalize() == "Hello **world**"
+
+
+def test_assistant_message_finalize_renders_model_and_timestamp_metadata():
+    from swarmee_river.tui.widgets import AssistantMessage
+
+    msg = AssistantMessage(model="gpt-5-mini", timestamp="2:34 PM")
+    msg._buffer.append("Hello")
+    assert msg.finalize() == "Hello"
+    content = msg._Static__content  # type: ignore[attr-defined]
+    renderables = getattr(content, "renderables", [])
+    assert len(renderables) == 2
+    assert getattr(renderables[1], "plain", "") == "gpt-5-mini · 2:34 PM"
+
+
+def test_user_message_renders_timestamp_when_provided():
+    from swarmee_river.tui.widgets import UserMessage
+
+    msg = UserMessage("hello", timestamp="2:34 PM")
+    content = msg._Static__content  # type: ignore[attr-defined]
+    assert "[dim]2:34 PM[/dim]" in str(content)
 
 
 def test_status_bar_refresh_display():

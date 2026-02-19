@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json as _json
 
+from rich.console import Group as RichGroup
 from rich.markdown import Markdown as RichMarkdown
-from textual.widgets import Collapsible, Static
+from rich.text import Text as RichText
+from textual.widgets import Button, Collapsible, Static
 
 
 class UserMessage(Static):
@@ -20,8 +22,11 @@ class UserMessage(Static):
     }
     """
 
-    def __init__(self, text: str, **kwargs: object) -> None:
-        super().__init__(f"[bold cyan]YOU>[/bold cyan] {text}", **kwargs)
+    def __init__(self, text: str, timestamp: str | None = None, **kwargs: object) -> None:
+        render_text = f"[bold cyan]YOU>[/bold cyan] {text}"
+        if isinstance(timestamp, str) and timestamp.strip():
+            render_text = f"{render_text}\n[dim]{timestamp.strip()}[/dim]"
+        super().__init__(render_text, **kwargs)
 
 
 class AssistantMessage(Static):
@@ -34,9 +39,11 @@ class AssistantMessage(Static):
     }
     """
 
-    def __init__(self, **kwargs: object) -> None:
+    def __init__(self, model: str | None = None, timestamp: str | None = None, **kwargs: object) -> None:
         super().__init__("", **kwargs)
         self._buffer: list[str] = []
+        self._model = model.strip() if isinstance(model, str) and model.strip() else ""
+        self._timestamp = timestamp.strip() if isinstance(timestamp, str) and timestamp.strip() else ""
 
     def append_delta(self, text: str) -> None:
         self._buffer.append(text)
@@ -45,7 +52,12 @@ class AssistantMessage(Static):
 
     def finalize(self) -> str:
         """Called on text_complete. Returns the full raw text."""
-        return "".join(self._buffer)
+        full = "".join(self._buffer)
+        meta_parts = [part for part in [self._model, self._timestamp] if part]
+        if meta_parts:
+            meta_line = " · ".join(meta_parts)
+            self.update(RichGroup(RichMarkdown(full), RichText(meta_line, style="dim")))
+        return full
 
     @property
     def full_text(self) -> str:
@@ -249,6 +261,44 @@ class PlanCard(Static):
             lines.append("")
         lines.append("[dim]/approve  /replan  /clearplan[/dim]")
         return "\n".join(lines)
+
+
+class PlanActions(Static):
+    """Button row for plan actions in the sidebar."""
+
+    DEFAULT_CSS = """
+    PlanActions {
+        layout: horizontal;
+        height: auto;
+        padding: 0;
+        margin: 0;
+    }
+    PlanActions Button {
+        width: 1fr;
+        min-width: 8;
+        margin: 0;
+        padding: 0 1;
+        background: transparent;
+        color: $accent;
+        border: round $accent;
+    }
+    PlanActions Button:hover {
+        background: transparent;
+        color: $accent;
+        border: round $accent;
+    }
+    PlanActions Button.-active,
+    PlanActions Button:focus {
+        background: transparent;
+        color: $accent;
+        border: round $accent;
+    }
+    """
+
+    def compose(self):  # type: ignore[override]
+        yield Button("Approve", id="plan_action_approve", compact=True, variant="default")
+        yield Button("Replan", id="plan_action_replan", compact=True, variant="default")
+        yield Button("Clear", id="plan_action_clear", compact=True, variant="default")
 
 
 class CommandPalette(Static):

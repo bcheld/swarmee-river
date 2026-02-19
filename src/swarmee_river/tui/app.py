@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
@@ -23,6 +24,7 @@ from swarmee_river.state_paths import logs_dir, sessions_dir
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
 _MODEL_AUTO_VALUE = "__auto__"
+_MODEL_LOADING_VALUE = "__loading__"
 _TRUNCATED_ARTIFACT_RE = re.compile(r"full output saved to (?P<path>[^\]]+)")
 _PATH_TOKEN_RE = re.compile(r"[A-Za-z]:\\[^\s,;]+|/(?:[^\s,;]+)|\./[^\s,;]+|\.\./[^\s,;]+")
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -565,6 +567,7 @@ def run_tui() -> int:
         AssistantMessage,
         CommandPalette,
         ConsentCard,
+        PlanActions,
         PlanCard,
         StatusBar,
         SystemMessage,
@@ -782,6 +785,10 @@ def run_tui() -> int:
             padding: 0 1;
         }
 
+        #plan_actions {
+            height: auto;
+        }
+
         #consent {
             height: 8;
             border: round $warning;
@@ -870,6 +877,7 @@ def run_tui() -> int:
         _split_ratio: int = 2
         _search_active: bool = False
         _plan_step_counter: int = 0
+        _plan_completion_announced: bool = False
         _transcript_widget_count: int = 0
         _MAX_TRANSCRIPT_WIDGETS: int = 500
         _received_structured_plan: bool = False
@@ -879,8 +887,10 @@ def run_tui() -> int:
         _daemon_provider: str | None = None
         _daemon_tier: str | None = None
         _daemon_model_id: str | None = None
+        _current_daemon_model: str | None = None
         _turn_output_chunks: list[str] = []
         _daemon_session_id: str | None = None
+        _is_shutting_down: bool = False
 
         def compose(self) -> Any:
             yield Header()
@@ -897,6 +907,7 @@ def run_tui() -> int:
                                 id="plan",
                                 soft_wrap=True,
                             )
+                            yield PlanActions(id="plan_actions")
                         with TabPane("Issues", id="tab_issues"):
                             yield TextArea(
                                 text="",
@@ -926,7 +937,7 @@ def run_tui() -> int:
                 with Horizontal(id="prompt_bottom"):
                     yield Static("", id="prompt_spacer")
                     yield Select(
-                        options=[("Auto", _MODEL_AUTO_VALUE)],
+                        options=[("Loading model info...", _MODEL_LOADING_VALUE)],
                         allow_blank=False,
                         id="model_select",
                         compact=True,
@@ -990,8 +1001,17 @@ def run_tui() -> int:
             """Write a plain text line to the transcript (used for TUI-internal messages)."""
             self._write_transcript(line)
 
+        def _call_from_thread_safe(self, callback: Any, *args: Any, **kwargs: Any) -> None:
+            if self._is_shutting_down:
+                return
+            with contextlib.suppress(Exception):
+                self.call_from_thread(callback, *args, **kwargs)
+
         def _write_user_input(self, text: str) -> None:
-            self._mount_transcript_widget(UserMessage(text))
+            self._mount_transcript_widget(UserMessage(text, timestamp=self._turn_timestamp()))
+
+        def _turn_timestamp(self) -> str:
+            return datetime.now().strftime("%I:%M %p").lstrip("0")
 
         def _append_plain_text(self, text: str) -> None:
             """Mount a plain Static widget for non-event output lines (legacy fallback)."""
@@ -1008,6 +1028,9 @@ def run_tui() -> int:
 
         def _reset_plan_panel(self) -> None:
             self._set_plan_panel("(no plan)")
+            self._current_plan_card = None
+            self._plan_step_counter = 0
+            self._plan_completion_announced = False
 
         def _reset_issues_panel(self) -> None:
             self._issues_lines = []
@@ -1079,6 +1102,14 @@ def run_tui() -> int:
             return overrides
 
         def _refresh_model_select(self) -> None:
+            if self._daemon_provider and self._daemon_tier and self._daemon_tiers:
+                self._refresh_model_select_from_daemon(
+                    provider=self._daemon_provider,
+                    tier=self._daemon_tier,
+                    tiers=self._daemon_tiers,
+                )
+                return
+
             selector = self.query_one("#model_select", Select)
             options, selected_value = self._model_select_options()
             self._model_select_syncing = True
@@ -1089,15 +1120,57 @@ def run_tui() -> int:
             finally:
                 self._model_select_syncing = False
 
+        def _refresh_model_select_from_daemon(
+            self,
+            *,
+            provider: str,
+            tier: str,
+            tiers: list[dict[str, Any]],
+        ) -> None:
+            selector = self.query_one("#model_select", Select)
+            provider_name = (provider or "").strip().lower()
+            selected_tier = (tier or "").strip().lower()
+
+            options: list[tuple[str, str]] = []
+            selected_value: str | None = None
+            for item in tiers:
+                item_provider = str(item.get("provider", "")).strip().lower()
+                item_tier = str(item.get("name", "")).strip().lower()
+                if not item_tier or item_provider != provider_name:
+                    continue
+                if not bool(item.get("available", False)):
+                    continue
+                model_id = str(item.get("model_id", "")).strip()
+                suffix = f" ({model_id})" if model_id else ""
+                value = f"{item_provider}|{item_tier}"
+                options.append((f"{item_provider}/{item_tier}{suffix}", value))
+                if item_tier == selected_tier:
+                    selected_value = value
+
+            if not options:
+                options = [("No available tiers", _MODEL_LOADING_VALUE)]
+                selected_value = _MODEL_LOADING_VALUE
+            elif selected_value is None:
+                selected_value = options[0][1]
+
+            self._model_select_syncing = True
+            try:
+                selector.set_options(options)
+                with contextlib.suppress(Exception):
+                    selector.value = selected_value
+            finally:
+                self._model_select_syncing = False
+
         def _model_select_options(self) -> tuple[list[tuple[str, str]], str]:
             if self._daemon_tiers and self._daemon_provider:
-                auto_summary = self._current_model_summary().removeprefix("Model: ").strip()
-                options: list[tuple[str, str]] = [(f"Auto ({auto_summary})", _MODEL_AUTO_VALUE)]
-                selected_value = _MODEL_AUTO_VALUE
+                options: list[tuple[str, str]] = []
+                selected_value: str | None = None
                 for tier in self._daemon_tiers:
                     tier_name = str(tier.get("name", "")).strip().lower()
                     provider_name = str(tier.get("provider", "")).strip().lower()
                     if not tier_name or provider_name != self._daemon_provider:
+                        continue
+                    if not bool(tier.get("available", False)):
                         continue
                     model_id = str(tier.get("model_id", "")).strip()
                     suffix = f" ({model_id})" if model_id else ""
@@ -1105,16 +1178,49 @@ def run_tui() -> int:
                     options.append((f"{provider_name}/{tier_name}{suffix}", value))
                     if tier_name == (self._daemon_tier or ""):
                         selected_value = value
+                if not options:
+                    return [("No available tiers", _MODEL_LOADING_VALUE)], _MODEL_LOADING_VALUE
+                if selected_value is None:
+                    selected_value = options[0][1]
                 return options, selected_value
             return model_select_options(
                 provider_override=self._model_provider_override,
                 tier_override=self._model_tier_override,
             )
 
+        def _handle_model_info(self, event: dict[str, Any]) -> None:
+            provider = str(event.get("provider", "")).strip().lower()
+            tier = str(event.get("tier", "")).strip().lower()
+            model_id = event.get("model_id")
+            tiers = event.get("tiers")
+
+            self._daemon_provider = provider or None
+            self._daemon_tier = tier or None
+            self._daemon_model_id = str(model_id).strip() if model_id is not None and str(model_id).strip() else None
+            self._daemon_tiers = tiers if isinstance(tiers, list) else []
+            self._current_daemon_model = self._daemon_model_id or (
+                f"{self._daemon_provider}/{self._daemon_tier}" if self._daemon_provider and self._daemon_tier else None
+            )
+
+            if self._daemon_provider and self._daemon_tier:
+                self._refresh_model_select_from_daemon(
+                    provider=self._daemon_provider,
+                    tier=self._daemon_tier,
+                    tiers=self._daemon_tiers,
+                )
+            else:
+                self._refresh_model_select()
+
+            self._update_header_status()
+            if self._status_bar is not None:
+                self._status_bar.set_model(self._current_model_summary())
+
         def _update_prompt_placeholder(self) -> None:
             input_widget = self.query_one("#prompt", PromptTextArea)
-            mode = "execute" if self._default_auto_approve else "plan"
-            input_widget.placeholder = f"Mode: {mode}. Enter submits. Shift+Enter/Ctrl+J adds newline."
+            approval = "on" if self._default_auto_approve else "off"
+            input_widget.placeholder = (
+                f"Auto-approve: {approval}. Enter submits. Shift+Enter/Ctrl+J adds newline."
+            )
 
         def _update_command_palette(self, text: str) -> None:
             if self._command_palette is None:
@@ -1344,27 +1450,17 @@ def run_tui() -> int:
                 self._finalize_turn(exit_status=str(event.get("exit_status", "ok")))
 
             elif etype == "model_info":
-                provider = str(event.get("provider", "")).strip().lower()
-                tier = str(event.get("tier", "")).strip().lower()
-                model_id = event.get("model_id")
-                self._daemon_provider = provider or None
-                self._daemon_tier = tier or None
-                self._daemon_model_id = (
-                    str(model_id).strip() if model_id is not None and str(model_id).strip() else None
-                )
-                tiers = event.get("tiers")
-                self._daemon_tiers = tiers if isinstance(tiers, list) else []
-                self._refresh_model_select()
-                self._update_header_status()
-                if self._status_bar is not None:
-                    self._status_bar.set_model(self._current_model_summary())
+                self._handle_model_info(event)
 
             elif etype == "text_delta":
                 if self._current_thinking is not None:
                     self._current_thinking.remove()
                     self._current_thinking = None
                 if self._current_assistant_msg is None:
-                    self._current_assistant_msg = AssistantMessage()
+                    self._current_assistant_msg = AssistantMessage(
+                        model=self._current_daemon_model,
+                        timestamp=self._turn_timestamp(),
+                    )
                     self._mount_transcript_widget(self._current_assistant_msg)
                 self._current_assistant_msg.append_delta(event.get("data", ""))
                 self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
@@ -1410,6 +1506,15 @@ def run_tui() -> int:
                 if self._current_plan_card is not None:
                     self._current_plan_card.mark_step_complete(self._plan_step_counter)
                     self._plan_step_counter += 1
+                    step_status = getattr(self._current_plan_card, "_step_status", [])
+                    if (
+                        isinstance(step_status, list)
+                        and step_status
+                        and all(bool(item) for item in step_status)
+                        and not self._plan_completion_announced
+                    ):
+                        self._plan_completion_announced = True
+                        self._write_transcript_line("[plan] all steps complete. Clear plan?")
 
             elif etype == "consent_prompt":
                 self._consent_active = True
@@ -1428,6 +1533,7 @@ def run_tui() -> int:
                     rendered = _json.dumps(plan_json, indent=2)
                 self._set_plan_panel(rendered)
                 self._received_structured_plan = True
+                self._plan_completion_announced = False
                 if not self._last_run_auto_approve and self._last_prompt:
                     self._pending_plan_prompt = self._last_prompt
                 if plan_json and isinstance(plan_json, dict):
@@ -1564,14 +1670,19 @@ def run_tui() -> int:
 
             if was_query_active:
                 self._finalize_turn(exit_status="error")
+            if self._is_shutting_down:
+                return
             self._write_transcript_line(f"[daemon] exited unexpectedly (code {return_code}).")
             self._write_transcript_line("[daemon] run /daemon restart to restart the background agent.")
 
         def _stream_daemon_output(self, proc: subprocess.Popen[str]) -> None:
             if proc.stdout is None:
-                self.call_from_thread(self._write_transcript_line, "[daemon] error: subprocess stdout unavailable.")
+                self._call_from_thread_safe(
+                    self._write_transcript_line,
+                    "[daemon] error: subprocess stdout unavailable.",
+                )
                 return_code = proc.poll()
-                self.call_from_thread(
+                self._call_from_thread_safe(
                     self._handle_daemon_exit,
                     proc,
                     return_code=(return_code if return_code is not None else 1),
@@ -1580,14 +1691,14 @@ def run_tui() -> int:
 
             try:
                 for raw_line in proc.stdout:
-                    self.call_from_thread(self._handle_output_line, raw_line.rstrip("\n"), raw_line)
+                    self._call_from_thread_safe(self._handle_output_line, raw_line.rstrip("\n"), raw_line)
             except Exception as exc:
-                self.call_from_thread(self._write_transcript_line, f"[daemon] output stream error: {exc}")
+                self._call_from_thread_safe(self._write_transcript_line, f"[daemon] output stream error: {exc}")
             finally:
                 with contextlib.suppress(Exception):
                     proc.stdout.close()
                 return_code = proc.wait()
-                self.call_from_thread(self._handle_daemon_exit, proc, return_code=return_code)
+                self._call_from_thread_safe(self._handle_daemon_exit, proc, return_code=return_code)
 
         def _spawn_daemon(self, *, restart: bool = False) -> None:
             proc = self._proc
@@ -1651,6 +1762,7 @@ def run_tui() -> int:
             self._run_tool_count = 0
             self._run_start_time = time.time()
             self._plan_step_counter = 0
+            self._plan_completion_announced = False
             self._received_structured_plan = False
             self._turn_output_chunks = []
             if self._status_bar is not None:
@@ -1695,12 +1807,16 @@ def run_tui() -> int:
                 self._write_transcript_line("[run] failed to send interrupt.")
 
         def action_quit(self) -> None:
+            self._is_shutting_down = True
             if self._proc is not None and self._proc.poll() is None:
                 send_daemon_command(self._proc, {"cmd": "shutdown"})
                 with contextlib.suppress(Exception):
                     self._proc.wait(timeout=3.0)
                 if self._proc.poll() is None:
                     stop_process(self._proc)
+            if self._runner_thread is not None and self._runner_thread.is_alive():
+                with contextlib.suppress(Exception):
+                    self._runner_thread.join(timeout=1.0)
             self._save_session()
             self.exit(return_code=0)
 
@@ -1900,6 +2016,8 @@ def run_tui() -> int:
             if value == _MODEL_AUTO_VALUE:
                 self._model_provider_override = None
                 self._model_tier_override = None
+            elif value == _MODEL_LOADING_VALUE:
+                return
             elif "|" in value:
                 provider, tier = value.split("|", 1)
                 self._model_provider_override = provider.strip().lower() or None
@@ -1907,9 +2025,14 @@ def run_tui() -> int:
                 if self._daemon_ready and self._proc is not None and self._proc.poll() is None:
                     requested_tier = tier.strip().lower()
                     current_tier = (self._daemon_tier or "").strip().lower()
+                    if requested_tier == current_tier:
+                        self._update_header_status()
+                        self._update_prompt_placeholder()
+                        if self._status_bar is not None:
+                            self._status_bar.set_model(self._current_model_summary())
+                        return
                     if self._query_active:
-                        if requested_tier != current_tier:
-                            self._write_transcript_line("[model] cannot change tier while a run is active.")
+                        self._write_transcript_line("[model] cannot change tier while a run is active.")
                     else:
                         if not send_daemon_command(self._proc, {"cmd": "set_tier", "tier": requested_tier}):
                             self._write_transcript_line("[model] failed to send tier change to daemon.")
@@ -1918,6 +2041,38 @@ def run_tui() -> int:
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
             # The model selector is always visible; avoid transient notifications.
+
+        def _dispatch_plan_action(self, action: str) -> None:
+            normalized = action.strip().lower()
+            if normalized == "approve":
+                if not self._pending_plan_prompt:
+                    self._write_transcript_line("[run] no pending plan.")
+                    return
+                self._start_run(self._pending_plan_prompt, auto_approve=True)
+                return
+            if normalized == "replan":
+                if not self._last_prompt:
+                    self._write_transcript_line("[run] no previous prompt to replan.")
+                    return
+                self._start_run(self._last_prompt, auto_approve=False, mode="plan")
+                return
+            if normalized == "clearplan":
+                self._pending_plan_prompt = None
+                self._reset_plan_panel()
+                self._write_transcript_line("[run] plan cleared.")
+                return
+
+        def on_button_pressed(self, event: Any) -> None:
+            button_id = str(getattr(getattr(event, "button", None), "id", "")).strip().lower()
+            if button_id == "plan_action_approve":
+                self._dispatch_plan_action("approve")
+                return
+            if button_id == "plan_action_replan":
+                self._dispatch_plan_action("replan")
+                return
+            if button_id == "plan_action_clear":
+                self._dispatch_plan_action("clearplan")
+                return
 
         def _handle_user_input(self, text: str) -> None:
             self._write_user_input(text)
@@ -2045,29 +2200,21 @@ def run_tui() -> int:
                 return
 
             if normalized == "/approve":
-                if not self._pending_plan_prompt:
-                    self._write_transcript_line("[run] no pending plan.")
-                    return
-                self._start_run(self._pending_plan_prompt, auto_approve=True)
+                self._dispatch_plan_action("approve")
                 return
 
             if normalized == "/replan":
-                if not self._last_prompt:
-                    self._write_transcript_line("[run] no previous prompt to replan.")
-                    return
-                self._start_run(self._last_prompt, auto_approve=False, mode="plan")
+                self._dispatch_plan_action("replan")
                 return
 
             if normalized == "/clearplan":
-                self._pending_plan_prompt = None
-                self._reset_plan_panel()
-                self._write_transcript_line("[run] plan cleared.")
+                self._dispatch_plan_action("clearplan")
                 return
 
             if normalized == "/plan":
                 self._default_auto_approve = False
                 self._update_prompt_placeholder()
-                self._write_transcript_line("[mode] default set to plan. Type a prompt to generate a plan.")
+                self._write_transcript_line("[mode] auto-approve disabled for default prompts.")
                 return
 
             if text.startswith("/plan "):
@@ -2081,7 +2228,7 @@ def run_tui() -> int:
             if normalized == "/run":
                 self._default_auto_approve = True
                 self._update_prompt_placeholder()
-                self._write_transcript_line("[mode] default set to execute. Type a prompt to run immediately.")
+                self._write_transcript_line("[mode] auto-approve enabled for default prompts.")
                 return
 
             if text.startswith("/run "):
