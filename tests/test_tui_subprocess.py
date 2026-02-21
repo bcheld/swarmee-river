@@ -117,6 +117,61 @@ def test_choose_daemon_model_select_value_falls_back_to_first_option():
     assert selected == "openai|fast"
 
 
+def test_choose_model_summary_parts_prefers_pending_until_confirmed():
+    provider, tier, model_id = tui_app.choose_model_summary_parts(
+        daemon_provider="openai",
+        daemon_tier="balanced",
+        daemon_model_id="gpt-5-mini",
+        pending_value="openai|fast",
+    )
+    assert provider == "openai"
+    assert tier == "fast"
+    assert model_id is None
+
+
+def test_choose_model_summary_parts_uses_model_id_when_pending_matches_daemon():
+    provider, tier, model_id = tui_app.choose_model_summary_parts(
+        daemon_provider="openai",
+        daemon_tier="fast",
+        daemon_model_id="gpt-5-mini",
+        pending_value="openai|fast",
+    )
+    assert provider == "openai"
+    assert tier == "fast"
+    assert model_id == "gpt-5-mini"
+
+
+def test_choose_model_summary_parts_falls_back_to_daemon_without_pending():
+    provider, tier, model_id = tui_app.choose_model_summary_parts(
+        daemon_provider="openai",
+        daemon_tier="balanced",
+        daemon_model_id="gpt-5-mini",
+        daemon_tiers=[],
+        pending_value=None,
+    )
+    assert provider == "openai"
+    assert tier == "balanced"
+    assert model_id == "gpt-5-mini"
+
+
+def test_choose_model_summary_parts_prefers_override_over_stale_daemon():
+    provider, tier, model_id = tui_app.choose_model_summary_parts(
+        daemon_provider="openai",
+        daemon_tier="balanced",
+        daemon_model_id="gpt-5-mini",
+        daemon_tiers=[
+            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5-mini"},
+            {"provider": "openai", "name": "fast", "available": True, "model_id": "gpt-5-nano"},
+        ],
+        pending_value=None,
+        override_provider="openai",
+        override_tier="fast",
+    )
+    assert provider == "openai"
+    assert tier == "fast"
+    assert model_id == "gpt-5-nano"
+
+
 def test_looks_like_plan_output():
     text = "Some output\nProposed plan:\n- Step 1\n- Step 2\nPlan generated. Re-run with --yes to execute."
     assert tui_app.looks_like_plan_output(text) is True
@@ -235,6 +290,7 @@ def test_spawn_swarmee_configures_subprocess_run_mode(monkeypatch):
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
     assert kwargs["bufsize"] == 1
+    assert kwargs["start_new_session"] is True
     env = kwargs["env"]
     assert isinstance(env, dict)
     assert env["PYTHONUNBUFFERED"] == "1"
@@ -269,6 +325,7 @@ def test_spawn_swarmee_configures_subprocess_plan_mode(monkeypatch):
     assert kwargs["stderr"] is tui_app.subprocess.STDOUT
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
+    assert kwargs["start_new_session"] is True
     env = kwargs["env"]
     assert isinstance(env, dict)
     assert env["PYTHONIOENCODING"] == "utf-8"
@@ -417,6 +474,11 @@ def test_sanitize_output_text_strips_ansi_and_carriage_returns():
     assert tui_app.sanitize_output_text(text) == "hello\nred"
 
 
+def test_sanitize_output_text_strips_osc_title_sequences():
+    text = "a\x1b]0;Python/git/rg\x07b\x1b]2;tool run\x1b\\c"
+    assert tui_app.sanitize_output_text(text) == "abc"
+
+
 def test_update_consent_capture_collects_recent_lines():
     consent_active = False
     consent_buffer: list[str] = []
@@ -459,6 +521,12 @@ def test_parse_tui_event_non_json_returns_none():
     assert tui_app.parse_tui_event("plain text output") is None
     assert tui_app.parse_tui_event("") is None
     assert tui_app.parse_tui_event("Error: something failed") is None
+
+
+def test_parse_tui_event_ignores_osc_prefix():
+    line = "\x1b]0;Python/git/rg\x07{\"event\":\"text_delta\",\"data\":\"hello\"}"
+    result = tui_app.parse_tui_event(line)
+    assert result == {"event": "text_delta", "data": "hello"}
 
 
 def test_extract_tui_text_chunk_prefers_data_then_falls_back_to_text():
@@ -529,6 +597,7 @@ def test_spawn_swarmee_daemon_configures_subprocess(monkeypatch):
     assert kwargs["stdout"] is tui_app.subprocess.PIPE
     assert kwargs["stderr"] is tui_app.subprocess.STDOUT
     assert kwargs["text"] is True
+    assert kwargs["start_new_session"] is True
     env = kwargs["env"]
     assert isinstance(env, dict)
     assert env["SWARMEE_SESSION_ID"] == "abc123"
@@ -661,7 +730,7 @@ def test_status_bar_refresh_display():
     bar.set_elapsed(12.4)
     text = _get_text(bar)
     assert "running" in text
-    assert "Tools: 3" in text
+    assert "tools 3" in text
     assert "12.4s" in text
 
 
@@ -750,12 +819,22 @@ def test_stop_process_escalates(monkeypatch):
 
     proc = FakeProc()
     monkeypatch.setattr(tui_app.os, "name", "posix")
+    killpg_calls: list[tuple[int, int]] = []
+
+    def _fake_killpg(pid: int, sig: int) -> None:
+        killpg_calls.append((pid, sig))
+
+    monkeypatch.setattr(tui_app.os, "killpg", _fake_killpg)
+    monkeypatch.setattr(proc, "pid", 4242, raising=False)
 
     tui_app.stop_process(proc, timeout_s=0.01)
 
     if hasattr(tui_app.signal, "SIGINT"):
-        assert proc.send_signal_calls == [tui_app.signal.SIGINT]
+        assert proc.send_signal_calls == []
+        expected_signals = [tui_app.signal.SIGINT, tui_app.signal.SIGTERM, tui_app.signal.SIGKILL]
+        assert [sig for (_, sig) in killpg_calls] == expected_signals
+        assert all(pid == 4242 for (pid, _) in killpg_calls)
     else:
         assert proc.send_signal_calls == []
-    assert proc.terminate_called is True
-    assert proc.kill_called is True
+    assert proc.terminate_called is False
+    assert proc.kill_called is False

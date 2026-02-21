@@ -28,6 +28,7 @@ _MODEL_LOADING_VALUE = "__loading__"
 _TRUNCATED_ARTIFACT_RE = re.compile(r"full output saved to (?P<path>[^\]]+)")
 _PATH_TOKEN_RE = re.compile(r"[A-Za-z]:\\[^\s,;]+|/(?:[^\s,;]+)|\./[^\s,;]+|\.\./[^\s,;]+")
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_OSC_ESCAPE_RE = re.compile(r"\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)")
 _PROVIDER_NOISE_PREFIX = "[provider]"
 _PROVIDER_FALLBACK_PHRASE = "falling back to"
 
@@ -133,7 +134,10 @@ def _extract_paths_from_text(text: str) -> list[str]:
 def sanitize_output_text(text: str) -> str:
     """Remove common control sequences that render poorly in a TUI transcript."""
     cleaned = text.replace("\r", "")
-    return _ANSI_ESCAPE_RE.sub("", cleaned)
+    cleaned = _OSC_ESCAPE_RE.sub("", cleaned)
+    cleaned = _ANSI_ESCAPE_RE.sub("", cleaned)
+    # Remove any stray ESC bytes left by malformed or partial sequences.
+    return cleaned.replace("\x1b", "")
 
 
 def resolve_model_config_summary(*, provider_override: str | None = None, tier_override: str | None = None) -> str:
@@ -299,6 +303,69 @@ def choose_daemon_model_select_value(
     return available[0]
 
 
+def choose_model_summary_parts(
+    *,
+    daemon_provider: str | None,
+    daemon_tier: str | None,
+    daemon_model_id: str | None,
+    daemon_tiers: list[dict[str, Any]] | None = None,
+    pending_value: str | None = None,
+    override_provider: str | None = None,
+    override_tier: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Choose provider/tier/model_id for top-level model summary display."""
+    def _lookup_model_id(provider_name: str, tier_name: str) -> str | None:
+        tiers = daemon_tiers if isinstance(daemon_tiers, list) else []
+        for item in tiers:
+            item_provider = str(item.get("provider", "")).strip().lower()
+            item_tier = str(item.get("name", "")).strip().lower()
+            if item_provider != provider_name or item_tier != tier_name:
+                continue
+            model_id_value = str(item.get("model_id", "")).strip()
+            if model_id_value:
+                return model_id_value
+        return None
+
+    pending = (pending_value or "").strip().lower()
+    if pending and "|" in pending:
+        pending_provider, pending_tier = pending.split("|", 1)
+        pending_provider = pending_provider.strip().lower()
+        pending_tier = pending_tier.strip().lower()
+        if pending_provider and pending_tier:
+            # Keep selected tier stable in header while daemon confirmation is in-flight.
+            if (
+                daemon_provider
+                and daemon_tier
+                and daemon_model_id
+                and pending_provider == daemon_provider.strip().lower()
+                and pending_tier == daemon_tier.strip().lower()
+            ):
+                return pending_provider, pending_tier, daemon_model_id
+            return pending_provider, pending_tier, _lookup_model_id(pending_provider, pending_tier)
+
+    override_provider_name = (override_provider or "").strip().lower()
+    override_tier_name = (override_tier or "").strip().lower()
+    if override_provider_name and override_tier_name:
+        if (
+            daemon_provider
+            and daemon_tier
+            and daemon_model_id
+            and override_provider_name == daemon_provider.strip().lower()
+            and override_tier_name == daemon_tier.strip().lower()
+        ):
+            return override_provider_name, override_tier_name, daemon_model_id
+        return override_provider_name, override_tier_name, _lookup_model_id(override_provider_name, override_tier_name)
+
+    provider_name = (daemon_provider or "").strip().lower()
+    tier_name = (daemon_tier or "").strip().lower()
+    if provider_name and tier_name:
+        model_id = str(daemon_model_id).strip() if daemon_model_id is not None else None
+        if not model_id:
+            model_id = _lookup_model_id(provider_name, tier_name)
+        return provider_name, tier_name, (model_id or None)
+    return None, None, None
+
+
 def parse_output_line(line: str) -> ParsedEvent | None:
     """Best-effort parser for notable subprocess output events."""
     text = line.rstrip("\n")
@@ -354,7 +421,7 @@ def parse_output_line(line: str) -> ParsedEvent | None:
 
 def parse_tui_event(line: str) -> dict[str, Any] | None:
     """Parse a JSONL event line emitted by TuiCallbackHandler. Returns None for non-JSON lines."""
-    stripped = line.strip()
+    stripped = sanitize_output_text(line).strip()
     if not stripped.startswith("{"):
         return None
     try:
@@ -508,6 +575,9 @@ def spawn_swarmee(
         errors="replace",
         bufsize=1,
         env=env,
+        # Isolate child subprocesses from the interactive terminal session to
+        # prevent terminal-title churn while tools (git/rg/etc.) execute.
+        start_new_session=True,
     )
 
 
@@ -544,6 +614,9 @@ def spawn_swarmee_daemon(
         errors="replace",
         bufsize=1,
         env=env,
+        # Keep daemon and all descendants in a separate session/process-group so
+        # macOS Terminal does not treat transient tool commands as foreground title context.
+        start_new_session=True,
     )
 
 
@@ -553,16 +626,28 @@ def stop_process(proc: subprocess.Popen[str], *, timeout_s: float = 2.0) -> None
         return
 
     if os.name == "posix" and hasattr(signal, "SIGINT"):
-        with contextlib.suppress(Exception):
-            proc.send_signal(signal.SIGINT)
+        signaled = False
+        if hasattr(os, "killpg"):
+            with contextlib.suppress(Exception):
+                os.killpg(proc.pid, signal.SIGINT)
+                signaled = True
+        if not signaled:
+            with contextlib.suppress(Exception):
+                proc.send_signal(signal.SIGINT)
         try:
             proc.wait(timeout=timeout_s)
             return
         except subprocess.TimeoutExpired:
             pass
 
-    with contextlib.suppress(Exception):
-        proc.terminate()
+    terminated = False
+    if os.name == "posix" and hasattr(os, "killpg") and hasattr(signal, "SIGTERM"):
+        with contextlib.suppress(Exception):
+            os.killpg(proc.pid, signal.SIGTERM)
+            terminated = True
+    if not terminated:
+        with contextlib.suppress(Exception):
+            proc.terminate()
     try:
         proc.wait(timeout=timeout_s)
         return
@@ -571,8 +656,14 @@ def stop_process(proc: subprocess.Popen[str], *, timeout_s: float = 2.0) -> None
     except Exception:
         return
 
-    with contextlib.suppress(Exception):
-        proc.kill()
+    killed = False
+    if os.name == "posix" and hasattr(os, "killpg") and hasattr(signal, "SIGKILL"):
+        with contextlib.suppress(Exception):
+            os.killpg(proc.pid, signal.SIGKILL)
+            killed = True
+    if not killed:
+        with contextlib.suppress(Exception):
+            proc.kill()
     with contextlib.suppress(Exception):
         proc.wait(timeout=timeout_s)
 
@@ -1241,9 +1332,18 @@ def run_tui() -> int:
                 self._status_bar.set_counts(warnings=self._warning_count, errors=self._error_count)
 
         def _current_model_summary(self) -> str:
-            if self._daemon_provider and self._daemon_tier:
-                suffix = f" ({self._daemon_model_id})" if self._daemon_model_id else ""
-                return f"Model: {self._daemon_provider}/{self._daemon_tier}{suffix}"
+            provider_name, tier_name, model_id = choose_model_summary_parts(
+                daemon_provider=self._daemon_provider,
+                daemon_tier=self._daemon_tier,
+                daemon_model_id=self._daemon_model_id,
+                daemon_tiers=self._daemon_tiers,
+                pending_value=self._pending_model_select_value,
+                override_provider=self._model_provider_override,
+                override_tier=self._model_tier_override,
+            )
+            if provider_name and tier_name:
+                suffix = f" ({model_id})" if model_id else ""
+                return f"Model: {provider_name}/{tier_name}{suffix}"
             return resolve_model_config_summary(
                 provider_override=self._model_provider_override,
                 tier_override=self._model_tier_override,
@@ -1570,15 +1670,16 @@ def run_tui() -> int:
 
         def _handle_output_line(self, line: str, raw_line: str | None = None) -> None:
             if self._query_active:
-                self._turn_output_chunks.append(raw_line if raw_line is not None else (line + "\n"))
+                chunk = raw_line if raw_line is not None else (line + "\n")
+                self._turn_output_chunks.append(sanitize_output_text(chunk))
+            sanitized = sanitize_output_text(line)
             # Try structured JSONL first (emitted by TuiCallbackHandler).
-            tui_event = parse_tui_event(line)
+            tui_event = parse_tui_event(sanitized)
             if tui_event is not None:
                 self._handle_tui_event(tui_event)
                 return
 
             # Legacy fallback for non-JSON lines (stderr leakage, library warnings, etc.).
-            sanitized = sanitize_output_text(line)
             event = parse_output_line(sanitized)
             if event is None:
                 if sanitized.strip() == "return meta(":
@@ -1652,7 +1753,7 @@ def run_tui() -> int:
                 self._refresh_prompt_metrics()
 
             elif etype in {"text_delta", "message_delta", "output_text_delta", "delta"}:
-                chunk = extract_tui_text_chunk(event)
+                chunk = sanitize_output_text(extract_tui_text_chunk(event))
                 if not chunk:
                     return
                 self._dismiss_thinking()
