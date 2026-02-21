@@ -12,6 +12,8 @@ from swarmee_river.interrupts import AgentInterruptedError
 
 _STRANDS_KWARGS_DEPRECATION = r"`\*\*kwargs` parameter is deprecating, use `invocation_state` instead\."
 
+_OTEL_DETACH_FILTER_INSTALLED = False
+
 
 def invoke_agent(
     agent: Any,
@@ -20,6 +22,7 @@ def invoke_agent(
     callback_handler: Any,
     interrupt_event: threading.Event,
     invocation_state: dict[str, Any],
+    system_reminder: str | None = None,
     structured_output_model: type[Any] | None = None,
     structured_output_prompt: str | None = None,
 ) -> Any:
@@ -36,6 +39,8 @@ def invoke_agent(
                 if isinstance(exc, RuntimeError):
                     if "athrow(): asynchronous generator is already running" in str(exc):
                         return
+                if isinstance(exc, ValueError) and "was created in a different Context" in str(exc):
+                    return
             if previous_handler:
                 previous_handler(loop, context)
             else:
@@ -46,13 +51,18 @@ def invoke_agent(
         class _OtelDetachFilter(logging.Filter):
             def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
                 message = str(record.getMessage())
-                if interrupt_event.is_set() and message.startswith("Failed to detach context"):
+                # Opentelemetry can log noisy detach errors during cancellation.
+                # Filter them unconditionally; these are not actionable for users.
+                if message.startswith("Failed to detach context"):
                     return False
                 return True
 
-        otel_logger = logging.getLogger("opentelemetry.context")
+        global _OTEL_DETACH_FILTER_INSTALLED
         otel_filter = _OtelDetachFilter()
-        otel_logger.addFilter(otel_filter)
+        if not _OTEL_DETACH_FILTER_INSTALLED:
+            logging.getLogger("opentelemetry.context").addFilter(otel_filter)
+            logging.getLogger("opentelemetry").addFilter(otel_filter)
+            _OTEL_DETACH_FILTER_INSTALLED = True
 
         current_task = asyncio.current_task()
 
@@ -66,7 +76,9 @@ def invoke_agent(
         canceller_task = asyncio.create_task(_canceller())
         try:
             invoke_kwargs: dict[str, Any] = {"invocation_state": invocation_state}
-            invoke_query = query
+            base_query = query
+            reminder_prefix = (system_reminder or "").strip()
+            invoke_query = f"{reminder_prefix}\n\n{base_query}".strip() if reminder_prefix else base_query
             if structured_output_model is not None:
                 invoke_kwargs["structured_output_model"] = structured_output_model
 
@@ -85,7 +97,12 @@ def invoke_agent(
             elif structured_output_prompt is not None:
                 prompt_text = structured_output_prompt.strip()
                 if prompt_text:
-                    invoke_query = f"{prompt_text}\n\nUser request:\n{query}"
+                    prefix_parts: list[str] = []
+                    if reminder_prefix:
+                        prefix_parts.append(reminder_prefix)
+                    prefix_parts.append(prompt_text)
+                    prefix = "\n\n".join(prefix_parts).strip()
+                    invoke_query = f"{prefix}\n\nUser request:\n{base_query}".strip()
 
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -102,7 +119,6 @@ def invoke_agent(
             canceller_task.cancel()
             with contextlib.suppress(BaseException):
                 await canceller_task
-            otel_logger.removeFilter(otel_filter)
             loop.set_exception_handler(previous_handler)
 
     try:

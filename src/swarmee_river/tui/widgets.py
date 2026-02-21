@@ -192,7 +192,7 @@ class ConsentCard(Static):
 
     DEFAULT_CSS = """
     ConsentCard {
-        border: round $warning;
+        border: round $accent;
         padding: 0 1;
         margin: 1 0 0 0;
     }
@@ -400,6 +400,10 @@ class StatusBar(Static):
         self._elapsed: float = 0.0
         self._warning_count: int = 0
         self._error_count: int = 0
+        self._prompt_tokens_est: int | None = None
+        self._budget_tokens: int | None = None
+        self._usage: dict[str, Any] | None = None
+        self._cost_usd: float | None = None
         self.refresh_display()
 
     def set_state(self, state: str) -> None:
@@ -423,19 +427,108 @@ class StatusBar(Static):
         self._error_count = errors
         self.refresh_display()
 
+    def set_context(self, *, prompt_tokens_est: int | None, budget_tokens: int | None) -> None:
+        self._prompt_tokens_est = prompt_tokens_est
+        self._budget_tokens = budget_tokens
+        self.refresh_display()
+
+    def set_usage(self, usage: dict[str, Any] | None, *, cost_usd: float | None = None) -> None:
+        self._usage = usage
+        self._cost_usd = cost_usd
+        self.refresh_display()
+
+    def _format_k(self, n: int) -> str:
+        if n >= 100_000:
+            return f"{n/1000.0:.0f}k"
+        if n >= 10_000:
+            return f"{n/1000.0:.1f}k"
+        if n >= 1000:
+            return f"{n/1000.0:.2f}k"
+        return str(n)
+
+    def _extract_usage_tokens(self) -> tuple[int | None, int | None, int | None]:
+        if not isinstance(self._usage, dict):
+            return None, None, None
+        usage = self._usage
+
+        def _as_int(value: Any) -> int | None:
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            if isinstance(value, str) and value.strip().isdigit():
+                return int(value.strip())
+            return None
+
+        in_tokens = _as_int(usage.get("input_tokens")) or _as_int(usage.get("prompt_tokens"))
+        out_tokens = _as_int(usage.get("output_tokens")) or _as_int(usage.get("completion_tokens"))
+        cached = None
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            cached = _as_int(details.get("cached_tokens"))
+        cached = cached or _as_int(usage.get("cache_read_input_tokens"))
+        return in_tokens, out_tokens, cached
+
     def refresh_display(self) -> None:
         icon = "\u25b6" if self._state == "running" else "\u23f8"  # ▶ / ⏸
-        parts = [
-            f"{icon} {self._state}",
-            self._model or "Model: ?",
-            f"Tools: {self._tool_count}",
-            f"{self._elapsed:.1f}s",
-        ]
+        parts: list[str] = [f"{icon} {self._state}", self._model or "Model: ?"]
+
+        if isinstance(self._prompt_tokens_est, int):
+            if isinstance(self._budget_tokens, int) and self._budget_tokens > 0:
+                parts.append(f"ctx {self._format_k(self._prompt_tokens_est)}/{self._format_k(self._budget_tokens)}")
+            else:
+                parts.append(f"ctx {self._format_k(self._prompt_tokens_est)}")
+
+        in_tokens, out_tokens, cached = self._extract_usage_tokens()
+        if in_tokens is not None or out_tokens is not None:
+            token_parts: list[str] = []
+            if in_tokens is not None:
+                token_parts.append(f"in {self._format_k(in_tokens)}")
+            if out_tokens is not None:
+                token_parts.append(f"out {self._format_k(out_tokens)}")
+            if cached is not None and cached > 0:
+                token_parts.append(f"cache {self._format_k(cached)}")
+            parts.append(" ".join(token_parts))
+        if isinstance(self._cost_usd, (int, float)):
+            parts.append(f"${self._cost_usd:.4f}")
+
+        parts.append(f"tools {self._tool_count}")
+        parts.append(f"{self._elapsed:.1f}s")
         if self._warning_count:
             parts.append(f"warn={self._warning_count}")
         if self._error_count:
             parts.append(f"err={self._error_count}")
-        self.update(" | ".join(parts))
+
+        rendered = " | ".join(parts)
+        width = getattr(getattr(self, "size", None), "width", None)
+        if isinstance(width, int) and width > 0 and len(rendered) > width:
+            # Drop least important segments until it fits.
+            drop_prefixes = ("warn=", "err=",)
+            prunable: list[int] = []
+            for i, part in enumerate(parts):
+                if part.startswith(drop_prefixes) or part.endswith("s") or part.startswith("tools "):
+                    prunable.append(i)
+            for idx in reversed(prunable):
+                candidate = parts[:idx] + parts[idx + 1 :]
+                if len(" | ".join(candidate)) <= width:
+                    parts = candidate
+                    rendered = " | ".join(parts)
+                    break
+            if len(rendered) > width:
+                # As a last resort, truncate the model segment.
+                model_idx = 1
+                if len(parts) > model_idx and width > 10:
+                    other = [p for i, p in enumerate(parts) if i != model_idx]
+                    overhead = len(" | ".join(other)) + (3 * (len(parts) - 1))
+                    room = max(5, width - overhead)
+                    model = parts[model_idx]
+                    if len(model) > room:
+                        parts[model_idx] = model[: max(0, room - 1)] + "…"
+                        rendered = " | ".join(parts)
+
+        self.update(rendered)
 
 
 class SystemMessage(Static):

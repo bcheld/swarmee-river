@@ -561,7 +561,7 @@ class TestKnowledgeBaseIntegration:
         mock_user_input,
         monkeypatch,
     ):
-        """Test that welcome text is included in system prompt when enabled"""
+        """Test that welcome text is passed via a cache-friendly system reminder when enabled."""
         # Setup mocks
         mock_user_input.side_effect = ["test query", "exit"]
 
@@ -578,9 +578,16 @@ class TestKnowledgeBaseIntegration:
         with mock.patch.object(swarmee, "render_welcome_message"), mock.patch.object(swarmee, "render_goodbye_message"):
             swarmee.main()
 
-        # Verify system prompt includes both base prompt and welcome text
-        assert base_system_prompt in mock_agent.system_prompt
-        assert "Custom welcome text" in mock_agent.system_prompt
+        # Verify the Agent was constructed with the base system prompt (stable prefix).
+        agent_kwargs = swarmee.Agent.call_args.kwargs  # type: ignore[attr-defined]
+        assert base_system_prompt in str(agent_kwargs.get("system_prompt", ""))
+
+        # Verify the welcome text is injected as a system reminder (not via system prompt refresh).
+        call = mock_agent.invoke_async.call_args
+        prompt = call.args[0]
+        assert "<system-reminder>" in prompt
+        assert "Welcome Text Reference:" in prompt
+        assert "Custom welcome text" in prompt
 
     def test_welcome_message_failure(
         self,
@@ -607,9 +614,15 @@ class TestKnowledgeBaseIntegration:
         with mock.patch.object(swarmee, "render_welcome_message"), mock.patch.object(swarmee, "render_goodbye_message"):
             swarmee.main()
 
-        # Verify agent was called with system prompt that excludes welcome text reference
-        assert base_system_prompt in mock_agent.system_prompt
-        assert "Welcome Text Reference:" not in mock_agent.system_prompt
+        # Verify the Agent was constructed with the base system prompt (stable prefix).
+        agent_kwargs = swarmee.Agent.call_args.kwargs  # type: ignore[attr-defined]
+        assert base_system_prompt in str(agent_kwargs.get("system_prompt", ""))
+
+        # Verify the welcome reminder is omitted when no welcome text is available.
+        call = mock_agent.invoke_async.call_args
+        prompt = call.args[0]
+        assert "Welcome Text Reference:" not in prompt
+        assert "<system-reminder>" not in prompt
 
 
 class TestToolConsentPrompt:

@@ -20,6 +20,7 @@ from swarmee_river.runtime_env import detect_runtime_environment, render_runtime
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
 from swarmee_river.tools import get_tools
+from swarmee_river.context.prompt_cache import format_system_reminder, inject_system_reminder
 from swarmee_river.utils.env_utils import load_env_file
 from swarmee_river.utils.kb_utils import load_system_prompt
 from swarmee_river.utils.provider_utils import resolve_model_provider
@@ -388,7 +389,7 @@ def _get_or_create_runtime() -> _NotebookRuntime:
     tools_dict = get_tools()
     for name, tool_obj in load_enabled_pack_tools(settings).items():
         tools_dict.setdefault(name, tool_obj)
-    tools = list(tools_dict.values())
+    tools = [tools_dict[name] for name in sorted(tools_dict)]
 
     artifact_store = ArtifactStore()
 
@@ -483,13 +484,9 @@ def _execute_with_plan(runtime: _NotebookRuntime, prompt: str, plan: WorkPlan, *
     approved_plan_section = (
         "Approved Plan (execute ONLY this plan; if you need changes, regenerate the plan):\n" + plan_json_for_execution
     )
-
-    prev_system_prompt = runtime.agent.system_prompt
-    runtime.agent.system_prompt = "\n\n".join([runtime.base_system_prompt, approved_plan_section]).strip()
-    try:
-        return _invoke_agent(runtime, prompt, invocation_state=invocation_state)
-    finally:
-        runtime.agent.system_prompt = prev_system_prompt
+    reminder = format_system_reminder([approved_plan_section])
+    query = inject_system_reminder(user_query=prompt, reminder=reminder)
+    return _invoke_agent(runtime, query, invocation_state=invocation_state)
 
 
 def _run_swarmee(

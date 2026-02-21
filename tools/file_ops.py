@@ -24,6 +24,7 @@ def _run_rg(args: list[str], *, cwd: Path, timeout_s: int = 15) -> tuple[int | N
         completed = subprocess.run(
             ["rg", *args],
             cwd=str(cwd),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -175,7 +176,7 @@ def file_search(
 
     base = _safe_cwd(cwd)
     code, out, err = _run_rg(
-        ["-n", "--no-heading", "--max-count", str(max(1, int(max_matches))), q],
+        ["-n", "--no-heading", "--max-count", str(max(1, int(max_matches))), q, "."],
         cwd=base,
         timeout_s=20,
     )

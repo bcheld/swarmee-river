@@ -346,11 +346,19 @@ class TuiCallbackHandler:
         self.tool_histories: dict[str, dict[str, Any]] = {}
         self.interrupt_event: Event | None = None
         self._saw_text_delta: bool = False
+        self._assistant_text_snapshot: str = ""
         self._emitted_tool_results: set[str] = set()
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Write a single JSONL event to stdout."""
         _write_stdout_jsonl(event)
+
+    def _reset_turn_state(self) -> None:
+        self._saw_text_delta = False
+        self._assistant_text_snapshot = ""
+        self.current_tool = None
+        self.tool_histories.clear()
+        self._emitted_tool_results.clear()
 
     def _emit_tool_result(self, tool_use_id: str, status: str, *, tool_name: str | None = None) -> None:
         if tool_use_id in self._emitted_tool_results:
@@ -371,37 +379,102 @@ class TuiCallbackHandler:
         if self.current_tool == tool_use_id:
             self.current_tool = None
 
-    def _emit_text_fallback_if_needed(self, text: str | None) -> None:
+    def _emit_text_fallback_if_needed(self, text: str | None) -> bool:
         if self._saw_text_delta:
-            return
+            return False
         if not isinstance(text, str):
-            return
+            return False
         if not text:
-            return
+            return False
         self._emit({"event": "text_delta", "data": text})
         self._emit({"event": "text_complete"})
         self._saw_text_delta = True
+        return True
 
     def _extract_text_from_result(self, result: Any) -> str | None:
         if isinstance(result, str):
             return result
+        if isinstance(result, list):
+            chunks: list[str] = []
+            for item in result:
+                text = self._extract_text_from_result(item)
+                if isinstance(text, str) and text:
+                    chunks.append(text)
+            if chunks:
+                return "".join(chunks)
+            return None
         if isinstance(result, dict):
-            text_value = result.get("text")
-            if isinstance(text_value, str):
-                return text_value
+            for key in ("text", "data", "delta", "output_text", "outputText", "textDelta"):
+                text_value = result.get(key)
+                if isinstance(text_value, str) and text_value:
+                    return text_value
             message = result.get("message")
             if isinstance(message, dict):
                 return self._extract_text_from_result(message)
+            if isinstance(message, list):
+                return self._extract_text_from_result(message)
             content = result.get("content")
-            if isinstance(content, list):
-                chunks: list[str] = []
-                for item in content:
-                    if isinstance(item, dict):
-                        text = item.get("text")
-                        if isinstance(text, str):
-                            chunks.append(text)
-                if chunks:
-                    return "".join(chunks)
+            if content is not None:
+                extracted = self._extract_text_from_result(content)
+                if isinstance(extracted, str) and extracted:
+                    return extracted
+            for key in ("chunk", "event", "response"):
+                extracted = self._extract_text_from_result(result.get(key))
+                if isinstance(extracted, str) and extracted:
+                    return extracted
+        return None
+
+    def _emit_assistant_message_text(self, text: str | None) -> bool:
+        if not isinstance(text, str):
+            return False
+        if not text:
+            return False
+
+        delta = text
+        snapshot = self._assistant_text_snapshot
+        if snapshot:
+            if text.startswith(snapshot):
+                delta = text[len(snapshot):]
+                self._assistant_text_snapshot = text
+            elif snapshot.endswith(text):
+                delta = ""
+            else:
+                self._assistant_text_snapshot = snapshot + text
+        else:
+            self._assistant_text_snapshot = text
+
+        if not delta:
+            return False
+        self._emit({"event": "text_delta", "data": delta})
+        self._saw_text_delta = True
+        return True
+
+    def _extract_text_from_assistant_message(self, message: dict[str, Any]) -> str | None:
+        if message.get("role") != "assistant":
+            return None
+        raw_content = message.get("content")
+        if not isinstance(raw_content, list):
+            return None
+        chunks: list[str] = []
+        for item in raw_content:
+            if isinstance(item, dict) and (item.get("toolUse") or item.get("toolResult")):
+                continue
+            text = self._extract_text_from_result(item)
+            if isinstance(text, str) and text:
+                chunks.append(text)
+        if chunks:
+            return "".join(chunks)
+        return None
+
+    def _extract_text_from_extra_fields(self, extra_fields: dict[str, Any]) -> str | None:
+        for key in ("data", "text", "delta", "content_delta", "text_delta", "output_text", "outputText"):
+            value = extra_fields.get(key)
+            if isinstance(value, str) and value:
+                return value
+        for key in ("message", "event", "chunk", "content", "response", "payload"):
+            text = self._extract_text_from_result(extra_fields.get(key))
+            if isinstance(text, str) and text:
+                return text
         return None
 
     def callback_handler(
@@ -423,23 +496,37 @@ class TuiCallbackHandler:
         **extra_event_fields: Any,
     ) -> None:
         del invocation_state, structured_output_model, structured_output_prompt
-        del extra_event_fields, console
-        del init_event_loop, start_event_loop
+        del console, start_event_loop
         message = message or {}
         current_tool_use = current_tool_use or {}
 
+        if init_event_loop:
+            self._reset_turn_state()
+
         if force_stop:
+            self._reset_turn_state()
             return
 
         if self.interrupt_event is not None and self.interrupt_event.is_set():
+            self._reset_turn_state()
             return
 
         if reasoningText:
             self._emit({"event": "thinking", "text": str(reasoningText)})
 
+        emitted_stream_text = False
         if data:
             self._emit({"event": "text_delta", "data": data})
             self._saw_text_delta = True
+            self._assistant_text_snapshot += data
+            emitted_stream_text = True
+
+        if not emitted_stream_text and isinstance(message, dict):
+            emitted_stream_text = self._emit_assistant_message_text(self._extract_text_from_assistant_message(message))
+
+        if not emitted_stream_text and extra_event_fields:
+            self._emit_assistant_message_text(self._extract_text_from_extra_fields(extra_event_fields))
+
         if complete:
             self._emit({"event": "text_complete"})
 
@@ -507,6 +594,7 @@ class TuiCallbackHandler:
                 "text": f"Throttled! Waiting {event_loop_throttled_delay}s before retrying...",
             })
 
+        emitted_text_fallback = False
         if isinstance(result, dict):
             tid = result.get("toolUseId")
             status = result.get("status")
@@ -514,9 +602,12 @@ class TuiCallbackHandler:
                 tool_label = result.get("name")
                 self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
             else:
-                self._emit_text_fallback_if_needed(self._extract_text_from_result(result))
+                emitted_text_fallback = self._emit_text_fallback_if_needed(self._extract_text_from_result(result))
         elif result is not None:
-            self._emit_text_fallback_if_needed(self._extract_text_from_result(result))
+            emitted_text_fallback = self._emit_text_fallback_if_needed(self._extract_text_from_result(result))
+
+        if emitted_text_fallback:
+            self._reset_turn_state()
 
 
 # ---------------------------------------------------------------------------

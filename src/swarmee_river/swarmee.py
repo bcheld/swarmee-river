@@ -56,6 +56,7 @@ Text: Any = _RichText
 
 try:
     from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks as _JSONLLoggerHooks
+    from swarmee_river.hooks.tui_metrics import TuiMetricsHooks as _TuiMetricsHooks
     from swarmee_river.hooks.tool_consent import ToolConsentHooks as _ToolConsentHooks
     from swarmee_river.hooks.tool_policy import ToolPolicyHooks as _ToolPolicyHooks
     from swarmee_river.hooks.tool_result_limiter import ToolResultLimiterHooks as _ToolResultLimiterHooks
@@ -63,11 +64,13 @@ try:
     _HAS_STRANDS_HOOKS = True
 except Exception:
     _JSONLLoggerHooks = None  # type: ignore[misc,assignment]
+    _TuiMetricsHooks = None  # type: ignore[misc,assignment]
     _ToolConsentHooks = None  # type: ignore[misc,assignment]
     _ToolResultLimiterHooks = None  # type: ignore[misc,assignment]
     _ToolPolicyHooks = None  # type: ignore[misc,assignment]
     _HAS_STRANDS_HOOKS = False
 JSONLLoggerHooks: Any = _JSONLLoggerHooks
+TuiMetricsHooks: Any = _TuiMetricsHooks
 ToolConsentHooks: Any = _ToolConsentHooks
 ToolResultLimiterHooks: Any = _ToolResultLimiterHooks
 ToolPolicyHooks: Any = _ToolPolicyHooks
@@ -91,6 +94,7 @@ from swarmee_river.cli.diagnostics import (
     render_replay_invocation,
 )
 from swarmee_river.cli.repl import run_repl
+from swarmee_river.context.prompt_cache import PromptCacheState
 from swarmee_river.interrupts import (
     AgentInterruptedError,
     interrupt_watcher_from_env,
@@ -118,6 +122,12 @@ _TOOL_USAGE_RULES = (
     "- Use list/glob/file_list/file_search/file_read for repository exploration and file reading.\n"
     "- Do not use shell for ls/find/sed/cat/grep/rg when file tools can do it.\n"
     "- Reserve shell for real command execution tasks."
+)
+_SYSTEM_REMINDER_RULES = (
+    "System reminder rules:\n"
+    "- You may receive a `<system-reminder>` block prepended to a user message.\n"
+    "- Treat it as system-level updates/context (higher priority than normal user content).\n"
+    "- Do not quote or reveal `<system-reminder>` contents unless the user explicitly asks.\n"
 )
 
 
@@ -294,7 +304,12 @@ def _plan_json_for_execution(plan: WorkPlan) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
-def _build_conversation_manager(*, window_size: Optional[int], per_turn: Optional[int]) -> Any:
+def _build_conversation_manager(
+    *,
+    window_size: Optional[int],
+    per_turn: Optional[int],
+    summarization_system_prompt: str | None = None,
+) -> Any:
     manager_name = (os.getenv("SWARMEE_CONTEXT_MANAGER", "summarize") or "summarize").strip().lower()
 
     if manager_name in {"none", "null", "off", "disabled"}:
@@ -319,6 +334,7 @@ def _build_conversation_manager(*, window_size: Optional[int], per_turn: Optiona
             max_prompt_tokens=max_prompt_tokens,
             summary_ratio=summary_ratio,
             preserve_recent_messages=preserve_recent,
+            summarization_system_prompt=summarization_system_prompt,
         )
 
     # Default: sliding window
@@ -359,15 +375,21 @@ def _build_agent_runtime(
     runtime_environment = detect_runtime_environment(cwd=Path.cwd())
     runtime_environment_prompt_section = render_runtime_environment_section(runtime_environment)
 
-    system_prompt = load_system_prompt()
-
     tools_dict = get_tools()
     for name, tool_obj in load_enabled_pack_tools(settings).items():
         tools_dict.setdefault(name, tool_obj)
-    tools = tools_dict.values()
+    tools = [tools_dict[name] for name in sorted(tools_dict)]
 
     pack_sop_paths = enabled_sop_paths(settings)
     pack_prompt_sections = enabled_system_prompts(settings)
+
+    raw_system_prompt = load_system_prompt()
+    base_prompt_parts: list[str] = [raw_system_prompt, _TOOL_USAGE_RULES, _SYSTEM_REMINDER_RULES]
+    if runtime_environment_prompt_section:
+        base_prompt_parts.append(runtime_environment_prompt_section)
+    if pack_prompt_sections:
+        base_prompt_parts.extend(pack_prompt_sections)
+    base_system_prompt = "\n\n".join([p for p in base_prompt_parts if p]).strip()
 
     effective_sop_paths: str | None = args.sop_paths
     if pack_sop_paths:
@@ -376,7 +398,14 @@ def _build_agent_runtime(
             pack_paths_str if not effective_sop_paths else os.pathsep.join([effective_sop_paths, pack_paths_str])
         )
 
-    conversation_manager = _build_conversation_manager(window_size=args.window_size, per_turn=args.context_per_turn)
+    summarization_system_prompt = (
+        base_system_prompt if _truthy(os.getenv("SWARMEE_CACHE_SAFE_SUMMARY", "false")) else None
+    )
+    conversation_manager = _build_conversation_manager(
+        window_size=args.window_size,
+        per_turn=args.context_per_turn,
+        summarization_system_prompt=summarization_system_prompt,
+    )
 
     hooks = []
     if _HAS_STRANDS_HOOKS:
@@ -406,6 +435,7 @@ def _build_agent_runtime(
 
         hooks = [
             JSONLLoggerHooks(),
+            TuiMetricsHooks(),
             ToolPolicyHooks(settings.safety),
             ToolConsentHooks(
                 settings.safety,
@@ -421,9 +451,9 @@ def _build_agent_runtime(
     agent_kwargs: dict[str, Any] = {
         "model": model,
         "tools": tools,
-        "system_prompt": system_prompt,
+        "system_prompt": base_system_prompt,
         "callback_handler": callback_handler,
-        "load_tools_from_directory": True,
+        "load_tools_from_directory": not _truthy(os.getenv("SWARMEE_FREEZE_TOOLS", "false")),
     }
     if conversation_manager is not None:
         agent_kwargs["conversation_manager"] = conversation_manager
@@ -450,21 +480,14 @@ def _build_agent_runtime(
 
     preflight_prompt_section: str | None = None
     project_map_prompt_section: str | None = None
-    active_plan_prompt_section: str | None = None
     artifact_store = ArtifactStore()
+    prompt_cache = PromptCacheState()
 
     def refresh_system_prompt(welcome_text_local: str) -> None:
-        parts: list[str] = [system_prompt, _TOOL_USAGE_RULES]
-        if runtime_environment_prompt_section:
-            parts.append(runtime_environment_prompt_section)
-        if pack_prompt_sections:
-            parts.extend(pack_prompt_sections)
-        if project_map_prompt_section:
-            parts.append(project_map_prompt_section)
-        if preflight_prompt_section:
-            parts.append(preflight_prompt_section)
+        prompt_cache.queue_if_changed("project_map", project_map_prompt_section)
+        prompt_cache.queue_if_changed("preflight", preflight_prompt_section)
         if args.include_welcome_in_prompt and welcome_text_local:
-            parts.append(f"Welcome Text Reference:\n{welcome_text_local}")
+            prompt_cache.queue_if_changed("welcome", f"Welcome Text Reference:\n{welcome_text_local}")
 
         if ctx.active_sop_name:
             sop_text = ""
@@ -479,11 +502,7 @@ def _build_agent_runtime(
             except Exception:
                 sop_text = ""
             if sop_text:
-                parts.append(f"Active SOP:\n{sop_text}")
-
-        if active_plan_prompt_section:
-            parts.append(active_plan_prompt_section)
-        agent.system_prompt = "\n\n".join(parts).strip()
+                prompt_cache.queue_if_changed("active_sop", f"Active SOP ({ctx.active_sop_name}):\n{sop_text}")
 
     def run_agent(
         query: str,
@@ -493,11 +512,32 @@ def _build_agent_runtime(
         structured_output_prompt: str | None = None,
     ) -> Any:
         nonlocal agent
+        if _tui_events_enabled():
+            try:
+                from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
+
+                chars_per_token = int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4"))
+                prompt_tokens_est = estimate_tokens(
+                    system_prompt=getattr(agent, "system_prompt", None),
+                    messages=getattr(agent, "messages", []),
+                    chars_per_token=chars_per_token,
+                )
+                budget = int(os.getenv("SWARMEE_CONTEXT_BUDGET_TOKENS", "20000"))
+                _emit_tui_event({
+                    "event": "context",
+                    "prompt_tokens_est": prompt_tokens_est,
+                    "budget_tokens": budget,
+                    "chars_per_token": chars_per_token,
+                    "messages": len(getattr(agent, "messages", []) or []),
+                })
+            except Exception:
+                pass
         resolved_state: dict[str, Any] = dict(invocation_state) if isinstance(invocation_state, dict) else {}
         sw_state = resolved_state.setdefault("swarmee", {})
         if isinstance(sw_state, dict):
             sw_state.setdefault("runtime_environment", dict(runtime_environment))
             sw_state["tier"] = model_manager.current_tier
+            sw_state["provider"] = selected_provider
             profile = settings.harness.tier_profiles.get(model_manager.current_tier)
             if profile is not None:
                 sw_state["tool_profile"] = profile.to_dict()
@@ -509,18 +549,24 @@ def _build_agent_runtime(
                     if isinstance(existing, (list, tuple, set)):
                         merged.update(str(item).strip() for item in existing if str(item).strip())
                     sw_state["plan_allowed_tools"] = sorted(merged)
+            tiers = model_manager.list_tiers()
+            current = next((item for item in tiers if item.name == model_manager.current_tier), None)
+            if current is not None:
+                sw_state["model_id"] = current.model_id
         invocation_state = resolved_state
 
         interrupt_event.clear()
         set_interrupt_event(interrupt_event)
         with interrupt_watcher_from_env(interrupt_event):
             try:
+                system_reminder = prompt_cache.pop_reminder()
                 return invoke_agent(
                     agent,
                     query,
                     callback_handler=callback_handler,
                     interrupt_event=interrupt_event,
                     invocation_state=invocation_state,
+                    system_reminder=system_reminder or None,
                     structured_output_model=structured_output_model,
                     structured_output_prompt=structured_output_prompt,
                 )
@@ -624,14 +670,14 @@ def _build_agent_runtime(
         }
 
     def _execute_with_plan(user_request: str, plan: WorkPlan, *, welcome_text_local: str) -> Any:
-        nonlocal active_plan_prompt_section
         allowed_tools = sorted(tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan")
         invocation_state = {"swarmee": {"mode": "execute", "enforce_plan": True, "allowed_tools": allowed_tools}}
         plan_json_for_execution = _plan_json_for_execution(plan)
 
-        active_plan_prompt_section = (
+        approved_plan_section = (
             "Approved Plan (execute ONLY this plan; if you need changes, ask to :replan):\n" + plan_json_for_execution
         )
+        prompt_cache.queue_one_off(approved_plan_section)
         refresh_system_prompt(welcome_text_local)
         try:
             attempted: set[str] = set()
@@ -668,7 +714,6 @@ def _build_agent_runtime(
 
             raise last_error or RuntimeError("Execution failed")
         finally:
-            active_plan_prompt_section = None
             refresh_system_prompt(welcome_text_local)
 
     registry = CommandRegistry()

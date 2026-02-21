@@ -181,6 +181,54 @@ def test_tool_input_emitted_from_assistant_message():
     assert tool_input_events[0]["input"] == {"command": "ls -la", "cwd": "/tmp"}
 
 
+def test_assistant_message_text_emitted_when_data_is_empty():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(
+            message={"role": "assistant", "content": [{"text": "hello from message"}]},
+        ),
+    )
+    assert events == [{"event": "text_delta", "data": "hello from message"}]
+
+
+def test_assistant_message_cumulative_text_is_delta_deduped():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(message={"role": "assistant", "content": [{"text": "hel"}]})
+        h.callback_handler(message={"role": "assistant", "content": [{"text": "hello"}]})
+        h.callback_handler(message={"role": "assistant", "content": [{"text": "hello"}]})
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "hel"},
+        {"event": "text_delta", "data": "lo"},
+    ]
+
+
+def test_extra_event_fields_text_emits_text_delta():
+    h = TuiCallbackHandler()
+    events = _capture_events(h, lambda: h.callback_handler(delta="hello from extra"))
+    assert events == [{"event": "text_delta", "data": "hello from extra"}]
+
+
+def test_init_event_loop_resets_text_fallback_state():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(data="first")
+        h.callback_handler(init_event_loop=True)
+        h.callback_handler(result="second")
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "first"},
+        {"event": "text_delta", "data": "second"},
+        {"event": "text_complete"},
+    ]
+
+
 def test_tool_input_not_emitted_for_non_dict_input():
     """tool_input event should not be emitted when toolUse input is not a dict."""
     h = TuiCallbackHandler()

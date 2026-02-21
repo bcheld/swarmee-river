@@ -265,6 +265,40 @@ def model_select_options(
     return options, selected_value
 
 
+def choose_daemon_model_select_value(
+    *,
+    provider: str,
+    tier: str,
+    option_values: list[str],
+    pending_value: str | None = None,
+    override_provider: str | None = None,
+    override_tier: str | None = None,
+) -> str | None:
+    """Choose which model-select value should be shown for daemon-backed options."""
+    available = [str(v).strip().lower() for v in option_values if isinstance(v, str) and str(v).strip()]
+    if not available:
+        return None
+
+    provider_name = (provider or "").strip().lower()
+    tier_name = (tier or "").strip().lower()
+
+    pending = (pending_value or "").strip().lower()
+    if pending and pending in available:
+        return pending
+
+    override_provider_name = (override_provider or "").strip().lower()
+    override_tier_name = (override_tier or "").strip().lower()
+    if provider_name and override_provider_name == provider_name and override_tier_name:
+        override_value = f"{provider_name}|{override_tier_name}"
+        if override_value in available:
+            return override_value
+
+    daemon_value = f"{provider_name}|{tier_name}" if provider_name and tier_name else ""
+    if daemon_value and daemon_value in available:
+        return daemon_value
+    return available[0]
+
+
 def parse_output_line(line: str) -> ParsedEvent | None:
     """Best-effort parser for notable subprocess output events."""
     text = line.rstrip("\n")
@@ -328,6 +362,15 @@ def parse_tui_event(line: str) -> dict[str, Any] | None:
         return parsed if isinstance(parsed, dict) else None
     except (ValueError, _json.JSONDecodeError):
         return None
+
+
+def extract_tui_text_chunk(event: dict[str, Any]) -> str:
+    """Extract a text chunk from a structured TUI event payload."""
+    for key in ("data", "text", "delta", "content", "output_text", "outputText", "textDelta"):
+        value = event.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
 
 
 def extract_plan_section_from_output(output: str) -> str | None:
@@ -751,8 +794,22 @@ def run_tui() -> int:
 
     class SwarmeeTUI(AppBase):
         CSS = """
+        $accent: #6a9955;
+        $primary: #6a9955;
+        $footer-key-foreground: #6a9955;
+        $footer-key-background: #2f2f2f;
+        $footer-description-background: #1f1f1f;
+        $footer-item-background: #1f1f1f;
+        $footer-background: #1f1f1f;
+
         Screen {
             layout: vertical;
+            scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
+            scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
         }
 
         #panes {
@@ -767,6 +824,12 @@ def run_tui() -> int:
             border: round $accent;
             padding: 0 1;
             overflow-y: auto;
+            scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
+            scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
         }
 
         #side {
@@ -783,6 +846,12 @@ def run_tui() -> int:
             height: 1fr;
             border: round $accent;
             padding: 0 1;
+            scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
+            scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
         }
 
         #plan_actions {
@@ -791,8 +860,14 @@ def run_tui() -> int:
 
         #consent {
             height: 8;
-            border: round $warning;
+            border: round $accent;
             padding: 0 1;
+            scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
+            scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
         }
 
         #prompt_box {
@@ -813,7 +888,12 @@ def run_tui() -> int:
         #prompt_bottom {
             height: 1;
             layout: horizontal;
-            align: right middle;
+            align: left middle;
+        }
+
+        #prompt_metrics {
+            width: auto;
+            color: $text-muted;
         }
 
         #prompt_spacer {
@@ -823,6 +903,25 @@ def run_tui() -> int:
         #model_select {
             width: 34;
             min-width: 24;
+        }
+
+        Footer {
+            color: $text-muted;
+            background: #1f1f1f;
+        }
+
+        Footer FooterKey {
+            background: #1f1f1f;
+        }
+
+        Footer FooterKey .footer-key--key {
+            color: $accent;
+            background: #2f2f2f;
+        }
+
+        Footer FooterKey .footer-key--description {
+            color: $text-muted;
+            background: #1f1f1f;
         }
         """
         BINDINGS = [
@@ -860,6 +959,7 @@ def run_tui() -> int:
         _model_provider_override: str | None = None
         _model_tier_override: str | None = None
         _model_select_syncing: bool = False
+        _pending_model_select_value: str | None = None
         # Conversation view state
         _current_assistant_msg: Any = None  # AssistantMessage | None
         _current_thinking: Any = None  # ThinkingIndicator | None
@@ -867,6 +967,7 @@ def run_tui() -> int:
         _current_plan_card: Any = None  # PlanCard | None
         _command_palette: Any = None  # CommandPalette | None
         _status_bar: Any = None  # StatusBar | None
+        _prompt_metrics: Any = None  # Static | None
         _run_tool_count: int = 0
         _run_start_time: float | None = None
         _status_timer: Any = None
@@ -891,6 +992,11 @@ def run_tui() -> int:
         _turn_output_chunks: list[str] = []
         _daemon_session_id: str | None = None
         _is_shutting_down: bool = False
+        _last_usage: dict[str, Any] | None = None
+        _last_cost_usd: float | None = None
+        _last_prompt_tokens_est: int | None = None
+        _last_budget_tokens: int | None = None
+        _help_text: str = ""
 
         def compose(self) -> Any:
             yield Header()
@@ -908,6 +1014,14 @@ def run_tui() -> int:
                                 soft_wrap=True,
                             )
                             yield PlanActions(id="plan_actions")
+                        with TabPane("Help", id="tab_help"):
+                            yield TextArea(
+                                text="",
+                                read_only=True,
+                                show_cursor=False,
+                                id="help",
+                                soft_wrap=True,
+                            )
                         with TabPane("Issues", id="tab_issues"):
                             yield TextArea(
                                 text="",
@@ -935,6 +1049,7 @@ def run_tui() -> int:
                     soft_wrap=True,
                 )
                 with Horizontal(id="prompt_bottom"):
+                    yield Static("", id="prompt_metrics")
                     yield Static("", id="prompt_spacer")
                     yield Select(
                         options=[("Loading model info...", _MODEL_LOADING_VALUE)],
@@ -947,8 +1062,10 @@ def run_tui() -> int:
         def on_mount(self) -> None:
             self._command_palette = self.query_one("#command_palette", CommandPalette)
             self._status_bar = self.query_one("#status_bar", StatusBar)
+            self._prompt_metrics = self.query_one("#prompt_metrics", Static)
             self._status_bar.set_model(self._current_model_summary())
             self.query_one("#prompt", PromptTextArea).focus()
+            self._reset_help_panel()
             self._reset_plan_panel()
             self._reset_issues_panel()
             self._reset_artifacts_panel()
@@ -965,18 +1082,32 @@ def run_tui() -> int:
                 self._mount_transcript_widget(Static(banner_line))
             self._write_transcript("Starting Swarmee daemon...")
             self._write_transcript(self.sub_title)
-            self._write_transcript(
-                "Commands: /plan <prompt>, /run <prompt>, /approve, /replan, "
-                "/clearplan, /model, /stop, /daemon restart, /exit."
+            self._write_transcript("Tips: see the Help tab for commands/keys/copy shortcuts.")
+            self._set_help_panel(
+                "\n".join(
+                    [
+                        "Commands:",
+                        "- /plan <prompt>, /run <prompt>",
+                        "- /approve, /replan, /clearplan",
+                        "- /model, /stop, /daemon restart, /exit",
+                        "",
+                        "Consent:",
+                        "- /consent <y|n|a|v> (or press y/n/a/v when prompted)",
+                        "",
+                        "Keys:",
+                        "- Enter submit, Shift+Enter newline (Ctrl+J/Alt+Enter fallback)",
+                        "- Ctrl+Left/Right (or F6/F7) resize panes, F5 submit",
+                        "- Esc interrupt run, Ctrl+C/Cmd+C copy selection",
+                        "",
+                        "Copy/export:",
+                        "- /copy, /copy plan, /copy issues, /copy all",
+                        "",
+                        "Notes:",
+                        "- Model selector is in the prompt box footer dropdown.",
+                        "- In transcript view, use Ctrl+C/Cmd+C (or /copy) to export text.",
+                    ]
+                )
             )
-            self._write_transcript("Consent: /consent <y|n|a|v> (or press y/n/a/v when prompted).")
-            self._write_transcript(
-                "Keys: Enter submit, Shift+Enter newline (Ctrl+J/Alt+Enter fallback), "
-                "Ctrl+Left/Right (or F6/F7) resize panes, F5 submit, Esc interrupt run, Ctrl+C/Cmd+C copy selection."
-            )
-            self._write_transcript("Model selector: prompt box footer dropdown (or /model commands).")
-            self._write_transcript("Text is selectable in all panes.")
-            self._write_transcript("Optional export: /copy, /copy plan, /copy issues, /copy all.")
             self._load_session()
             self._spawn_daemon()
 
@@ -996,6 +1127,21 @@ def run_tui() -> int:
         def _write_transcript(self, line: str) -> None:
             """Write a system/info message to the transcript."""
             self._mount_transcript_widget(SystemMessage(line))
+
+        def _dismiss_thinking(self) -> None:
+            """Immediately hide and discard the current thinking indicator."""
+            indicator = self._current_thinking
+            if indicator is None:
+                return
+            self._current_thinking = None
+            # Stop the animation timer so it doesn't fire after removal.
+            timer = getattr(indicator, "_timer", None)
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+            # Hide synchronously, then schedule async removal.
+            indicator.display = False
+            indicator.remove()
 
         def _write_transcript_line(self, line: str) -> None:
             """Write a plain text line to the transcript (used for TUI-internal messages)."""
@@ -1025,6 +1171,16 @@ def run_tui() -> int:
             text = content if content.strip() else "(no plan)"
             plan_panel.load_text(text)
             plan_panel.scroll_end(animate=False)
+
+        def _set_help_panel(self, content: str) -> None:
+            self._help_text = content
+            panel = self.query_one("#help", TextArea)
+            text = content if content.strip() else "(no help yet)"
+            panel.load_text(text)
+            panel.scroll_home(animate=False)
+
+        def _reset_help_panel(self) -> None:
+            self._set_help_panel("(help)")
 
         def _reset_plan_panel(self) -> None:
             self._set_plan_panel("(no plan)")
@@ -1129,10 +1285,8 @@ def run_tui() -> int:
         ) -> None:
             selector = self.query_one("#model_select", Select)
             provider_name = (provider or "").strip().lower()
-            selected_tier = (tier or "").strip().lower()
 
             options: list[tuple[str, str]] = []
-            selected_value: str | None = None
             for item in tiers:
                 item_provider = str(item.get("provider", "")).strip().lower()
                 item_tier = str(item.get("name", "")).strip().lower()
@@ -1144,14 +1298,21 @@ def run_tui() -> int:
                 suffix = f" ({model_id})" if model_id else ""
                 value = f"{item_provider}|{item_tier}"
                 options.append((f"{item_provider}/{item_tier}{suffix}", value))
-                if item_tier == selected_tier:
-                    selected_value = value
 
             if not options:
                 options = [("No available tiers", _MODEL_LOADING_VALUE)]
                 selected_value = _MODEL_LOADING_VALUE
-            elif selected_value is None:
-                selected_value = options[0][1]
+            else:
+                selected_value = choose_daemon_model_select_value(
+                    provider=provider_name,
+                    tier=tier,
+                    option_values=[value for _label, value in options],
+                    pending_value=self._pending_model_select_value,
+                    override_provider=self._model_provider_override,
+                    override_tier=self._model_tier_override,
+                )
+                if selected_value is None:
+                    selected_value = options[0][1]
 
             self._model_select_syncing = True
             try:
@@ -1201,6 +1362,11 @@ def run_tui() -> int:
             self._current_daemon_model = self._daemon_model_id or (
                 f"{self._daemon_provider}/{self._daemon_tier}" if self._daemon_provider and self._daemon_tier else None
             )
+            pending_value = (self._pending_model_select_value or "").strip().lower()
+            if pending_value and "|" in pending_value:
+                pending_provider, pending_tier = pending_value.split("|", 1)
+                if pending_provider == provider and pending_tier == tier:
+                    self._pending_model_select_value = None
 
             if self._daemon_provider and self._daemon_tier:
                 self._refresh_model_select_from_daemon(
@@ -1297,10 +1463,22 @@ def run_tui() -> int:
             for child in transcript.children:
                 if isinstance(child, AssistantMessage):
                     lines.append(child.full_text)
-                elif isinstance(child, UserMessage):
-                    lines.append(str(child.renderable))
                 else:
-                    lines.append(str(child.renderable))
+                    # Textual Static implementations differ by version; prefer public
+                    # attributes/methods and gracefully fall back when unavailable.
+                    text = ""
+                    with contextlib.suppress(Exception):
+                        renderable = getattr(child, "renderable", None)
+                        if renderable is not None:
+                            text = str(renderable)
+                    if not text:
+                        with contextlib.suppress(Exception):
+                            text = str(child.render())
+                    if not text:
+                        with contextlib.suppress(Exception):
+                            text = str(getattr(child, "_content", ""))
+                    if text:
+                        lines.append(text)
             return "\n".join(lines).rstrip() + "\n"
 
         def _get_all_text(self) -> str:
@@ -1452,20 +1630,42 @@ def run_tui() -> int:
             elif etype == "model_info":
                 self._handle_model_info(event)
 
-            elif etype == "text_delta":
-                if self._current_thinking is not None:
-                    self._current_thinking.remove()
-                    self._current_thinking = None
+            elif etype == "context":
+                prompt_tokens_est = event.get("prompt_tokens_est")
+                budget_tokens = event.get("budget_tokens")
+                self._last_prompt_tokens_est = int(prompt_tokens_est) if isinstance(prompt_tokens_est, int) else None
+                self._last_budget_tokens = int(budget_tokens) if isinstance(budget_tokens, int) else None
+                if self._status_bar is not None:
+                    self._status_bar.set_context(
+                        prompt_tokens_est=self._last_prompt_tokens_est,
+                        budget_tokens=self._last_budget_tokens,
+                    )
+                self._refresh_prompt_metrics()
+
+            elif etype == "usage":
+                usage = event.get("usage")
+                self._last_usage = usage if isinstance(usage, dict) else None
+                cost = event.get("cost_usd")
+                self._last_cost_usd = float(cost) if isinstance(cost, (int, float)) else None
+                if self._status_bar is not None:
+                    self._status_bar.set_usage(self._last_usage, cost_usd=self._last_cost_usd)
+                self._refresh_prompt_metrics()
+
+            elif etype in {"text_delta", "message_delta", "output_text_delta", "delta"}:
+                chunk = extract_tui_text_chunk(event)
+                if not chunk:
+                    return
+                self._dismiss_thinking()
                 if self._current_assistant_msg is None:
                     self._current_assistant_msg = AssistantMessage(
                         model=self._current_daemon_model,
                         timestamp=self._turn_timestamp(),
                     )
                     self._mount_transcript_widget(self._current_assistant_msg)
-                self._current_assistant_msg.append_delta(event.get("data", ""))
+                self._current_assistant_msg.append_delta(chunk)
                 self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
-            elif etype == "text_complete":
+            elif etype in {"text_complete", "message_complete", "output_text_complete", "complete"}:
                 if self._current_assistant_msg is not None:
                     self._last_assistant_text = self._current_assistant_msg.finalize()
                     self._current_assistant_msg = None
@@ -1476,6 +1676,7 @@ def run_tui() -> int:
                     self._mount_transcript_widget(self._current_thinking)
 
             elif etype == "tool_start":
+                self._dismiss_thinking()
                 tid = event.get("tool_use_id", "")
                 tool_name = event.get("tool", "unknown")
                 block = ToolCallBlock(tool_name=tool_name, tool_use_id=tid)
@@ -1550,6 +1751,14 @@ def run_tui() -> int:
                 error_text = event.get("text", "")
                 if not error_text.startswith("ERROR:"):
                     error_text = f"ERROR: {error_text}"
+                normalized_error = error_text.lower()
+                if self._pending_model_select_value and (
+                    "set_tier" in normalized_error
+                    or "cannot set tier" in normalized_error
+                    or "tier" in normalized_error
+                ):
+                    self._pending_model_select_value = None
+                    self._refresh_model_select()
                 self._error_count += 1
                 self._write_issue(error_text)
                 self._update_header_status()
@@ -1621,9 +1830,7 @@ def run_tui() -> int:
             if self._current_assistant_msg is not None:
                 self._last_assistant_text = self._current_assistant_msg.finalize()
                 self._current_assistant_msg = None
-            if self._current_thinking is not None:
-                self._current_thinking.remove()
-                self._current_thinking = None
+            self._dismiss_thinking()
 
             output_text = "".join(self._turn_output_chunks)
             self._turn_output_chunks = []
@@ -1658,6 +1865,7 @@ def run_tui() -> int:
                 return
             was_query_active = self._query_active
             self._daemon_ready = False
+            self._pending_model_select_value = None
             self._query_active = False
             self._proc = None
             self._runner_thread = None
@@ -1704,6 +1912,7 @@ def run_tui() -> int:
             proc = self._proc
             if proc is not None and proc.poll() is None:
                 if restart:
+                    self._pending_model_select_value = None
                     send_daemon_command(proc, {"cmd": "shutdown"})
                     with contextlib.suppress(Exception):
                         proc.wait(timeout=3.0)
@@ -1757,7 +1966,8 @@ def run_tui() -> int:
             self._reset_consent_panel()
             self._reset_issues_panel()
             self._current_assistant_msg = None
-            self._current_thinking = None
+            self._current_thinking = ThinkingIndicator()
+            self._mount_transcript_widget(self._current_thinking)
             self._tool_blocks = {}
             self._run_tool_count = 0
             self._run_start_time = time.time()
@@ -1765,11 +1975,19 @@ def run_tui() -> int:
             self._plan_completion_announced = False
             self._received_structured_plan = False
             self._turn_output_chunks = []
+            self._last_usage = None
+            self._last_cost_usd = None
             if self._status_bar is not None:
                 self._status_bar.set_state("running")
                 self._status_bar.set_tool_count(0)
                 self._status_bar.set_elapsed(0.0)
                 self._status_bar.set_model(self._current_model_summary())
+                self._status_bar.set_usage(None, cost_usd=None)
+                self._status_bar.set_context(
+                    prompt_tokens_est=self._last_prompt_tokens_est,
+                    budget_tokens=self._last_budget_tokens,
+                )
+            self._refresh_prompt_metrics()
             if self._status_timer is not None:
                 self._status_timer.stop()
             self._status_timer = self.set_interval(1.0, self._tick_status)
@@ -1805,6 +2023,32 @@ def run_tui() -> int:
                 self._write_transcript_line("[run] interrupt requested.")
             else:
                 self._write_transcript_line("[run] failed to send interrupt.")
+
+        def _refresh_prompt_metrics(self) -> None:
+            if self._prompt_metrics is None:
+                return
+
+            parts: list[str] = []
+            if isinstance(self._last_prompt_tokens_est, int):
+                if isinstance(self._last_budget_tokens, int) and self._last_budget_tokens > 0:
+                    parts.append(f"ctx {self._last_prompt_tokens_est}/{self._last_budget_tokens}")
+                else:
+                    parts.append(f"ctx {self._last_prompt_tokens_est}")
+
+            if self._last_usage:
+                in_tokens = self._last_usage.get("input_tokens") or self._last_usage.get("prompt_tokens")
+                out_tokens = self._last_usage.get("output_tokens") or self._last_usage.get("completion_tokens")
+                if isinstance(in_tokens, int) or isinstance(out_tokens, int):
+                    usage_parts: list[str] = []
+                    if isinstance(in_tokens, int):
+                        usage_parts.append(f"in {in_tokens}")
+                    if isinstance(out_tokens, int):
+                        usage_parts.append(f"out {out_tokens}")
+                    parts.append(" ".join(usage_parts))
+            if isinstance(self._last_cost_usd, (int, float)):
+                parts.append(f"${self._last_cost_usd:.4f}")
+
+            self._prompt_metrics.update(" | ".join(parts))
 
         def action_quit(self) -> None:
             self._is_shutting_down = True
@@ -1854,14 +2098,28 @@ def run_tui() -> int:
 
         def action_copy_selection(self) -> None:
             focused = getattr(self, "focused", None)
-            if not isinstance(focused, TextArea):
-                self._notify("No text area focused.", severity="warning")
-                return
-            selected_text = focused.selected_text or ""
-            if not selected_text.strip():
+            if isinstance(focused, TextArea):
+                selected_text = focused.selected_text or ""
+                if selected_text.strip():
+                    self._copy_text(selected_text, label="selection")
+                    return
+                focused_text = (getattr(focused, "text", "") or "").strip()
+                if focused.id in {"issues", "plan", "artifacts", "consent", "help"} and focused_text:
+                    self._copy_text(focused_text + "\n", label=f"{focused.id} pane")
+                    return
                 self._notify("Select text first.", severity="warning")
                 return
-            self._copy_text(selected_text, label="selection")
+
+            transcript = self.query_one("#transcript", VerticalScroll)
+            node = focused
+            while node is not None:
+                if node is transcript:
+                    fallback = self._get_all_text()
+                    self._copy_text(fallback, label="transcript+panes")
+                    return
+                node = getattr(node, "parent", None)
+
+            self._notify("No text area focused.", severity="warning")
 
         def action_widen_side(self) -> None:
             if self._split_ratio > 1:
@@ -2014,18 +2272,24 @@ def run_tui() -> int:
             if not value:
                 return
             if value == _MODEL_AUTO_VALUE:
+                self._pending_model_select_value = None
                 self._model_provider_override = None
                 self._model_tier_override = None
             elif value == _MODEL_LOADING_VALUE:
                 return
             elif "|" in value:
                 provider, tier = value.split("|", 1)
-                self._model_provider_override = provider.strip().lower() or None
-                self._model_tier_override = tier.strip().lower() or None
+                requested_provider = provider.strip().lower()
+                requested_tier = tier.strip().lower()
+                if not requested_provider or not requested_tier:
+                    return
                 if self._daemon_ready and self._proc is not None and self._proc.poll() is None:
-                    requested_tier = tier.strip().lower()
                     current_tier = (self._daemon_tier or "").strip().lower()
+                    current_provider = (self._daemon_provider or "").strip().lower()
                     if requested_tier == current_tier:
+                        self._pending_model_select_value = None
+                        self._model_provider_override = requested_provider or None
+                        self._model_tier_override = requested_tier or None
                         self._update_header_status()
                         self._update_prompt_placeholder()
                         if self._status_bar is not None:
@@ -2033,9 +2297,24 @@ def run_tui() -> int:
                         return
                     if self._query_active:
                         self._write_transcript_line("[model] cannot change tier while a run is active.")
+                        self._pending_model_select_value = None
+                        self._refresh_model_select_from_daemon(
+                            provider=current_provider or requested_provider,
+                            tier=current_tier or requested_tier,
+                            tiers=self._daemon_tiers,
+                        )
+                        return
                     else:
                         if not send_daemon_command(self._proc, {"cmd": "set_tier", "tier": requested_tier}):
                             self._write_transcript_line("[model] failed to send tier change to daemon.")
+                            self._pending_model_select_value = None
+                            self._refresh_model_select()
+                            return
+                        self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
+                else:
+                    self._pending_model_select_value = None
+                self._model_provider_override = requested_provider or None
+                self._model_tier_override = requested_tier or None
             self._update_header_status()
             self._update_prompt_placeholder()
             if self._status_bar is not None:
@@ -2154,6 +2433,7 @@ def run_tui() -> int:
                 return
 
             if normalized == "/model reset":
+                self._pending_model_select_value = None
                 self._model_provider_override = None
                 self._model_tier_override = None
                 self._refresh_model_select()
@@ -2166,6 +2446,7 @@ def run_tui() -> int:
                 if not provider:
                     self._write_transcript_line("Usage: /model provider <name>")
                     return
+                self._pending_model_select_value = None
                 self._model_provider_override = provider
                 self._refresh_model_select()
                 self._update_header_status()
@@ -2180,6 +2461,7 @@ def run_tui() -> int:
                 if not tier:
                     self._write_transcript_line("Usage: /model tier <name>")
                     return
+                self._pending_model_select_value = None
                 self._model_tier_override = tier
                 self._refresh_model_select()
                 self._update_header_status()
@@ -2190,8 +2472,13 @@ def run_tui() -> int:
                     and self._proc.poll() is None
                     and not self._query_active
                 ):
+                    requested_provider = (self._model_provider_override or self._daemon_provider or "").strip().lower()
+                    requested_tier = tier.strip().lower()
                     if not send_daemon_command(self._proc, {"cmd": "set_tier", "tier": tier}):
+                        self._pending_model_select_value = None
                         self._write_transcript_line("[model] failed to send tier change to daemon.")
+                    elif requested_provider and requested_tier:
+                        self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
                 self._write_transcript_line(self._current_model_summary())
                 return
 

@@ -76,6 +76,47 @@ def test_model_select_options_only_includes_configured_provider_tiers(monkeypatc
     assert selected == "__auto__"
 
 
+def test_choose_daemon_model_select_value_prefers_pending_then_daemon():
+    values = ["openai|fast", "openai|balanced"]
+    selected = tui_app.choose_daemon_model_select_value(
+        provider="openai",
+        tier="balanced",
+        option_values=values,
+        pending_value="openai|fast",
+    )
+    assert selected == "openai|fast"
+
+    selected_no_pending = tui_app.choose_daemon_model_select_value(
+        provider="openai",
+        tier="balanced",
+        option_values=values,
+    )
+    assert selected_no_pending == "openai|balanced"
+
+
+def test_choose_daemon_model_select_value_uses_override_when_available():
+    values = ["openai|fast", "openai|balanced"]
+    selected = tui_app.choose_daemon_model_select_value(
+        provider="openai",
+        tier="balanced",
+        option_values=values,
+        override_provider="openai",
+        override_tier="fast",
+    )
+    assert selected == "openai|fast"
+
+
+def test_choose_daemon_model_select_value_falls_back_to_first_option():
+    values = ["openai|fast", "openai|balanced"]
+    selected = tui_app.choose_daemon_model_select_value(
+        provider="openai",
+        tier="economy",
+        option_values=values,
+        pending_value="openai|missing",
+    )
+    assert selected == "openai|fast"
+
+
 def test_looks_like_plan_output():
     text = "Some output\nProposed plan:\n- Step 1\n- Step 2\nPlan generated. Re-run with --yes to execute."
     assert tui_app.looks_like_plan_output(text) is True
@@ -418,6 +459,14 @@ def test_parse_tui_event_non_json_returns_none():
     assert tui_app.parse_tui_event("plain text output") is None
     assert tui_app.parse_tui_event("") is None
     assert tui_app.parse_tui_event("Error: something failed") is None
+
+
+def test_extract_tui_text_chunk_prefers_data_then_falls_back_to_text():
+    assert tui_app.extract_tui_text_chunk({"data": "hello", "text": "world"}) == "hello"
+    assert tui_app.extract_tui_text_chunk({"text": "world"}) == "world"
+    assert tui_app.extract_tui_text_chunk({"delta": "chunk"}) == "chunk"
+    assert tui_app.extract_tui_text_chunk({"outputText": "done"}) == "done"
+    assert tui_app.extract_tui_text_chunk({"event": "text_delta"}) == ""
 
 
 def test_parse_tui_event_malformed_json_returns_none():

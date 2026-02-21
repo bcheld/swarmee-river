@@ -563,14 +563,14 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "deep": ModelTier(
                             provider="openai",
-                            model_id="gpt-5",
-                            display_name="GPT-5",
+                            model_id="gpt-5.2",
+                            display_name="GPT-5.2",
                             description="Stronger reasoning; slower / more expensive.",
                         ),
                         "long": ModelTier(
                             provider="openai",
-                            model_id="gpt-5",
-                            display_name="GPT-5 (long)",
+                            model_id="gpt-5.2",
+                            display_name="GPT-5.2 (long)",
                             description="Long-form outputs (override via SWARMEE_OPENAI_LONG_MODEL_ID).",
                         ),
                     },
