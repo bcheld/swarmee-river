@@ -221,15 +221,24 @@ class ConsentPrompt(Vertical):
         padding: 0 1;
         margin: 0 0 1 0;
         height: auto;
-        max-height: 4;
+        max-height: 7;
+    }
+    ConsentPrompt.-highlight {
+        border: heavy yellow;
     }
     ConsentPrompt #consent_context {
-        height: 2;
+        height: auto;
         color: $text;
+    }
+    ConsentPrompt #consent_separator {
+        height: auto;
+        color: $text-muted;
+        margin: 0;
+        padding: 0;
     }
     ConsentPrompt #consent_actions {
         layout: horizontal;
-        height: 1;
+        height: auto;
         margin: 0;
         padding: 0;
     }
@@ -241,29 +250,35 @@ class ConsentPrompt(Vertical):
     """
 
     _CHOICE_IDS = ("y", "n", "a", "v")
+    _highlight_timer: Any = None
 
     def compose(self):  # type: ignore[override]
         yield Static("", id="consent_context")
+        yield Static("", id="consent_separator")
         with Horizontal(id="consent_actions"):
-            yield Button("Yes (y)", id="consent_choice_y", variant="success")
-            yield Button("No (n)", id="consent_choice_n", variant="error")
-            yield Button("Always (a)", id="consent_choice_a", variant="primary")
-            yield Button("Never (v)", id="consent_choice_v", variant="warning")
+            yield Button("Yes (y)", id="consent_choice_y", variant="success", compact=True)
+            yield Button("No (n)", id="consent_choice_n", variant="error", compact=True)
+            yield Button("Always (a)", id="consent_choice_a", variant="primary", compact=True)
+            yield Button("Never (v)", id="consent_choice_v", variant="warning", compact=True)
 
-    def set_prompt(self, context: str, *, options: list[str] | None = None) -> None:
+    def set_prompt(self, context: str, *, options: list[str] | None = None, alert: bool = True) -> None:
         """Show context + enabled options and reveal the prompt."""
         available = {opt.strip().lower() for opt in (options or self._CHOICE_IDS) if opt.strip()}
         if not available:
             available = set(self._CHOICE_IDS)
 
         tool_name = extract_consent_tool_name(context)
-        summary = self._summarize_context(context)
+        summary = self._first_context_line(context)
         rich_context = RichText()
         rich_context.append("Consent required: ", style="bold yellow")
         rich_context.append(tool_name, style="bold")
         if summary:
-            rich_context.append(f"\n{summary}", style="dim")
+            rich_context.append(" — ", style="bold yellow")
+            rich_context.append("Command: ", style="bold")
+            rich_context.append(summary, style="dim")
         self.query_one("#consent_context", Static).update(rich_context)
+        self.query_one("#consent_separator", Static).update(RichText("─" * 28, style="dim"))
+        self.query_one("#consent_actions", Horizontal).styles.display = "block"
 
         for choice in self._CHOICE_IDS:
             with contextlib.suppress(Exception):
@@ -273,10 +288,16 @@ class ConsentPrompt(Vertical):
                 button.styles.display = "block" if is_available else "none"
 
         self.styles.display = "block"
+        if alert:
+            self._signal_attention()
+            self._flash_highlight()
         self.focus_first_choice()
 
     def hide_prompt(self) -> None:
+        self._clear_highlight()
         self.styles.display = "none"
+        with contextlib.suppress(Exception):
+            self.query_one("#consent_actions", Horizontal).styles.display = "block"
 
     def focus_first_choice(self) -> None:
         for choice in self._CHOICE_IDS:
@@ -286,16 +307,52 @@ class ConsentPrompt(Vertical):
                     button.focus()
                     return
 
-    def _summarize_context(self, context: str) -> str:
+    def show_confirmation(self, message: str, *, approved: bool) -> None:
+        """Show a compact post-choice confirmation before the prompt is hidden."""
+        self._clear_highlight()
+        status_style = "bold green" if approved else "bold red"
+        self.query_one("#consent_context", Static).update(RichText(message, style=status_style))
+        self.query_one("#consent_separator", Static).update("")
+        with contextlib.suppress(Exception):
+            self.query_one("#consent_actions", Horizontal).styles.display = "none"
+        self.styles.display = "block"
+
+    def _first_context_line(self, context: str) -> str:
         lines = [line.strip() for line in context.splitlines() if line.strip()]
         if not lines:
             return ""
         for line in lines:
             lower = line.lower()
-            if "allow tool" in lower or "consent" in lower:
+            if "allow tool" in lower or "consent" in lower or line.startswith("~"):
                 continue
             return line[:120]
-        return lines[0][:120]
+        return ""
+
+    def _signal_attention(self) -> None:
+        app = getattr(self, "app", None)
+        if app is None:
+            return
+        with contextlib.suppress(Exception):
+            app.notify("Tool consent required", severity="warning", timeout=10)
+        with contextlib.suppress(Exception):
+            app.bell()
+
+    def _flash_highlight(self) -> None:
+        timer = self._highlight_timer
+        self._highlight_timer = None
+        if timer is not None:
+            with contextlib.suppress(Exception):
+                timer.stop()
+        self.add_class("-highlight")
+        self._highlight_timer = self.set_timer(2.0, self._clear_highlight)
+
+    def _clear_highlight(self) -> None:
+        timer = self._highlight_timer
+        self._highlight_timer = None
+        if timer is not None:
+            with contextlib.suppress(Exception):
+                timer.stop()
+        self.remove_class("-highlight")
 
     def on_key(self, event: Any) -> None:
         key = str(getattr(event, "key", "")).lower()
@@ -876,6 +933,7 @@ class CommandPalette(Static):
         ("/new", "Start fresh session"),
         ("/context", "Manage context sources"),
         ("/compact", "Summarize context"),
+        ("/text", "Toggle transcript text mode"),
         ("/sop", "Browse and toggle SOPs"),
         ("/copy", "Copy transcript"),
         ("/copy plan", "Copy plan text"),

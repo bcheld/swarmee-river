@@ -139,6 +139,8 @@ def test_classify_pre_run_command_matrix():
         "/open": ("open_usage", None),
         "/search bug": ("search", "bug"),
         "/search": ("search_usage", None),
+        "/text": ("text", None),
+        "/text extra": ("text_usage", None),
         "/compact": ("compact", None),
         "/compact now": ("compact_usage", None),
         "/restore": ("restore", None),
@@ -943,6 +945,15 @@ def test_command_palette_includes_sop():
     palette.filter("/so")
     assert len(palette._filtered) == 1
     assert palette._filtered[0][0] == "/sop"
+
+
+def test_command_palette_includes_text_toggle():
+    from swarmee_river.tui.widgets import CommandPalette
+
+    palette = CommandPalette()
+    palette.filter("/te")
+    assert len(palette._filtered) == 1
+    assert palette._filtered[0][0] == "/text"
 
 
 def test_action_sheet_selection_wraps():

@@ -47,6 +47,7 @@ _SEARCH_USAGE_TEXT = "Usage: /search <term>"
 _OPEN_USAGE_TEXT = "Usage: /open <number>"
 _EXPAND_USAGE_TEXT = "Usage: /expand <tool_use_id>"
 _COMPACT_USAGE_TEXT = "Usage: /compact"
+_TEXT_USAGE_TEXT = "Usage: /text"
 _CONTEXT_USAGE_TEXT = (
     "Usage: /context add file <path> | /context add note <text> | /context add sop <name> | "
     "/context add kb <id> | /context remove <index> | /context list | /context clear"
@@ -66,7 +67,8 @@ _SOP_FILE_SUFFIX = ".sop.md"
 _CONTEXT_SELECT_PLACEHOLDER = "__context_select_none__"
 _CONTEXT_INPUT_SOURCE_TYPES = {"file", "note", "kb"}
 _CONTEXT_SOP_SOURCE_TYPE = "sop"
-_TOOL_PROGRESS_RENDER_INTERVAL_S = 0.2
+_STREAMING_FLUSH_INTERVAL_S = 0.15
+_TOOL_PROGRESS_RENDER_INTERVAL_S = 0.15
 _TOOL_HEARTBEAT_RENDER_MIN_STEP_S = 0.5
 _TOOL_OUTPUT_RETENTION_MAX_CHARS = 4096
 _TRANSIENT_TOAST_TIMEOUT_S = 5.0
@@ -776,6 +778,10 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
         return "search", text[len("/search "):]
     if normalized == "/search":
         return "search_usage", None
+    if normalized == "/text":
+        return "text", None
+    if normalized.startswith("/text "):
+        return "text_usage", None
     if normalized == "/compact":
         return "compact", None
     if normalized.startswith("/compact "):
@@ -1291,6 +1297,13 @@ def run_tui() -> int:
                 app.action_open_action_sheet()
                 return
 
+            # ── Ctrl+T: transcript mode toggle ──
+            if key == "ctrl+t" and app is not None and hasattr(app, "action_toggle_transcript_mode"):
+                event.stop()
+                event.prevent_default()
+                app.action_toggle_transcript_mode()
+                return
+
             # ── Arrow keys: prompt history (when palette hidden) ──
             if key == "up" and app is not None and hasattr(app, "_prompt_history"):
                 history = app._prompt_history
@@ -1427,7 +1440,7 @@ def run_tui() -> int:
             width: 100%;
         }
 
-        #transcript {
+        #transcript, #transcript_text {
             width: 2fr;
             height: 1fr;
             border: round $accent;
@@ -1439,6 +1452,9 @@ def run_tui() -> int:
             scrollbar-color: #7f7f7f;
             scrollbar-color-hover: #999999;
             scrollbar-color-active: #b3b3b3;
+        }
+        #transcript_text {
+            display: none;
         }
 
         #side {
@@ -1592,7 +1608,7 @@ def run_tui() -> int:
         #consent_prompt {
             display: none;
             height: auto;
-            min-height: 0;
+            min-height: 5;
             margin: 0 0 0 0;
         }
 
@@ -1655,6 +1671,7 @@ def run_tui() -> int:
         BINDINGS = [
             ("f5", "submit_prompt", "Send prompt"),
             ("escape", "interrupt_run", "Interrupt run"),
+            ("ctrl+t", "toggle_transcript_mode", "Toggle transcript mode"),
             Binding("ctrl+k", "open_action_sheet", "Actions", priority=True),
             Binding("ctrl+space", "open_action_sheet", "Actions", priority=True),
             ("ctrl+c", "copy_selection", "Copy selection"),
@@ -1681,6 +1698,8 @@ def run_tui() -> int:
         _consent_buffer: list[str] = []
         _consent_history_lines: list[str] = []
         _consent_tool_name: str = "tool"
+        _consent_prompt_nonce: int = 0
+        _consent_hide_timer: Any = None
         _context_sources: list[dict[str, str]] = []
         _context_sop_names: list[str] = []
         _context_add_mode: str | None = None
@@ -1702,11 +1721,16 @@ def run_tui() -> int:
         _pending_model_select_value: str | None = None
         # Conversation view state
         _current_assistant_chunks: list[str] = []
+        _streaming_buffer: list[str] = []
+        _streaming_flush_timer: Any = None
+        _tool_progress_pending_ids: set[str] = set()
+        _tool_progress_flush_timer: Any = None
         _current_assistant_model: str | None = None
         _current_assistant_timestamp: str | None = None
         _assistant_placeholder_written: bool = False
         _current_thinking: bool = False
         _tool_blocks: dict[str, dict[str, Any]] = {}
+        _transcript_mode: str = "rich"
         _current_plan_steps_total: int = 0
         _current_plan_summary: str = ""
         _current_plan_steps: list[str] = []
@@ -1767,6 +1791,13 @@ def run_tui() -> int:
             yield Header()
             with Horizontal(id="panes"):
                 yield RichLog(id="transcript")
+                yield TextArea(
+                    text="",
+                    read_only=True,
+                    show_line_numbers=False,
+                    id="transcript_text",
+                    soft_wrap=True,
+                )
                 with Vertical(id="side"):
                     with TabbedContent(id="side_tabs"):
                         with TabPane("Plan", id="tab_plan"):
@@ -1805,12 +1836,12 @@ def run_tui() -> int:
                             with Vertical(id="sops_panel"):
                                 yield Static("Available SOPs", id="sops_header")
                                 yield VerticalScroll(id="sop_list")
-                        with TabPane("Help", id="tab_help"):
+                        with TabPane("Artifacts", id="tab_artifacts"):
                             yield TextArea(
                                 text="",
                                 read_only=True,
                                 show_cursor=False,
-                                id="help",
+                                id="artifacts",
                                 soft_wrap=True,
                             )
                         with TabPane("Issues", id="tab_issues"):
@@ -1821,12 +1852,12 @@ def run_tui() -> int:
                                 id="issues",
                                 soft_wrap=True,
                             )
-                        with TabPane("Artifacts", id="tab_artifacts"):
+                        with TabPane("Help", id="tab_help"):
                             yield TextArea(
                                 text="",
                                 read_only=True,
                                 show_cursor=False,
-                                id="artifacts",
+                                id="help",
                                 soft_wrap=True,
                             )
             yield CommandPalette(id="command_palette")
@@ -1897,7 +1928,7 @@ def run_tui() -> int:
                         "- /context add/list/remove/clear",
                         "- /sop list, /sop activate <name>, /sop deactivate <name>, /sop preview <name>",
                         "- /approve, /replan, /clearplan",
-                        "- /model, /stop, /daemon restart, /expand <tool_id>, /exit",
+                        "- /model, /text, /stop, /daemon restart, /expand <tool_id>, /exit",
                         "",
                         "Consent:",
                         "- /consent <y|n|a|v> (or press y/n/a/v when prompted)",
@@ -1906,6 +1937,7 @@ def run_tui() -> int:
                         "Keys:",
                         "- Enter submit, Shift+Enter newline (Ctrl+J/Alt+Enter fallback)",
                         "- Ctrl+Left/Right (or F6/F7) resize panes, F5 submit",
+                        "- Ctrl+T toggles transcript rich/text mode",
                         "- Ctrl+K or Ctrl+Space opens action sheet",
                         "- Esc interrupt run, Ctrl+C/Cmd+C copy selection",
                         "",
@@ -1924,6 +1956,7 @@ def run_tui() -> int:
                 transcript.auto_scroll = True
             with contextlib.suppress(Exception):
                 transcript.max_lines = self._TRANSCRIPT_MAX_LINES
+            self._set_transcript_mode("rich", notify=False)
             self._load_session()
             self._spawn_daemon()
 
@@ -1935,6 +1968,53 @@ def run_tui() -> int:
             if len(self._transcript_fallback_lines) > self._TRANSCRIPT_MAX_LINES:
                 self._transcript_fallback_lines = self._transcript_fallback_lines[-self._TRANSCRIPT_MAX_LINES :]
 
+        def _sync_transcript_text_widget(self) -> None:
+            text_widget = self.query_one("#transcript_text", TextArea)
+            text = "\n".join(self._transcript_fallback_lines).rstrip()
+            if text:
+                text += "\n"
+            text_widget.load_text(text)
+            self._scroll_transcript_text_to_end()
+
+        def _scroll_transcript_text_to_end(self) -> None:
+            text_widget = self.query_one("#transcript_text", TextArea)
+            with contextlib.suppress(Exception):
+                text_widget.scroll_end(animate=False)
+            for method_name in ("action_cursor_document_end", "action_end"):
+                method = getattr(text_widget, method_name, None)
+                if callable(method):
+                    with contextlib.suppress(Exception):
+                        method()
+                        break
+
+        def _set_transcript_mode(self, mode: str, *, notify: bool = True) -> None:
+            normalized = mode.strip().lower()
+            if normalized not in {"rich", "text"}:
+                return
+            rich_widget = self.query_one("#transcript", RichLog)
+            text_widget = self.query_one("#transcript_text", TextArea)
+            if normalized == "text":
+                self._sync_transcript_text_widget()
+                rich_widget.styles.display = "none"
+                text_widget.styles.display = "block"
+                self._scroll_transcript_text_to_end()
+                self._transcript_mode = "text"
+                if notify:
+                    self._notify("Text mode: select text with mouse. /text to return.", severity="information")
+                return
+
+            text_widget.styles.display = "none"
+            rich_widget.styles.display = "block"
+            with contextlib.suppress(Exception):
+                rich_widget.scroll_end(animate=False)
+            self._transcript_mode = "rich"
+            if notify:
+                self._notify("Rich mode restored.", severity="information")
+
+        def _toggle_transcript_mode(self) -> None:
+            target = "text" if self._transcript_mode != "text" else "rich"
+            self._set_transcript_mode(target, notify=True)
+
         def _mount_transcript_widget(self, renderable: Any, *, plain_text: str | None = None) -> None:
             """Write a renderable into the transcript RichLog."""
             transcript = self.query_one("#transcript", RichLog)
@@ -1943,6 +2023,8 @@ def run_tui() -> int:
                 self._record_transcript_fallback(plain_text)
             elif isinstance(renderable, str):
                 self._record_transcript_fallback(renderable)
+            if self._transcript_mode == "text":
+                self._sync_transcript_text_widget()
             with contextlib.suppress(Exception):
                 transcript.scroll_end(animate=False)
 
@@ -1953,6 +2035,67 @@ def run_tui() -> int:
         def _dismiss_thinking(self) -> None:
             """Mark the thinking placeholder as dismissed."""
             self._current_thinking = False
+
+        def _cancel_streaming_flush_timer(self) -> None:
+            timer = self._streaming_flush_timer
+            self._streaming_flush_timer = None
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+
+        def _schedule_streaming_flush(self) -> None:
+            if self._streaming_flush_timer is None:
+                self._streaming_flush_timer = self.set_timer(_STREAMING_FLUSH_INTERVAL_S, self._on_streaming_flush_timer)
+
+        def _on_streaming_flush_timer(self) -> None:
+            self._streaming_flush_timer = None
+            self._flush_streaming_buffer()
+
+        def _flush_streaming_buffer(self) -> None:
+            if not self._streaming_buffer:
+                return
+            text = "".join(self._streaming_buffer)
+            self._streaming_buffer = []
+            if not text:
+                return
+            self._current_assistant_chunks.append(text)
+
+        def _cancel_tool_progress_flush_timer(self) -> None:
+            timer = self._tool_progress_flush_timer
+            self._tool_progress_flush_timer = None
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+
+        def _schedule_tool_progress_flush(self, tool_use_id: str | None = None) -> None:
+            if isinstance(tool_use_id, str) and tool_use_id.strip():
+                self._tool_progress_pending_ids.add(tool_use_id.strip())
+            if self._tool_progress_flush_timer is None:
+                self._tool_progress_flush_timer = self.set_timer(
+                    _STREAMING_FLUSH_INTERVAL_S,
+                    self._on_tool_progress_flush_timer,
+                )
+
+        def _on_tool_progress_flush_timer(self) -> None:
+            self._tool_progress_flush_timer = None
+            pending_ids = list(self._tool_progress_pending_ids)
+            self._tool_progress_pending_ids.clear()
+            for tool_use_id in pending_ids:
+                rendered = self._flush_tool_progress_render(tool_use_id)
+                record = self._tool_blocks.get(tool_use_id)
+                has_pending = bool(record and str(record.get("pending_output", "")))
+                if has_pending and not rendered:
+                    self._tool_progress_pending_ids.add(tool_use_id)
+            if self._tool_progress_pending_ids:
+                self._schedule_tool_progress_flush()
+
+        def _flush_all_streaming_buffers(self) -> None:
+            self._cancel_streaming_flush_timer()
+            self._flush_streaming_buffer()
+            self._cancel_tool_progress_flush_timer()
+            self._tool_progress_pending_ids.clear()
+            for tool_use_id in list(self._tool_blocks.keys()):
+                self._flush_tool_progress_render(tool_use_id, force=True)
 
         def _write_transcript_line(self, line: str) -> None:
             """Write a plain text line to the transcript (used for TUI-internal messages)."""
@@ -2642,73 +2785,14 @@ def run_tui() -> int:
                 self._write_transcript_line(f"[copy] {label}: clipboard unavailable.")
 
         def _get_transcript_text(self) -> str:
-            transcript = self.query_one("#transcript", RichLog)
-            for method_name in ("export_text", "get_text", "to_text"):
-                method = getattr(transcript, method_name, None)
-                if not callable(method):
-                    continue
-                with contextlib.suppress(Exception):
-                    exported = method()
-                    if isinstance(exported, str) and exported.strip():
-                        return sanitize_output_text(exported).rstrip() + "\n"
-
             if self._transcript_fallback_lines:
                 return "\n".join(self._transcript_fallback_lines).rstrip() + "\n"
-
-            lines = getattr(transcript, "lines", None)
-            if isinstance(lines, list) and lines:
-                extracted: list[str] = []
-                for line in lines:
-                    if isinstance(line, str):
-                        extracted.append(line)
-                        continue
-                    text = ""
-                    with contextlib.suppress(Exception):
-                        text = str(getattr(line, "text"))
-                    if not text:
-                        with contextlib.suppress(Exception):
-                            text = str(line)
-                    if text:
-                        extracted.append(text)
-                if extracted:
-                    return sanitize_output_text("\n".join(extracted)).rstrip() + "\n"
-
             return ""
 
         def _get_richlog_selection_text(self, transcript: Any) -> str:
-            for attr_name in ("selected_text", "selection_text"):
-                selected = getattr(transcript, attr_name, None)
-                if isinstance(selected, str) and selected.strip():
-                    return selected
-                if callable(selected):
-                    with contextlib.suppress(Exception):
-                        value = selected()
-                        if isinstance(value, str) and value.strip():
-                            return value
-
-            for method_name in ("get_selection_text", "export_selection", "get_selected_text"):
-                method = getattr(transcript, method_name, None)
-                if not callable(method):
-                    continue
-                with contextlib.suppress(Exception):
-                    value = method()
-                    if isinstance(value, str) and value.strip():
-                        return value
-
-            selection = getattr(transcript, "selection", None)
-            if selection is None:
-                return ""
-            if isinstance(selection, str):
-                return selection
-            for method_name in ("extract", "to_text", "text"):
-                method = getattr(selection, method_name, None)
-                if callable(method):
-                    with contextlib.suppress(Exception):
-                        value = method()
-                        if isinstance(value, str) and value.strip():
-                            return value
-                elif isinstance(method, str) and method.strip():
-                    return method
+            if isinstance(transcript, TextArea):
+                selected = transcript.selected_text or ""
+                return selected if isinstance(selected, str) else ""
             return ""
 
         def _get_all_text(self) -> str:
@@ -3221,7 +3305,33 @@ def run_tui() -> int:
             if len(self._consent_history_lines) > 200:
                 self._consent_history_lines = self._consent_history_lines[-200:]
 
-        def _show_consent_prompt(self, *, context: str, options: list[str] | None = None) -> None:
+        def _cancel_consent_hide_timer(self) -> None:
+            timer = self._consent_hide_timer
+            self._consent_hide_timer = None
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+
+        def _complete_consent_prompt_hide(self, expected_nonce: int) -> None:
+            self._consent_hide_timer = None
+            if expected_nonce != self._consent_prompt_nonce:
+                return
+            widget = self._consent_prompt_widget
+            if widget is not None:
+                with contextlib.suppress(Exception):
+                    widget.hide_prompt()
+            with contextlib.suppress(Exception):
+                self.query_one("#prompt", TextArea).focus()
+
+        def _schedule_consent_prompt_hide(self, *, delay: float = 1.0) -> None:
+            self._cancel_consent_hide_timer()
+            nonce = self._consent_prompt_nonce
+            self._consent_hide_timer = self.set_timer(
+                delay,
+                lambda: self._complete_consent_prompt_hide(nonce),
+            )
+
+        def _show_consent_prompt(self, *, context: str, options: list[str] | None = None, alert: bool = True) -> None:
             widget = self._consent_prompt_widget
             if widget is None:
                 with contextlib.suppress(Exception):
@@ -3229,12 +3339,16 @@ def run_tui() -> int:
                     self._consent_prompt_widget = widget
             if widget is None:
                 return
+            self._cancel_consent_hide_timer()
+            self._consent_prompt_nonce += 1
             self._consent_active = True
             self._consent_tool_name = extract_consent_tool_name(context)
             normalized_options = options or ["y", "n", "a", "v"]
-            widget.set_prompt(context=context, options=normalized_options)
+            widget.set_prompt(context=context, options=normalized_options, alert=alert)
 
         def _reset_consent_panel(self) -> None:
+            self._cancel_consent_hide_timer()
+            self._consent_prompt_nonce += 1
             self._consent_active = False
             self._consent_buffer = []
             self._consent_tool_name = "tool"
@@ -3357,6 +3471,7 @@ def run_tui() -> int:
                 self._write_transcript_line("[recovery] failed to send skip request.")
 
         def _apply_consent_capture(self, line: str) -> None:
+            previously_active = self._consent_active
             next_active, next_buffer = update_consent_capture(
                 self._consent_active,
                 self._consent_buffer,
@@ -3368,7 +3483,11 @@ def run_tui() -> int:
                 self._consent_buffer = next_buffer
                 if self._consent_active:
                     context = "\n".join(self._consent_buffer[-4:])
-                    self._show_consent_prompt(context=context, options=["y", "n", "a", "v"])
+                    self._show_consent_prompt(
+                        context=context,
+                        options=["y", "n", "a", "v"],
+                        alert=not previously_active and next_active,
+                    )
 
         def _consent_decision_line(self, choice: str) -> str:
             tool_name = self._consent_tool_name or "tool"
@@ -3397,13 +3516,21 @@ def run_tui() -> int:
             decision_line = self._consent_decision_line(normalized_choice)
             self._write_transcript(decision_line)
             self._record_consent_history(decision_line)
-            self._reset_consent_panel()
-            self.query_one("#prompt", TextArea).focus()
+            self._consent_active = False
+            self._consent_buffer = []
+            approved = normalized_choice in {"y", "a"}
+            widget = self._consent_prompt_widget
+            if widget is not None:
+                with contextlib.suppress(Exception):
+                    widget.show_confirmation(decision_line, approved=approved)
+            self._schedule_consent_prompt_hide(delay=1.0)
             if not send_daemon_command(self._proc, {"cmd": "consent_response", "choice": normalized_choice}):
                 self._write_transcript_line("[consent] failed to send response (stdin unavailable).")
                 return
 
         def _finalize_assistant_message(self) -> None:
+            self._cancel_streaming_flush_timer()
+            self._flush_streaming_buffer()
             if not self._current_assistant_chunks:
                 self._current_assistant_model = None
                 self._current_assistant_timestamp = None
@@ -3425,6 +3552,7 @@ def run_tui() -> int:
             )
 
             self._current_assistant_chunks = []
+            self._streaming_buffer = []
             self._current_assistant_model = None
             self._current_assistant_timestamp = None
             self._assistant_placeholder_written = False
@@ -3598,12 +3726,15 @@ def run_tui() -> int:
                     self._mount_transcript_widget(render_thinking_message(), plain_text="thinking...")
                     self._assistant_placeholder_written = True
                     self._current_thinking = True
-                if not self._current_assistant_chunks:
+                if not self._current_assistant_chunks and not self._streaming_buffer:
                     self._current_assistant_model = self._current_daemon_model
                     self._current_assistant_timestamp = self._turn_timestamp()
-                self._current_assistant_chunks.append(chunk)
+                self._streaming_buffer.append(chunk)
+                self._schedule_streaming_flush()
 
             elif etype in {"text_complete", "message_complete", "output_text_complete", "complete"}:
+                self._cancel_streaming_flush_timer()
+                self._flush_streaming_buffer()
                 self._finalize_assistant_message()
 
             elif etype == "thinking":
@@ -3668,7 +3799,7 @@ def run_tui() -> int:
                     if isinstance(content, str) and content:
                         stream = str(event.get("stream", "stdout")).strip().lower() or "stdout"
                         self._queue_tool_progress_content(record, content=content, stream=stream)
-                    self._flush_tool_progress_render(tid)
+                    self._schedule_tool_progress_flush(tid)
 
             elif etype == "tool_input":
                 tid = str(event.get("tool_use_id", "")).strip()
@@ -3691,6 +3822,7 @@ def run_tui() -> int:
                     record["duration_s"] = duration_s
                     record["elapsed_s"] = duration_s
                     tool_name = str(record.get("tool", tool_name))
+                    self._tool_progress_pending_ids.discard(tid)
                     self._flush_tool_progress_render(tid, force=True)
                 plain = f"⚙ {tool_name} ({duration_s:.1f}s) {'✓' if status == 'success' else '✗'} [{tid}]"
                 self._mount_transcript_widget(
@@ -3710,7 +3842,6 @@ def run_tui() -> int:
                         self._show_tool_error_actions(tool_use_id=tid, tool_name=tool_name)
 
             elif etype == "consent_prompt":
-                self._consent_active = True
                 context = str(event.get("context", ""))
                 raw_options = event.get("options", ["y", "n", "a", "v"])
                 options = (
@@ -3721,7 +3852,7 @@ def run_tui() -> int:
                 if not options:
                     options = ["y", "n", "a", "v"]
                 self._consent_buffer = [context]
-                self._show_consent_prompt(context=context, options=options)
+                self._show_consent_prompt(context=context, options=options, alert=True)
 
             elif etype == "plan":
                 rendered = event.get("rendered", "")
@@ -3909,6 +4040,8 @@ def run_tui() -> int:
                 self._status_bar.set_plan_step(current=None, total=None)
             self._run_start_time = None
             self._query_active = False
+            self._cancel_tool_progress_flush_timer()
+            self._tool_progress_pending_ids = set()
             for tool_use_id in list(self._tool_blocks.keys()):
                 self._flush_tool_progress_render(tool_use_id, force=True)
 
@@ -4064,11 +4197,15 @@ def run_tui() -> int:
             self._reset_error_action_prompt()
             self._reset_issues_panel()
             self._current_assistant_chunks = []
+            self._streaming_buffer = []
+            self._cancel_streaming_flush_timer()
             self._current_assistant_model = None
             self._current_assistant_timestamp = None
             self._assistant_placeholder_written = False
             self._current_thinking = False
             self._tool_blocks = {}
+            self._tool_progress_pending_ids = set()
+            self._cancel_tool_progress_flush_timer()
             self._run_tool_count = 0
             self._run_start_time = time.time()
             self._run_active_tier_warning_emitted = False
@@ -4158,6 +4295,7 @@ def run_tui() -> int:
                 self._reset_consent_panel()
                 self._reset_error_action_prompt()
                 return
+            self._flush_all_streaming_buffers()
             if send_daemon_command(proc, {"cmd": "interrupt"}):
                 self._write_transcript_line("[run] interrupt requested.")
             else:
@@ -4186,6 +4324,8 @@ def run_tui() -> int:
             if timer is not None:
                 with contextlib.suppress(Exception):
                     timer.stop()
+            self._cancel_streaming_flush_timer()
+            self._cancel_tool_progress_flush_timer()
             if self._proc is not None and self._proc.poll() is None:
                 send_daemon_command(self._proc, {"cmd": "shutdown"})
                 with contextlib.suppress(Exception):
@@ -4232,6 +4372,7 @@ def run_tui() -> int:
                 self._reset_consent_panel()
                 self._reset_error_action_prompt()
                 return
+            self._flush_all_streaming_buffers()
             send_daemon_command(proc, {"cmd": "interrupt"})
             self._write_transcript_line("[run] interrupted.")
             self._reset_consent_panel()
@@ -4244,6 +4385,13 @@ def run_tui() -> int:
                 if selected_text.strip():
                     self._copy_text(selected_text, label="selection")
                     return
+                if focused.id == "transcript_text":
+                    transcript_text = self._get_transcript_text()
+                    if transcript_text.strip():
+                        self._copy_text(transcript_text, label="transcript")
+                        return
+                    self._notify("transcript: nothing to copy.", severity="warning")
+                    return
                 focused_text = (getattr(focused, "text", "") or "").strip()
                 if focused.id in {"issues", "plan", "artifacts", "help"} and focused_text:
                     self._copy_text(focused_text + "\n", label=f"{focused.id} pane")
@@ -4251,9 +4399,14 @@ def run_tui() -> int:
                 self._notify("Select text first.", severity="warning")
                 return
 
-            transcript = self.query_one("#transcript", RichLog)
-            if focused is transcript:
-                selected_text = self._get_richlog_selection_text(transcript)
+            transcript_widget: Any
+            if self._transcript_mode == "text":
+                transcript_widget = self.query_one("#transcript_text", TextArea)
+            else:
+                transcript_widget = self.query_one("#transcript", RichLog)
+
+            if isinstance(transcript_widget, TextArea):
+                selected_text = self._get_richlog_selection_text(transcript_widget)
                 if selected_text.strip():
                     self._copy_text(selected_text, label="selection")
                     return
@@ -4266,12 +4419,8 @@ def run_tui() -> int:
 
             node = focused
             while node is not None:
-                if node is transcript:
-                    selected_text = self._get_richlog_selection_text(transcript)
-                    if selected_text.strip():
-                        self._copy_text(selected_text, label="selection")
-                    else:
-                        self._copy_text(self._get_transcript_text(), label="transcript")
+                if node is transcript_widget:
+                    self._copy_text(self._get_transcript_text(), label="transcript")
                     return
                 node = getattr(node, "parent", None)
 
@@ -4289,10 +4438,15 @@ def run_tui() -> int:
 
         def _apply_split_ratio(self) -> None:
             transcript = self.query_one("#transcript", RichLog)
+            transcript_text = self.query_one("#transcript_text", TextArea)
             side = self.query_one("#side", Vertical)
             transcript.styles.width = f"{self._split_ratio}fr"
+            transcript_text.styles.width = f"{self._split_ratio}fr"
             side.styles.width = "1fr"
             self.refresh(layout=True)
+
+        def action_toggle_transcript_mode(self) -> None:
+            self._toggle_transcript_mode()
 
         def action_search_transcript(self) -> None:
             prompt_widget = self.query_one("#prompt", PromptTextArea)
@@ -4760,6 +4914,12 @@ def run_tui() -> int:
                 return True
             if action == "search_usage":
                 self._write_transcript_line(_SEARCH_USAGE_TEXT)
+                return True
+            if action == "text":
+                self._toggle_transcript_mode()
+                return True
+            if action == "text_usage":
+                self._write_transcript_line(_TEXT_USAGE_TEXT)
                 return True
             if action == "compact":
                 self._request_context_compact()
