@@ -220,6 +220,10 @@ class ToolPolicyHooks(HookProvider):
             event.cancel_tool = "Tool 'WorkPlan' is only allowed in plan mode."
             return
 
+        # Plan progress reporting should remain available while executing.
+        if mode == "execute" and name == "plan_progress":
+            return
+
         if mode == "execute" and sw.get("enforce_plan"):
             allowed_tools = sw.get("allowed_tools")
             if isinstance(allowed_tools, (list, tuple, set)):

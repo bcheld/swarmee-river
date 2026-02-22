@@ -42,13 +42,12 @@ class PromptCacheState:
 
     def queue_if_changed(self, key: str, text: str | None) -> None:
         normalized = (text or "").strip()
-        if not normalized:
-            return
         digest = _hash_text(normalized)
         if self.sent_hashes.get(key) == digest:
             return
         self.sent_hashes[key] = digest
-        self.pending.append(normalized)
+        if normalized:
+            self.pending.append(normalized)
 
     def queue_one_off(self, text: str | None) -> None:
         normalized = (text or "").strip()
@@ -60,4 +59,3 @@ class PromptCacheState:
         reminder = format_system_reminder(self.pending)
         self.pending.clear()
         return reminder
-

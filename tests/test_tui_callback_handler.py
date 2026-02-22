@@ -114,6 +114,82 @@ def test_tool_result_emitted_from_result_payload():
     assert any(event.get("event") == "tool_result" and event.get("tool_use_id") == "t1" for event in events)
 
 
+def test_tool_progress_content_rate_limited_and_flushed_before_result(monkeypatch):
+    h = TuiCallbackHandler()
+    now = {"value": 100.0}
+
+    def _mono() -> float:
+        return now["value"]
+
+    def _wall() -> float:
+        return 1000.0 + now["value"]
+
+    monkeypatch.setattr("swarmee_river.handlers.callback_handler.time.monotonic", _mono)
+    monkeypatch.setattr("swarmee_river.handlers.callback_handler.time.time", _wall)
+
+    def run():
+        h.callback_handler(current_tool_use={"toolUseId": "t1", "name": "shell", "input": {"command": "ls"}})
+        h.callback_handler(current_tool_use={"toolUseId": "t1", "stdout": "first\n"})
+        now["value"] = 100.05
+        h.callback_handler(current_tool_use={"toolUseId": "t1", "stdout": "second\n"})
+        now["value"] = 100.06
+        h.callback_handler(message={"role": "user", "content": [{"toolResult": {"toolUseId": "t1", "status": "success"}}]})
+
+    events = _capture_events(h, run)
+    progress_events = [event for event in events if event.get("event") == "tool_progress" and event.get("content")]
+    assert [event.get("content") for event in progress_events] == ["first\n", "second\n"]
+    result_index = [idx for idx, event in enumerate(events) if event.get("event") == "tool_result"][0]
+    second_progress_index = [idx for idx, event in enumerate(events) if event.get("event") == "tool_progress"][-1]
+    assert second_progress_index < result_index
+
+
+def test_tool_progress_heartbeat_emitted_for_long_running_tool(monkeypatch):
+    h = TuiCallbackHandler()
+    now = {"value": 5.0}
+
+    def _mono() -> float:
+        return now["value"]
+
+    def _wall() -> float:
+        return 1000.0 + now["value"]
+
+    monkeypatch.setattr("swarmee_river.handlers.callback_handler.time.monotonic", _mono)
+    monkeypatch.setattr("swarmee_river.handlers.callback_handler.time.time", _wall)
+
+    def run():
+        h.callback_handler(current_tool_use={"toolUseId": "t-heartbeat", "name": "shell", "input": {"command": "sleep 5"}})
+        now["value"] = 7.3
+        h.callback_handler(current_tool_use={"toolUseId": "t-heartbeat", "input": {"command": "sleep 5"}})
+
+    events = _capture_events(h, run)
+    heartbeat_events = [
+        event
+        for event in events
+        if event.get("event") == "tool_progress" and "content" not in event and event.get("tool_use_id") == "t-heartbeat"
+    ]
+    assert len(heartbeat_events) == 1
+    assert float(heartbeat_events[0].get("elapsed_s", 0.0)) >= 2.0
+
+
+def test_tool_output_preview_capped_to_4kb(monkeypatch):
+    h = TuiCallbackHandler()
+    now = {"value": 1.0}
+
+    monkeypatch.setattr("swarmee_river.handlers.callback_handler.time.monotonic", lambda: now["value"])
+    monkeypatch.setattr("swarmee_river.handlers.callback_handler.time.time", lambda: 1000.0 + now["value"])
+
+    large_chunk = "x" * 6000
+
+    def run():
+        h.callback_handler(current_tool_use={"toolUseId": "t-cap", "name": "shell", "input": {"command": "echo"}})
+        h.callback_handler(current_tool_use={"toolUseId": "t-cap", "stdout": large_chunk})
+
+    _capture_events(h, run)
+    info = h.tool_histories.get("t-cap")
+    assert info is not None
+    assert len(str(info.get("output_preview", ""))) <= 4096
+
+
 def test_result_string_emits_text_when_no_stream_deltas():
     h = TuiCallbackHandler()
     events = _capture_events(h, lambda: h.callback_handler(result="final response"))
@@ -242,3 +318,84 @@ def test_tool_input_not_emitted_for_non_dict_input():
     events = _capture_events(h, run)
     tool_input_events = [e for e in events if e["event"] == "tool_input"]
     assert len(tool_input_events) == 0
+
+
+def test_plan_step_updates_emitted_from_text_markers():
+    h = TuiCallbackHandler()
+
+    def run():
+        invocation_state = {"swarmee": {"plan_step_count": 2}}
+        h.callback_handler(data="Starting step 1: Inspect logs\n", invocation_state=invocation_state)
+        h.callback_handler(data="Completed step 1.\n", invocation_state=invocation_state)
+        h.callback_handler(
+            data="Starting step 2: Apply fix\nCompleted step 2.\n",
+            invocation_state=invocation_state,
+        )
+
+    events = _capture_events(h, run)
+    plan_events = [event for event in events if event.get("event") in {"plan_step_update", "plan_complete"}]
+    assert plan_events == [
+        {"event": "plan_step_update", "step_index": 0, "status": "in_progress", "note": "Inspect logs"},
+        {"event": "plan_step_update", "step_index": 0, "status": "completed"},
+        {"event": "plan_step_update", "step_index": 1, "status": "in_progress", "note": "Apply fix"},
+        {"event": "plan_step_update", "step_index": 1, "status": "completed"},
+        {"event": "plan_complete", "completed_steps": 2, "total_steps": 2},
+    ]
+
+
+def test_plan_marker_buffer_flushes_on_text_complete():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(
+            data="Starting step 1: Prepare",
+            complete=True,
+            invocation_state={"swarmee": {"plan_step_count": 1}},
+        ),
+    )
+    assert any(
+        event.get("event") == "plan_step_update"
+        and event.get("step_index") == 0
+        and event.get("status") == "in_progress"
+        for event in events
+    )
+    assert any(event.get("event") == "text_complete" for event in events)
+
+
+def test_plan_step_updates_emitted_from_plan_progress_tool():
+    h = TuiCallbackHandler()
+
+    def run():
+        invocation_state = {"swarmee": {"plan_step_count": 1}}
+        h.callback_handler(
+            current_tool_use={
+                "toolUseId": "p1",
+                "name": "plan_progress",
+                "input": {"step": 1, "status": "in_progress", "note": "Setting up"},
+            },
+            invocation_state=invocation_state,
+        )
+        h.callback_handler(
+            current_tool_use={
+                "toolUseId": "p1",
+                "name": "plan_progress",
+                "input": {"step_index": 0, "status": "completed"},
+            },
+            invocation_state=invocation_state,
+        )
+
+    events = _capture_events(h, run)
+    assert any(
+        event.get("event") == "plan_step_update"
+        and event.get("step_index") == 0
+        and event.get("status") == "in_progress"
+        and event.get("note") == "Setting up"
+        for event in events
+    )
+    assert any(
+        event.get("event") == "plan_step_update"
+        and event.get("step_index") == 0
+        and event.get("status") == "completed"
+        for event in events
+    )
+    assert any(event.get("event") == "plan_complete" and event.get("total_steps") == 1 for event in events)

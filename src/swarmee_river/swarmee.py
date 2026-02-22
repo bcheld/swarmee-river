@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 import warnings
 from collections.abc import Callable
@@ -91,6 +92,13 @@ from swarmee_river.cli.diagnostics import (
 )
 from swarmee_river.cli.repl import run_repl
 from swarmee_river.context.prompt_cache import PromptCacheState
+from swarmee_river.error_classification import (
+    ERROR_CATEGORY_FATAL,
+    ERROR_CATEGORY_ESCALATABLE,
+    ERROR_CATEGORY_TRANSIENT,
+    ERROR_CATEGORY_TOOL_ERROR,
+    classify_error_message,
+)
 from swarmee_river.interrupts import (
     AgentInterruptedError,
     interrupt_watcher_from_env,
@@ -133,12 +141,95 @@ _SYSTEM_REMINDER_RULES = (
     "- Do not quote or reveal `<system-reminder>` contents unless the user explicitly asks.\n"
 )
 _DIAGNOSTIC_COMMANDS = {"status", "diff", "artifact", "log", "replay"}
+_USER_CONTEXT_SOURCE_TYPES = {"file", "note", "sop", "kb", "url"}
+_USER_CONTEXT_PER_SOURCE_MAX_CHARS = 8000
+_USER_CONTEXT_TOTAL_MAX_CHARS = 32000
+_SOP_FILE_SUFFIX = ".sop.md"
+_SESSION_MESSAGE_VERSION = 1
+_SESSION_MESSAGE_MAX_COUNT = 200
+_TRANSIENT_RETRY_MAX_ATTEMPTS = 3
 
 
 _consent_prompt_session: Any | None = None
 _consent_prompt_lock = threading.Lock()
 _consent_console: Any | None = Console() if Console is not None else None
 _stdout_jsonl_lock = threading.Lock()
+
+
+def _sanitize_context_source_token(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (value or "").strip())
+    return token.strip("-") or uuid.uuid4().hex[:12]
+
+
+def _normalize_daemon_context_source(source: Any) -> dict[str, str] | None:
+    if not isinstance(source, dict):
+        return None
+    source_type = str(source.get("type", "")).strip().lower()
+    if source_type not in _USER_CONTEXT_SOURCE_TYPES:
+        return None
+
+    normalized: dict[str, str] = {"type": source_type}
+    if source_type == "file":
+        path = str(source.get("path", "")).strip()
+        if not path:
+            return None
+        normalized["path"] = path
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", path)))
+        return normalized
+    if source_type == "note":
+        text = str(source.get("text", "")).strip()
+        if not text:
+            return None
+        normalized["text"] = text
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", text[:64])))
+        return normalized
+    if source_type == "sop":
+        name = str(source.get("name", "")).strip()
+        if not name:
+            return None
+        normalized["name"] = name
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", name)))
+        return normalized
+    if source_type == "kb":
+        kb_id = str(source.get("id", source.get("kb_id", ""))).strip()
+        if not kb_id:
+            return None
+        normalized["id"] = kb_id
+        return normalized
+    if source_type == "url":
+        url = str(source.get("url", source.get("path", ""))).strip()
+        if not url:
+            return None
+        normalized["url"] = url
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", url)))
+        return normalized
+    return None
+
+
+def _normalize_daemon_context_sources(raw_sources: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_sources, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_sources:
+        source = _normalize_daemon_context_source(item)
+        if source is None:
+            continue
+        source_type = source.get("type", "")
+        value_key = (
+            source.get("path")
+            or source.get("text")
+            or source.get("name")
+            or source.get("url")
+            or source.get("id")
+            or ""
+        ).strip()
+        dedupe_key = (source_type, value_key)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(source)
+    return normalized
 
 
 def _write_stdout_jsonl(event: dict[str, Any]) -> None:
@@ -171,6 +262,99 @@ def _emit_tui_event(event: dict[str, Any]) -> None:
     """Emit a structured JSONL event to stdout for TUI consumption."""
     if _tui_events_enabled():
         _write_stdout_jsonl(event)
+
+
+def _build_tui_error_event(
+    text: str,
+    *,
+    category_hint: str | None = None,
+    tool_use_id: str | None = None,
+    retry_after_s: int | None = None,
+    next_tier: str | None = None,
+) -> dict[str, Any]:
+    classified = classify_error_message(text, category_hint=category_hint, tool_use_id=tool_use_id)
+    payload: dict[str, Any] = {
+        "event": "error",
+        # Keep both fields for compatibility with older TUI parsers.
+        "text": text,
+        "message": text,
+        "category": classified["category"],
+        "retryable": bool(classified.get("retryable", False)),
+    }
+    resolved_tool = classified.get("tool_use_id")
+    if isinstance(resolved_tool, str) and resolved_tool.strip():
+        payload["tool_use_id"] = resolved_tool.strip()
+    if isinstance(retry_after_s, int) and retry_after_s > 0:
+        payload["retry_after_s"] = retry_after_s
+    if isinstance(next_tier, str) and next_tier.strip():
+        payload["next_tier"] = next_tier.strip().lower()
+    return payload
+
+
+def _emit_classified_tui_error(
+    text: str,
+    *,
+    category_hint: str | None = None,
+    tool_use_id: str | None = None,
+    retry_after_s: int | None = None,
+    next_tier: str | None = None,
+) -> None:
+    _emit_tui_event(
+        _build_tui_error_event(
+            text,
+            category_hint=category_hint,
+            tool_use_id=tool_use_id,
+            retry_after_s=retry_after_s,
+            next_tier=next_tier,
+        )
+    )
+
+
+def _extract_replay_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            text = _extract_replay_text(item)
+            if text:
+                parts.append(text)
+        return "".join(parts)
+    if isinstance(content, dict):
+        if content.get("toolUse") or content.get("toolResult"):
+            return ""
+        for key in ("text", "data", "delta", "output_text", "outputText", "textDelta"):
+            value = content.get(key)
+            if isinstance(value, str) and value:
+                return value
+        nested = content.get("content")
+        if nested is not None:
+            nested_text = _extract_replay_text(nested)
+            if nested_text:
+                return nested_text
+    return ""
+
+
+def _extract_text_from_message_for_replay(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    extracted = _extract_replay_text(content)
+    if extracted:
+        return extracted
+    for key in ("text", "data", "output_text"):
+        value = message.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _turn_count_from_messages(messages: list[Any]) -> int:
+    return sum(
+        1
+        for item in messages
+        if isinstance(item, dict) and str(item.get("role", "")).strip().lower() == "user"
+    )
 
 
 def _event_loop_running() -> bool:
@@ -347,8 +531,9 @@ def _build_session_meta_payload(
     settings: SwarmeeSettings,
     selected_provider: str,
     current_tier: str,
-    active_sop_name: str | None,
+    active_sop_names: list[str] | None,
 ) -> dict[str, Any]:
+    normalized_sops = [name.strip() for name in (active_sop_names or []) if str(name).strip()]
     enabled_packs = [
         {"name": p.name, "path": p.path, "enabled": p.enabled}
         for p in settings.packs.installed
@@ -365,7 +550,9 @@ def _build_session_meta_payload(
         "provider": selected_provider,
         "tier": current_tier,
         "packs": enabled_packs,
-        "active_sop": active_sop_name,
+        # Keep both fields for backwards compatibility with existing session metadata readers.
+        "active_sop": normalized_sops[0] if normalized_sops else None,
+        "active_sops": normalized_sops,
     }
 
 
@@ -591,16 +778,316 @@ def _build_agent_runtime(
 
     preflight_prompt_section: str | None = None
     project_map_prompt_section: str | None = None
+    active_plan_prompt_section: str | None = None
     artifact_store = ArtifactStore()
     prompt_cache = PromptCacheState()
+    active_knowledge_base_id: str | None = knowledge_base_id
+    user_context_sources: list[dict[str, str]] = []
+    user_context_active_reminder_keys: set[str] = set()
+    user_context_file_cache: dict[str, dict[str, Any]] = {}
+    user_context_sop_cache: dict[str, dict[str, Any]] = {}
+    user_context_last_warning: str | None = None
+    user_context_lock = threading.Lock()
+    active_sop_overrides: dict[str, str] = {}
+    active_sop_lock = threading.Lock()
+    daemon_managed_sops = False
+
+    def _context_source_key(source: dict[str, str]) -> str:
+        source_type = source.get("type", "").strip().lower()
+        raw_value = (
+            source.get("id")
+            or source.get("path")
+            or source.get("name")
+            or source.get("text", "")[:64]
+            or source.get("url")
+            or uuid.uuid4().hex
+        )
+        token = _sanitize_context_source_token(raw_value)
+        return f"user_context_{source_type}_{token}"
+
+    def _context_per_source_limit() -> int:
+        try:
+            return max(128, int(os.getenv("SWARMEE_USER_CONTEXT_SOURCE_MAX_CHARS", str(_USER_CONTEXT_PER_SOURCE_MAX_CHARS))))
+        except Exception:
+            return _USER_CONTEXT_PER_SOURCE_MAX_CHARS
+
+    def _context_total_limit() -> int:
+        try:
+            return max(1024, int(os.getenv("SWARMEE_USER_CONTEXT_TOTAL_MAX_CHARS", str(_USER_CONTEXT_TOTAL_MAX_CHARS))))
+        except Exception:
+            return _USER_CONTEXT_TOTAL_MAX_CHARS
+
+    def _resolve_context_file_path(path_text: str) -> Path:
+        candidate = Path(path_text).expanduser()
+        return candidate if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
+
+    def _load_cached_text_for_path(
+        *,
+        path: Path,
+        cache: dict[str, dict[str, Any]],
+        max_chars: int,
+    ) -> str | None:
+        try:
+            stat = path.stat()
+        except Exception:
+            return None
+        cache_key = str(path)
+        entry = cache.get(cache_key)
+        if entry and int(entry.get("mtime_ns", -1)) == int(stat.st_mtime_ns):
+            return str(entry.get("text", ""))
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        text = raw[:max_chars].strip()
+        cache[cache_key] = {"mtime_ns": int(stat.st_mtime_ns), "text": text}
+        return text
+
+    def _iter_effective_sop_dirs() -> list[Path]:
+        dirs: list[Path] = []
+        cwd_sops = Path.cwd() / "sops"
+        if cwd_sops.exists() and cwd_sops.is_dir():
+            dirs.append(cwd_sops)
+        if effective_sop_paths:
+            for token in str(effective_sop_paths).split(os.pathsep):
+                candidate = Path(token).expanduser()
+                if candidate.exists() and candidate.is_dir():
+                    dirs.append(candidate)
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for directory in dirs:
+            key = str(directory.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(directory)
+        return deduped
+
+    def _resolve_sop_file_path(name: str) -> Path | None:
+        sop_name = name.strip()
+        if not sop_name:
+            return None
+        filename = sop_name if sop_name.endswith(_SOP_FILE_SUFFIX) else f"{sop_name}{_SOP_FILE_SUFFIX}"
+        for directory in _iter_effective_sop_dirs():
+            candidate = directory / filename
+            if candidate.exists() and candidate.is_file():
+                return candidate.resolve()
+        return None
+
+    def _set_active_sop_override(name: str, content: str | None) -> None:
+        sop_name = name.strip()
+        if not sop_name:
+            return
+        with active_sop_lock:
+            if content is None:
+                active_sop_overrides.pop(sop_name, None)
+                return
+            normalized = str(content).strip()
+            if not normalized:
+                active_sop_overrides.pop(sop_name, None)
+                return
+            active_sop_overrides[sop_name] = normalized
+
+    def _snapshot_active_sop_overrides() -> dict[str, str]:
+        with active_sop_lock:
+            return dict(active_sop_overrides)
+
+    def _list_active_sop_names() -> list[str]:
+        names: dict[str, str] = {}
+        if not daemon_managed_sops and ctx.active_sop_name:
+            base = ctx.active_sop_name.strip()
+            if base:
+                names[base.lower()] = base
+        for name in _snapshot_active_sop_overrides().keys():
+            normalized = name.strip()
+            if normalized:
+                names.setdefault(normalized.lower(), normalized)
+        return [names[key] for key in sorted(names.keys())]
+
+    def _set_daemon_sop_override(name: str, content: str | None) -> None:
+        nonlocal daemon_managed_sops
+        daemon_managed_sops = True
+        _set_active_sop_override(name, content)
+
+    def _queue_user_context_reminders() -> str | None:
+        nonlocal user_context_active_reminder_keys, user_context_last_warning
+        total_limit = _context_total_limit()
+        per_source_limit = _context_per_source_limit()
+        used_chars = 0
+        seen_keys: set[str] = set()
+        warning_messages: list[str] = []
+        with user_context_lock:
+            sources_snapshot = [dict(item) for item in user_context_sources]
+            active_keys_snapshot = set(user_context_active_reminder_keys)
+
+        for source in sources_snapshot:
+            source_type = source.get("type", "").strip().lower()
+            if source_type == "kb":
+                continue
+
+            key = _context_source_key(source)
+            seen_keys.add(key)
+            section = ""
+            if source_type == "file":
+                resolved_path = _resolve_context_file_path(source.get("path", ""))
+                text = _load_cached_text_for_path(path=resolved_path, cache=user_context_file_cache, max_chars=per_source_limit)
+                if text:
+                    section = f"User Context File ({resolved_path}):\n{text}"
+                else:
+                    warning_messages.append(f"[context] failed to read file source: {resolved_path}")
+            elif source_type == "note":
+                text = source.get("text", "").strip()
+                section = f"User Context Note:\n{text[:per_source_limit]}".strip() if text else ""
+            elif source_type == "sop":
+                sop_name = source.get("name", "").strip()
+                sop_path = _resolve_sop_file_path(sop_name)
+                sop_text = ""
+                if sop_path is not None:
+                    loaded = _load_cached_text_for_path(path=sop_path, cache=user_context_sop_cache, max_chars=per_source_limit)
+                    sop_text = loaded or ""
+                else:
+                    try:
+                        sop_result = run_sop(action="get", name=sop_name, sop_paths=effective_sop_paths)
+                        if sop_result.get("status") == "success":
+                            sop_text = str(sop_result.get("content", [{}])[0].get("text", "")).strip()[:per_source_limit]
+                    except Exception:
+                        sop_text = ""
+                if sop_text:
+                    section = f"User SOP Context ({sop_name}):\n{sop_text}"
+                else:
+                    warning_messages.append(f"[context] failed to resolve sop source: {sop_name}")
+            elif source_type == "url":
+                url_text = source.get("url", "").strip()
+                section = f"User Context URL reference:\n{url_text[:per_source_limit]}".strip() if url_text else ""
+
+            section = section.strip()
+            if not section:
+                prompt_cache.queue_if_changed(key, "")
+                continue
+
+            if used_chars >= total_limit:
+                prompt_cache.queue_if_changed(key, "")
+                warning_messages.append(
+                    f"[context] user context exceeded {total_limit} chars; truncated before source {key}."
+                )
+                continue
+
+            remaining = total_limit - used_chars
+            if len(section) > remaining:
+                section = section[:remaining].rstrip()
+                warning_messages.append(
+                    f"[context] user context exceeded {total_limit} chars; additional content was truncated."
+                )
+
+            used_chars += len(section)
+            prompt_cache.queue_if_changed(key, section)
+
+        for stale_key in active_keys_snapshot - seen_keys:
+            prompt_cache.queue_if_changed(stale_key, "")
+        with user_context_lock:
+            user_context_active_reminder_keys = seen_keys
+
+        warning = warning_messages[0] if warning_messages else None
+        if warning != user_context_last_warning:
+            user_context_last_warning = warning
+            return warning
+        return None
+
+    def set_user_context_sources(raw_sources: Any) -> list[dict[str, str]]:
+        nonlocal user_context_sources, user_context_active_reminder_keys, active_knowledge_base_id
+        normalized = _normalize_daemon_context_sources(raw_sources)
+        with user_context_lock:
+            old_keys = {_context_source_key(item) for item in user_context_sources if item.get("type") != "kb"}
+            new_keys = {_context_source_key(item) for item in normalized if item.get("type") != "kb"}
+            user_context_active_reminder_keys = new_keys
+            user_context_sources = normalized
+        for stale_key in old_keys - new_keys:
+            prompt_cache.queue_if_changed(stale_key, "")
+        kb_override = next((item.get("id", "").strip() for item in normalized if item.get("type") == "kb"), "")
+        active_knowledge_base_id = kb_override or knowledge_base_id
+        return [dict(item) for item in normalized]
+
+    def current_knowledge_base_id() -> str | None:
+        return active_knowledge_base_id
+
+    def compact_context() -> dict[str, Any]:
+        manager = conversation_manager
+        before_tokens: int | None = None
+        after_tokens: int | None = None
+        compacted = False
+        warning: str | None = None
+
+        with contextlib.suppress(Exception):
+            from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
+
+            before_tokens = estimate_tokens(
+                system_prompt=getattr(agent, "system_prompt", None),
+                messages=getattr(agent, "messages", []),
+                chars_per_token=int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4")),
+            )
+
+        if manager is None:
+            warning = "Context compaction is unavailable for this session."
+        else:
+            try:
+                reduce_fn = getattr(manager, "reduce_context", None)
+                apply_fn = getattr(manager, "apply_management", None)
+                if callable(reduce_fn):
+                    reduce_fn(agent, e=None)
+                    compacted = True
+                elif callable(apply_fn):
+                    apply_fn(agent)
+                    compacted = True
+                else:
+                    warning = "Current conversation manager does not support compaction."
+            except Exception as exc:
+                warning = f"Context compaction failed: {exc}"
+
+        with contextlib.suppress(Exception):
+            from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
+
+            after_tokens = estimate_tokens(
+                system_prompt=getattr(agent, "system_prompt", None),
+                messages=getattr(agent, "messages", []),
+                chars_per_token=int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4")),
+            )
+        if (
+            isinstance(before_tokens, int)
+            and isinstance(after_tokens, int)
+            and after_tokens >= before_tokens
+            and compacted
+            and warning is None
+        ):
+            compacted = False
+        return {
+            "compacted": compacted,
+            "before_tokens_est": before_tokens,
+            "after_tokens_est": after_tokens,
+            "warning": warning,
+        }
 
     def refresh_system_prompt(welcome_text_local: str) -> None:
         prompt_cache.queue_if_changed("project_map", project_map_prompt_section)
         prompt_cache.queue_if_changed("preflight", preflight_prompt_section)
+        prompt_cache.queue_if_changed("active_plan", active_plan_prompt_section)
         if args.include_welcome_in_prompt and welcome_text_local:
             prompt_cache.queue_if_changed("welcome", f"Welcome Text Reference:\n{welcome_text_local}")
 
-        if ctx.active_sop_name:
+        active_sop_sections: list[str] = []
+        active_sop_names_seen: set[str] = set()
+
+        def _append_active_sop_section(name: str, content: str) -> None:
+            sop_name = name.strip()
+            sop_body = content.strip()
+            if not sop_name or not sop_body:
+                return
+            token = sop_name.lower()
+            if token in active_sop_names_seen:
+                return
+            active_sop_names_seen.add(token)
+            active_sop_sections.append(f"Active SOP ({sop_name}):\n{sop_body}")
+
+        if not daemon_managed_sops and ctx.active_sop_name:
             sop_text = ""
             try:
                 sop_result = run_sop(
@@ -612,8 +1099,19 @@ def _build_agent_runtime(
                     sop_text = sop_result.get("content", [{}])[0].get("text", "")
             except Exception:
                 sop_text = ""
-            if sop_text:
-                prompt_cache.queue_if_changed("active_sop", f"Active SOP ({ctx.active_sop_name}):\n{sop_text}")
+            _append_active_sop_section(ctx.active_sop_name, sop_text)
+
+        override_snapshot = _snapshot_active_sop_overrides()
+        for sop_name in sorted(override_snapshot.keys(), key=lambda item: item.lower()):
+            _append_active_sop_section(sop_name, override_snapshot.get(sop_name, ""))
+
+        if active_sop_sections:
+            prompt_cache.queue_if_changed("active_sop", "\n\n".join(active_sop_sections))
+        else:
+            prompt_cache.queue_if_changed("active_sop", "")
+        warning_text = _queue_user_context_reminders()
+        if warning_text:
+            _emit_tui_event({"event": "warning", "text": warning_text})
 
     def run_agent(
         query: str,
@@ -657,7 +1155,7 @@ def _build_agent_runtime(
                     "- Fix: increase SWARMEE_MAX_TOKENS (or pass --max-output-tokens), or ask for a shorter response.\n"
                     "- Resetting agent loop so you can continue."
                 )
-                _emit_tui_event({"event": "error", "text": error_msg})
+                _emit_classified_tui_error(error_msg, category_hint=ERROR_CATEGORY_ESCALATABLE)
                 if not _tui_events_enabled():
                     print(f"\n{error_msg}")
                 agent = create_agent()
@@ -754,13 +1252,48 @@ def _build_agent_runtime(
             settings=settings,
             selected_provider=selected_provider,
             current_tier=model_manager.current_tier,
-            active_sop_name=ctx.active_sop_name,
+            active_sop_names=_list_active_sop_names(),
         )
 
     def _execute_with_plan(user_request: str, plan: WorkPlan, *, welcome_text_local: str) -> Any:
-        allowed_tools = sorted(tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan")
-        invocation_state = {"swarmee": {"mode": "execute", "enforce_plan": True, "allowed_tools": allowed_tools}}
+        nonlocal active_plan_prompt_section
+        allowed = {tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan"}
+        allowed.add("plan_progress")
+        allowed_tools = sorted(allowed)
+        steps = list(plan.steps or [])
+        step_descriptions = [str(step.description).strip() for step in steps]
+        invocation_state = {
+            "swarmee": {
+                "mode": "execute",
+                "enforce_plan": True,
+                "allowed_tools": allowed_tools,
+                "plan_step_count": len(step_descriptions),
+                "plan_step_descriptions": step_descriptions,
+            }
+        }
         plan_json_payload = plan_json_for_execution(plan)
+
+        lines: list[str] = [
+            "Active execution plan:",
+            f"Summary: {plan.summary}",
+        ]
+        if step_descriptions:
+            lines.append("Steps:")
+            for idx, desc in enumerate(step_descriptions, start=1):
+                lines.append(f"{idx}. {desc}")
+        else:
+            lines.append("Steps: (none)")
+        lines.extend(
+            [
+                "",
+                "You are executing the following plan. Before starting each step, emit a brief status message indicating which step you are beginning.",
+                "Format: 'Starting step N: <description>'.",
+                "After completing a step, emit: 'Completed step N.'",
+                "Use the `plan_progress` tool before each step (status=in_progress) and after each step (status=completed).",
+                "The `plan_progress` tool accepts step (1-based) or step_index (0-based), status, and optional note.",
+            ]
+        )
+        active_plan_prompt_section = "\n".join(lines).strip()
 
         approved_plan_section = (
             "Approved Plan (execute ONLY this plan; if you need changes, ask to :replan):\n" + plan_json_payload
@@ -786,6 +1319,7 @@ def _build_agent_runtime(
                 non_retryable_exceptions=(AgentInterruptedError,),
             )
         finally:
+            active_plan_prompt_section = None
             refresh_system_prompt(welcome_text_local)
 
     registry = CommandRegistry()
@@ -851,6 +1385,10 @@ def _build_agent_runtime(
         "registry": registry,
         "refresh_query_context": _refresh_query_context,
         "current_model_info_event": _current_model_info_event,
+        "set_user_context_sources": set_user_context_sources,
+        "set_daemon_sop_override": _set_daemon_sop_override,
+        "current_knowledge_base_id": current_knowledge_base_id,
+        "compact_context": compact_context,
     }
 
 
@@ -1136,12 +1674,17 @@ def main() -> None:
     registry = runtime["registry"]
     _refresh_query_context = runtime["refresh_query_context"]
     _current_model_info_event = runtime["current_model_info_event"]
+    _set_user_context_sources = runtime["set_user_context_sources"]
+    _set_daemon_sop_override = runtime["set_daemon_sop_override"]
+    _current_knowledge_base_id = runtime["current_knowledge_base_id"]
+    _compact_context = runtime["compact_context"]
 
     def _best_effort_retrieve(query_text: str, *, warn_on_error: bool) -> None:
-        if not knowledge_base_id:
+        kb_for_turn = _current_knowledge_base_id()
+        if not kb_for_turn:
             return
         try:
-            ctx.agent.tool.retrieve(text=query_text, knowledgeBaseId=knowledge_base_id)
+            ctx.agent.tool.retrieve(text=query_text, knowledgeBaseId=kb_for_turn)
         except Exception as e:
             if warn_on_error and not _tui_events_enabled():
                 print(f"[warn] retrieve failed: {e}")
@@ -1161,18 +1704,152 @@ def main() -> None:
         _refresh_query_context(interactive=True)
 
         resolved_session_id = daemon_session_id or (os.getenv("SWARMEE_SESSION_ID") or "").strip() or uuid.uuid4().hex
+        active_session_id = resolved_session_id
+        persist_lock = threading.Lock()
+
+        session_store = ctx.session_store if isinstance(ctx.session_store, SessionStore) else SessionStore()
+
+        def _persist_messages_async(*, session_id: str, messages_snapshot: list[Any]) -> None:
+            def _worker() -> None:
+                with persist_lock:
+                    try:
+                        session_store.save_messages(
+                            session_id,
+                            messages_snapshot,
+                            max_messages=_SESSION_MESSAGE_MAX_COUNT,
+                            version=_SESSION_MESSAGE_VERSION,
+                        )
+                    except Exception as e:
+                        _write_stdout_jsonl({"event": "warning", "text": f"Failed to persist session messages: {e}"})
+
+            threading.Thread(target=_worker, daemon=True, name="swarmee-session-save").start()
+
+        def _same_cwd(meta_cwd: str) -> bool:
+            if not meta_cwd:
+                return False
+            try:
+                return Path(meta_cwd).expanduser().resolve() == Path.cwd().resolve()
+            except Exception:
+                return str(meta_cwd).strip() == str(Path.cwd())
+
+        def _find_available_session_for_cwd() -> tuple[str, int, int] | None:
+            with contextlib.suppress(Exception):
+                entries = session_store.list(limit=200)
+                for entry in entries:
+                    sid = str(entry.get("id", "")).strip()
+                    if not sid:
+                        continue
+                    if not _same_cwd(str(entry.get("cwd", "")).strip()):
+                        continue
+                    messages = session_store.load_messages(sid, max_messages=_SESSION_MESSAGE_MAX_COUNT)
+                    if not messages:
+                        continue
+                    turn_count = _turn_count_from_messages(messages)
+                    return sid, turn_count, len(messages)
+            return None
+
+        def _restore_session(session_id: str) -> tuple[int, int]:
+            nonlocal active_session_id
+            sid = session_id.strip()
+            if not sid:
+                raise ValueError("restore_session.session_id is required")
+
+            messages = session_store.load_messages(sid, max_messages=_SESSION_MESSAGE_MAX_COUNT)
+            if not isinstance(messages, list):
+                messages = []
+
+            try:
+                ctx.agent.messages = messages
+            except Exception:
+                state = getattr(ctx.agent, "state", None)
+                with contextlib.suppress(Exception):
+                    ctx.swap_agent(messages, state)
+                    _refresh_query_context(interactive=True)
+
+            active_session_id = sid
+            os.environ["SWARMEE_SESSION_ID"] = sid
+            with contextlib.suppress(Exception):
+                session_store.save(sid, meta=ctx.build_session_meta())
+
+            turn_count = _turn_count_from_messages(messages)
+            _write_stdout_jsonl(
+                {
+                    "event": "session_restored",
+                    "session_id": sid,
+                    "turn_count": turn_count,
+                    "message_count": len(messages),
+                }
+            )
+
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role", "")).strip().lower()
+                if role not in {"user", "assistant"}:
+                    continue
+                text = _extract_text_from_message_for_replay(message).strip()
+                if not text:
+                    continue
+                event_payload: dict[str, Any] = {
+                    "event": "replay_turn",
+                    "role": role,
+                    "text": text,
+                    "timestamp": str(
+                        message.get("timestamp") or message.get("ts") or message.get("created_at") or ""
+                    ),
+                }
+                if role == "assistant":
+                    model_value = message.get("model") or message.get("model_id") or message.get("name")
+                    if isinstance(model_value, str) and model_value.strip():
+                        event_payload["model"] = model_value.strip()
+                _write_stdout_jsonl(event_payload)
+
+            _write_stdout_jsonl({"event": "replay_complete", "turn_count": turn_count})
+            return turn_count, len(messages)
+
+        with contextlib.suppress(Exception):
+            session_store.save(active_session_id, meta=ctx.build_session_meta())
+            os.environ["SWARMEE_SESSION_ID"] = active_session_id
+
         _write_stdout_jsonl({"event": "ready", "session_id": resolved_session_id})
         _write_stdout_jsonl(_current_model_info_event())
 
+        available = _find_available_session_for_cwd()
+        if available is not None:
+            available_sid, available_turn_count, _available_message_count = available
+            _write_stdout_jsonl(
+                {
+                    "event": "session_available",
+                    "session_id": available_sid,
+                    "turn_count": available_turn_count,
+                }
+            )
+
         worker_thread: threading.Thread | None = None
         worker_lock = threading.Lock()
+        last_query_text: str = ""
+        last_query_auto_approve: bool = auto_approve
 
         def _worker_is_running() -> bool:
             with worker_lock:
                 return worker_thread is not None and worker_thread.is_alive()
 
-        def _emit_turn_error(text: str) -> None:
-            _write_stdout_jsonl({"event": "error", "text": text})
+        def _next_available_tier() -> str | None:
+            current = str(model_manager.current_tier or "").strip().lower()
+            with contextlib.suppress(Exception):
+                tiers = [tier.name.strip().lower() for tier in model_manager.list_tiers() if tier.available]
+                if current in tiers:
+                    idx = tiers.index(current)
+                    for candidate in tiers[idx + 1 :]:
+                        if candidate:
+                            return candidate
+                for candidate in tiers:
+                    if candidate and candidate != current:
+                        return candidate
+            return None
+
+        def _emit_turn_error(text: str, *, category_hint: str | None = None) -> None:
+            _write_stdout_jsonl(_build_tui_error_event(text, category_hint=category_hint))
             _write_stdout_jsonl({"event": "turn_complete", "exit_status": "error"})
 
         def _set_daemon_consent_waiting(waiting: bool) -> None:
@@ -1182,6 +1859,22 @@ def main() -> None:
             else:
                 daemon_consent_event.set()
 
+        def _start_query_worker_thread(*, query_text: str, turn_auto_approve: bool, mode: str | None = None) -> None:
+            nonlocal worker_thread
+            interrupt_event.clear()
+            _set_daemon_consent_waiting(True)
+            with worker_lock:
+                worker_thread = threading.Thread(
+                    target=_run_query_worker,
+                    kwargs={
+                        "query_text": query_text,
+                        "turn_auto_approve": turn_auto_approve,
+                        "mode": mode,
+                    },
+                    daemon=True,
+                )
+                worker_thread.start()
+
         def _run_query_worker(query_text: str, *, turn_auto_approve: bool, mode: str | None = None) -> None:
             exit_status = "ok"
             response: Any | None = None
@@ -1189,40 +1882,99 @@ def main() -> None:
             forced_mode = (mode or "").strip().lower()
             if forced_mode not in {"", "plan", "execute"}:
                 forced_mode = ""
+            transient_attempts = 0
 
             try:
-                _refresh_query_context(interactive=False)
-                _best_effort_retrieve(query_text, warn_on_error=False)
+                while True:
+                    try:
+                        _refresh_query_context(interactive=False)
+                        _best_effort_retrieve(query_text, warn_on_error=False)
 
-                _, response, executed = _run_query_with_optional_plan(
-                    query_text=query_text,
-                    forced_mode=forced_mode,
-                    auto_approve=turn_auto_approve,
-                    welcome_text=ctx.welcome_text,
-                    generate_plan=_generate_plan,
-                    execute_with_plan=lambda req, plan, welcome: _execute_with_plan(
-                        req, plan, welcome_text_local=welcome
-                    ),
-                    run_agent=lambda req: run_agent(req, invocation_state={"swarmee": {"mode": "execute"}}),
-                    classify_intent_fn=classify_intent,
-                    on_plan=lambda plan: (
-                        setattr(ctx, "last_plan", plan),
-                        _emit_plan_event(plan, write_jsonl=True, echo_console=False),
-                    ),
-                )
+                        _, response, executed = _run_query_with_optional_plan(
+                            query_text=query_text,
+                            forced_mode=forced_mode,
+                            auto_approve=turn_auto_approve,
+                            welcome_text=ctx.welcome_text,
+                            generate_plan=_generate_plan,
+                            execute_with_plan=lambda req, plan, welcome: _execute_with_plan(
+                                req, plan, welcome_text_local=welcome
+                            ),
+                            run_agent=lambda req: run_agent(req, invocation_state={"swarmee": {"mode": "execute"}}),
+                            classify_intent_fn=classify_intent,
+                            on_plan=lambda plan: (
+                                setattr(ctx, "last_plan", plan),
+                                _emit_plan_event(plan, write_jsonl=True, echo_console=False),
+                            ),
+                        )
 
-                if executed and knowledge_base_id:
-                    store_conversation_in_kb(ctx.agent, query_text, response, knowledge_base_id)
-            except AgentInterruptedError:
-                callback_handler(force_stop=True)
-                exit_status = "interrupted"
-            except MaxTokensReachedException:
-                exit_status = "error"
-            except Exception as e:
-                callback_handler(force_stop=True)
-                _write_stdout_jsonl({"event": "error", "text": str(e)})
-                exit_status = "error"
+                        kb_for_turn = _current_knowledge_base_id()
+                        if executed and kb_for_turn:
+                            store_conversation_in_kb(ctx.agent, query_text, response, kb_for_turn)
+                        break
+                    except AgentInterruptedError:
+                        callback_handler(force_stop=True)
+                        exit_status = "interrupted"
+                        break
+                    except MaxTokensReachedException as exc:
+                        callback_handler(force_stop=True)
+                        next_tier = _next_available_tier()
+                        _write_stdout_jsonl(
+                            _build_tui_error_event(
+                                str(exc),
+                                category_hint=ERROR_CATEGORY_ESCALATABLE,
+                                next_tier=next_tier,
+                            )
+                        )
+                        exit_status = "error"
+                        break
+                    except Exception as e:
+                        callback_handler(force_stop=True)
+                        text = str(e)
+                        classified = classify_error_message(text)
+                        category = str(classified.get("category", "")).strip().lower()
+                        if category == ERROR_CATEGORY_TRANSIENT and transient_attempts < _TRANSIENT_RETRY_MAX_ATTEMPTS:
+                            retry_after_s = min(30, 2**transient_attempts)
+                            transient_attempts += 1
+                            _write_stdout_jsonl(
+                                _build_tui_error_event(
+                                    text,
+                                    category_hint=ERROR_CATEGORY_TRANSIENT,
+                                    retry_after_s=retry_after_s,
+                                )
+                            )
+                            time.sleep(retry_after_s)
+                            continue
+
+                        if category == ERROR_CATEGORY_TRANSIENT and transient_attempts >= _TRANSIENT_RETRY_MAX_ATTEMPTS:
+                            next_tier = _next_available_tier()
+                            _write_stdout_jsonl(
+                                _build_tui_error_event(
+                                    text,
+                                    category_hint=ERROR_CATEGORY_ESCALATABLE,
+                                    next_tier=next_tier,
+                                )
+                            )
+                        else:
+                            next_tier = _next_available_tier() if category == ERROR_CATEGORY_ESCALATABLE else None
+                            _write_stdout_jsonl(
+                                _build_tui_error_event(
+                                    text,
+                                    category_hint=category,
+                                    next_tier=next_tier,
+                                )
+                            )
+                        exit_status = "error"
+                        break
             finally:
+                if exit_status == "ok":
+                    snapshot_raw = getattr(ctx.agent, "messages", [])
+                    if isinstance(snapshot_raw, list):
+                        messages_snapshot = list(snapshot_raw)
+                    elif isinstance(snapshot_raw, tuple):
+                        messages_snapshot = list(snapshot_raw)
+                    else:
+                        messages_snapshot = []
+                    _persist_messages_async(session_id=active_session_id, messages_snapshot=messages_snapshot)
                 _write_stdout_jsonl(_current_model_info_event())
                 _write_stdout_jsonl({"event": "turn_complete", "exit_status": exit_status})
 
@@ -1252,7 +2004,7 @@ def main() -> None:
                     _emit_turn_error("query.text is required")
                     continue
                 if _worker_is_running():
-                    _emit_turn_error("A query is already running")
+                    _emit_turn_error("A query is already running", category_hint=ERROR_CATEGORY_FATAL)
                     continue
 
                 requested_tier = payload.get("tier")
@@ -1263,34 +2015,102 @@ def main() -> None:
                         _refresh_query_context(interactive=True)
                         _write_stdout_jsonl(_current_model_info_event())
                     except Exception as e:
-                        _emit_turn_error(str(e))
+                        _emit_turn_error(str(e), category_hint=ERROR_CATEGORY_ESCALATABLE)
                         continue
 
                 requested_mode = payload.get("mode")
                 mode = requested_mode.strip().lower() if isinstance(requested_mode, str) else None
                 raw_auto_approve = payload.get("auto_approve")
                 turn_auto_approve = raw_auto_approve if isinstance(raw_auto_approve, bool) else auto_approve
-
-                interrupt_event.clear()
-                _set_daemon_consent_waiting(True)
-
-                with worker_lock:
-                    worker_thread = threading.Thread(
-                        target=_run_query_worker,
-                        kwargs={
-                            "query_text": query_text.strip(),
-                            "turn_auto_approve": turn_auto_approve,
-                            "mode": mode,
-                        },
-                        daemon=True,
-                    )
-                    worker_thread.start()
+                last_query_text = query_text.strip()
+                last_query_auto_approve = turn_auto_approve
+                _start_query_worker_thread(
+                    query_text=last_query_text,
+                    turn_auto_approve=turn_auto_approve,
+                    mode=mode,
+                )
                 continue
 
             if cmd == "consent_response":
                 choice = payload.get("choice")
                 _set_daemon_consent_response(choice.strip().lower() if isinstance(choice, str) else "")
                 daemon_consent_event.set()
+                continue
+
+            if cmd == "set_context_sources":
+                sources_payload = payload.get("sources", [])
+                try:
+                    _set_user_context_sources(sources_payload)
+                except Exception as e:
+                    _write_stdout_jsonl({"event": "warning", "text": f"Failed to set context sources: {e}"})
+                continue
+
+            if cmd == "compact":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot compact while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                compact_result = _compact_context()
+                _emit_tui_context_event_if_enabled(ctx.agent)
+                _write_stdout_jsonl(
+                    {
+                        "event": "compact_complete",
+                        "compacted": bool(compact_result.get("compacted", False)),
+                        "before_tokens_est": compact_result.get("before_tokens_est"),
+                        "after_tokens_est": compact_result.get("after_tokens_est"),
+                        "warning": compact_result.get("warning"),
+                    }
+                )
+                continue
+
+            if cmd == "set_sop":
+                raw_name = payload.get("name")
+                if not isinstance(raw_name, str) or not raw_name.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event("set_sop.name is required", category_hint=ERROR_CATEGORY_FATAL)
+                    )
+                    continue
+                raw_content = payload.get("content")
+                if raw_content is not None and not isinstance(raw_content, str):
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "set_sop.content must be a string or null",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                _set_daemon_sop_override(raw_name, raw_content)
+                ctx.refresh_system_prompt()
+                with contextlib.suppress(Exception):
+                    session_store.save(active_session_id, meta=ctx.build_session_meta())
+                continue
+
+            if cmd == "restore_session":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot restore session while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                raw_session_id = payload.get("session_id")
+                if not isinstance(raw_session_id, str) or not raw_session_id.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "restore_session.session_id is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    _restore_session(raw_session_id)
+                except Exception as e:
+                    _write_stdout_jsonl({"event": "warning", "text": f"Failed to restore session: {e}"})
                 continue
 
             if cmd == "interrupt":
@@ -1301,10 +2121,17 @@ def main() -> None:
             if cmd == "set_tier":
                 tier = payload.get("tier")
                 if not isinstance(tier, str) or not tier.strip():
-                    _write_stdout_jsonl({"event": "error", "text": "set_tier.tier is required"})
+                    _write_stdout_jsonl(
+                        _build_tui_error_event("set_tier.tier is required", category_hint=ERROR_CATEGORY_FATAL)
+                    )
                     continue
                 if _worker_is_running():
-                    _write_stdout_jsonl({"event": "error", "text": "Cannot set tier while a query is running"})
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot set tier while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
                     continue
                 try:
                     model_manager.set_tier(ctx.agent, tier.strip().lower())
@@ -1312,7 +2139,83 @@ def main() -> None:
                     _refresh_query_context(interactive=True)
                     _write_stdout_jsonl(_current_model_info_event())
                 except Exception as e:
-                    _write_stdout_jsonl({"event": "error", "text": str(e)})
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_ESCALATABLE))
+                continue
+
+            if cmd == "retry_tool":
+                tool_use_id = str(payload.get("tool_use_id", "")).strip()
+                if not tool_use_id:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "retry_tool.tool_use_id is required",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                        )
+                    )
+                    continue
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot retry tool while a query is running",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                            tool_use_id=tool_use_id,
+                        )
+                    )
+                    continue
+                if not last_query_text:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "No previous query available for tool retry",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                            tool_use_id=tool_use_id,
+                        )
+                    )
+                    continue
+                recovery_query = (
+                    f"Tool call {tool_use_id} failed previously. Retry that tool call now and continue the task."
+                )
+                _start_query_worker_thread(
+                    query_text=recovery_query,
+                    turn_auto_approve=last_query_auto_approve,
+                    mode="execute",
+                )
+                continue
+
+            if cmd == "skip_tool":
+                tool_use_id = str(payload.get("tool_use_id", "")).strip()
+                if not tool_use_id:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "skip_tool.tool_use_id is required",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                        )
+                    )
+                    continue
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot skip tool while a query is running",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                            tool_use_id=tool_use_id,
+                        )
+                    )
+                    continue
+                if not last_query_text:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "No previous query available for tool skip",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                            tool_use_id=tool_use_id,
+                        )
+                    )
+                    continue
+                recovery_query = (
+                    f"Tool call {tool_use_id} failed previously. Continue the task without rerunning that tool."
+                )
+                _start_query_worker_thread(
+                    query_text=recovery_query,
+                    turn_auto_approve=last_query_auto_approve,
+                    mode="execute",
+                )
                 continue
 
             if cmd == "shutdown":
@@ -1364,9 +2267,10 @@ def main() -> None:
         except MaxTokensReachedException:
             return
 
-        if knowledge_base_id and executed:
+        kb_for_turn = _current_knowledge_base_id()
+        if kb_for_turn and executed:
             # Persist the executed exchange when KB is configured.
-            store_conversation_in_kb(ctx.agent, query, response, knowledge_base_id)
+            store_conversation_in_kb(ctx.agent, query, response, kb_for_turn)
     else:
         # Render welcome banner once at startup in interactive mode.
         try:

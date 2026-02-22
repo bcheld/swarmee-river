@@ -370,6 +370,303 @@ class TestTuiDaemonMode:
         assert len(model_events) >= 2
         assert any(event.get("tier") == "deep" for event in model_events)
 
+    def test_tui_daemon_query_missing_text_emits_classified_error(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"query"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        error_events = [event for event in events if event.get("event") == "error"]
+        assert error_events
+        assert error_events[0].get("message") == "query.text is required"
+        assert error_events[0].get("category") == "fatal"
+        assert error_events[0].get("retryable") is False
+
+    def test_tui_daemon_retry_tool_without_history_emits_tool_error(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"retry_tool","tool_use_id":"t-1"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        error_events = [event for event in events if event.get("event") == "error"]
+        assert error_events
+        assert error_events[0].get("category") == "tool_error"
+        assert error_events[0].get("tool_use_id") == "t-1"
+
+    def test_tui_daemon_set_sop_updates_session_meta(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+        tmp_path,
+    ):
+        saved_meta: list[dict[str, object]] = []
+
+        class _FakeStore:
+            def save(self, session_id, *, meta=None, messages=None, state=None, last_plan=None):
+                del session_id, messages, state, last_plan
+                if isinstance(meta, dict):
+                    saved_meta.append(dict(meta))
+                return None
+
+            def list(self, *, limit=50):
+                del limit
+                return []
+
+            def load_messages(self, session_id, *, max_messages=200, expected_version=1):
+                del session_id, max_messages, expected_version
+                return []
+
+            def save_messages(self, session_id, messages, *, max_messages=200, version=1):
+                del session_id, messages, max_messages, version
+                return {"version": 1, "message_count": 0, "turn_count": 0}
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO('{"cmd":"set_sop","name":"bugfix","content":"Use bugfix SOP"}\n{"cmd":"shutdown"}\n'),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert any("bugfix" in list(meta.get("active_sops", [])) for meta in saved_meta)
+        assert any(meta.get("active_sop") == "bugfix" for meta in saved_meta)
+
+    def test_tui_daemon_compact_emits_completion_event(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"compact"}\n{"cmd":"shutdown"}\n'))
+        mock_agent.messages = [
+            {"role": "user", "content": [{"text": "hello"}]},
+            {"role": "assistant", "content": [{"text": "world"}]},
+        ]
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        compact_events = [event for event in events if event.get("event") == "compact_complete"]
+        assert compact_events
+        assert "compacted" in compact_events[0]
+
+    def test_tui_daemon_emits_session_available_for_same_cwd(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+        tmp_path,
+    ):
+        class _FakeStore:
+            def save(self, session_id, *, meta=None, messages=None, state=None, last_plan=None):
+                return None
+
+            def list(self, *, limit=50):
+                del limit
+                return [{"id": "sid-prev", "cwd": str(tmp_path)}]
+
+            def load_messages(self, session_id, *, max_messages=200, expected_version=1):
+                del max_messages, expected_version
+                if session_id != "sid-prev":
+                    return []
+                return [
+                    {"role": "user", "content": [{"text": "hello"}]},
+                    {"role": "assistant", "content": [{"text": "world"}]},
+                ]
+
+            def save_messages(self, session_id, messages, *, max_messages=200, version=1):
+                del session_id, messages, max_messages, version
+                return {"version": 1, "message_count": 2, "turn_count": 1}
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert any(
+            event.get("event") == "session_available"
+            and event.get("session_id") == "sid-prev"
+            and int(event.get("turn_count", 0)) == 1
+            for event in events
+        )
+
+    def test_tui_daemon_restore_session_emits_replay_events(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+        tmp_path,
+    ):
+        class _FakeStore:
+            def save(self, session_id, *, meta=None, messages=None, state=None, last_plan=None):
+                del session_id, meta, messages, state, last_plan
+                return None
+
+            def list(self, *, limit=50):
+                del limit
+                return []
+
+            def load_messages(self, session_id, *, max_messages=200, expected_version=1):
+                del max_messages, expected_version
+                if session_id != "restore-me":
+                    return []
+                return [
+                    {
+                        "role": "user",
+                        "content": [{"text": "What changed?"}],
+                        "timestamp": "10:01 AM",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [{"text": "I updated the config."}],
+                        "model": "openai/deep",
+                        "timestamp": "10:02 AM",
+                    },
+                ]
+
+            def save_messages(self, session_id, messages, *, max_messages=200, version=1):
+                del session_id, messages, max_messages, version
+                return {"version": 1, "message_count": 2, "turn_count": 1}
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO('{"cmd":"restore_session","session_id":"restore-me"}\n{"cmd":"shutdown"}\n'),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert any(event.get("event") == "session_restored" and event.get("turn_count") == 1 for event in events)
+        assert any(
+            event.get("event") == "replay_turn"
+            and event.get("role") == "user"
+            and event.get("text") == "What changed?"
+            for event in events
+        )
+        assert any(
+            event.get("event") == "replay_turn"
+            and event.get("role") == "assistant"
+            and event.get("model") == "openai/deep"
+            for event in events
+        )
+        assert any(event.get("event") == "replay_complete" and event.get("turn_count") == 1 for event in events)
+
+    def test_tui_daemon_query_success_persists_messages(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+        tmp_path,
+    ):
+        saved_calls: list[tuple[str, list[dict[str, object]]]] = []
+
+        class _FakeStore:
+            def save(self, session_id, *, meta=None, messages=None, state=None, last_plan=None):
+                del session_id, meta, messages, state, last_plan
+                return None
+
+            def list(self, *, limit=50):
+                del limit
+                return []
+
+            def load_messages(self, session_id, *, max_messages=200, expected_version=1):
+                del session_id, max_messages, expected_version
+                return []
+
+            def save_messages(self, session_id, messages, *, max_messages=200, version=1):
+                del max_messages, version
+                saved_calls.append((session_id, list(messages) if isinstance(messages, list) else []))
+                return {"version": 1, "message_count": len(messages), "turn_count": 1}
+
+        real_thread = swarmee.threading.Thread
+
+        def _thread_factory(*args, **kwargs):
+            if kwargs.get("name") == "swarmee-session-save":
+                class _ImmediateThread:
+                    def start(self_inner):
+                        target = kwargs.get("target")
+                        if callable(target):
+                            target()
+
+                    def is_alive(self_inner):
+                        return False
+
+                    def join(self_inner, timeout=None):
+                        del timeout
+                        return None
+
+                return _ImmediateThread()
+            return real_thread(*args, **kwargs)
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
+        monkeypatch.setattr(swarmee.threading, "Thread", _thread_factory)
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", lambda **_kwargs: (None, "ok", True))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"query","text":"hello"}\n{"cmd":"shutdown"}\n'))
+
+        mock_agent.messages = [
+            {"role": "user", "content": [{"text": "hello"}]},
+            {"role": "assistant", "content": [{"text": "ok"}]},
+        ]
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert saved_calls
+        assert saved_calls[0][1][0]["role"] == "user"
+
 
 class TestCommandLine:
     """Test cases for command line mode functionality"""
@@ -741,6 +1038,27 @@ class TestOverflowErrorClassification:
 
     def test_context_window_overflow_negative(self):
         assert not swarmee._is_context_window_overflow_error(RuntimeError("rate limit exceeded"))
+
+    def test_build_tui_error_event_includes_metadata(self):
+        event = swarmee._build_tui_error_event(
+            "ThrottlingException: slow down",
+            category_hint="transient",
+            retry_after_s=4,
+        )
+        assert event["event"] == "error"
+        assert event["message"] == "ThrottlingException: slow down"
+        assert event["category"] == "transient"
+        assert event["retryable"] is True
+        assert event["retry_after_s"] == 4
+
+    def test_build_tui_error_event_extracts_tool_use_id(self):
+        event = swarmee._build_tui_error_event(
+            "tool execution failed: tool_use_id=t-99",
+            category_hint="tool_error",
+        )
+        assert event["category"] == "tool_error"
+        assert event["retryable"] is False
+        assert event["tool_use_id"] == "t-99"
 
     def test_render_tool_consent_message_preserves_choice_brackets(self):
         if swarmee.Console is None:

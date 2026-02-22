@@ -139,6 +139,14 @@ def test_classify_pre_run_command_matrix():
         "/open": ("open_usage", None),
         "/search bug": ("search", "bug"),
         "/search": ("search_usage", None),
+        "/compact": ("compact", None),
+        "/compact now": ("compact_usage", None),
+        "/restore": ("restore", None),
+        "/new": ("new", None),
+        "/context": ("context_usage", None),
+        "/context list": ("context", "list"),
+        "/sop": ("sop_usage", None),
+        "/sop list": ("sop", "list"),
         "/stop": ("stop", None),
         ":stop": ("stop", None),
         "/exit": ("exit", None),
@@ -170,6 +178,29 @@ def test_classify_post_run_command_matrix():
     }
     for command, expected in cases.items():
         assert tui_app.classify_post_run_command(command) == expected
+
+
+def test_classify_tui_error_event_prefers_daemon_metadata() -> None:
+    event = {
+        "event": "error",
+        "message": "rate limit exceeded",
+        "category": "transient",
+        "retryable": True,
+        "retry_after_s": 4,
+    }
+    result = tui_app.classify_tui_error_event(event)
+    assert result["category"] == "transient"
+    assert result["retryable"] is True
+    assert result["retry_after_s"] == 4
+
+
+def test_summarize_error_for_toast_transient_message() -> None:
+    message, severity, timeout = tui_app.summarize_error_for_toast(
+        {"category": "transient", "message": "ThrottlingException", "retry_after_s": 5}
+    )
+    assert message == "Rate limited - retrying in 5s"
+    assert severity == "warning"
+    assert timeout == 5.0
 
 
 def test_command_classification_precedence_ordering():
@@ -796,7 +827,7 @@ def test_command_palette_move_selection():
 
     palette = CommandPalette()
     palette.filter("/co")
-    assert len(palette._filtered) == 6  # /copy, /copy plan, /copy issues, /copy last, /copy all, /consent
+    assert len(palette._filtered) == 8  # /context, /compact, /copy, /copy plan, /copy issues, /copy last, /copy all, /consent
     palette.move_selection(1)
     assert palette._selected_index == 1
 
@@ -861,6 +892,28 @@ def test_status_bar_counts():
     assert "err=1" in text
 
 
+def test_status_bar_shows_context_high_warning_over_90_percent():
+    from swarmee_river.tui.widgets import StatusBar
+
+    bar = StatusBar()
+    bar.set_context(prompt_tokens_est=19_000, budget_tokens=20_000)
+    text = bar._Static__content  # type: ignore[attr-defined]
+    assert "CTX HIGH" in text
+
+
+def test_context_budget_bar_renders_warning_and_prompt_estimate():
+    from swarmee_river.tui.widgets import ContextBudgetBar
+
+    bar = ContextBudgetBar()
+    bar.set_context(prompt_tokens_est=45_000, budget_tokens=50_000, animate=False)
+    bar.set_prompt_input_estimate(250)
+    plain = bar.plain_text
+    assert "Context: 45k / 50k (90%)" in plain
+    assert "~250 tokens" in plain
+    assert "⚠" in plain
+    assert getattr(bar, "tooltip", None) == "Context nearly full. Consider /compact or /new."
+
+
 def test_command_palette_includes_copy_last():
     from swarmee_river.tui.widgets import CommandPalette
 
@@ -881,6 +934,33 @@ def test_command_palette_includes_open_and_search():
     palette.filter("/se")
     assert len(palette._filtered) == 1
     assert palette._filtered[0][0] == "/search"
+
+
+def test_command_palette_includes_sop():
+    from swarmee_river.tui.widgets import CommandPalette
+
+    palette = CommandPalette()
+    palette.filter("/so")
+    assert len(palette._filtered) == 1
+    assert palette._filtered[0][0] == "/sop"
+
+
+def test_action_sheet_selection_wraps():
+    from swarmee_river.tui.widgets import ActionSheet
+
+    sheet = ActionSheet()
+    sheet.set_actions(
+        title="Actions",
+        actions=[
+            {"id": "one", "icon": "1", "label": "One", "shortcut": "A"},
+            {"id": "two", "icon": "2", "label": "Two", "shortcut": "B"},
+        ],
+    )
+    assert sheet.selected_action_id() == "one"
+    sheet.move_selection(1)
+    assert sheet.selected_action_id() == "two"
+    sheet.move_selection(1)
+    assert sheet.selected_action_id() == "one"
 
 
 def test_session_save_load(tmp_path, monkeypatch):

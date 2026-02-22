@@ -17,9 +17,19 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.error_classification import (
+    ERROR_CATEGORY_AUTH_ERROR,
+    ERROR_CATEGORY_ESCALATABLE,
+    ERROR_CATEGORY_FATAL,
+    ERROR_CATEGORY_TOOL_ERROR,
+    ERROR_CATEGORY_TRANSIENT,
+    classify_error_message,
+    normalize_error_category,
+)
 from swarmee_river.state_paths import logs_dir, sessions_dir
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
@@ -35,7 +45,39 @@ _MODEL_USAGE_TEXT = "Usage: /model show | /model list | /model provider <name> |
 _CONSENT_USAGE_TEXT = "Usage: /consent <y|n|a|v>"
 _SEARCH_USAGE_TEXT = "Usage: /search <term>"
 _OPEN_USAGE_TEXT = "Usage: /open <number>"
+_EXPAND_USAGE_TEXT = "Usage: /expand <tool_use_id>"
+_COMPACT_USAGE_TEXT = "Usage: /compact"
+_CONTEXT_USAGE_TEXT = (
+    "Usage: /context add file <path> | /context add note <text> | /context add sop <name> | "
+    "/context add kb <id> | /context remove <index> | /context list | /context clear"
+)
+_SOP_USAGE_TEXT = "Usage: /sop list | /sop activate <name> | /sop deactivate <name> | /sop preview <name>"
 _RUN_ACTIVE_TIER_WARNING = "[model] cannot change tier while a run is active."
+_CONTEXT_SOURCE_ICONS: dict[str, str] = {
+    "file": "📄",
+    "url": "🌐",
+    "kb": "📚",
+    "sop": "📋",
+    "note": "📝",
+}
+_CONTEXT_SOURCE_TYPES = {"file", "note", "sop", "kb", "url"}
+_CONTEXT_SOURCE_MAX_LABEL = 72
+_SOP_FILE_SUFFIX = ".sop.md"
+_CONTEXT_SELECT_PLACEHOLDER = "__context_select_none__"
+_CONTEXT_INPUT_SOURCE_TYPES = {"file", "note", "kb"}
+_CONTEXT_SOP_SOURCE_TYPE = "sop"
+_TOOL_PROGRESS_RENDER_INTERVAL_S = 0.2
+_TOOL_HEARTBEAT_RENDER_MIN_STEP_S = 0.5
+_TOOL_OUTPUT_RETENTION_MAX_CHARS = 4096
+_TRANSIENT_TOAST_TIMEOUT_S = 5.0
+_FATAL_TOAST_TIMEOUT_S = 3600.0
+_SOP_SOURCE_LOCAL = "local"
+_SOP_SOURCE_STRANDS = "strands-sops"
+_SOP_SOURCE_PRIORITY: dict[str, int] = {
+    _SOP_SOURCE_LOCAL: 0,
+    "pack": 1,
+    _SOP_SOURCE_STRANDS: 2,
+}
 _COPY_COMMAND_MAP: dict[str, str] = {
     "/copy": "transcript",
     ":copy": "transcript",
@@ -57,6 +99,250 @@ class ParsedEvent:
     kind: str
     text: str
     meta: dict[str, str] | None = None
+
+
+def _sanitize_context_source_id(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (value or "").strip())
+    return token.strip("-") or uuid.uuid4().hex[:12]
+
+
+def _normalize_context_source(source: dict[str, Any]) -> dict[str, str] | None:
+    if not isinstance(source, dict):
+        return None
+    source_type = str(source.get("type", "")).strip().lower()
+    if source_type not in _CONTEXT_SOURCE_TYPES:
+        return None
+
+    normalized: dict[str, str] = {"type": source_type}
+    source_id = str(source.get("id", "")).strip()
+    if source_id:
+        normalized["id"] = _sanitize_context_source_id(source_id)
+    else:
+        seed = (
+            str(source.get("path", "") or source.get("text", "") or source.get("name", "") or source.get("kb_id", "")).strip()
+            or uuid.uuid4().hex
+        )
+        normalized["id"] = _sanitize_context_source_id(f"{source_type}-{seed}")
+
+    if source_type == "file":
+        path = str(source.get("path", "")).strip()
+        if not path:
+            return None
+        normalized["path"] = path
+        return normalized
+    if source_type == "note":
+        text = str(source.get("text", "")).strip()
+        if not text:
+            return None
+        normalized["text"] = text
+        return normalized
+    if source_type == "sop":
+        name = str(source.get("name", "")).strip()
+        if not name:
+            return None
+        normalized["name"] = name
+        return normalized
+    if source_type == "kb":
+        kb_id = str(source.get("id", source.get("kb_id", ""))).strip()
+        if not kb_id:
+            return None
+        normalized["id"] = kb_id
+        return normalized
+    if source_type == "url":
+        url = str(source.get("url", source.get("path", ""))).strip()
+        if not url:
+            return None
+        normalized["url"] = url
+        return normalized
+    return None
+
+
+def _normalize_context_sources(raw_sources: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_sources, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_sources:
+        source = _normalize_context_source(item if isinstance(item, dict) else {})
+        if source is None:
+            continue
+        source_type = source.get("type", "")
+        value_key = (
+            source.get("path")
+            or source.get("text")
+            or source.get("name")
+            or source.get("id")
+            or source.get("url")
+            or ""
+        ).strip()
+        dedupe_key = (source_type, value_key)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(source)
+    return normalized
+
+
+def _strip_sop_frontmatter(markdown: str) -> tuple[dict[str, str], str]:
+    text = (markdown or "").lstrip("\ufeff")
+    if not text.startswith("---\n"):
+        return {}, text.strip()
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return {}, text.strip()
+    header = text[4:end].strip()
+    body = text[end + len("\n---\n") :].strip()
+    meta: dict[str, str] = {}
+    for line in header.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        k = key.strip().lower()
+        v = value.strip()
+        if k and v:
+            meta[k] = v
+    return meta, body
+
+
+def _first_sop_paragraph(markdown: str) -> str:
+    _meta, body = _strip_sop_frontmatter(markdown)
+    lines = [line.rstrip() for line in body.splitlines()]
+    paragraph_lines: list[str] = []
+    started = False
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            if started:
+                break
+            continue
+        if line.startswith("#") and not started:
+            continue
+        paragraph_lines.append(line)
+        started = True
+    preview = " ".join(paragraph_lines).strip()
+    if not preview:
+        return "(no preview available)"
+    if len(preview) > 220:
+        return preview[:219].rstrip() + "…"
+    return preview
+
+
+def _load_sop_file(path: Path) -> tuple[str, str]:
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    meta, body = _strip_sop_frontmatter(raw)
+    file_name = path.name
+    derived = file_name[: -len(_SOP_FILE_SUFFIX)] if file_name.endswith(_SOP_FILE_SUFFIX) else path.stem
+    name = str(meta.get("name", derived)).strip() or derived
+    return name, body.strip()
+
+
+def discover_available_sops() -> list[dict[str, str]]:
+    records: dict[str, dict[str, str]] = {}
+
+    def _record_source_priority(source: str) -> int:
+        if source == _SOP_SOURCE_LOCAL:
+            return _SOP_SOURCE_PRIORITY[_SOP_SOURCE_LOCAL]
+        if source.startswith("pack:"):
+            return _SOP_SOURCE_PRIORITY["pack"]
+        return _SOP_SOURCE_PRIORITY[_SOP_SOURCE_STRANDS]
+
+    def _add_record(*, name: str, path: str, source: str, content: str) -> None:
+        sop_name = name.strip()
+        if not sop_name:
+            return
+        existing = records.get(sop_name)
+        priority = _record_source_priority(source)
+        if existing is not None:
+            existing_priority = _record_source_priority(existing.get("source", ""))
+            if existing_priority <= priority:
+                return
+        body = content.strip()
+        preview = _first_sop_paragraph(body)
+        records[sop_name] = {
+            "name": sop_name,
+            "path": path.strip(),
+            "source": source.strip(),
+            "first_paragraph_preview": preview,
+            "content": body,
+        }
+
+    local_dirs: list[Path] = []
+    for candidate in (Path.cwd() / "sops", Path(__file__).resolve().parents[1] / "sops"):
+        if candidate.exists() and candidate.is_dir():
+            local_dirs.append(candidate.resolve())
+    seen_local: set[str] = set()
+    for directory in local_dirs:
+        key = str(directory)
+        if key in seen_local:
+            continue
+        seen_local.add(key)
+        for file_path in sorted(directory.glob(f"*{_SOP_FILE_SUFFIX}")):
+            if not file_path.is_file():
+                continue
+            with contextlib.suppress(Exception):
+                name, content = _load_sop_file(file_path)
+                _add_record(name=name, path=str(file_path.resolve()), source=_SOP_SOURCE_LOCAL, content=content)
+
+    try:
+        from swarmee_river.packs import iter_packs
+        from swarmee_river.settings import load_settings
+
+        settings = load_settings()
+        for pack in iter_packs(settings):
+            if not pack.enabled:
+                continue
+            sop_dir = pack.sops_dir
+            if not sop_dir.exists() or not sop_dir.is_dir():
+                continue
+            source_label = f"pack:{pack.name}"
+            for file_path in sorted(sop_dir.glob(f"*{_SOP_FILE_SUFFIX}")):
+                if not file_path.is_file():
+                    continue
+                with contextlib.suppress(Exception):
+                    name, content = _load_sop_file(file_path)
+                    _add_record(name=name, path=str(file_path.resolve()), source=source_label, content=content)
+    except Exception:
+        pass
+
+    try:
+        import strands_agents_sops as strands_sops
+
+        module_path = Path(getattr(strands_sops, "__file__", "")).resolve().parent
+        candidate_dirs = [module_path / "sops", module_path]
+        saw_file = False
+        for directory in candidate_dirs:
+            if not directory.exists() or not directory.is_dir():
+                continue
+            for file_path in sorted(directory.glob(f"*{_SOP_FILE_SUFFIX}")):
+                if not file_path.is_file():
+                    continue
+                saw_file = True
+                with contextlib.suppress(Exception):
+                    name, content = _load_sop_file(file_path)
+                    _add_record(name=name, path=str(file_path.resolve()), source=_SOP_SOURCE_STRANDS, content=content)
+        if not saw_file:
+            for attr_name in dir(strands_sops):
+                if attr_name.startswith("_"):
+                    continue
+                value = getattr(strands_sops, attr_name, None)
+                if not isinstance(value, str) or len(value.strip()) < 40:
+                    continue
+                meta, body = _strip_sop_frontmatter(value)
+                name = str(meta.get("name", attr_name)).strip() or attr_name
+                _add_record(
+                    name=name,
+                    path=f"{strands_sops.__name__}.{attr_name}",
+                    source=_SOP_SOURCE_STRANDS,
+                    content=body.strip(),
+                )
+    except Exception:
+        pass
+
+    return [records[name] for name in sorted(records.keys())]
+
+
+def discover_available_sop_names() -> list[str]:
+    return [record["name"] for record in discover_available_sops()]
 
 
 def build_swarmee_cmd(prompt: str, *, auto_approve: bool) -> list[str]:
@@ -466,14 +752,34 @@ def classify_model_command(normalized: str) -> tuple[str, str | None] | None:
 def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
     """Classify commands handled before active-run gating."""
     normalized = text.lower()
+    if normalized == "/restore":
+        return "restore", None
+    if normalized == "/new":
+        return "new", None
+    if normalized == "/context":
+        return "context_usage", None
+    if normalized.startswith("/context "):
+        return "context", text[len("/context "):]
+    if normalized == "/sop":
+        return "sop_usage", None
+    if normalized.startswith("/sop "):
+        return "sop", text[len("/sop "):]
     if normalized.startswith("/open "):
         return "open", text[len("/open "):]
     if normalized == "/open":
         return "open_usage", None
+    if normalized.startswith("/expand "):
+        return "expand", text[len("/expand "):]
+    if normalized == "/expand":
+        return "expand_usage", None
     if normalized.startswith("/search "):
         return "search", text[len("/search "):]
     if normalized == "/search":
         return "search_usage", None
+    if normalized == "/compact":
+        return "compact", None
+    if normalized.startswith("/compact "):
+        return "compact_usage", None
     if normalized in {"/stop", ":stop"}:
         return "stop", None
     if normalized in {"/exit", ":exit"}:
@@ -509,6 +815,56 @@ def classify_post_run_command(text: str) -> tuple[str, str | None] | None:
     if text.startswith("/run "):
         return "run_prompt", text[len("/run "):].strip()
     return None
+
+
+def classify_tui_error_event(event: dict[str, Any]) -> dict[str, Any]:
+    message = str(event.get("message", event.get("text", ""))).strip()
+    category_hint = normalize_error_category(event.get("category"))
+    tool_use_id = str(event.get("tool_use_id", "")).strip() or None
+    classified = classify_error_message(message, category_hint=category_hint, tool_use_id=tool_use_id)
+    retry_after_raw = event.get("retry_after_s")
+    retry_after_s: int | None = None
+    if isinstance(retry_after_raw, (int, float)):
+        retry_after_s = int(retry_after_raw)
+    elif isinstance(retry_after_raw, str) and retry_after_raw.strip().isdigit():
+        retry_after_s = int(retry_after_raw.strip())
+    next_tier = str(event.get("next_tier", "")).strip() or None
+    return {
+        "message": message,
+        "category": str(classified.get("category", ERROR_CATEGORY_FATAL)),
+        "retryable": bool(event.get("retryable", classified.get("retryable", False))),
+        "tool_use_id": str(classified.get("tool_use_id", "")).strip() or None,
+        "retry_after_s": retry_after_s if isinstance(retry_after_s, int) and retry_after_s > 0 else None,
+        "next_tier": next_tier,
+    }
+
+
+def summarize_error_for_toast(error_info: dict[str, Any]) -> tuple[str, str, float | None]:
+    category = str(error_info.get("category", ERROR_CATEGORY_FATAL))
+    message = str(error_info.get("message", "")).strip()
+    retry_after_s = error_info.get("retry_after_s")
+
+    if category == ERROR_CATEGORY_TRANSIENT:
+        delay = int(retry_after_s) if isinstance(retry_after_s, int) and retry_after_s > 0 else 1
+        return f"Rate limited - retrying in {delay}s", "warning", _TRANSIENT_TOAST_TIMEOUT_S
+
+    if category == ERROR_CATEGORY_TOOL_ERROR:
+        tool_use_id = str(error_info.get("tool_use_id", "")).strip()
+        if tool_use_id:
+            return f"Tool failed ({tool_use_id})", "error", 6.0
+        return "Tool execution failed", "error", 6.0
+
+    if category == ERROR_CATEGORY_ESCALATABLE:
+        return "Model/context limit hit - escalation available", "warning", 8.0
+
+    if category == ERROR_CATEGORY_AUTH_ERROR:
+        return "Auth/permissions error - check credentials", "error", 10.0
+
+    if message:
+        first = message.splitlines()[0].strip()
+        if first:
+            return first[:140], "error", _FATAL_TOAST_TIMEOUT_S
+    return "Fatal error", "error", _FATAL_TOAST_TIMEOUT_S
 
 
 def parse_output_line(line: str) -> ParsedEvent | None:
@@ -830,8 +1186,12 @@ def run_tui() -> int:
     Horizontal = textual_containers.Horizontal
     Vertical = textual_containers.Vertical
     VerticalScroll = textual_containers.VerticalScroll
+    Button = textual_widgets.Button
+    Checkbox = textual_widgets.Checkbox
     Header = textual_widgets.Header
     Footer = textual_widgets.Footer
+    Input = textual_widgets.Input
+    RichLog = textual_widgets.RichLog
     Select = textual_widgets.Select
     Static = textual_widgets.Static
     TabbedContent = textual_widgets.TabbedContent
@@ -839,16 +1199,24 @@ def run_tui() -> int:
     TextArea = textual_widgets.TextArea
 
     from swarmee_river.tui.widgets import (
-        AssistantMessage,
+        ActionSheet,
         CommandPalette,
-        ConsentCard,
+        ContextBudgetBar,
+        ConsentPrompt,
+        ErrorActionPrompt,
         PlanActions,
-        PlanCard,
         StatusBar,
-        SystemMessage,
-        ThinkingIndicator,
-        ToolCallBlock,
-        UserMessage,
+        extract_consent_tool_name,
+        render_assistant_message,
+        render_plan_panel,
+        render_system_message,
+        render_thinking_message,
+        render_tool_details_panel,
+        render_tool_heartbeat_line,
+        render_tool_progress_chunk,
+        render_tool_result_line,
+        render_tool_start_line,
+        render_user_message,
     )
 
     class PromptTextArea(TextArea):
@@ -884,6 +1252,8 @@ def run_tui() -> int:
             app = getattr(self, "app", None)
             if app is not None and hasattr(app, "_update_command_palette"):
                 app._update_command_palette(self.text)
+            if app is not None and hasattr(app, "_on_prompt_text_changed"):
+                app._on_prompt_text_changed(self.text)
 
         async def _on_key(self, event: Any) -> None:
             """Override TextArea._on_key to control Enter behaviour and route
@@ -913,6 +1283,13 @@ def run_tui() -> int:
                     event.prevent_default()
                     palette.move_selection(-1 if key == "up" else 1)
                     return
+
+            # ── Ctrl+K / Ctrl+Space: action sheet ──
+            if key in {"ctrl+k", "ctrl+space", "ctrl+@"} and app is not None and hasattr(app, "action_open_action_sheet"):
+                event.stop()
+                event.prevent_default()
+                app.action_open_action_sheet()
+                return
 
             # ── Arrow keys: prompt history (when palette hidden) ──
             if key == "up" and app is not None and hasattr(app, "_prompt_history"):
@@ -1086,20 +1463,144 @@ def run_tui() -> int:
             scrollbar-color-active: #b3b3b3;
         }
 
-        #plan_actions {
-            height: auto;
-        }
-
-        #consent {
-            height: 8;
+        #context_panel {
+            height: 1fr;
             border: round $accent;
             padding: 0 1;
+            layout: vertical;
+        }
+
+        #sops_panel {
+            height: 1fr;
+            border: round $accent;
+            padding: 0 1;
+            layout: vertical;
+        }
+
+        #context_header {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
+        #sops_header {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
+        #context_sources_list {
+            height: 1fr;
+            border: round #3b3b3b;
+            padding: 0 1;
+            margin: 0 0 1 0;
             scrollbar-background: #2f2f2f;
             scrollbar-background-hover: #3a3a3a;
             scrollbar-background-active: #454545;
             scrollbar-color: #7f7f7f;
             scrollbar-color-hover: #999999;
             scrollbar-color-active: #b3b3b3;
+        }
+
+        #sop_list {
+            height: 1fr;
+            border: round #3b3b3b;
+            padding: 0 1;
+            margin: 0 0 1 0;
+            scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
+            scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
+        }
+
+        .context-source-row {
+            layout: horizontal;
+            height: auto;
+            margin: 0;
+            padding: 0;
+        }
+
+        .sop-row {
+            height: auto;
+            margin: 0 0 1 0;
+            padding: 0;
+            layout: vertical;
+            border-bottom: solid #333333;
+        }
+
+        .sop-row-header {
+            height: auto;
+            layout: horizontal;
+            margin: 0;
+            padding: 0;
+        }
+
+        .sop-source-label {
+            width: auto;
+            min-width: 14;
+            color: $text-muted;
+            padding: 0 0 0 1;
+        }
+
+        .sop-preview {
+            color: $text-muted;
+            padding: 0 0 0 3;
+        }
+
+        .context-source-label {
+            width: 1fr;
+            color: $text;
+            padding: 0 1 0 0;
+        }
+
+        .context-remove-btn {
+            width: 3;
+            min-width: 3;
+            margin: 0;
+            padding: 0;
+        }
+
+        #context_add_row {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #context_add_row Button {
+            width: 1fr;
+            min-width: 7;
+            margin: 0 1 0 0;
+        }
+
+        #context_input_row, #context_sop_row {
+            height: auto;
+            layout: horizontal;
+            margin: 0;
+        }
+
+        #context_input, #context_sop_select {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #plan_actions {
+            height: auto;
+        }
+
+        #consent_prompt {
+            display: none;
+            height: auto;
+            min-height: 0;
+            margin: 0 0 0 0;
+        }
+
+        #error_action_prompt {
+            display: none;
+            height: auto;
+            min-height: 0;
+            margin: 0 0 0 0;
         }
 
         #prompt_box {
@@ -1124,11 +1625,6 @@ def run_tui() -> int:
         }
 
         #prompt_metrics {
-            width: auto;
-            color: $text-muted;
-        }
-
-        #prompt_spacer {
             width: 1fr;
         }
 
@@ -1159,6 +1655,8 @@ def run_tui() -> int:
         BINDINGS = [
             ("f5", "submit_prompt", "Send prompt"),
             ("escape", "interrupt_run", "Interrupt run"),
+            Binding("ctrl+k", "open_action_sheet", "Actions", priority=True),
+            Binding("ctrl+space", "open_action_sheet", "Actions", priority=True),
             ("ctrl+c", "copy_selection", "Copy selection"),
             ("meta+c", "copy_selection", "Copy selection"),
             ("super+c", "copy_selection", "Copy selection"),
@@ -1181,6 +1679,16 @@ def run_tui() -> int:
         _default_auto_approve: bool = False
         _consent_active: bool = False
         _consent_buffer: list[str] = []
+        _consent_history_lines: list[str] = []
+        _consent_tool_name: str = "tool"
+        _context_sources: list[dict[str, str]] = []
+        _context_sop_names: list[str] = []
+        _context_add_mode: str | None = None
+        _context_ready_for_sync: bool = False
+        _sop_catalog: list[dict[str, str]] = []
+        _active_sop_names: set[str] = set()
+        _sop_toggle_id_to_name: dict[str, str] = {}
+        _sops_ready_for_sync: bool = False
         _artifacts: list[str] = []
         _plan_text: str = ""
         _issues_lines: list[str] = []
@@ -1193,13 +1701,35 @@ def run_tui() -> int:
         _model_select_syncing: bool = False
         _pending_model_select_value: str | None = None
         # Conversation view state
-        _current_assistant_msg: Any = None  # AssistantMessage | None
-        _current_thinking: Any = None  # ThinkingIndicator | None
-        _tool_blocks: dict[str, Any] = {}  # tool_use_id → ToolCallBlock
-        _current_plan_card: Any = None  # PlanCard | None
+        _current_assistant_chunks: list[str] = []
+        _current_assistant_model: str | None = None
+        _current_assistant_timestamp: str | None = None
+        _assistant_placeholder_written: bool = False
+        _current_thinking: bool = False
+        _tool_blocks: dict[str, dict[str, Any]] = {}
+        _current_plan_steps_total: int = 0
+        _current_plan_summary: str = ""
+        _current_plan_steps: list[str] = []
+        _current_plan_step_statuses: list[str] = []
+        _current_plan_active_step: int | None = None
+        _plan_updates_seen: bool = False
+        _transcript_fallback_lines: list[str] = []
+        _consent_prompt_widget: Any = None  # ConsentPrompt | None
+        _error_action_prompt_widget: Any = None  # ErrorActionPrompt | None
+        _pending_error_action: dict[str, Any] | None = None
+        _context_sources_list: Any = None  # VerticalScroll | None
+        _sop_list: Any = None  # VerticalScroll | None
+        _context_input: Any = None  # Input | None
+        _context_sop_select: Any = None  # Select | None
         _command_palette: Any = None  # CommandPalette | None
+        _action_sheet: Any = None  # ActionSheet | None
+        _action_sheet_mode: str = "root"
+        _action_sheet_previous_focus: Any = None
         _status_bar: Any = None  # StatusBar | None
-        _prompt_metrics: Any = None  # Static | None
+        _prompt_metrics: Any = None  # ContextBudgetBar | None
+        _prompt_input_tokens_est: int | None = None
+        _prompt_estimate_timer: Any = None
+        _pending_prompt_estimate_text: str = ""
         _run_tool_count: int = 0
         _run_start_time: float | None = None
         _status_timer: Any = None
@@ -1207,12 +1737,11 @@ def run_tui() -> int:
         _prompt_history: list[str] = []
         _history_index: int = -1
         _MAX_PROMPT_HISTORY: int = 50
+        _TRANSCRIPT_MAX_LINES: int = 5000
         _split_ratio: int = 2
         _search_active: bool = False
         _plan_step_counter: int = 0
         _plan_completion_announced: bool = False
-        _transcript_widget_count: int = 0
-        _MAX_TRANSCRIPT_WIDGETS: int = 500
         _received_structured_plan: bool = False
         _daemon_ready: bool = False
         _query_active: bool = False
@@ -1223,6 +1752,9 @@ def run_tui() -> int:
         _current_daemon_model: str | None = None
         _turn_output_chunks: list[str] = []
         _daemon_session_id: str | None = None
+        _available_restore_session_id: str | None = None
+        _available_restore_turn_count: int = 0
+        _last_restored_turn_count: int = 0
         _is_shutting_down: bool = False
         _last_usage: dict[str, Any] | None = None
         _last_cost_usd: float | None = None
@@ -1234,7 +1766,7 @@ def run_tui() -> int:
         def compose(self) -> Any:
             yield Header()
             with Horizontal(id="panes"):
-                yield VerticalScroll(id="transcript")
+                yield RichLog(id="transcript")
                 with Vertical(id="side"):
                     with TabbedContent(id="side_tabs"):
                         with TabPane("Plan", id="tab_plan"):
@@ -1247,6 +1779,32 @@ def run_tui() -> int:
                                 soft_wrap=True,
                             )
                             yield PlanActions(id="plan_actions")
+                        with TabPane("Context", id="tab_context"):
+                            with Vertical(id="context_panel"):
+                                yield Static("Active Context Sources", id="context_header")
+                                yield VerticalScroll(id="context_sources_list")
+                                with Horizontal(id="context_add_row"):
+                                    yield Button("File", id="context_add_file", compact=True, variant="default")
+                                    yield Button("Note", id="context_add_note", compact=True, variant="default")
+                                    yield Button("SOP", id="context_add_sop", compact=True, variant="default")
+                                    yield Button("KB", id="context_add_kb", compact=True, variant="default")
+                                with Horizontal(id="context_input_row"):
+                                    yield Input(placeholder="Enter context value", id="context_input")
+                                    yield Button("Add", id="context_add_commit", compact=True, variant="success")
+                                    yield Button("Cancel", id="context_add_cancel", compact=True, variant="default")
+                                with Horizontal(id="context_sop_row"):
+                                    yield Select(
+                                        options=[("Select SOP...", _CONTEXT_SELECT_PLACEHOLDER)],
+                                        allow_blank=False,
+                                        id="context_sop_select",
+                                        compact=True,
+                                    )
+                                    yield Button("Add", id="context_sop_commit", compact=True, variant="success")
+                                    yield Button("Cancel", id="context_sop_cancel", compact=True, variant="default")
+                        with TabPane("SOPs", id="tab_sops"):
+                            with Vertical(id="sops_panel"):
+                                yield Static("Available SOPs", id="sops_header")
+                                yield VerticalScroll(id="sop_list")
                         with TabPane("Help", id="tab_help"):
                             yield TextArea(
                                 text="",
@@ -1271,9 +1829,11 @@ def run_tui() -> int:
                                 id="artifacts",
                                 soft_wrap=True,
                             )
-                    yield TextArea(text="", read_only=True, show_cursor=False, id="consent", soft_wrap=True)
             yield CommandPalette(id="command_palette")
+            yield ActionSheet(id="action_sheet")
             yield StatusBar(id="status_bar")
+            yield ErrorActionPrompt(id="error_action_prompt")
+            yield ConsentPrompt(id="consent_prompt")
             with Vertical(id="prompt_box"):
                 yield PromptTextArea(
                     text="",
@@ -1282,8 +1842,7 @@ def run_tui() -> int:
                     soft_wrap=True,
                 )
                 with Horizontal(id="prompt_bottom"):
-                    yield Static("", id="prompt_metrics")
-                    yield Static("", id="prompt_spacer")
+                    yield ContextBudgetBar(id="prompt_metrics")
                     yield Select(
                         options=[("Loading model info...", _MODEL_LOADING_VALUE)],
                         allow_blank=False,
@@ -1294,8 +1853,15 @@ def run_tui() -> int:
 
         def on_mount(self) -> None:
             self._command_palette = self.query_one("#command_palette", CommandPalette)
+            self._action_sheet = self.query_one("#action_sheet", ActionSheet)
             self._status_bar = self.query_one("#status_bar", StatusBar)
-            self._prompt_metrics = self.query_one("#prompt_metrics", Static)
+            self._consent_prompt_widget = self.query_one("#consent_prompt", ConsentPrompt)
+            self._error_action_prompt_widget = self.query_one("#error_action_prompt", ErrorActionPrompt)
+            self._context_sources_list = self.query_one("#context_sources_list", VerticalScroll)
+            self._sop_list = self.query_one("#sop_list", VerticalScroll)
+            self._context_input = self.query_one("#context_input", Input)
+            self._context_sop_select = self.query_one("#context_sop_select", Select)
+            self._prompt_metrics = self.query_one("#prompt_metrics", ContextBudgetBar)
             self._status_bar.set_model(self._current_model_summary())
             self.query_one("#prompt", PromptTextArea).focus()
             self._reset_help_panel()
@@ -1303,16 +1869,21 @@ def run_tui() -> int:
             self._reset_issues_panel()
             self._reset_artifacts_panel()
             self._reset_consent_panel()
+            self._reset_error_action_prompt()
+            self._set_context_add_mode(None)
+            self._refresh_context_sop_options()
+            self._render_context_sources_panel()
+            self._refresh_sop_catalog()
+            self._render_sop_panel()
             self._refresh_model_select()
             self.title = "Swarmee"
             self.sub_title = self._current_model_summary()
             self._update_prompt_placeholder()
             # Show ASCII art banner at the top of the transcript.
-            # Use plain Static widgets to avoid Rich markup interpretation
-            # (the banner contains / characters that break [dim]...[/dim] wrapping).
+            # Write plain lines so selection/export keeps exact banner text.
             from swarmee_river.utils.welcome_utils import SWARMEE_BANNER
             for banner_line in SWARMEE_BANNER.strip().splitlines():
-                self._mount_transcript_widget(Static(banner_line))
+                self._mount_transcript_widget(banner_line, plain_text=banner_line)
             self._write_transcript("Starting Swarmee daemon...")
             self._write_transcript(self.sub_title)
             self._write_transcript("Tips: see the Help tab for commands/keys/copy shortcuts.")
@@ -1321,15 +1892,21 @@ def run_tui() -> int:
                     [
                         "Commands:",
                         "- /plan <prompt>, /run <prompt>",
+                        "- /restore, /new",
+                        "- /compact",
+                        "- /context add/list/remove/clear",
+                        "- /sop list, /sop activate <name>, /sop deactivate <name>, /sop preview <name>",
                         "- /approve, /replan, /clearplan",
-                        "- /model, /stop, /daemon restart, /exit",
+                        "- /model, /stop, /daemon restart, /expand <tool_id>, /exit",
                         "",
                         "Consent:",
                         "- /consent <y|n|a|v> (or press y/n/a/v when prompted)",
+                        "- Inline consent buttons appear above the prompt box",
                         "",
                         "Keys:",
                         "- Enter submit, Shift+Enter newline (Ctrl+J/Alt+Enter fallback)",
                         "- Ctrl+Left/Right (or F6/F7) resize panes, F5 submit",
+                        "- Ctrl+K or Ctrl+Space opens action sheet",
                         "- Esc interrupt run, Ctrl+C/Cmd+C copy selection",
                         "",
                         "Copy/export:",
@@ -1337,50 +1914,119 @@ def run_tui() -> int:
                         "",
                         "Notes:",
                         "- Model selector is in the prompt box footer dropdown.",
-                        "- In transcript view, use Ctrl+C/Cmd+C (or /copy) to export text.",
+                        "- Transcript supports native mouse/keyboard text selection.",
+                        "- Ctrl+C/Cmd+C copies selected text; /copy exports full transcript.",
                     ]
                 )
             )
+            transcript = self.query_one("#transcript", RichLog)
+            with contextlib.suppress(Exception):
+                transcript.auto_scroll = True
+            with contextlib.suppress(Exception):
+                transcript.max_lines = self._TRANSCRIPT_MAX_LINES
             self._load_session()
             self._spawn_daemon()
 
-        def _mount_transcript_widget(self, widget: Any) -> None:
-            """Mount a widget into the transcript VerticalScroll and prune if needed."""
-            transcript = self.query_one("#transcript", VerticalScroll)
-            transcript.mount(widget)
-            self._transcript_widget_count += 1
-            if self._transcript_widget_count > self._MAX_TRANSCRIPT_WIDGETS:
-                children = list(transcript.children)
-                prune = len(children) - self._MAX_TRANSCRIPT_WIDGETS
-                for child in children[:prune]:
-                    child.remove()
-                self._transcript_widget_count = len(list(transcript.children))
-            transcript.scroll_end(animate=False)
+        def _record_transcript_fallback(self, text: str) -> None:
+            clean = sanitize_output_text(text).rstrip("\n")
+            if not clean:
+                return
+            self._transcript_fallback_lines.extend(clean.splitlines())
+            if len(self._transcript_fallback_lines) > self._TRANSCRIPT_MAX_LINES:
+                self._transcript_fallback_lines = self._transcript_fallback_lines[-self._TRANSCRIPT_MAX_LINES :]
+
+        def _mount_transcript_widget(self, renderable: Any, *, plain_text: str | None = None) -> None:
+            """Write a renderable into the transcript RichLog."""
+            transcript = self.query_one("#transcript", RichLog)
+            transcript.write(renderable)
+            if isinstance(plain_text, str):
+                self._record_transcript_fallback(plain_text)
+            elif isinstance(renderable, str):
+                self._record_transcript_fallback(renderable)
+            with contextlib.suppress(Exception):
+                transcript.scroll_end(animate=False)
 
         def _write_transcript(self, line: str) -> None:
             """Write a system/info message to the transcript."""
-            self._mount_transcript_widget(SystemMessage(line))
+            self._mount_transcript_widget(render_system_message(line), plain_text=line)
 
         def _dismiss_thinking(self) -> None:
-            """Immediately hide and discard the current thinking indicator."""
-            indicator = self._current_thinking
-            if indicator is None:
-                return
-            self._current_thinking = None
-            # Stop the animation timer so it doesn't fire after removal.
-            timer = getattr(indicator, "_timer", None)
-            if timer is not None:
-                with contextlib.suppress(Exception):
-                    timer.stop()
-            # Hide synchronously, then schedule async removal.
-            indicator.display = False
-            indicator.remove()
+            """Mark the thinking placeholder as dismissed."""
+            self._current_thinking = False
 
         def _write_transcript_line(self, line: str) -> None:
             """Write a plain text line to the transcript (used for TUI-internal messages)."""
             if self._query_active:
                 self._turn_output_chunks.append(sanitize_output_text(f"[tui] {line}\n"))
             self._write_transcript(line)
+
+        def _append_tool_output(self, record: dict[str, Any], chunk: str) -> None:
+            text = sanitize_output_text(str(chunk or ""))
+            if not text:
+                return
+            output = str(record.get("output", "")) + text
+            if len(output) > _TOOL_OUTPUT_RETENTION_MAX_CHARS:
+                output = output[-_TOOL_OUTPUT_RETENTION_MAX_CHARS:]
+            record["output"] = output
+
+        def _queue_tool_progress_content(self, record: dict[str, Any], *, content: str, stream: str) -> None:
+            text = sanitize_output_text(str(content or ""))
+            if not text:
+                return
+            self._append_tool_output(record, text)
+            pending = str(record.get("pending_output", ""))
+            pending_stream = str(record.get("pending_stream", "stdout") or "stdout")
+            normalized_stream = stream if stream in {"stdout", "stderr", "mixed"} else "stdout"
+            chunk = text
+            if pending:
+                if pending_stream != normalized_stream:
+                    pending_stream = "mixed"
+                    chunk = f"[{normalized_stream}] {text}"
+            else:
+                pending_stream = normalized_stream
+            pending += chunk
+            if len(pending) > _TOOL_OUTPUT_RETENTION_MAX_CHARS:
+                pending = pending[-_TOOL_OUTPUT_RETENTION_MAX_CHARS:]
+            record["pending_output"] = pending
+            record["pending_stream"] = pending_stream
+
+        def _flush_tool_progress_render(self, tool_use_id: str, *, force: bool = False) -> bool:
+            record = self._tool_blocks.get(tool_use_id)
+            if record is None:
+                return False
+            now = time.monotonic()
+            last = float(record.get("last_progress_render_mono", 0.0))
+            pending = str(record.get("pending_output", ""))
+            if pending:
+                if force or (now - last) >= _TOOL_PROGRESS_RENDER_INTERVAL_S:
+                    stream = str(record.get("pending_stream", "stdout") or "stdout")
+                    self._mount_transcript_widget(
+                        render_tool_progress_chunk(pending, stream=stream),
+                        plain_text=pending,
+                    )
+                    record["pending_output"] = ""
+                    record["pending_stream"] = "stdout"
+                    record["last_progress_render_mono"] = now
+                    return True
+                return False
+
+            elapsed = record.get("elapsed_s")
+            if force or not isinstance(elapsed, (int, float)):
+                return False
+            elapsed_s = float(elapsed)
+            previous = float(record.get("last_heartbeat_rendered_s", 0.0))
+            if (elapsed_s - previous) < _TOOL_HEARTBEAT_RENDER_MIN_STEP_S:
+                return False
+            if (now - last) < _TOOL_PROGRESS_RENDER_INTERVAL_S:
+                return False
+            tool_name = str(record.get("tool", "unknown"))
+            self._mount_transcript_widget(
+                render_tool_heartbeat_line(tool_name, elapsed_s=elapsed_s, tool_use_id=tool_use_id),
+                plain_text=f"⚙ {tool_name} [{tool_use_id}] running... ({elapsed_s:.1f}s)",
+            )
+            record["last_progress_render_mono"] = now
+            record["last_heartbeat_rendered_s"] = elapsed_s
+            return True
 
         def _call_from_thread_safe(self, callback: Any, *args: Any, **kwargs: Any) -> None:
             if self._is_shutting_down:
@@ -1395,16 +2041,41 @@ def run_tui() -> int:
             self._write_transcript_line(_RUN_ACTIVE_TIER_WARNING)
 
         def _write_user_input(self, text: str) -> None:
-            self._mount_transcript_widget(UserMessage(text, timestamp=self._turn_timestamp()))
+            timestamp = self._turn_timestamp()
+            plain = f"YOU> {text}\n{timestamp}"
+            self._mount_transcript_widget(render_user_message(text, timestamp=timestamp), plain_text=plain)
+
+        def _write_user_message(self, text: str, *, timestamp: str | None = None) -> None:
+            resolved_timestamp = (timestamp or "").strip() or self._turn_timestamp()
+            plain = f"YOU> {text}\n{resolved_timestamp}"
+            self._mount_transcript_widget(render_user_message(text, timestamp=resolved_timestamp), plain_text=plain)
+
+        def _write_assistant_message(
+            self,
+            text: str,
+            *,
+            model: str | None = None,
+            timestamp: str | None = None,
+        ) -> None:
+            resolved_timestamp = (timestamp or "").strip() or self._turn_timestamp()
+            self._last_assistant_text = text
+            plain_lines = [text]
+            meta_parts = [part for part in [model, resolved_timestamp] if isinstance(part, str) and part.strip()]
+            if meta_parts:
+                plain_lines.append(" · ".join(meta_parts))
+            self._mount_transcript_widget(
+                render_assistant_message(text, model=model, timestamp=resolved_timestamp),
+                plain_text="\n".join(plain_lines),
+            )
 
         def _turn_timestamp(self) -> str:
             return datetime.now().strftime("%I:%M %p").lstrip("0")
 
         def _append_plain_text(self, text: str) -> None:
-            """Mount a plain Static widget for non-event output lines (legacy fallback)."""
+            """Write a plain text line for non-event fallback output."""
             if not text.strip():
                 return
-            self._mount_transcript_widget(Static(text))
+            self._mount_transcript_widget(text, plain_text=text)
 
         def _set_plan_panel(self, content: str) -> None:
             self._plan_text = content
@@ -1412,6 +2083,67 @@ def run_tui() -> int:
             text = content if content.strip() else "(no plan)"
             plan_panel.load_text(text)
             plan_panel.scroll_end(animate=False)
+
+        def _extract_plan_step_descriptions(self, plan_json: dict[str, Any]) -> list[str]:
+            steps_raw = plan_json.get("steps", [])
+            if not isinstance(steps_raw, list):
+                return []
+            steps: list[str] = []
+            for step in steps_raw:
+                if isinstance(step, str):
+                    desc = step.strip()
+                elif isinstance(step, dict):
+                    desc = str(step.get("description", step.get("title", step))).strip()
+                else:
+                    desc = str(step).strip()
+                if desc:
+                    steps.append(desc)
+            return steps
+
+        def _refresh_plan_status_bar(self) -> None:
+            if self._status_bar is None:
+                return
+            if not self._query_active:
+                self._status_bar.set_plan_step(current=None, total=None)
+                return
+            total = self._current_plan_steps_total
+            if total <= 0:
+                self._status_bar.set_plan_step(current=None, total=None)
+                return
+            current: int | None = None
+            if isinstance(self._current_plan_active_step, int) and self._current_plan_active_step >= 0:
+                current = self._current_plan_active_step + 1
+            else:
+                completed = sum(1 for item in self._current_plan_step_statuses if item == "completed")
+                if completed >= total:
+                    current = total
+                elif completed > 0:
+                    current = completed
+            self._status_bar.set_plan_step(current=current, total=total)
+
+        def _render_plan_panel_from_status(self) -> None:
+            if self._current_plan_steps_total <= 0 or not self._current_plan_steps:
+                return
+            text_lines: list[str] = []
+            if self._current_plan_summary:
+                text_lines.append(self._current_plan_summary)
+                text_lines.append("")
+            for index, desc in enumerate(self._current_plan_steps, start=1):
+                status = (
+                    self._current_plan_step_statuses[index - 1]
+                    if index - 1 < len(self._current_plan_step_statuses)
+                    else "pending"
+                )
+                marker = "☐"
+                if status == "in_progress":
+                    marker = "▶"
+                elif status == "completed":
+                    marker = "☑"
+                text_lines.append(f"{marker} {index}. {desc}")
+            text_lines.append("")
+            text_lines.append("/approve  /replan  /clearplan")
+            self._set_plan_panel("\n".join(text_lines))
+            self._refresh_plan_status_bar()
 
         def _set_help_panel(self, content: str) -> None:
             self._help_text = content
@@ -1425,9 +2157,15 @@ def run_tui() -> int:
 
         def _reset_plan_panel(self) -> None:
             self._set_plan_panel("(no plan)")
-            self._current_plan_card = None
+            self._current_plan_steps_total = 0
+            self._current_plan_summary = ""
+            self._current_plan_steps = []
+            self._current_plan_step_statuses = []
+            self._current_plan_active_step = None
+            self._plan_updates_seen = False
             self._plan_step_counter = 0
             self._plan_completion_announced = False
+            self._refresh_plan_status_bar()
 
         def _reset_issues_panel(self) -> None:
             self._issues_lines = []
@@ -1614,9 +2352,238 @@ def run_tui() -> int:
             else:
                 self._command_palette.hide()
 
-        def _notify(self, message: str, *, severity: str = "information") -> None:
+        def _switch_side_tab(self, tab_id: str) -> None:
             with contextlib.suppress(Exception):
-                self.notify(message, severity=severity, timeout=2.5)
+                tabs = self.query_one("#side_tabs", TabbedContent)
+                tabs.active = tab_id
+
+        def _seed_prompt_with_command(self, command: str) -> None:
+            prompt_widget = self.query_one("#prompt", PromptTextArea)
+            existing = (prompt_widget.text or "").strip()
+            prompt_widget.clear()
+            command_text = command.strip()
+            if existing and not existing.startswith("/"):
+                seeded = f"{command_text} {existing}".strip() + " "
+            else:
+                seeded = f"{command_text} "
+            for method_name in ("insert", "insert_text_at_cursor"):
+                method = getattr(prompt_widget, method_name, None)
+                if callable(method):
+                    with contextlib.suppress(Exception):
+                        method(seeded)
+                        break
+            prompt_widget.focus()
+
+        def _set_model_tier_from_value(self, value: str) -> None:
+            parsed = parse_model_select_value(value)
+            if parsed is None:
+                return
+            requested_provider, requested_tier = parsed
+            self._pending_model_select_value = None
+            self._model_provider_override = requested_provider or None
+            self._model_tier_override = requested_tier or None
+            self._refresh_model_select()
+            self._update_header_status()
+            self._update_prompt_placeholder()
+            if (
+                self._daemon_ready
+                and self._proc is not None
+                and self._proc.poll() is None
+                and not self._query_active
+            ):
+                if not send_daemon_command(self._proc, {"cmd": "set_tier", "tier": requested_tier}):
+                    self._write_transcript_line("[model] failed to send tier change to daemon.")
+                else:
+                    self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
+            if self._status_bar is not None:
+                self._status_bar.set_model(self._current_model_summary())
+
+        def _build_action_sheet_actions(self) -> tuple[str, list[dict[str, str]]]:
+            if self._action_sheet_mode == "tier_menu":
+                options, _selected = self._model_select_options()
+                tier_actions: list[dict[str, str]] = [
+                    {"id": "tiers:back", "icon": "←", "label": "Back", "shortcut": "Esc"},
+                ]
+                for label, value in options:
+                    parsed = parse_model_select_value(value)
+                    if parsed is None:
+                        continue
+                    provider_name, tier_name = parsed
+                    tier_actions.append(
+                        {
+                            "id": f"tier:{value}",
+                            "icon": "◌",
+                            "label": f"{provider_name}/{tier_name}",
+                            "shortcut": "Enter",
+                        }
+                    )
+                return "Switch Model Tier", tier_actions
+
+            if self._consent_active:
+                return (
+                    "Consent Pending",
+                    [
+                        {"id": "consent:y", "icon": "✓", "label": "Allow", "shortcut": "y"},
+                        {"id": "consent:n", "icon": "✗", "label": "Deny", "shortcut": "n"},
+                        {"id": "consent:a", "icon": "★", "label": "Always allow", "shortcut": "a"},
+                        {"id": "consent:v", "icon": "🚫", "label": "Never allow", "shortcut": "v"},
+                    ],
+                )
+
+            if self._query_active:
+                return (
+                    "Run Actions",
+                    [
+                        {"id": "run:stop", "icon": "■", "label": "Stop run", "shortcut": "Esc"},
+                        {"id": "view:plan", "icon": "▶", "label": "View plan progress", "shortcut": "P"},
+                        {"id": "view:issues", "icon": "⚠", "label": "View issues", "shortcut": "I"},
+                    ],
+                )
+
+            if self._pending_plan_prompt:
+                return (
+                    "Plan Review",
+                    [
+                        {"id": "plan:approve", "icon": "✓", "label": "Approve plan", "shortcut": "/approve"},
+                        {"id": "plan:replan", "icon": "↻", "label": "Replan", "shortcut": "/replan"},
+                        {"id": "plan:clear", "icon": "⌫", "label": "Clear plan", "shortcut": "/clearplan"},
+                        {"id": "plan:edit", "icon": "✎", "label": "Edit plan", "shortcut": "Future"},
+                    ],
+                )
+
+            actions: list[dict[str, str]] = [
+                {"id": "idle:new_query", "icon": "✍", "label": "New query", "shortcut": "Tab"},
+                {"id": "idle:plan_mode", "icon": "🧭", "label": "Plan mode", "shortcut": "/plan"},
+                {"id": "idle:run_mode", "icon": "▶", "label": "Run mode", "shortcut": "/run"},
+            ]
+            if self._available_restore_session_id:
+                actions.append({"id": "idle:restore", "icon": "↺", "label": "Restore session", "shortcut": "/restore"})
+            actions.extend(
+                [
+                    {"id": "idle:compact", "icon": "⇢", "label": "Compact context", "shortcut": "/compact"},
+                    {"id": "idle:tiers", "icon": "⚙", "label": "Switch model tier", "shortcut": "Enter"},
+                ]
+            )
+            return "Actions", actions
+
+        def _show_action_sheet(self) -> None:
+            sheet = self._action_sheet
+            if sheet is None:
+                return
+            title, actions = self._build_action_sheet_actions()
+            sheet.set_actions(title=title, actions=actions)
+            sheet.show_sheet(focus=True)
+
+        def _dismiss_action_sheet(self, *, restore_focus: bool = True) -> None:
+            sheet = self._action_sheet
+            if sheet is not None:
+                sheet.hide_sheet()
+            previous = self._action_sheet_previous_focus
+            self._action_sheet_previous_focus = None
+            self._action_sheet_mode = "root"
+            if restore_focus and previous is not None:
+                with contextlib.suppress(Exception):
+                    previous.focus()
+
+        def action_open_action_sheet(self) -> None:
+            sheet = self._action_sheet
+            if sheet is None:
+                return
+            if sheet.is_visible:
+                self._dismiss_action_sheet(restore_focus=True)
+                return
+            if self._command_palette is not None:
+                self._command_palette.hide()
+            self._action_sheet_previous_focus = getattr(self, "focused", None)
+            self._action_sheet_mode = "root"
+            self._show_action_sheet()
+
+        def _execute_action_sheet_action(self, action_id: str) -> None:
+            action = action_id.strip().lower()
+            if not action:
+                return
+            if action == "tiers:back":
+                self._action_sheet_mode = "root"
+                self._show_action_sheet()
+                return
+            if action.startswith("tier:"):
+                value = action_id.split(":", 1)[1].strip()
+                self._set_model_tier_from_value(value)
+                return
+
+            if action == "idle:new_query":
+                self.action_focus_prompt()
+                return
+            if action == "idle:plan_mode":
+                self._seed_prompt_with_command("/plan")
+                return
+            if action == "idle:run_mode":
+                self._seed_prompt_with_command("/run")
+                return
+            if action == "idle:restore":
+                self._restore_available_session()
+                return
+            if action == "idle:compact":
+                self._request_context_compact()
+                return
+            if action == "idle:tiers":
+                self._action_sheet_mode = "tier_menu"
+                self._show_action_sheet()
+                return
+
+            if action == "run:stop":
+                self._stop_run()
+                return
+            if action == "view:plan":
+                self._switch_side_tab("tab_plan")
+                return
+            if action == "view:issues":
+                self._switch_side_tab("tab_issues")
+                return
+
+            if action.startswith("consent:"):
+                choice = action.split(":", 1)[1].strip().lower()
+                self._submit_consent_choice(choice)
+                return
+
+            if action == "plan:approve":
+                self._dispatch_plan_action("approve")
+                return
+            if action == "plan:replan":
+                self._dispatch_plan_action("replan")
+                return
+            if action == "plan:clear":
+                self._dispatch_plan_action("clearplan")
+                return
+            if action == "plan:edit":
+                self._seed_prompt_with_command("/plan")
+                self._write_transcript_line("[plan] inline editing is not available yet; adjust prompt and submit.")
+                return
+
+        def _estimate_prompt_tokens(self, text: str) -> int:
+            # Lightweight heuristic for pre-send token estimate.
+            return max(0, (len(text or "") + 3) // 4)
+
+        def _apply_prompt_estimate(self) -> None:
+            text = self._pending_prompt_estimate_text
+            self._prompt_input_tokens_est = self._estimate_prompt_tokens(text)
+            self._refresh_prompt_metrics()
+
+        def _schedule_prompt_estimate_update(self, text: str) -> None:
+            self._pending_prompt_estimate_text = text or ""
+            timer = self._prompt_estimate_timer
+            self._prompt_estimate_timer = None
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+            self._prompt_estimate_timer = self.set_timer(0.2, self._apply_prompt_estimate)
+
+        def _on_prompt_text_changed(self, text: str) -> None:
+            self._schedule_prompt_estimate_update(text)
+
+        def _notify(self, message: str, *, severity: str = "information", timeout: float | None = 2.5) -> None:
+            with contextlib.suppress(Exception):
+                self.notify(message, severity=severity, timeout=timeout)
 
         def _copy_text(self, text: str, *, label: str) -> None:
             payload = text or ""
@@ -1675,28 +2642,74 @@ def run_tui() -> int:
                 self._write_transcript_line(f"[copy] {label}: clipboard unavailable.")
 
         def _get_transcript_text(self) -> str:
-            transcript = self.query_one("#transcript", VerticalScroll)
-            lines: list[str] = []
-            for child in transcript.children:
-                if isinstance(child, AssistantMessage):
-                    lines.append(child.full_text)
-                else:
-                    # Textual Static implementations differ by version; prefer public
-                    # attributes/methods and gracefully fall back when unavailable.
+            transcript = self.query_one("#transcript", RichLog)
+            for method_name in ("export_text", "get_text", "to_text"):
+                method = getattr(transcript, method_name, None)
+                if not callable(method):
+                    continue
+                with contextlib.suppress(Exception):
+                    exported = method()
+                    if isinstance(exported, str) and exported.strip():
+                        return sanitize_output_text(exported).rstrip() + "\n"
+
+            if self._transcript_fallback_lines:
+                return "\n".join(self._transcript_fallback_lines).rstrip() + "\n"
+
+            lines = getattr(transcript, "lines", None)
+            if isinstance(lines, list) and lines:
+                extracted: list[str] = []
+                for line in lines:
+                    if isinstance(line, str):
+                        extracted.append(line)
+                        continue
                     text = ""
                     with contextlib.suppress(Exception):
-                        renderable = getattr(child, "renderable", None)
-                        if renderable is not None:
-                            text = str(renderable)
+                        text = str(getattr(line, "text"))
                     if not text:
                         with contextlib.suppress(Exception):
-                            text = str(child.render())
-                    if not text:
-                        with contextlib.suppress(Exception):
-                            text = str(getattr(child, "_content", ""))
+                            text = str(line)
                     if text:
-                        lines.append(text)
-            return "\n".join(lines).rstrip() + "\n"
+                        extracted.append(text)
+                if extracted:
+                    return sanitize_output_text("\n".join(extracted)).rstrip() + "\n"
+
+            return ""
+
+        def _get_richlog_selection_text(self, transcript: Any) -> str:
+            for attr_name in ("selected_text", "selection_text"):
+                selected = getattr(transcript, attr_name, None)
+                if isinstance(selected, str) and selected.strip():
+                    return selected
+                if callable(selected):
+                    with contextlib.suppress(Exception):
+                        value = selected()
+                        if isinstance(value, str) and value.strip():
+                            return value
+
+            for method_name in ("get_selection_text", "export_selection", "get_selected_text"):
+                method = getattr(transcript, method_name, None)
+                if not callable(method):
+                    continue
+                with contextlib.suppress(Exception):
+                    value = method()
+                    if isinstance(value, str) and value.strip():
+                        return value
+
+            selection = getattr(transcript, "selection", None)
+            if selection is None:
+                return ""
+            if isinstance(selection, str):
+                return selection
+            for method_name in ("extract", "to_text", "text"):
+                method = getattr(selection, method_name, None)
+                if callable(method):
+                    with contextlib.suppress(Exception):
+                        value = method()
+                        if isinstance(value, str) and value.strip():
+                            return value
+                elif isinstance(method, str) and method.strip():
+                    return method
+            return ""
 
         def _get_all_text(self) -> str:
             parts = [
@@ -1712,8 +2725,11 @@ def run_tui() -> int:
                 "# Artifacts",
                 "\n".join(self._artifacts).rstrip() or "(no artifacts)",
                 "",
-                "# Consent",
-                "\n".join(self._consent_buffer).rstrip() or "(no consent buffer)",
+                "# Context Sources",
+                "\n".join(self._context_list_lines()).rstrip() or "(no context sources)",
+                "",
+                "# Consent History",
+                "\n".join(self._consent_history_lines).rstrip() or "(no consent decisions)",
                 "",
             ]
             return "\n".join(parts).rstrip() + "\n"
@@ -1744,22 +2760,601 @@ def run_tui() -> int:
                 self._artifacts = updated
                 self._render_artifacts_panel()
 
-        def _render_consent_panel(self) -> None:
-            consent_panel = self.query_one("#consent", TextArea)
-            if not self._consent_active:
-                consent_panel.load_text("(no active consent prompt)")
+        def _context_source_label(self, source: dict[str, str]) -> str:
+            source_type = source.get("type", "")
+            if source_type == "file":
+                return source.get("path", "")
+            if source_type == "note":
+                return source.get("text", "")
+            if source_type == "sop":
+                return source.get("name", "")
+            if source_type == "kb":
+                return source.get("id", "")
+            if source_type == "url":
+                return source.get("url", source.get("path", ""))
+            return str(source)
+
+        def _truncate_context_label(self, value: str, *, max_chars: int = _CONTEXT_SOURCE_MAX_LABEL) -> str:
+            text = value.strip().replace("\n", " ")
+            if len(text) <= max_chars:
+                return text
+            if max_chars <= 1:
+                return text[:max_chars]
+            return text[: max_chars - 1].rstrip() + "…"
+
+        def _render_context_sources_panel(self) -> None:
+            container = self._context_sources_list
+            if container is None:
+                with contextlib.suppress(Exception):
+                    container = self.query_one("#context_sources_list", VerticalScroll)
+                    self._context_sources_list = container
+            if container is None:
                 return
-            lines = self._consent_buffer[-10:] + [
-                "",
-                "[y] yes  [n] no  [a] always(session)  [v] never(session)",
-            ]
-            consent_panel.load_text("\n".join(lines))
-            consent_panel.scroll_end(animate=False)
+
+            for child in list(container.children):
+                with contextlib.suppress(Exception):
+                    child.remove()
+
+            if not self._context_sources:
+                container.mount(Static("[dim](no context sources attached)[/dim]"))
+                return
+
+            for index, source in enumerate(self._context_sources):
+                source_type = source.get("type", "").strip().lower()
+                icon = _CONTEXT_SOURCE_ICONS.get(source_type, "•")
+                label = self._truncate_context_label(self._context_source_label(source))
+                row = Horizontal(classes="context-source-row")
+                container.mount(row)
+                row.mount(Static(f"{icon} {label}", classes="context-source-label"))
+                row.mount(
+                    Button(
+                        "✕",
+                        id=f"context_remove_{index}",
+                        classes="context-remove-btn",
+                        compact=True,
+                        variant="error",
+                    )
+                )
+
+        def _refresh_context_sop_options(self) -> None:
+            self._context_sop_names = discover_available_sop_names()
+            selector = self._context_sop_select
+            if selector is None:
+                with contextlib.suppress(Exception):
+                    selector = self.query_one("#context_sop_select", Select)
+                    self._context_sop_select = selector
+            if selector is None:
+                return
+            options: list[tuple[str, str]] = [("Select SOP...", _CONTEXT_SELECT_PLACEHOLDER)]
+            options.extend((name, name) for name in self._context_sop_names)
+            with contextlib.suppress(Exception):
+                selector.set_options(options)
+                selector.value = _CONTEXT_SELECT_PLACEHOLDER
+
+        def _sop_checkbox_id(self, name: str) -> str:
+            token = re.sub(r"[^a-zA-Z0-9_.-]+", "_", name.strip().lower())
+            token = token.strip("_") or "sop"
+            return f"sop_toggle_{token}"
+
+        def _refresh_sop_catalog(self) -> None:
+            self._sop_catalog = discover_available_sops()
+            available_names = {item.get("name", "").strip() for item in self._sop_catalog}
+            self._active_sop_names = {name for name in self._active_sop_names if name in available_names}
+            self._sops_ready_for_sync = bool(self._active_sop_names)
+
+        def _lookup_sop(self, name: str) -> dict[str, str] | None:
+            target = name.strip().lower()
+            for item in self._sop_catalog:
+                sop_name = str(item.get("name", "")).strip()
+                if sop_name.lower() == target:
+                    return item
+            return None
+
+        def _render_sop_panel(self) -> None:
+            container = self._sop_list
+            if container is None:
+                with contextlib.suppress(Exception):
+                    container = self.query_one("#sop_list", VerticalScroll)
+                    self._sop_list = container
+            if container is None:
+                return
+
+            self._sop_toggle_id_to_name = {}
+            for child in list(container.children):
+                with contextlib.suppress(Exception):
+                    child.remove()
+
+            if not self._sop_catalog:
+                container.mount(Static("[dim](no SOPs found)[/dim]"))
+                return
+
+            for sop in self._sop_catalog:
+                name = str(sop.get("name", "")).strip()
+                if not name:
+                    continue
+                source = str(sop.get("source", "")).strip() or "unknown"
+                preview = str(sop.get("first_paragraph_preview", "")).strip() or "(no preview available)"
+                checkbox_id = self._sop_checkbox_id(name)
+                self._sop_toggle_id_to_name[checkbox_id] = name
+                row = Vertical(classes="sop-row")
+                container.mount(row)
+                header = Horizontal(classes="sop-row-header")
+                row.mount(header)
+                header.mount(Checkbox(name, id=checkbox_id, value=(name in self._active_sop_names)))
+                header.mount(Static(f"[dim]{source}[/dim]", classes="sop-source-label"))
+                row.mount(Static(preview, classes="sop-preview"))
+
+        def _sync_active_sops_with_daemon(self, *, notify_on_failure: bool = False) -> bool:
+            proc = self._proc
+            if not self._daemon_ready or proc is None or proc.poll() is not None:
+                self._sops_ready_for_sync = bool(self._active_sop_names)
+                return False
+            for name in sorted(self._active_sop_names):
+                record = self._lookup_sop(name)
+                if record is None:
+                    continue
+                content = str(record.get("content", "")).strip()
+                if not content:
+                    continue
+                payload = {"cmd": "set_sop", "name": name, "content": content}
+                if not send_daemon_command(proc, payload):
+                    self._sops_ready_for_sync = True
+                    if notify_on_failure:
+                        self._write_transcript_line("[sop] failed to sync active SOPs with daemon.")
+                    return False
+            self._sops_ready_for_sync = False
+            return True
+
+        def _set_sop_active(self, name: str, active: bool, *, sync: bool = True, announce: bool = True) -> bool:
+            record = self._lookup_sop(name)
+            if record is None:
+                self._write_transcript_line(f"[sop] unknown SOP: {name}")
+                return False
+            sop_name = str(record.get("name", "")).strip()
+            if not sop_name:
+                return False
+
+            changed = False
+            if active and sop_name not in self._active_sop_names:
+                self._active_sop_names.add(sop_name)
+                changed = True
+            elif (not active) and sop_name in self._active_sop_names:
+                self._active_sop_names.remove(sop_name)
+                changed = True
+
+            if not changed:
+                return True
+
+            self._render_sop_panel()
+            self._save_session()
+
+            if sync:
+                proc = self._proc
+                if not self._daemon_ready or proc is None or proc.poll() is not None:
+                    self._sops_ready_for_sync = bool(self._active_sop_names)
+                else:
+                    payload = {
+                        "cmd": "set_sop",
+                        "name": sop_name,
+                        "content": (str(record.get("content", "")).strip() if active else None),
+                    }
+                    if not send_daemon_command(proc, payload):
+                        self._sops_ready_for_sync = True
+                        self._write_transcript_line("[sop] failed to sync with daemon.")
+                    else:
+                        self._sops_ready_for_sync = False
+
+            if announce:
+                status = "activated" if active else "deactivated"
+                self._write_transcript_line(f"[sop] {status}: {sop_name}")
+            return True
+
+        def _sop_list_lines(self) -> list[str]:
+            if not self._sop_catalog:
+                return ["[sop] no SOPs found."]
+            lines: list[str] = ["[sop] available:"]
+            for index, sop in enumerate(self._sop_catalog, start=1):
+                name = str(sop.get("name", "")).strip()
+                source = str(sop.get("source", "")).strip() or "unknown"
+                marker = "✓" if name in self._active_sop_names else " "
+                lines.append(f"{index}. [{marker}] {name} ({source})")
+            return lines
+
+        def _handle_sop_command(self, argument: str) -> bool:
+            raw = (argument or "").strip()
+            if not raw:
+                self._write_transcript_line(_SOP_USAGE_TEXT)
+                return True
+            lowered = raw.lower()
+
+            if lowered == "list":
+                for line in self._sop_list_lines():
+                    self._write_transcript_line(line)
+                return True
+
+            if lowered.startswith("activate "):
+                target = raw.split(maxsplit=1)[1].strip()
+                if not target:
+                    self._write_transcript_line(_SOP_USAGE_TEXT)
+                    return True
+                self._set_sop_active(target, True, sync=True, announce=True)
+                return True
+
+            if lowered.startswith("deactivate "):
+                target = raw.split(maxsplit=1)[1].strip()
+                if not target:
+                    self._write_transcript_line(_SOP_USAGE_TEXT)
+                    return True
+                self._set_sop_active(target, False, sync=True, announce=True)
+                return True
+
+            if lowered.startswith("preview "):
+                target = raw.split(maxsplit=1)[1].strip()
+                if not target:
+                    self._write_transcript_line(_SOP_USAGE_TEXT)
+                    return True
+                record = self._lookup_sop(target)
+                if record is None:
+                    self._write_transcript_line(f"[sop] unknown SOP: {target}")
+                    return True
+                name = str(record.get("name", target)).strip()
+                source = str(record.get("source", "")).strip() or "unknown"
+                content = str(record.get("content", "")).strip()
+                if not content:
+                    self._write_transcript_line(f"[sop] no content available for {name}")
+                    return True
+                markdown = f"# SOP: {name}\n\n[dim]Source: {source}[/dim]\n\n{content}"
+                self._mount_transcript_widget(render_assistant_message(markdown), plain_text=f"SOP: {name}\n\n{content}")
+                return True
+
+            self._write_transcript_line(_SOP_USAGE_TEXT)
+            return True
+
+        def _set_context_add_mode(self, mode: str | None) -> None:
+            normalized = (mode or "").strip().lower() or None
+            self._context_add_mode = normalized
+            input_row = self.query_one("#context_input_row", Horizontal)
+            sop_row = self.query_one("#context_sop_row", Horizontal)
+            input_widget = self._context_input
+            if input_widget is None:
+                with contextlib.suppress(Exception):
+                    input_widget = self.query_one("#context_input", Input)
+                    self._context_input = input_widget
+
+            if normalized in _CONTEXT_INPUT_SOURCE_TYPES:
+                input_row.styles.display = "block"
+                sop_row.styles.display = "none"
+                if input_widget is not None:
+                    if normalized == "file":
+                        input_widget.placeholder = "Enter file path"
+                    elif normalized == "kb":
+                        input_widget.placeholder = "Enter knowledge base ID"
+                    else:
+                        input_widget.placeholder = "Enter context note"
+                    with contextlib.suppress(Exception):
+                        input_widget.value = ""
+                        input_widget.focus()
+                return
+
+            if normalized == _CONTEXT_SOP_SOURCE_TYPE:
+                input_row.styles.display = "none"
+                sop_row.styles.display = "block"
+                self._refresh_context_sop_options()
+                if self._context_sop_select is not None:
+                    with contextlib.suppress(Exception):
+                        self._context_sop_select.focus()
+                return
+
+            input_row.styles.display = "none"
+            sop_row.styles.display = "none"
+
+        def _context_sources_payload(self) -> list[dict[str, str]]:
+            payload: list[dict[str, str]] = []
+            for source in self._context_sources:
+                source_type = source.get("type", "")
+                if source_type == "file":
+                    path = source.get("path", "").strip()
+                    if path:
+                        payload.append({"type": "file", "path": path, "id": source.get("id", "")})
+                elif source_type == "note":
+                    text = source.get("text", "").strip()
+                    if text:
+                        payload.append({"type": "note", "text": text, "id": source.get("id", "")})
+                elif source_type == "sop":
+                    name = source.get("name", "").strip()
+                    if name:
+                        payload.append({"type": "sop", "name": name, "id": source.get("id", "")})
+                elif source_type == "kb":
+                    kb_id = source.get("id", "").strip()
+                    if kb_id:
+                        payload.append({"type": "kb", "id": kb_id})
+                elif source_type == "url":
+                    url = source.get("url", "").strip()
+                    if url:
+                        payload.append({"type": "url", "url": url, "id": source.get("id", "")})
+            return payload
+
+        def _sync_context_sources_with_daemon(self, *, notify_on_failure: bool = False) -> bool:
+            proc = self._proc
+            if not self._daemon_ready or proc is None or proc.poll() is not None:
+                self._context_ready_for_sync = True
+                return False
+            payload = {"cmd": "set_context_sources", "sources": self._context_sources_payload()}
+            if send_daemon_command(proc, payload):
+                self._context_ready_for_sync = False
+                return True
+            self._context_ready_for_sync = True
+            if notify_on_failure:
+                self._write_transcript_line("[context] failed to sync sources with daemon.")
+            return False
+
+        def _set_context_sources(self, sources: list[dict[str, str]], *, sync: bool = True) -> None:
+            self._context_sources = _normalize_context_sources(sources)
+            self._render_context_sources_panel()
+            self._save_session()
+            if sync:
+                self._sync_context_sources_with_daemon(notify_on_failure=True)
+
+        def _add_context_source(self, source: dict[str, str]) -> None:
+            normalized = _normalize_context_source(source)
+            if normalized is None:
+                return
+            updated = [*self._context_sources, normalized]
+            self._set_context_sources(updated, sync=True)
+
+        def _remove_context_source(self, index: int) -> None:
+            if index < 0 or index >= len(self._context_sources):
+                self._write_transcript_line(f"[context] invalid index: {index + 1}.")
+                return
+            updated = [item for i, item in enumerate(self._context_sources) if i != index]
+            self._set_context_sources(updated, sync=True)
+
+        def _clear_context_sources(self) -> None:
+            self._set_context_sources([], sync=True)
+
+        def _context_list_lines(self) -> list[str]:
+            if not self._context_sources:
+                return ["[context] no sources attached."]
+            lines: list[str] = ["[context] active sources:"]
+            for index, source in enumerate(self._context_sources, start=1):
+                source_type = source.get("type", "unknown")
+                label = self._truncate_context_label(self._context_source_label(source), max_chars=96)
+                lines.append(f"{index}. {source_type}: {label}")
+            return lines
+
+        def _commit_context_add_from_ui(self) -> None:
+            mode = (self._context_add_mode or "").strip().lower()
+            if mode in _CONTEXT_INPUT_SOURCE_TYPES:
+                if self._context_input is None:
+                    return
+                raw_value = str(getattr(self._context_input, "value", "")).strip()
+                if not raw_value:
+                    self._notify("Context value is required.", severity="warning")
+                    return
+                source: dict[str, str]
+                if mode == "file":
+                    source = {"type": "file", "path": raw_value, "id": _sanitize_context_source_id(uuid.uuid4().hex)}
+                elif mode == "kb":
+                    source = {"type": "kb", "id": raw_value}
+                else:
+                    source = {"type": "note", "text": raw_value, "id": _sanitize_context_source_id(uuid.uuid4().hex)}
+                self._add_context_source(source)
+                self._set_context_add_mode(None)
+                self._write_transcript_line(f"[context] added {mode} source.")
+                return
+
+            if mode == _CONTEXT_SOP_SOURCE_TYPE:
+                selector = self._context_sop_select
+                selected = str(getattr(selector, "value", "")).strip() if selector is not None else ""
+                if not selected or selected == _CONTEXT_SELECT_PLACEHOLDER:
+                    self._notify("Select an SOP first.", severity="warning")
+                    return
+                self._add_context_source(
+                    {
+                        "type": "sop",
+                        "name": selected,
+                        "id": _sanitize_context_source_id(f"sop-{selected}"),
+                    }
+                )
+                self._set_context_add_mode(None)
+                self._write_transcript_line(f"[context] added sop source: {selected}")
+
+        def _handle_context_command(self, argument: str) -> bool:
+            raw = (argument or "").strip()
+            if not raw:
+                self._write_transcript_line(_CONTEXT_USAGE_TEXT)
+                return True
+
+            lowered = raw.lower()
+            if lowered == "list":
+                for line in self._context_list_lines():
+                    self._write_transcript_line(line)
+                return True
+
+            if lowered == "clear":
+                self._clear_context_sources()
+                self._write_transcript_line("[context] cleared all sources.")
+                return True
+
+            if lowered.startswith("remove "):
+                token = raw.split(maxsplit=1)[1].strip()
+                try:
+                    index = int(token) - 1
+                except ValueError:
+                    self._write_transcript_line("Usage: /context remove <index>")
+                    return True
+                self._remove_context_source(index)
+                return True
+
+            add_match = re.match(r"^add\s+(file|note|sop|kb)\s+(.+)$", raw, flags=re.IGNORECASE | re.DOTALL)
+            if add_match is None:
+                self._write_transcript_line(_CONTEXT_USAGE_TEXT)
+                return True
+            source_type = add_match.group(1).strip().lower()
+            value = add_match.group(2).strip()
+            if not value:
+                self._write_transcript_line(_CONTEXT_USAGE_TEXT)
+                return True
+
+            if source_type == "file":
+                self._add_context_source({"type": "file", "path": value, "id": _sanitize_context_source_id(uuid.uuid4().hex)})
+            elif source_type == "note":
+                self._add_context_source({"type": "note", "text": value, "id": _sanitize_context_source_id(uuid.uuid4().hex)})
+            elif source_type == "sop":
+                self._add_context_source(
+                    {"type": "sop", "name": value, "id": _sanitize_context_source_id(f"sop-{value}")}
+                )
+            elif source_type == "kb":
+                self._add_context_source({"type": "kb", "id": value})
+            else:
+                self._write_transcript_line(_CONTEXT_USAGE_TEXT)
+                return True
+
+            self._write_transcript_line(f"[context] added {source_type} source.")
+            return True
+
+        def _record_consent_history(self, line: str) -> None:
+            entry = line.strip()
+            if not entry:
+                return
+            self._consent_history_lines.append(entry)
+            if len(self._consent_history_lines) > 200:
+                self._consent_history_lines = self._consent_history_lines[-200:]
+
+        def _show_consent_prompt(self, *, context: str, options: list[str] | None = None) -> None:
+            widget = self._consent_prompt_widget
+            if widget is None:
+                with contextlib.suppress(Exception):
+                    widget = self.query_one("#consent_prompt", ConsentPrompt)
+                    self._consent_prompt_widget = widget
+            if widget is None:
+                return
+            self._consent_active = True
+            self._consent_tool_name = extract_consent_tool_name(context)
+            normalized_options = options or ["y", "n", "a", "v"]
+            widget.set_prompt(context=context, options=normalized_options)
 
         def _reset_consent_panel(self) -> None:
             self._consent_active = False
             self._consent_buffer = []
-            self._render_consent_panel()
+            self._consent_tool_name = "tool"
+            widget = self._consent_prompt_widget
+            if widget is not None:
+                with contextlib.suppress(Exception):
+                    widget.hide_prompt()
+
+        def _reset_error_action_prompt(self) -> None:
+            self._pending_error_action = None
+            widget = self._error_action_prompt_widget
+            if widget is not None:
+                with contextlib.suppress(Exception):
+                    widget.hide_prompt()
+
+        def _next_available_tier_name(self) -> str | None:
+            current_tier = (self._daemon_tier or "").strip().lower()
+            available = [
+                str(item.get("name", "")).strip().lower()
+                for item in self._daemon_tiers
+                if isinstance(item, dict) and bool(item.get("available"))
+            ]
+            if not available:
+                return None
+            if current_tier in available:
+                idx = available.index(current_tier)
+                for candidate in available[idx + 1 :]:
+                    if candidate:
+                        return candidate
+            for candidate in available:
+                if candidate and candidate != current_tier:
+                    return candidate
+            return None
+
+        def _show_tool_error_actions(self, *, tool_use_id: str, tool_name: str) -> None:
+            widget = self._error_action_prompt_widget
+            if widget is None:
+                return
+            self._pending_error_action = {
+                "kind": "tool",
+                "tool_use_id": tool_use_id,
+                "tool_name": tool_name,
+            }
+            with contextlib.suppress(Exception):
+                widget.show_tool_error(tool_name=tool_name, tool_use_id=tool_use_id)
+
+        def _show_escalation_actions(self, *, next_tier: str | None = None) -> None:
+            widget = self._error_action_prompt_widget
+            if widget is None:
+                return
+            resolved_next = (next_tier or "").strip().lower() or self._next_available_tier_name()
+            self._pending_error_action = {
+                "kind": "escalation",
+                "next_tier": resolved_next or None,
+            }
+            with contextlib.suppress(Exception):
+                widget.show_escalation(next_tier=resolved_next or None)
+
+        def _resume_after_error(self, *, escalate: bool) -> None:
+            if self._query_active:
+                self._write_transcript_line("[run] already running; use /stop.")
+                return
+            prompt = (self._last_prompt or "").strip()
+            if not prompt:
+                self._write_transcript_line("[run] no previous prompt to continue.")
+                self._reset_error_action_prompt()
+                return
+            proc = self._proc
+            if proc is None or proc.poll() is not None or not self._daemon_ready:
+                self._write_transcript_line("[run] daemon is not ready. Use /daemon restart.")
+                self._reset_error_action_prompt()
+                return
+            pending = self._pending_error_action or {}
+            if escalate:
+                next_tier = str(pending.get("next_tier", "")).strip().lower()
+                if next_tier:
+                    if not send_daemon_command(proc, {"cmd": "set_tier", "tier": next_tier}):
+                        self._write_transcript_line("[model] failed to request tier escalation.")
+                        return
+                    self._write_transcript_line(f"[model] escalated to {next_tier}.")
+                else:
+                    self._write_transcript_line("[model] no higher tier available; continuing on current tier.")
+            self._reset_error_action_prompt()
+            self._start_run(prompt, auto_approve=self._last_run_auto_approve, mode="execute")
+
+        def _retry_failed_tool(self) -> None:
+            action = self._pending_error_action or {}
+            tool_use_id = str(action.get("tool_use_id", "")).strip()
+            if not tool_use_id:
+                self._write_transcript_line("[recovery] no failed tool selected.")
+                self._reset_error_action_prompt()
+                return
+            proc = self._proc
+            if proc is None or proc.poll() is not None or not self._daemon_ready:
+                self._write_transcript_line("[recovery] daemon is not ready.")
+                self._reset_error_action_prompt()
+                return
+            if send_daemon_command(proc, {"cmd": "retry_tool", "tool_use_id": tool_use_id}):
+                self._write_transcript_line(f"[recovery] retry requested for tool {tool_use_id}.")
+                self._reset_error_action_prompt()
+            else:
+                self._write_transcript_line("[recovery] failed to send retry request.")
+
+        def _skip_failed_tool(self) -> None:
+            action = self._pending_error_action or {}
+            tool_use_id = str(action.get("tool_use_id", "")).strip()
+            if not tool_use_id:
+                self._write_transcript_line("[recovery] no failed tool selected.")
+                self._reset_error_action_prompt()
+                return
+            proc = self._proc
+            if proc is None or proc.poll() is not None or not self._daemon_ready:
+                self._write_transcript_line("[recovery] daemon is not ready.")
+                self._reset_error_action_prompt()
+                return
+            if send_daemon_command(proc, {"cmd": "skip_tool", "tool_use_id": tool_use_id}):
+                self._write_transcript_line(f"[recovery] skip requested for tool {tool_use_id}.")
+                self._reset_error_action_prompt()
+            else:
+                self._write_transcript_line("[recovery] failed to send skip request.")
 
         def _apply_consent_capture(self, line: str) -> None:
             next_active, next_buffer = update_consent_capture(
@@ -1771,7 +3366,21 @@ def run_tui() -> int:
             if next_active != self._consent_active or next_buffer != self._consent_buffer:
                 self._consent_active = next_active
                 self._consent_buffer = next_buffer
-                self._render_consent_panel()
+                if self._consent_active:
+                    context = "\n".join(self._consent_buffer[-4:])
+                    self._show_consent_prompt(context=context, options=["y", "n", "a", "v"])
+
+        def _consent_decision_line(self, choice: str) -> str:
+            tool_name = self._consent_tool_name or "tool"
+            if choice == "y":
+                return f"✓ {tool_name} allowed"
+            if choice == "n":
+                return f"✗ {tool_name} denied"
+            if choice == "a":
+                return f"✓ {tool_name} always allowed (session)"
+            if choice == "v":
+                return f"✗ {tool_name} never allowed (session)"
+            return f"[consent] response: {choice}"
 
         def _submit_consent_choice(self, choice: str) -> None:
             normalized_choice = choice.strip().lower()
@@ -1785,12 +3394,41 @@ def run_tui() -> int:
                 self._write_transcript_line("[consent] daemon is not running.")
                 self._reset_consent_panel()
                 return
-            if not send_daemon_command(self._proc, {"cmd": "consent_response", "choice": normalized_choice}):
-                self._write_transcript_line("[consent] failed to send response (stdin unavailable).")
-                self._reset_consent_panel()
-                return
+            decision_line = self._consent_decision_line(normalized_choice)
+            self._write_transcript(decision_line)
+            self._record_consent_history(decision_line)
             self._reset_consent_panel()
             self.query_one("#prompt", TextArea).focus()
+            if not send_daemon_command(self._proc, {"cmd": "consent_response", "choice": normalized_choice}):
+                self._write_transcript_line("[consent] failed to send response (stdin unavailable).")
+                return
+
+        def _finalize_assistant_message(self) -> None:
+            if not self._current_assistant_chunks:
+                self._current_assistant_model = None
+                self._current_assistant_timestamp = None
+                self._assistant_placeholder_written = False
+                self._dismiss_thinking()
+                return
+
+            full_text = "".join(self._current_assistant_chunks)
+            self._last_assistant_text = full_text
+            model = self._current_assistant_model
+            timestamp = self._current_assistant_timestamp or self._turn_timestamp()
+            plain_lines = [full_text]
+            meta_parts = [part for part in [model, timestamp] if isinstance(part, str) and part.strip()]
+            if meta_parts:
+                plain_lines.append(" · ".join(meta_parts))
+            self._mount_transcript_widget(
+                render_assistant_message(full_text, model=model, timestamp=timestamp),
+                plain_text="\n".join(plain_lines),
+            )
+
+            self._current_assistant_chunks = []
+            self._current_assistant_model = None
+            self._current_assistant_timestamp = None
+            self._assistant_placeholder_written = False
+            self._dismiss_thinking()
 
         def _handle_output_line(self, line: str, raw_line: str | None = None) -> None:
             if self._query_active:
@@ -1847,10 +3485,66 @@ def run_tui() -> int:
                 session_id = str(event.get("session_id", "")).strip()
                 if session_id:
                     self._daemon_session_id = session_id
+                    self._save_session()
                 self._write_transcript("Swarmee daemon ready. Enter a prompt to run Swarmee.")
+                if self._context_sources or self._context_ready_for_sync:
+                    self._sync_context_sources_with_daemon(notify_on_failure=True)
+                if self._active_sop_names or self._sops_ready_for_sync:
+                    self._sync_active_sops_with_daemon(notify_on_failure=True)
+
+            elif etype == "session_available":
+                session_id = str(event.get("session_id", "")).strip()
+                turn_count_raw = event.get("turn_count", 0)
+                try:
+                    turn_count = int(turn_count_raw or 0)
+                except (TypeError, ValueError):
+                    turn_count = 0
+                self._available_restore_session_id = session_id or None
+                self._available_restore_turn_count = max(0, turn_count)
+                if session_id:
+                    self._write_transcript_line(
+                        f"Previous session found ({self._available_restore_turn_count} turns). "
+                        "Type /restore to resume or /new to start fresh."
+                    )
+
+            elif etype == "session_restored":
+                session_id = str(event.get("session_id", "")).strip()
+                if session_id:
+                    self._daemon_session_id = session_id
+                turn_count_raw = event.get("turn_count", 0)
+                try:
+                    self._last_restored_turn_count = max(0, int(turn_count_raw or 0))
+                except (TypeError, ValueError):
+                    self._last_restored_turn_count = 0
+                self._available_restore_session_id = None
+                self._available_restore_turn_count = 0
+                self._save_session()
+
+            elif etype == "replay_turn":
+                role = str(event.get("role", "")).strip().lower()
+                text = sanitize_output_text(str(event.get("text", "")))
+                if not text.strip():
+                    return
+                timestamp = str(event.get("timestamp", "")).strip() or None
+                if role == "user":
+                    self._write_user_message(text, timestamp=timestamp)
+                elif role == "assistant":
+                    model = str(event.get("model", "")).strip() or None
+                    self._write_assistant_message(text, model=model, timestamp=timestamp)
+
+            elif etype == "replay_complete":
+                turn_count_raw = event.get("turn_count", self._last_restored_turn_count)
+                try:
+                    turns = max(0, int(turn_count_raw or 0))
+                except (TypeError, ValueError):
+                    turns = max(0, self._last_restored_turn_count)
+                self._write_transcript_line(f"Session restored ({turns} turns).")
 
             elif etype == "turn_complete":
-                self._finalize_turn(exit_status=str(event.get("exit_status", "ok")))
+                exit_status = str(event.get("exit_status", "ok"))
+                self._finalize_turn(exit_status=exit_status)
+                if exit_status in {"ok", "interrupted"}:
+                    self._reset_error_action_prompt()
 
             elif etype == "model_info":
                 self._handle_model_info(event)
@@ -1876,81 +3570,158 @@ def run_tui() -> int:
                     self._status_bar.set_usage(self._last_usage, cost_usd=self._last_cost_usd)
                 self._refresh_prompt_metrics()
 
+            elif etype == "compact_complete":
+                compacted = bool(event.get("compacted", False))
+                warning_text = str(event.get("warning", "")).strip()
+                before_tokens = event.get("before_tokens_est")
+                after_tokens = event.get("after_tokens_est")
+                if isinstance(before_tokens, int) and isinstance(after_tokens, int):
+                    self._last_prompt_tokens_est = after_tokens
+                    if self._status_bar is not None:
+                        self._status_bar.set_context(
+                            prompt_tokens_est=self._last_prompt_tokens_est,
+                            budget_tokens=self._last_budget_tokens,
+                        )
+                    self._refresh_prompt_metrics()
+                if compacted:
+                    self._notify("Context compacted.", severity="information", timeout=4.0)
+                elif warning_text:
+                    self._notify(warning_text, severity="warning", timeout=6.0)
+                else:
+                    self._notify("Context compaction made no changes.", severity="information", timeout=4.0)
+
             elif etype in {"text_delta", "message_delta", "output_text_delta", "delta"}:
                 chunk = sanitize_output_text(extract_tui_text_chunk(event))
                 if not chunk:
                     return
-                self._dismiss_thinking()
-                if self._current_assistant_msg is None:
-                    self._current_assistant_msg = AssistantMessage(
-                        model=self._current_daemon_model,
-                        timestamp=self._turn_timestamp(),
-                    )
-                    self._mount_transcript_widget(self._current_assistant_msg)
-                self._current_assistant_msg.append_delta(chunk)
-                self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+                if not self._assistant_placeholder_written:
+                    self._mount_transcript_widget(render_thinking_message(), plain_text="thinking...")
+                    self._assistant_placeholder_written = True
+                    self._current_thinking = True
+                if not self._current_assistant_chunks:
+                    self._current_assistant_model = self._current_daemon_model
+                    self._current_assistant_timestamp = self._turn_timestamp()
+                self._current_assistant_chunks.append(chunk)
 
             elif etype in {"text_complete", "message_complete", "output_text_complete", "complete"}:
-                if self._current_assistant_msg is not None:
-                    self._last_assistant_text = self._current_assistant_msg.finalize()
-                    self._current_assistant_msg = None
+                self._finalize_assistant_message()
 
             elif etype == "thinking":
-                if self._current_thinking is None:
-                    self._current_thinking = ThinkingIndicator()
-                    self._mount_transcript_widget(self._current_thinking)
+                self._current_thinking = True
 
             elif etype == "tool_start":
                 self._dismiss_thinking()
-                tid = event.get("tool_use_id", "")
-                tool_name = event.get("tool", "unknown")
-                block = ToolCallBlock(tool_name=tool_name, tool_use_id=tid)
-                self._tool_blocks[tid] = block
-                self._mount_transcript_widget(block)
+                tid = str(event.get("tool_use_id", "")).strip() or f"tool-{self._run_tool_count + 1}"
+                tool_name = str(event.get("tool", "unknown"))
+                self._tool_blocks[tid] = {
+                    "tool_use_id": tid,
+                    "tool": tool_name,
+                    "status": "running",
+                    "duration_s": 0.0,
+                    "input": None,
+                    "output": "",
+                    "pending_output": "",
+                    "pending_stream": "stdout",
+                    "elapsed_s": 0.0,
+                    "last_progress_render_mono": 0.0,
+                    "last_heartbeat_rendered_s": 0.0,
+                }
+                self._mount_transcript_widget(
+                    render_tool_start_line(tool_name, tool_use_id=tid),
+                    plain_text=f"⚙ {tool_name} [{tid}] running...",
+                )
                 self._run_tool_count += 1
                 if self._status_bar is not None:
                     self._status_bar.set_tool_count(self._run_tool_count)
 
             elif etype == "tool_progress":
-                tid = event.get("tool_use_id", "")
-                block = self._tool_blocks.get(tid)
-                if block is not None:
-                    block.update_progress(event.get("chars", 0))
+                tid = str(event.get("tool_use_id", "")).strip()
+                record = self._tool_blocks.get(tid)
+                if record is None and tid:
+                    fallback_tool_name = str(event.get("tool", "unknown"))
+                    record = {
+                        "tool_use_id": tid,
+                        "tool": fallback_tool_name,
+                        "status": "running",
+                        "duration_s": 0.0,
+                        "input": None,
+                        "output": "",
+                        "pending_output": "",
+                        "pending_stream": "stdout",
+                        "elapsed_s": 0.0,
+                        "last_progress_render_mono": 0.0,
+                        "last_heartbeat_rendered_s": 0.0,
+                    }
+                    self._tool_blocks[tid] = record
+                    self._mount_transcript_widget(
+                        render_tool_start_line(fallback_tool_name, tool_use_id=tid),
+                        plain_text=f"⚙ {fallback_tool_name} [{tid}] running...",
+                    )
+                if record is not None:
+                    chars = event.get("chars")
+                    if isinstance(chars, int):
+                        record["chars"] = chars
+                    elapsed_raw = event.get("elapsed_s")
+                    if isinstance(elapsed_raw, (int, float)):
+                        record["elapsed_s"] = float(elapsed_raw)
+                    content = event.get("content")
+                    if isinstance(content, str) and content:
+                        stream = str(event.get("stream", "stdout")).strip().lower() or "stdout"
+                        self._queue_tool_progress_content(record, content=content, stream=stream)
+                    self._flush_tool_progress_render(tid)
 
             elif etype == "tool_input":
-                tid = event.get("tool_use_id", "")
-                block = self._tool_blocks.get(tid)
-                if block is not None:
-                    block.set_input(event.get("input", {}))
+                tid = str(event.get("tool_use_id", "")).strip()
+                record = self._tool_blocks.get(tid)
+                if record is not None:
+                    record["input"] = event.get("input", {})
 
             elif etype == "tool_result":
-                tid = event.get("tool_use_id", "")
-                block = self._tool_blocks.get(tid)
-                if block is not None:
-                    block.set_result(event.get("status", "unknown"), event.get("duration_s", 0))
-                # Auto-check plan steps sequentially
-                if self._current_plan_card is not None:
-                    self._current_plan_card.mark_step_complete(self._plan_step_counter)
-                    self._plan_step_counter += 1
-                    step_status = getattr(self._current_plan_card, "_step_status", [])
-                    if (
-                        isinstance(step_status, list)
-                        and step_status
-                        and all(bool(item) for item in step_status)
-                        and not self._plan_completion_announced
-                    ):
-                        self._plan_completion_announced = True
-                        self._write_transcript_line("[plan] all steps complete. Clear plan?")
+                tid = str(event.get("tool_use_id", "")).strip()
+                status = str(event.get("status", "unknown"))
+                duration_raw = event.get("duration_s", 0.0)
+                try:
+                    duration_s = float(duration_raw or 0.0)
+                except (TypeError, ValueError):
+                    duration_s = 0.0
+                record = self._tool_blocks.get(tid)
+                tool_name = str(event.get("tool", "unknown"))
+                if record is not None:
+                    record["status"] = status
+                    record["duration_s"] = duration_s
+                    record["elapsed_s"] = duration_s
+                    tool_name = str(record.get("tool", tool_name))
+                    self._flush_tool_progress_render(tid, force=True)
+                plain = f"⚙ {tool_name} ({duration_s:.1f}s) {'✓' if status == 'success' else '✗'} [{tid}]"
+                self._mount_transcript_widget(
+                    render_tool_result_line(tool_name, status=status, duration_s=duration_s, tool_use_id=tid),
+                    plain_text=plain,
+                )
+                if status != "success":
+                    self._error_count += 1
+                    self._write_issue(f"ERROR: tool {tool_name} failed ({status}) [{tid}]")
+                    self._update_header_status()
+                    self._notify(f"{tool_name} tool failed", severity="error", timeout=6.0)
+                    if tid:
+                        self._mount_transcript_widget(
+                            render_system_message("Tool failed. Retry or skip using buttons above the prompt."),
+                            plain_text="Tool failed. Retry or skip using buttons above the prompt.",
+                        )
+                        self._show_tool_error_actions(tool_use_id=tid, tool_name=tool_name)
 
             elif etype == "consent_prompt":
                 self._consent_active = True
-                self._consent_buffer = [event.get("context", "")]
-                card = ConsentCard(
-                    context=event.get("context", ""),
-                    options=event.get("options", ["y", "n", "a", "v"]),
+                context = str(event.get("context", ""))
+                raw_options = event.get("options", ["y", "n", "a", "v"])
+                options = (
+                    [str(item).strip() for item in raw_options if str(item).strip()]
+                    if isinstance(raw_options, (list, tuple))
+                    else ["y", "n", "a", "v"]
                 )
-                self._mount_transcript_widget(card)
-                self._render_consent_panel()
+                if not options:
+                    options = ["y", "n", "a", "v"]
+                self._consent_buffer = [context]
+                self._show_consent_prompt(context=context, options=options)
 
             elif etype == "plan":
                 rendered = event.get("rendered", "")
@@ -1960,12 +3731,74 @@ def run_tui() -> int:
                 self._set_plan_panel(rendered)
                 self._received_structured_plan = True
                 self._plan_completion_announced = False
+                self._plan_step_counter = 0
+                self._current_plan_steps_total = 0
+                self._current_plan_summary = ""
+                self._current_plan_steps = []
+                self._current_plan_step_statuses = []
+                self._current_plan_active_step = None
+                self._plan_updates_seen = False
                 if not self._last_run_auto_approve and self._last_prompt:
                     self._pending_plan_prompt = self._last_prompt
                 if plan_json and isinstance(plan_json, dict):
-                    card = PlanCard(plan_json=plan_json)
-                    self._current_plan_card = card
-                    self._mount_transcript_widget(card)
+                    self._current_plan_summary = str(plan_json.get("summary", plan_json.get("title", ""))).strip()
+                    self._current_plan_steps = self._extract_plan_step_descriptions(plan_json)
+                    self._current_plan_steps_total = len(self._current_plan_steps)
+                    self._current_plan_step_statuses = ["pending"] * self._current_plan_steps_total
+                    self._render_plan_panel_from_status()
+                    self._mount_transcript_widget(
+                        render_plan_panel(plan_json),
+                        plain_text=rendered if isinstance(rendered, str) else _json.dumps(plan_json, indent=2),
+                    )
+                else:
+                    self._refresh_plan_status_bar()
+
+            elif etype == "plan_step_update":
+                step_index_raw = event.get("step_index")
+                status = str(event.get("status", "")).strip().lower()
+                if not isinstance(step_index_raw, int):
+                    with contextlib.suppress(Exception):
+                        step_index_raw = int(step_index_raw)
+                if not isinstance(step_index_raw, int):
+                    return
+                step_index = step_index_raw
+                if step_index < 0:
+                    return
+                if not self._current_plan_step_statuses:
+                    return
+                if step_index >= len(self._current_plan_step_statuses):
+                    self._write_transcript_line(f"[plan] ignoring out-of-range step index: {step_index + 1}")
+                    return
+                if status not in {"in_progress", "completed"}:
+                    return
+                self._plan_updates_seen = True
+                if status == "in_progress":
+                    self._current_plan_active_step = step_index
+                    if self._current_plan_step_statuses[step_index] != "completed":
+                        self._current_plan_step_statuses[step_index] = "in_progress"
+                elif status == "completed":
+                    self._current_plan_step_statuses[step_index] = "completed"
+                    if self._current_plan_active_step == step_index:
+                        self._current_plan_active_step = None
+                self._plan_step_counter = sum(1 for item in self._current_plan_step_statuses if item == "completed")
+                self._render_plan_panel_from_status()
+                if (
+                    self._current_plan_steps_total > 0
+                    and self._plan_step_counter >= self._current_plan_steps_total
+                    and not self._plan_completion_announced
+                ):
+                    self._plan_completion_announced = True
+                    self._write_transcript_line("Plan complete. Clear?")
+
+            elif etype == "plan_complete":
+                self._plan_step_counter = self._current_plan_steps_total
+                if self._current_plan_step_statuses:
+                    self._current_plan_step_statuses = ["completed"] * len(self._current_plan_step_statuses)
+                self._current_plan_active_step = None
+                self._render_plan_panel_from_status()
+                if not self._plan_completion_announced:
+                    self._plan_completion_announced = True
+                    self._write_transcript_line("Plan complete. Clear?")
 
             elif etype == "artifact":
                 paths = event.get("paths", [])
@@ -1973,7 +3806,9 @@ def run_tui() -> int:
                     self._add_artifact_paths(paths)
 
             elif etype == "error":
-                error_text = event.get("text", "")
+                error_info = classify_tui_error_event(event)
+                error_message = str(error_info.get("message", "")).strip()
+                error_text = error_message
                 if not error_text.startswith("ERROR:"):
                     error_text = f"ERROR: {error_text}"
                 normalized_error = error_text.lower()
@@ -1987,6 +3822,31 @@ def run_tui() -> int:
                 self._error_count += 1
                 self._write_issue(error_text)
                 self._update_header_status()
+                toast_message, severity, timeout = summarize_error_for_toast(error_info)
+                self._notify(toast_message, severity=severity, timeout=timeout)
+
+                category = str(error_info.get("category", ERROR_CATEGORY_FATAL))
+                if category == ERROR_CATEGORY_TRANSIENT:
+                    self._reset_error_action_prompt()
+                elif category == ERROR_CATEGORY_TOOL_ERROR:
+                    tool_use_id = str(error_info.get("tool_use_id", "")).strip()
+                    if tool_use_id:
+                        tool_record = self._tool_blocks.get(tool_use_id)
+                        tool_name = str(tool_record.get("tool", "tool")) if isinstance(tool_record, dict) else "tool"
+                        self._show_tool_error_actions(tool_use_id=tool_use_id, tool_name=tool_name)
+                elif category == ERROR_CATEGORY_ESCALATABLE:
+                    next_tier = str(error_info.get("next_tier", "")).strip() or self._next_available_tier_name()
+                    self._show_escalation_actions(next_tier=next_tier or None)
+                elif category == ERROR_CATEGORY_AUTH_ERROR:
+                    self._mount_transcript_widget(
+                        render_system_message(
+                            "Authentication failed. Verify credentials/permissions for the active provider."
+                        ),
+                        plain_text="Authentication failed. Verify credentials/permissions for the active provider.",
+                    )
+                    self._reset_error_action_prompt()
+                elif category == ERROR_CATEGORY_FATAL:
+                    self._reset_error_action_prompt()
 
             elif etype == "warning":
                 warn_text = event.get("text", "")
@@ -2046,16 +3906,17 @@ def run_tui() -> int:
             if self._status_bar is not None:
                 self._status_bar.set_state("idle")
                 self._status_bar.set_elapsed(elapsed)
+                self._status_bar.set_plan_step(current=None, total=None)
             self._run_start_time = None
             self._query_active = False
+            for tool_use_id in list(self._tool_blocks.keys()):
+                self._flush_tool_progress_render(tool_use_id, force=True)
 
             self._write_transcript(
                 f"[run] completed in {elapsed:.1f}s ({self._run_tool_count} tool calls, status={exit_status})"
             )
 
-            if self._current_assistant_msg is not None:
-                self._last_assistant_text = self._current_assistant_msg.finalize()
-                self._current_assistant_msg = None
+            self._finalize_assistant_message()
             self._dismiss_thinking()
 
             output_text = "".join(self._turn_output_chunks)
@@ -2093,6 +3954,10 @@ def run_tui() -> int:
             self._daemon_ready = False
             self._pending_model_select_value = None
             self._query_active = False
+            self._context_ready_for_sync = bool(self._context_sources)
+            self._sops_ready_for_sync = bool(self._active_sop_names)
+            self._reset_consent_panel()
+            self._reset_error_action_prompt()
             self._proc = None
             self._runner_thread = None
 
@@ -2149,9 +4014,10 @@ def run_tui() -> int:
                     return
 
             try:
-                self._daemon_session_id = uuid.uuid4().hex
+                requested_session_id = (self._daemon_session_id or "").strip() or uuid.uuid4().hex
+                self._daemon_session_id = requested_session_id
                 daemon = spawn_swarmee_daemon(
-                    session_id=self._daemon_session_id,
+                    session_id=requested_session_id,
                     env_overrides=self._model_env_overrides(),
                 )
             except Exception as exc:
@@ -2161,6 +4027,8 @@ def run_tui() -> int:
 
             self._proc = daemon
             self._daemon_ready = False
+            self._context_ready_for_sync = bool(self._context_sources)
+            self._sops_ready_for_sync = bool(self._active_sop_names)
             self._runner_thread = threading.Thread(
                 target=self._stream_daemon_output,
                 args=(daemon,),
@@ -2169,6 +4037,7 @@ def run_tui() -> int:
             )
             self._runner_thread.start()
             self._write_transcript_line("[daemon] started, waiting for ready event.")
+            self._save_session()
 
         def _tick_status(self) -> None:
             if self._run_start_time is not None and self._status_bar is not None:
@@ -2186,21 +4055,38 @@ def run_tui() -> int:
             if self._query_active:
                 self._write_transcript_line("[run] already running; use /stop.")
                 return
+            self._dismiss_action_sheet(restore_focus=False)
             self._sync_selected_model_before_run()
 
             self._pending_plan_prompt = None
             self._reset_artifacts_panel()
             self._reset_consent_panel()
+            self._reset_error_action_prompt()
             self._reset_issues_panel()
-            self._current_assistant_msg = None
-            self._current_thinking = ThinkingIndicator()
-            self._mount_transcript_widget(self._current_thinking)
+            self._current_assistant_chunks = []
+            self._current_assistant_model = None
+            self._current_assistant_timestamp = None
+            self._assistant_placeholder_written = False
+            self._current_thinking = False
             self._tool_blocks = {}
             self._run_tool_count = 0
             self._run_start_time = time.time()
             self._run_active_tier_warning_emitted = False
             self._plan_step_counter = 0
             self._plan_completion_announced = False
+            mode_normalized = (mode or "").strip().lower()
+            if mode_normalized == "execute" and self._current_plan_steps_total > 0:
+                self._current_plan_step_statuses = ["pending"] * self._current_plan_steps_total
+                self._current_plan_active_step = None
+                self._plan_updates_seen = False
+                self._render_plan_panel_from_status()
+            else:
+                self._current_plan_steps_total = 0
+                self._current_plan_summary = ""
+                self._current_plan_steps = []
+                self._current_plan_step_statuses = []
+                self._current_plan_active_step = None
+                self._plan_updates_seen = False
             self._received_structured_plan = False
             self._turn_output_chunks = []
             self._last_usage = None
@@ -2215,6 +4101,10 @@ def run_tui() -> int:
                     prompt_tokens_est=self._last_prompt_tokens_est,
                     budget_tokens=self._last_budget_tokens,
                 )
+                if mode_normalized == "execute" and self._current_plan_steps_total > 0:
+                    self._refresh_plan_status_bar()
+                else:
+                    self._status_bar.set_plan_step(current=None, total=None)
             self._refresh_prompt_metrics()
             if self._status_timer is not None:
                 self._status_timer.stop()
@@ -2260,43 +4150,42 @@ def run_tui() -> int:
             if proc is None or proc.poll() is not None:
                 self._write_transcript_line("[run] no active run.")
                 self._daemon_ready = False
+                self._reset_consent_panel()
+                self._reset_error_action_prompt()
                 return
             if not self._query_active:
                 self._write_transcript_line("[run] no active run.")
+                self._reset_consent_panel()
+                self._reset_error_action_prompt()
                 return
             if send_daemon_command(proc, {"cmd": "interrupt"}):
                 self._write_transcript_line("[run] interrupt requested.")
             else:
                 self._write_transcript_line("[run] failed to send interrupt.")
+            self._reset_consent_panel()
+            self._reset_error_action_prompt()
 
         def _refresh_prompt_metrics(self) -> None:
             if self._prompt_metrics is None:
                 return
-
-            parts: list[str] = []
-            if isinstance(self._last_prompt_tokens_est, int):
-                if isinstance(self._last_budget_tokens, int) and self._last_budget_tokens > 0:
-                    parts.append(f"ctx {self._last_prompt_tokens_est}/{self._last_budget_tokens}")
-                else:
-                    parts.append(f"ctx {self._last_prompt_tokens_est}")
-
-            if self._last_usage:
-                in_tokens = self._last_usage.get("input_tokens") or self._last_usage.get("prompt_tokens")
-                out_tokens = self._last_usage.get("output_tokens") or self._last_usage.get("completion_tokens")
-                if isinstance(in_tokens, int) or isinstance(out_tokens, int):
-                    usage_parts: list[str] = []
-                    if isinstance(in_tokens, int):
-                        usage_parts.append(f"in {in_tokens}")
-                    if isinstance(out_tokens, int):
-                        usage_parts.append(f"out {out_tokens}")
-                    parts.append(" ".join(usage_parts))
-            if isinstance(self._last_cost_usd, (int, float)):
-                parts.append(f"${self._last_cost_usd:.4f}")
-
-            self._prompt_metrics.update(" | ".join(parts))
+            set_context = getattr(self._prompt_metrics, "set_context", None)
+            if callable(set_context):
+                set_context(
+                    prompt_tokens_est=self._last_prompt_tokens_est,
+                    budget_tokens=self._last_budget_tokens,
+                    animate=True,
+                )
+            set_prompt_estimate = getattr(self._prompt_metrics, "set_prompt_input_estimate", None)
+            if callable(set_prompt_estimate):
+                set_prompt_estimate(self._prompt_input_tokens_est)
 
         def action_quit(self) -> None:
             self._is_shutting_down = True
+            timer = self._prompt_estimate_timer
+            self._prompt_estimate_timer = None
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
             if self._proc is not None and self._proc.poll() is None:
                 send_daemon_command(self._proc, {"cmd": "shutdown"})
                 with contextlib.suppress(Exception):
@@ -2340,9 +4229,13 @@ def run_tui() -> int:
         def action_interrupt_run(self) -> None:
             proc = self._proc
             if proc is None or proc.poll() is not None or not self._query_active:
+                self._reset_consent_panel()
+                self._reset_error_action_prompt()
                 return
             send_daemon_command(proc, {"cmd": "interrupt"})
             self._write_transcript_line("[run] interrupted.")
+            self._reset_consent_panel()
+            self._reset_error_action_prompt()
 
         def action_copy_selection(self) -> None:
             focused = getattr(self, "focused", None)
@@ -2352,18 +4245,33 @@ def run_tui() -> int:
                     self._copy_text(selected_text, label="selection")
                     return
                 focused_text = (getattr(focused, "text", "") or "").strip()
-                if focused.id in {"issues", "plan", "artifacts", "consent", "help"} and focused_text:
+                if focused.id in {"issues", "plan", "artifacts", "help"} and focused_text:
                     self._copy_text(focused_text + "\n", label=f"{focused.id} pane")
                     return
                 self._notify("Select text first.", severity="warning")
                 return
 
-            transcript = self.query_one("#transcript", VerticalScroll)
+            transcript = self.query_one("#transcript", RichLog)
+            if focused is transcript:
+                selected_text = self._get_richlog_selection_text(transcript)
+                if selected_text.strip():
+                    self._copy_text(selected_text, label="selection")
+                    return
+                transcript_text = self._get_transcript_text()
+                if transcript_text.strip():
+                    self._copy_text(transcript_text, label="transcript")
+                    return
+                self._notify("Select text first.", severity="warning")
+                return
+
             node = focused
             while node is not None:
                 if node is transcript:
-                    fallback = self._get_all_text()
-                    self._copy_text(fallback, label="transcript+panes")
+                    selected_text = self._get_richlog_selection_text(transcript)
+                    if selected_text.strip():
+                        self._copy_text(selected_text, label="selection")
+                    else:
+                        self._copy_text(self._get_transcript_text(), label="transcript")
                     return
                 node = getattr(node, "parent", None)
 
@@ -2380,7 +4288,7 @@ def run_tui() -> int:
                 self._apply_split_ratio()
 
         def _apply_split_ratio(self) -> None:
-            transcript = self.query_one("#transcript", VerticalScroll)
+            transcript = self.query_one("#transcript", RichLog)
             side = self.query_one("#side", Vertical)
             transcript.styles.width = f"{self._split_ratio}fr"
             side.styles.width = "1fr"
@@ -2407,19 +4315,46 @@ def run_tui() -> int:
             if not term.strip():
                 self._write_transcript_line("Usage: /search <term>")
                 return
-            transcript = self.query_one("#transcript", VerticalScroll)
             term_lower = term.lower()
-            for child in transcript.children:
-                text = ""
-                if isinstance(child, AssistantMessage):
-                    text = child.full_text
-                elif hasattr(child, "renderable"):
-                    text = str(child.renderable)
-                if term_lower in text.lower():
-                    child.scroll_visible(animate=True)
-                    self._write_transcript_line("[search] found match in transcript.")
-                    return
+            transcript_text = self._get_transcript_text()
+            if term_lower in transcript_text.lower():
+                with contextlib.suppress(Exception):
+                    self.query_one("#transcript", RichLog).scroll_end(animate=True)
+                self._write_transcript_line("[search] found match in transcript.")
+                return
             self._write_transcript_line(f"[search] no match for '{term}'.")
+
+        def _request_context_compact(self) -> None:
+            if self._query_active:
+                self._write_transcript_line("[compact] unavailable while a run is active.")
+                return
+            if not self._daemon_ready:
+                self._write_transcript_line("[compact] daemon is not ready. Use /daemon restart.")
+                return
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                self._daemon_ready = False
+                self._write_transcript_line("[compact] daemon is not running. Use /daemon restart.")
+                return
+            self._notify("Compacting context...", severity="information", timeout=5.0)
+            if send_daemon_command(proc, {"cmd": "compact"}):
+                self._write_transcript_line("[compact] requested context compaction.")
+            else:
+                self._write_transcript_line("[compact] failed to send compact command.")
+
+        def _expand_tool_call(self, tool_use_id: str) -> None:
+            tid = tool_use_id.strip()
+            if not tid:
+                self._write_transcript_line(_EXPAND_USAGE_TEXT)
+                return
+            record = self._tool_blocks.get(tid)
+            if record is None:
+                self._write_transcript_line(f"[expand] unknown tool id: {tid}")
+                return
+            self._mount_transcript_widget(
+                render_tool_details_panel(record),
+                plain_text=_json.dumps(record, indent=2, ensure_ascii=False),
+            )
 
         def _open_artifact(self, index_str: str) -> None:
             try:
@@ -2455,6 +4390,11 @@ def run_tui() -> int:
                     "last_prompt": self._last_prompt,
                     "plan_text": self._plan_text,
                     "artifacts": self._artifacts,
+                    "context_sources": self._context_sources,
+                    "active_sop_names": sorted(self._active_sop_names),
+                    "daemon_session_id": self._daemon_session_id,
+                    "available_restore_session_id": self._available_restore_session_id,
+                    "available_restore_turn_count": self._available_restore_turn_count,
                     "model_provider_override": self._model_provider_override,
                     "model_tier_override": self._model_tier_override,
                     "default_auto_approve": self._default_auto_approve,
@@ -2479,6 +4419,22 @@ def run_tui() -> int:
                 if artifacts:
                     self._artifacts = artifacts
                     self._render_artifacts_panel()
+                self._context_sources = _normalize_context_sources(data.get("context_sources", []))
+                self._render_context_sources_panel()
+                self._context_ready_for_sync = bool(self._context_sources)
+                loaded_active_sops = data.get("active_sop_names", [])
+                if isinstance(loaded_active_sops, list):
+                    self._active_sop_names = {str(item).strip() for item in loaded_active_sops if str(item).strip()}
+                self._refresh_sop_catalog()
+                self._render_sop_panel()
+                self._sops_ready_for_sync = bool(self._active_sop_names)
+                self._daemon_session_id = str(data.get("daemon_session_id", "")).strip() or None
+                self._available_restore_session_id = str(data.get("available_restore_session_id", "")).strip() or None
+                restore_turn_count_raw = data.get("available_restore_turn_count", 0)
+                try:
+                    self._available_restore_turn_count = max(0, int(restore_turn_count_raw or 0))
+                except (TypeError, ValueError):
+                    self._available_restore_turn_count = 0
                 # Do not restore model overrides from prior sessions.
                 # The daemon-reported model_info is the source of truth for startup model state.
                 self._model_provider_override = None
@@ -2499,6 +4455,12 @@ def run_tui() -> int:
         def on_key(self, event: Any) -> None:
             key = str(getattr(event, "key", "")).lower()
 
+            if key in {"ctrl+k", "ctrl+space", "ctrl+@"}:
+                event.stop()
+                event.prevent_default()
+                self.action_open_action_sheet()
+                return
+
             if self._consent_active and key in _CONSENT_CHOICES:
                 event.stop()
                 event.prevent_default()
@@ -2510,6 +4472,17 @@ def run_tui() -> int:
                 event.prevent_default()
                 self.action_copy_selection()
                 return
+
+        def on_checkbox_changed(self, event: Any) -> None:
+            checkbox = getattr(event, "checkbox", None)
+            checkbox_id = str(getattr(checkbox, "id", "")).strip()
+            if not checkbox_id:
+                return
+            sop_name = self._sop_toggle_id_to_name.get(checkbox_id)
+            if not sop_name:
+                return
+            value = bool(getattr(event, "value", False))
+            self._set_sop_active(sop_name, value, sync=True, announce=True)
 
         def on_select_changed(self, event: Any) -> None:
             if self._model_select_syncing:
@@ -2606,7 +4579,7 @@ def run_tui() -> int:
                 if not self._pending_plan_prompt:
                     self._write_transcript_line("[run] no pending plan.")
                     return
-                self._start_run(self._pending_plan_prompt, auto_approve=True)
+                self._start_run(self._pending_plan_prompt, auto_approve=True, mode="execute")
                 return
             if normalized == "replan":
                 if not self._last_prompt:
@@ -2619,6 +4592,30 @@ def run_tui() -> int:
                 self._reset_plan_panel()
                 self._write_transcript_line("[run] plan cleared.")
                 return
+
+        def _restore_available_session(self) -> None:
+            if self._query_active:
+                self._write_transcript_line("[restore] cannot restore while a run is active.")
+                return
+            session_id = (self._available_restore_session_id or "").strip()
+            if not session_id:
+                self._write_transcript_line("[restore] no previous session available.")
+                return
+            proc = self._proc
+            if not self._daemon_ready or proc is None or proc.poll() is not None:
+                self._write_transcript_line("[restore] daemon is not ready.")
+                return
+            if send_daemon_command(proc, {"cmd": "restore_session", "session_id": session_id}):
+                self._write_transcript_line(f"[restore] requesting session restore: {session_id}")
+            else:
+                self._write_transcript_line("[restore] failed to send restore command.")
+
+        def _start_fresh_session(self) -> None:
+            self._available_restore_session_id = None
+            self._available_restore_turn_count = 0
+            self._last_restored_turn_count = 0
+            self._write_transcript_line("[session] starting fresh.")
+            self._save_session()
 
         def _handle_copy_command(self, normalized: str) -> bool:
             command = classify_copy_command(normalized)
@@ -2736,11 +4733,39 @@ def run_tui() -> int:
             if action == "open_usage":
                 self._write_transcript_line(_OPEN_USAGE_TEXT)
                 return True
+            if action == "restore":
+                self._restore_available_session()
+                return True
+            if action == "new":
+                self._start_fresh_session()
+                return True
+            if action == "context":
+                return self._handle_context_command(argument or "")
+            if action == "context_usage":
+                self._write_transcript_line(_CONTEXT_USAGE_TEXT)
+                return True
+            if action == "sop":
+                return self._handle_sop_command(argument or "")
+            if action == "sop_usage":
+                self._write_transcript_line(_SOP_USAGE_TEXT)
+                return True
+            if action == "expand":
+                self._expand_tool_call(argument or "")
+                return True
+            if action == "expand_usage":
+                self._write_transcript_line(_EXPAND_USAGE_TEXT)
+                return True
             if action == "search":
                 self._search_transcript(argument or "")
                 return True
             if action == "search_usage":
                 self._write_transcript_line(_SEARCH_USAGE_TEXT)
+                return True
+            if action == "compact":
+                self._request_context_compact()
+                return True
+            if action == "compact_usage":
+                self._write_transcript_line(_COMPACT_USAGE_TEXT)
                 return True
             if action == "stop":
                 self._stop_run()
@@ -2811,8 +4836,72 @@ def run_tui() -> int:
 
             return False
 
+        def on_action_sheet_action_selected(self, event: Any) -> None:
+            action_id = str(getattr(event, "action_id", "")).strip()
+            event.stop()
+            if not action_id:
+                self._dismiss_action_sheet(restore_focus=True)
+                return
+            # Keep the sheet open when traversing sub-menus; otherwise close first.
+            if action_id.startswith("tier:") or action_id == "tiers:back" or action_id == "idle:tiers":
+                self._execute_action_sheet_action(action_id)
+                return
+            self._dismiss_action_sheet(restore_focus=False)
+            self._execute_action_sheet_action(action_id)
+
+        def on_action_sheet_dismissed(self, event: Any) -> None:
+            event.stop()
+            self._dismiss_action_sheet(restore_focus=True)
+
         def on_button_pressed(self, event: Any) -> None:
             button_id = str(getattr(getattr(event, "button", None), "id", "")).strip().lower()
+            if button_id.startswith("context_remove_"):
+                suffix = button_id.removeprefix("context_remove_")
+                with contextlib.suppress(ValueError):
+                    self._remove_context_source(int(suffix))
+                return
+            if button_id == "context_add_file":
+                self._set_context_add_mode("file")
+                return
+            if button_id == "context_add_note":
+                self._set_context_add_mode("note")
+                return
+            if button_id == "context_add_sop":
+                self._set_context_add_mode("sop")
+                return
+            if button_id == "context_add_kb":
+                self._set_context_add_mode("kb")
+                return
+            if button_id in {"context_add_commit", "context_sop_commit"}:
+                self._commit_context_add_from_ui()
+                return
+            if button_id in {"context_add_cancel", "context_sop_cancel"}:
+                self._set_context_add_mode(None)
+                return
+            if button_id == "consent_choice_y":
+                self._submit_consent_choice("y")
+                return
+            if button_id == "consent_choice_n":
+                self._submit_consent_choice("n")
+                return
+            if button_id == "consent_choice_a":
+                self._submit_consent_choice("a")
+                return
+            if button_id == "consent_choice_v":
+                self._submit_consent_choice("v")
+                return
+            if button_id == "error_action_retry_tool":
+                self._retry_failed_tool()
+                return
+            if button_id == "error_action_skip_tool":
+                self._skip_failed_tool()
+                return
+            if button_id == "error_action_escalate":
+                self._resume_after_error(escalate=True)
+                return
+            if button_id == "error_action_continue":
+                self._resume_after_error(escalate=False)
+                return
             if button_id == "plan_action_approve":
                 self._dispatch_plan_action("approve")
                 return

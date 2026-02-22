@@ -205,6 +205,19 @@ def test_execute_mode_blocks_workplan_tool() -> None:
     assert "only allowed in plan mode" in str(event.cancel_tool)
 
 
+def test_execute_mode_allows_plan_progress_even_when_enforce_plan_is_enabled() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "plan_progress", "input": {"step": 1, "status": "in_progress"}},
+        invocation_state={"swarmee": {"mode": "execute", "enforce_plan": True, "allowed_tools": ["shell"]}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool is False
+
+
 def test_execute_mode_enforce_plan_blocks_when_allowlist_is_empty() -> None:
     hook = ToolPolicyHooks()
     event = SimpleNamespace(
