@@ -5,11 +5,7 @@ from typing import Any
 
 from strands import tool
 
-
-def _truncate(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n… (truncated to {max_chars} chars) …"
+from swarmee_river.utils.text_utils import truncate
 
 
 @tool
@@ -86,4 +82,4 @@ def retrieve(
             lines.append("(empty)")
         lines.append("")
 
-    return {"status": "success", "content": [{"text": _truncate("\n".join(lines).strip(), max_chars)}]}
+    return {"status": "success", "content": [{"text": truncate("\n".join(lines).strip(), max_chars)}]}

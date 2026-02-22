@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from strands import tool
 
 from swarmee_river.state_paths import todo_path
-
-
-def _safe_cwd(cwd: str | None) -> Path:
-    return Path(cwd).expanduser().resolve() if cwd else Path.cwd().expanduser().resolve()
+from swarmee_river.utils.path_utils import safe_cwd
 
 
 @tool
@@ -20,7 +16,7 @@ def todoread(
     """
     Read the project-local todo list from <state_dir>/todo.md.
     """
-    path = todo_path(cwd=_safe_cwd(cwd))
+    path = todo_path(cwd=safe_cwd(cwd))
     if not path.exists():
         return {"status": "success", "content": [{"text": "(no todos)"}]}
     try:
@@ -43,7 +39,7 @@ def todowrite(
     if not isinstance(todos, str):
         return {"status": "error", "content": [{"text": "todos must be a string"}]}
 
-    path = todo_path(cwd=_safe_cwd(cwd))
+    path = todo_path(cwd=safe_cwd(cwd))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         if append:

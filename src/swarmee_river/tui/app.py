@@ -31,6 +31,25 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _OSC_ESCAPE_RE = re.compile(r"\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)")
 _PROVIDER_NOISE_PREFIX = "[provider]"
 _PROVIDER_FALLBACK_PHRASE = "falling back to"
+_MODEL_USAGE_TEXT = "Usage: /model show | /model list | /model provider <name> | /model tier <name> | /model reset"
+_CONSENT_USAGE_TEXT = "Usage: /consent <y|n|a|v>"
+_SEARCH_USAGE_TEXT = "Usage: /search <term>"
+_OPEN_USAGE_TEXT = "Usage: /open <number>"
+_RUN_ACTIVE_TIER_WARNING = "[model] cannot change tier while a run is active."
+_COPY_COMMAND_MAP: dict[str, str] = {
+    "/copy": "transcript",
+    ":copy": "transcript",
+    "/copy plan": "plan",
+    ":copy plan": "plan",
+    "/copy issues": "issues",
+    ":copy issues": "issues",
+    "/copy artifacts": "artifacts",
+    ":copy artifacts": "artifacts",
+    "/copy last": "last",
+    ":copy last": "last",
+    "/copy all": "all",
+    ":copy all": "all",
+}
 
 
 @dataclass(frozen=True)
@@ -113,18 +132,6 @@ def is_multiline_newline_key(event: Any) -> bool:
     if any(alias in modifier_enter_keys for alias in aliases):
         return True
     return False
-
-
-def build_plan_mode_prompt(prompt: str) -> str:
-    """Wrap user input so `/plan` consistently routes through plan generation."""
-    cleaned = prompt.strip()
-    if not cleaned:
-        return cleaned
-    return (
-        "Create a concrete work plan for the following request. "
-        "Return only the plan details.\n\n"
-        f"Request:\n{cleaned}"
-    )
 
 
 def _extract_paths_from_text(text: str) -> list[str]:
@@ -269,6 +276,33 @@ def model_select_options(
     return options, selected_value
 
 
+def parse_model_select_value(value: str | None) -> tuple[str, str] | None:
+    """Parse a model selector value like ``provider|tier``."""
+    selected = (value or "").strip().lower()
+    if not selected or selected in {_MODEL_AUTO_VALUE, _MODEL_LOADING_VALUE}:
+        return None
+    if "|" not in selected:
+        return None
+    provider, tier = selected.split("|", 1)
+    provider_name = provider.strip().lower()
+    tier_name = tier.strip().lower()
+    if not provider_name or not tier_name:
+        return None
+    return provider_name, tier_name
+
+
+def should_skip_active_run_tier_warning(
+    *,
+    requested_provider: str,
+    requested_tier: str,
+    pending_value: str | None,
+) -> bool:
+    """Return True when a select change is a stale echo of an already-pending pre-run tier switch."""
+    requested = f"{requested_provider.strip().lower()}|{requested_tier.strip().lower()}"
+    pending = (pending_value or "").strip().lower()
+    return bool(requested) and requested == pending
+
+
 def choose_daemon_model_select_value(
     *,
     provider: str,
@@ -301,6 +335,47 @@ def choose_daemon_model_select_value(
     if daemon_value and daemon_value in available:
         return daemon_value
     return available[0]
+
+
+def daemon_model_select_options(
+    *,
+    provider: str,
+    tier: str,
+    tiers: list[dict[str, Any]],
+    pending_value: str | None = None,
+    override_provider: str | None = None,
+    override_tier: str | None = None,
+) -> tuple[list[tuple[str, str]], str]:
+    """Build model selector options for daemon-backed provider/tier metadata."""
+    provider_name = (provider or "").strip().lower()
+
+    options: list[tuple[str, str]] = []
+    for item in tiers:
+        item_provider = str(item.get("provider", "")).strip().lower()
+        item_tier = str(item.get("name", "")).strip().lower()
+        if not item_tier or item_provider != provider_name:
+            continue
+        if not bool(item.get("available", False)):
+            continue
+        model_id = str(item.get("model_id", "")).strip()
+        suffix = f" ({model_id})" if model_id else ""
+        value = f"{item_provider}|{item_tier}"
+        options.append((f"{item_provider}/{item_tier}{suffix}", value))
+
+    if not options:
+        return [("No available tiers", _MODEL_LOADING_VALUE)], _MODEL_LOADING_VALUE
+
+    selected_value = choose_daemon_model_select_value(
+        provider=provider_name,
+        tier=tier,
+        option_values=[value for _label, value in options],
+        pending_value=pending_value,
+        override_provider=override_provider,
+        override_tier=override_tier,
+    )
+    if selected_value is None:
+        selected_value = options[0][1]
+    return options, selected_value
 
 
 def choose_model_summary_parts(
@@ -364,6 +439,76 @@ def choose_model_summary_parts(
             model_id = _lookup_model_id(provider_name, tier_name)
         return provider_name, tier_name, (model_id or None)
     return None, None, None
+
+
+def classify_copy_command(normalized: str) -> str | None:
+    """Classify copy command variants into action keys."""
+    return _COPY_COMMAND_MAP.get(normalized)
+
+
+def classify_model_command(normalized: str) -> tuple[str, str | None] | None:
+    """Classify /model commands into action + optional argument."""
+    if normalized == "/model":
+        return "help", None
+    if normalized == "/model show":
+        return "show", None
+    if normalized == "/model list":
+        return "list", None
+    if normalized == "/model reset":
+        return "reset", None
+    if normalized.startswith("/model provider "):
+        return "provider", normalized.split(maxsplit=2)[2].strip()
+    if normalized.startswith("/model tier "):
+        return "tier", normalized.split(maxsplit=2)[2].strip()
+    return None
+
+
+def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
+    """Classify commands handled before active-run gating."""
+    normalized = text.lower()
+    if normalized.startswith("/open "):
+        return "open", text[len("/open "):]
+    if normalized == "/open":
+        return "open_usage", None
+    if normalized.startswith("/search "):
+        return "search", text[len("/search "):]
+    if normalized == "/search":
+        return "search_usage", None
+    if normalized in {"/stop", ":stop"}:
+        return "stop", None
+    if normalized in {"/exit", ":exit"}:
+        return "exit", None
+    if normalized in {"/daemon restart", "/restart-daemon"}:
+        return "daemon_restart", None
+    if normalized == "/consent":
+        return "consent_usage", None
+    if normalized.startswith("/consent "):
+        return "consent", normalized.split(maxsplit=1)[1].strip()
+    model = classify_model_command(normalized)
+    if model is not None:
+        action, argument = model
+        return f"model:{action}", argument
+    return None
+
+
+def classify_post_run_command(text: str) -> tuple[str, str | None] | None:
+    """Classify commands handled after active-run gating."""
+    normalized = text.lower()
+    if normalized == "/approve":
+        return "approve", None
+    if normalized == "/replan":
+        return "replan", None
+    if normalized == "/clearplan":
+        return "clearplan", None
+    if normalized == "/plan":
+        return "plan_mode", None
+    if text.startswith("/plan "):
+        return "plan_prompt", text[len("/plan "):].strip()
+    if normalized == "/run":
+        return "run_mode", None
+    if text.startswith("/run "):
+        return "run_prompt", text[len("/run "):].strip()
+    return None
 
 
 def parse_output_line(line: str) -> ParsedEvent | None:
@@ -536,14 +681,11 @@ def send_daemon_command(proc: subprocess.Popen[str], cmd_dict: dict[str, Any]) -
     return True
 
 
-def spawn_swarmee(
-    prompt: str,
+def _build_swarmee_subprocess_env(
     *,
-    auto_approve: bool,
     session_id: str | None = None,
     env_overrides: dict[str, str] | None = None,
-) -> subprocess.Popen[str]:
-    """Spawn Swarmee as a subprocess with line-buffered merged output."""
+) -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -565,8 +707,18 @@ def spawn_swarmee(
         env.update(env_overrides)
     if session_id:
         env["SWARMEE_SESSION_ID"] = session_id
+    return env
+
+
+def _spawn_swarmee_process(
+    command: list[str],
+    *,
+    session_id: str | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
+    env = _build_swarmee_subprocess_env(session_id=session_id, env_overrides=env_overrides)
     return subprocess.Popen(
-        build_swarmee_cmd(prompt, auto_approve=auto_approve),
+        command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -581,42 +733,31 @@ def spawn_swarmee(
     )
 
 
+def spawn_swarmee(
+    prompt: str,
+    *,
+    auto_approve: bool,
+    session_id: str | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
+    """Spawn Swarmee as a subprocess with line-buffered merged output."""
+    return _spawn_swarmee_process(
+        build_swarmee_cmd(prompt, auto_approve=auto_approve),
+        session_id=session_id,
+        env_overrides=env_overrides,
+    )
+
+
 def spawn_swarmee_daemon(
     *,
     session_id: str | None = None,
     env_overrides: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
     """Spawn Swarmee daemon with line-buffered merged output."""
-    env = dict(os.environ)
-    env["PYTHONUNBUFFERED"] = "1"
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env["SWARMEE_SPINNERS"] = "0"
-    env["SWARMEE_TUI_EVENTS"] = "1"
-    existing_warning_filters = env.get("PYTHONWARNINGS", "").strip()
-    tui_warning_filters = [
-        'ignore:Field name "json" in "Http_requestTool" shadows an attribute in parent "BaseModel"'
-        ":UserWarning:pydantic.main",
-    ]
-    env["PYTHONWARNINGS"] = ",".join(
-        [item for item in [*tui_warning_filters, existing_warning_filters] if isinstance(item, str) and item.strip()]
-    )
-    if env_overrides:
-        env.update(env_overrides)
-    if session_id:
-        env["SWARMEE_SESSION_ID"] = session_id
-    return subprocess.Popen(
+    return _spawn_swarmee_process(
         build_swarmee_daemon_cmd(),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        env=env,
-        # Keep daemon and all descendants in a separate session/process-group so
-        # macOS Terminal does not treat transient tool commands as foreground title context.
-        start_new_session=True,
+        session_id=session_id,
+        env_overrides=env_overrides,
     )
 
 
@@ -1088,6 +1229,7 @@ def run_tui() -> int:
         _last_prompt_tokens_est: int | None = None
         _last_budget_tokens: int | None = None
         _help_text: str = ""
+        _run_active_tier_warning_emitted: bool = False
 
         def compose(self) -> Any:
             yield Header()
@@ -1236,6 +1378,8 @@ def run_tui() -> int:
 
         def _write_transcript_line(self, line: str) -> None:
             """Write a plain text line to the transcript (used for TUI-internal messages)."""
+            if self._query_active:
+                self._turn_output_chunks.append(sanitize_output_text(f"[tui] {line}\n"))
             self._write_transcript(line)
 
         def _call_from_thread_safe(self, callback: Any, *args: Any, **kwargs: Any) -> None:
@@ -1243,6 +1387,12 @@ def run_tui() -> int:
                 return
             with contextlib.suppress(Exception):
                 self.call_from_thread(callback, *args, **kwargs)
+
+        def _warn_run_active_tier_change_once(self) -> None:
+            if self._run_active_tier_warning_emitted:
+                return
+            self._run_active_tier_warning_emitted = True
+            self._write_transcript_line(_RUN_ACTIVE_TIER_WARNING)
 
         def _write_user_input(self, text: str) -> None:
             self._mount_transcript_widget(UserMessage(text, timestamp=self._turn_timestamp()))
@@ -1366,8 +1516,11 @@ def run_tui() -> int:
                 )
                 return
 
-            selector = self.query_one("#model_select", Select)
             options, selected_value = self._model_select_options()
+            self._apply_model_select_options(options, selected_value)
+
+        def _apply_model_select_options(self, options: list[tuple[str, str]], selected_value: str) -> None:
+            selector = self.query_one("#model_select", Select)
             self._model_select_syncing = True
             try:
                 selector.set_options(options)
@@ -1383,67 +1536,26 @@ def run_tui() -> int:
             tier: str,
             tiers: list[dict[str, Any]],
         ) -> None:
-            selector = self.query_one("#model_select", Select)
-            provider_name = (provider or "").strip().lower()
+            options, selected_value = daemon_model_select_options(
+                provider=provider,
+                tier=tier,
+                tiers=tiers,
+                pending_value=self._pending_model_select_value,
+                override_provider=self._model_provider_override,
+                override_tier=self._model_tier_override,
+            )
+            self._apply_model_select_options(options, selected_value)
 
-            options: list[tuple[str, str]] = []
-            for item in tiers:
-                item_provider = str(item.get("provider", "")).strip().lower()
-                item_tier = str(item.get("name", "")).strip().lower()
-                if not item_tier or item_provider != provider_name:
-                    continue
-                if not bool(item.get("available", False)):
-                    continue
-                model_id = str(item.get("model_id", "")).strip()
-                suffix = f" ({model_id})" if model_id else ""
-                value = f"{item_provider}|{item_tier}"
-                options.append((f"{item_provider}/{item_tier}{suffix}", value))
-
-            if not options:
-                options = [("No available tiers", _MODEL_LOADING_VALUE)]
-                selected_value = _MODEL_LOADING_VALUE
-            else:
-                selected_value = choose_daemon_model_select_value(
-                    provider=provider_name,
-                    tier=tier,
-                    option_values=[value for _label, value in options],
+        def _model_select_options(self) -> tuple[list[tuple[str, str]], str]:
+            if self._daemon_tiers and self._daemon_provider:
+                return daemon_model_select_options(
+                    provider=self._daemon_provider,
+                    tier=(self._daemon_tier or ""),
+                    tiers=self._daemon_tiers,
                     pending_value=self._pending_model_select_value,
                     override_provider=self._model_provider_override,
                     override_tier=self._model_tier_override,
                 )
-                if selected_value is None:
-                    selected_value = options[0][1]
-
-            self._model_select_syncing = True
-            try:
-                selector.set_options(options)
-                with contextlib.suppress(Exception):
-                    selector.value = selected_value
-            finally:
-                self._model_select_syncing = False
-
-        def _model_select_options(self) -> tuple[list[tuple[str, str]], str]:
-            if self._daemon_tiers and self._daemon_provider:
-                options: list[tuple[str, str]] = []
-                selected_value: str | None = None
-                for tier in self._daemon_tiers:
-                    tier_name = str(tier.get("name", "")).strip().lower()
-                    provider_name = str(tier.get("provider", "")).strip().lower()
-                    if not tier_name or provider_name != self._daemon_provider:
-                        continue
-                    if not bool(tier.get("available", False)):
-                        continue
-                    model_id = str(tier.get("model_id", "")).strip()
-                    suffix = f" ({model_id})" if model_id else ""
-                    value = f"{provider_name}|{tier_name}"
-                    options.append((f"{provider_name}/{tier_name}{suffix}", value))
-                    if tier_name == (self._daemon_tier or ""):
-                        selected_value = value
-                if not options:
-                    return [("No available tiers", _MODEL_LOADING_VALUE)], _MODEL_LOADING_VALUE
-                if selected_value is None:
-                    selected_value = options[0][1]
-                return options, selected_value
             return model_select_options(
                 provider_override=self._model_provider_override,
                 tier_override=self._model_tier_override,
@@ -1467,6 +1579,11 @@ def run_tui() -> int:
                 pending_provider, pending_tier = pending_value.split("|", 1)
                 if pending_provider == provider and pending_tier == tier:
                     self._pending_model_select_value = None
+                    pending_value = ""
+
+            if not pending_value and self._daemon_provider and self._daemon_tier:
+                self._model_provider_override = self._daemon_provider
+                self._model_tier_override = self._daemon_tier
 
             if self._daemon_provider and self._daemon_tier:
                 self._refresh_model_select_from_daemon(
@@ -1603,12 +1720,19 @@ def run_tui() -> int:
 
         def _render_artifacts_panel(self) -> None:
             panel = self.query_one("#artifacts", TextArea)
+            with contextlib.suppress(Exception):
+                panel.soft_wrap = True
             if not self._artifacts:
                 panel.load_text("(no artifacts yet)")
             else:
                 lines = [f"{i + 1}. {path}" for i, path in enumerate(self._artifacts)]
                 panel.load_text("\n".join(lines))
             panel.scroll_end(animate=False)
+
+        def _get_artifacts_text(self) -> str:
+            if not self._artifacts:
+                return "(no artifacts)\n"
+            return "\n".join(self._artifacts).rstrip() + "\n"
 
         def _reset_artifacts_panel(self) -> None:
             self._artifacts = []
@@ -1914,6 +2038,7 @@ def run_tui() -> int:
                 return None
 
         def _finalize_turn(self, *, exit_status: str) -> None:
+            self._run_active_tier_warning_emitted = False
             if self._status_timer is not None:
                 self._status_timer.stop()
                 self._status_timer = None
@@ -2061,6 +2186,7 @@ def run_tui() -> int:
             if self._query_active:
                 self._write_transcript_line("[run] already running; use /stop.")
                 return
+            self._sync_selected_model_before_run()
 
             self._pending_plan_prompt = None
             self._reset_artifacts_panel()
@@ -2072,6 +2198,7 @@ def run_tui() -> int:
             self._tool_blocks = {}
             self._run_tool_count = 0
             self._run_start_time = time.time()
+            self._run_active_tier_warning_emitted = False
             self._plan_step_counter = 0
             self._plan_completion_announced = False
             self._received_structured_plan = False
@@ -2095,11 +2222,28 @@ def run_tui() -> int:
             self._last_prompt = prompt
             self._last_run_auto_approve = auto_approve
             self._query_active = True
+            desired_tier = ""
+            pending_value = (self._pending_model_select_value or "").strip().lower()
+            if "|" in pending_value:
+                _pending_provider, pending_tier = pending_value.split("|", 1)
+                desired_tier = pending_tier.strip().lower()
+            if not desired_tier:
+                desired_tier = (self._model_tier_override or "").strip().lower()
+            if not desired_tier:
+                with contextlib.suppress(Exception):
+                    selector = self.query_one("#model_select", Select)
+                    selected_value = str(getattr(selector, "value", "")).strip()
+                    parsed = parse_model_select_value(selected_value)
+                    if parsed is not None:
+                        _provider_name, parsed_tier = parsed
+                        desired_tier = parsed_tier.strip().lower()
             command: dict[str, Any] = {
                 "cmd": "query",
                 "text": prompt,
                 "auto_approve": bool(auto_approve),
             }
+            if desired_tier:
+                command["tier"] = desired_tier
             if mode:
                 command["mode"] = mode
             if not send_daemon_command(proc, command):
@@ -2175,6 +2319,9 @@ def run_tui() -> int:
             self._flush_issue_repeats()
             payload = ("\n".join(self._issues_lines).rstrip() + "\n") if self._issues_lines else ""
             self._copy_text(payload, label="issues")
+
+        def action_copy_artifacts(self) -> None:
+            self._copy_text(self._get_artifacts_text(), label="artifacts")
 
         def action_focus_prompt(self) -> None:
             self.query_one("#prompt", PromptTextArea).focus()
@@ -2332,8 +2479,10 @@ def run_tui() -> int:
                 if artifacts:
                     self._artifacts = artifacts
                     self._render_artifacts_panel()
-                self._model_provider_override = data.get("model_provider_override")
-                self._model_tier_override = data.get("model_tier_override")
+                # Do not restore model overrides from prior sessions.
+                # The daemon-reported model_info is the source of truth for startup model state.
+                self._model_provider_override = None
+                self._model_tier_override = None
                 self._default_auto_approve = data.get("default_auto_approve", False)
                 self._split_ratio = data.get("split_ratio", 2)
                 self._apply_split_ratio()
@@ -2387,7 +2536,7 @@ def run_tui() -> int:
                 if self._daemon_ready and self._proc is not None and self._proc.poll() is None:
                     current_tier = (self._daemon_tier or "").strip().lower()
                     current_provider = (self._daemon_provider or "").strip().lower()
-                    if requested_tier == current_tier:
+                    if requested_provider == current_provider and requested_tier == current_tier:
                         self._pending_model_select_value = None
                         self._model_provider_override = requested_provider or None
                         self._model_tier_override = requested_tier or None
@@ -2397,20 +2546,29 @@ def run_tui() -> int:
                             self._status_bar.set_model(self._current_model_summary())
                         return
                     if self._query_active:
-                        self._write_transcript_line("[model] cannot change tier while a run is active.")
-                        self._pending_model_select_value = None
-                        self._refresh_model_select_from_daemon(
-                            provider=current_provider or requested_provider,
-                            tier=current_tier or requested_tier,
-                            tiers=self._daemon_tiers,
-                        )
+                        if should_skip_active_run_tier_warning(
+                            requested_provider=requested_provider,
+                            requested_tier=requested_tier,
+                            pending_value=self._pending_model_select_value,
+                        ):
+                            self._model_provider_override = requested_provider or None
+                            self._model_tier_override = requested_tier or None
+                            self._update_header_status()
+                            self._update_prompt_placeholder()
+                            if self._status_bar is not None:
+                                self._status_bar.set_model(self._current_model_summary())
+                            return
+                        self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
+                        self._model_provider_override = requested_provider or None
+                        self._model_tier_override = requested_tier or None
+                        self._update_header_status()
+                        self._update_prompt_placeholder()
+                        if self._status_bar is not None:
+                            self._status_bar.set_model(self._current_model_summary())
                         return
                     else:
-                        if not send_daemon_command(self._proc, {"cmd": "set_tier", "tier": requested_tier}):
-                            self._write_transcript_line("[model] failed to send tier change to daemon.")
-                            self._pending_model_select_value = None
-                            self._refresh_model_select()
-                            return
+                        # Persist desired selection locally; the next query command carries `tier` and applies
+                        # atomically in daemon before invocation.
                         self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
                 else:
                     self._pending_model_select_value = None
@@ -2421,6 +2579,26 @@ def run_tui() -> int:
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
             # The model selector is always visible; avoid transient notifications.
+
+        def _sync_selected_model_before_run(self) -> None:
+            selected_value: str | None = None
+            with contextlib.suppress(Exception):
+                selector = self.query_one("#model_select", Select)
+                selected_value = str(getattr(selector, "value", "")).strip()
+            parsed = parse_model_select_value(selected_value)
+            if parsed is None:
+                return
+
+            requested_provider, requested_tier = parsed
+            self._model_provider_override = requested_provider or None
+            self._model_tier_override = requested_tier or None
+
+            current_provider = (self._daemon_provider or "").strip().lower()
+            current_tier = (self._daemon_tier or "").strip().lower()
+            if current_provider and current_tier and requested_provider == current_provider and requested_tier == current_tier:
+                self._pending_model_select_value = None
+                return
+            self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
 
         def _dispatch_plan_action(self, action: str) -> None:
             normalized = action.strip().lower()
@@ -2442,111 +2620,69 @@ def run_tui() -> int:
                 self._write_transcript_line("[run] plan cleared.")
                 return
 
-        def on_button_pressed(self, event: Any) -> None:
-            button_id = str(getattr(getattr(event, "button", None), "id", "")).strip().lower()
-            if button_id == "plan_action_approve":
-                self._dispatch_plan_action("approve")
-                return
-            if button_id == "plan_action_replan":
-                self._dispatch_plan_action("replan")
-                return
-            if button_id == "plan_action_clear":
-                self._dispatch_plan_action("clearplan")
-                return
-
-        def _handle_user_input(self, text: str) -> None:
-            self._write_user_input(text)
-
-            normalized = text.lower()
-
-            if normalized in {"/copy", ":copy"}:
+        def _handle_copy_command(self, normalized: str) -> bool:
+            command = classify_copy_command(normalized)
+            if command == "transcript":
                 self.action_copy_transcript()
-                return
+                return True
 
-            if normalized in {"/copy plan", ":copy plan"}:
+            if command == "plan":
                 self.action_copy_plan()
-                return
+                return True
 
-            if normalized in {"/copy issues", ":copy issues"}:
+            if command == "issues":
                 self.action_copy_issues()
-                return
+                return True
 
-            if normalized in {"/copy last", ":copy last"}:
+            if command == "artifacts":
+                self.action_copy_artifacts()
+                return True
+
+            if command == "last":
                 self._copy_text(self._last_assistant_text, label="last response")
-                return
+                return True
 
-            if normalized in {"/copy all", ":copy all"}:
+            if command == "all":
                 self._copy_text(self._get_all_text(), label="all")
-                return
+                return True
 
-            if normalized.startswith("/open "):
-                self._open_artifact(text[len("/open "):])
-                return
+            return False
 
-            if normalized == "/open":
-                self._write_transcript_line("Usage: /open <number>")
-                return
+        def _handle_model_command(self, normalized: str) -> bool:
+            command = classify_model_command(normalized)
+            if command is None:
+                return False
+            action, argument = command
 
-            if normalized.startswith("/search "):
-                self._search_transcript(text[len("/search "):])
-                return
-
-            if normalized == "/search":
-                self._write_transcript_line("Usage: /search <term>")
-                return
-
-            if normalized in {"/stop", ":stop"}:
-                self._stop_run()
-                return
-
-            if normalized in {"/exit", ":exit"}:
-                self.action_quit()
-                return
-
-            if normalized in {"/daemon restart", "/restart-daemon"}:
-                self._spawn_daemon(restart=True)
-                return
-
-            if normalized == "/consent":
-                self._write_transcript_line("Usage: /consent <y|n|a|v>")
-                return
-
-            if normalized.startswith("/consent "):
-                choice = normalized.split(maxsplit=1)[1].strip()
-                self._submit_consent_choice(choice)
-                return
-
-            if normalized == "/model":
+            if action == "help":
                 self._write_transcript_line(self._current_model_summary())
-                self._write_transcript_line(
-                    "Usage: /model show | /model list | /model provider <name> | /model tier <name> | /model reset"
-                )
-                return
+                self._write_transcript_line(_MODEL_USAGE_TEXT)
+                return True
 
-            if normalized == "/model show":
+            if action == "show":
                 self._write_transcript_line(self._current_model_summary())
-                return
+                return True
 
-            if normalized == "/model list":
+            if action == "list":
                 options, _ = self._model_select_options()
                 for label, _value in options:
                     self._write_transcript_line(f"- {label}")
-                return
+                return True
 
-            if normalized == "/model reset":
+            if action == "reset":
                 self._pending_model_select_value = None
                 self._model_provider_override = None
                 self._model_tier_override = None
                 self._refresh_model_select()
                 self._update_header_status()
                 self._write_transcript_line(f"[model] reset. {self._current_model_summary()}")
-                return
+                return True
 
-            if normalized.startswith("/model provider "):
-                provider = normalized.split(maxsplit=2)[2].strip()
+            if action == "provider":
+                provider = (argument or "").strip()
                 if not provider:
                     self._write_transcript_line("Usage: /model provider <name>")
-                    return
+                    return True
                 self._pending_model_select_value = None
                 self._model_provider_override = provider
                 self._refresh_model_select()
@@ -2555,13 +2691,16 @@ def run_tui() -> int:
                 if self._daemon_ready:
                     self._write_transcript_line("[model] restart daemon to apply provider changes.")
                 self._write_transcript_line(self._current_model_summary())
-                return
+                return True
 
-            if normalized.startswith("/model tier "):
-                tier = normalized.split(maxsplit=2)[2].strip()
+            if action == "tier":
+                tier = (argument or "").strip()
                 if not tier:
                     self._write_transcript_line("Usage: /model tier <name>")
-                    return
+                    return True
+                if self._daemon_ready and self._proc is not None and self._proc.poll() is None and self._query_active:
+                    self._warn_run_active_tier_change_once()
+                    return True
                 self._pending_model_select_value = None
                 self._model_tier_override = tier
                 self._refresh_model_select()
@@ -2581,50 +2720,125 @@ def run_tui() -> int:
                     elif requested_provider and requested_tier:
                         self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
                 self._write_transcript_line(self._current_model_summary())
+                return True
+
+            return False
+
+        def _handle_pre_run_command(self, text: str) -> bool:
+            classified = classify_pre_run_command(text)
+            if classified is None:
+                return False
+
+            action, argument = classified
+            if action == "open":
+                self._open_artifact(argument or "")
+                return True
+            if action == "open_usage":
+                self._write_transcript_line(_OPEN_USAGE_TEXT)
+                return True
+            if action == "search":
+                self._search_transcript(argument or "")
+                return True
+            if action == "search_usage":
+                self._write_transcript_line(_SEARCH_USAGE_TEXT)
+                return True
+            if action == "stop":
+                self._stop_run()
+                return True
+            if action == "exit":
+                self.action_quit()
+                return True
+            if action == "daemon_restart":
+                self._spawn_daemon(restart=True)
+                return True
+            if action == "consent_usage":
+                self._write_transcript_line(_CONSENT_USAGE_TEXT)
+                return True
+            if action == "consent":
+                self._submit_consent_choice((argument or "").strip())
+                return True
+            if action.startswith("model:"):
+                normalized = text.lower()
+                return self._handle_model_command(normalized)
+            return False
+
+        def _handle_post_run_command(self, text: str) -> bool:
+            classified = classify_post_run_command(text)
+            if classified is None:
+                return False
+
+            action, argument = classified
+
+            if action == "approve":
+                self._dispatch_plan_action("approve")
+                return True
+
+            if action == "replan":
+                self._dispatch_plan_action("replan")
+                return True
+
+            if action == "clearplan":
+                self._dispatch_plan_action("clearplan")
+                return True
+
+            if action == "plan_mode":
+                self._default_auto_approve = False
+                self._update_prompt_placeholder()
+                self._write_transcript_line("[mode] auto-approve disabled for default prompts.")
+                return True
+
+            if action == "plan_prompt":
+                prompt = (argument or "").strip()
+                if not prompt:
+                    self._write_transcript_line("Usage: /plan <prompt>")
+                    return True
+                self._start_run(prompt, auto_approve=False, mode="plan")
+                return True
+
+            if action == "run_mode":
+                self._default_auto_approve = True
+                self._update_prompt_placeholder()
+                self._write_transcript_line("[mode] auto-approve enabled for default prompts.")
+                return True
+
+            if action == "run_prompt":
+                prompt = (argument or "").strip()
+                if not prompt:
+                    self._write_transcript_line("Usage: /run <prompt>")
+                    return True
+                self._start_run(prompt, auto_approve=True, mode="execute")
+                return True
+
+            return False
+
+        def on_button_pressed(self, event: Any) -> None:
+            button_id = str(getattr(getattr(event, "button", None), "id", "")).strip().lower()
+            if button_id == "plan_action_approve":
+                self._dispatch_plan_action("approve")
+                return
+            if button_id == "plan_action_replan":
+                self._dispatch_plan_action("replan")
+                return
+            if button_id == "plan_action_clear":
+                self._dispatch_plan_action("clearplan")
+                return
+
+        def _handle_user_input(self, text: str) -> None:
+            self._write_user_input(text)
+
+            normalized = text.lower()
+
+            if self._handle_copy_command(normalized):
+                return
+
+            if self._handle_pre_run_command(text):
                 return
 
             if self._query_active:
                 self._write_transcript_line("[run] already running; use /stop.")
                 return
 
-            if normalized == "/approve":
-                self._dispatch_plan_action("approve")
-                return
-
-            if normalized == "/replan":
-                self._dispatch_plan_action("replan")
-                return
-
-            if normalized == "/clearplan":
-                self._dispatch_plan_action("clearplan")
-                return
-
-            if normalized == "/plan":
-                self._default_auto_approve = False
-                self._update_prompt_placeholder()
-                self._write_transcript_line("[mode] auto-approve disabled for default prompts.")
-                return
-
-            if text.startswith("/plan "):
-                prompt = text[len("/plan ") :].strip()
-                if not prompt:
-                    self._write_transcript_line("Usage: /plan <prompt>")
-                    return
-                self._start_run(prompt, auto_approve=False, mode="plan")
-                return
-
-            if normalized == "/run":
-                self._default_auto_approve = True
-                self._update_prompt_placeholder()
-                self._write_transcript_line("[mode] auto-approve enabled for default prompts.")
-                return
-
-            if text.startswith("/run "):
-                prompt = text[len("/run ") :].strip()
-                if not prompt:
-                    self._write_transcript_line("Usage: /run <prompt>")
-                    return
-                self._start_run(prompt, auto_approve=True, mode="execute")
+            if self._handle_post_run_command(text):
                 return
 
             if text.startswith("/") or text.startswith(":"):

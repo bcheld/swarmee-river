@@ -1,26 +1,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 from strands import tool
 
-
-def _safe_cwd(cwd: str | None) -> Path:
-    return Path(cwd or os.getcwd()).expanduser().resolve()
-
-
-def _resolve_target(path: str, *, cwd: str | None) -> tuple[Path, Path]:
-    rel_path = (path or "").strip()
-    if not rel_path:
-        raise ValueError("path is required")
-
-    base = _safe_cwd(cwd)
-    target = (base / rel_path).expanduser().resolve()
-    if base not in target.parents and target != base:
-        raise ValueError("Refusing to write outside cwd")
-    return base, target
+from swarmee_river.utils.path_utils import resolve_target
 
 
 @tool
@@ -41,7 +26,7 @@ def file_write(
         return {"status": "error", "content": [{"text": "content is required"}]}
 
     try:
-        base, target = _resolve_target(path, cwd=cwd)
+        base, target = resolve_target(path, cwd=cwd)
     except ValueError as exc:
         return {"status": "error", "content": [{"text": str(exc)}]}
 

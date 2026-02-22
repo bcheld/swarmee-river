@@ -8,6 +8,7 @@ from typing import Any, Optional
 from strands import tool
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.utils.text_utils import truncate
 
 
 def _extract_target_files(patch_text: str) -> list[str]:
@@ -24,12 +25,6 @@ def _extract_target_files(patch_text: str) -> list[str]:
         if raw and raw not in targets:
             targets.append(raw)
     return targets
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n… (truncated to {max_chars} chars) …"
 
 
 @tool
@@ -122,7 +117,7 @@ def patch_apply(
             "status": "error",
             "content": [
                 {"text": f"exit_code: {exit_code} (duration_s={duration_s})"},
-                {"text": _truncate((stderr or stdout or "").strip(), max_chars)},
+                {"text": truncate((stderr or stdout or "").strip(), max_chars)},
                 {"text": f"patch: {patch_ref.path}"},
             ],
         }

@@ -388,3 +388,103 @@ def render_replay_invocation(
         lines.append(f"[{ts}] {ev} " + _truncate(json.dumps(e, ensure_ascii=False), 200))
 
     return _truncate("\n".join(lines).strip(), max_chars)
+
+
+def render_diagnostic_command(*, cmd: str, args: list[str], cwd: Path) -> str:
+    command = (cmd or "").strip().lower()
+    sub = list(args or [])
+
+    if command == "status":
+        return render_git_status(cwd=cwd)
+
+    if command == "diff":
+        staged = False
+        paths: list[str] = []
+        for item in sub:
+            if item in {"--staged", "--cached"}:
+                staged = True
+            elif item.startswith("-"):
+                continue
+            else:
+                paths.append(item)
+        return render_git_diff(cwd=cwd, staged=staged, paths=paths or None)
+
+    if command == "artifact":
+        subcmd = sub[0].strip().lower() if sub else "list"
+        if subcmd in {"list", "ls"}:
+            return render_artifact_list(cwd=cwd)
+        if subcmd == "get":
+            artifact_id = sub[1].strip() if len(sub) >= 2 else None
+            if not artifact_id:
+                return "Usage: artifact get <artifact_id>"
+            return render_artifact_get(cwd=cwd, artifact_id=artifact_id, path=None)
+        return "Usage: artifact list | artifact get <artifact_id>"
+
+    if command == "log":
+        subcmd = sub[0].strip().lower() if sub else "tail"
+        if subcmd != "tail":
+            return "Usage: log tail [--lines N]"
+        n = 50
+        if "--lines" in sub:
+            try:
+                idx = sub.index("--lines")
+                n = int(sub[idx + 1])
+            except Exception:
+                n = 50
+        return render_log_tail(cwd=cwd, lines=n)
+
+    if command == "replay":
+        if not sub:
+            return "Usage: replay <invocation_id>"
+        return render_replay_invocation(cwd=cwd, invocation_id=sub[0].strip())
+
+    raise ValueError(f"Unknown diagnostic command: {command}")
+
+
+def render_diagnostic_command_for_surface(*, cmd: str, args: list[str], cwd: Path, surface: str = "raw") -> str:
+    text = render_diagnostic_command(cmd=cmd, args=args, cwd=cwd)
+    kind = (surface or "raw").strip().lower()
+
+    prefixes = {
+        "repl": ":",
+        "cli": "swarmee ",
+    }
+    prefix = prefixes.get(kind)
+    if not prefix:
+        return text
+
+    for command_name in ("status", "diff", "artifact", "log", "replay"):
+        text = text.replace(f"Usage: {command_name}", f"Usage: {prefix}{command_name}")
+    return text
+
+
+def render_config_command_for_surface(
+    *,
+    args: list[str],
+    cwd: Path,
+    settings_path: Path,
+    settings: Any,
+    selected_provider: str | None,
+    model_manager: Any,
+    knowledge_base_id: str | None,
+    effective_sop_paths: str | None,
+    auto_approve: bool,
+    surface: str = "raw",
+) -> str:
+    subcmd = (args[0].strip().lower() if args else "show")
+    if subcmd != "show":
+        return {
+            "repl": "Usage: :config show",
+            "cli": "Usage: swarmee config show",
+        }.get((surface or "raw").strip().lower(), "Usage: config show")
+
+    return render_effective_config(
+        cwd=cwd,
+        settings_path=settings_path,
+        settings=settings,
+        selected_provider=selected_provider,
+        model_manager=model_manager,
+        knowledge_base_id=knowledge_base_id,
+        effective_sop_paths=effective_sop_paths,
+        auto_approve=auto_approve,
+    )

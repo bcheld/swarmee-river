@@ -51,6 +51,9 @@ def default_model_config(provider: str) -> dict[str, Any]:
             params["max_completion_tokens"] = int(max_tokens)
 
         client_args: dict[str, Any] = {}
+        max_retries = os.getenv("SWARMEE_OPENAI_MAX_RETRIES", "0").strip()
+        if max_retries.isdigit():
+            client_args["max_retries"] = int(max_retries)
         if os.getenv("OPENAI_API_KEY"):
             client_args["api_key"] = os.getenv("OPENAI_API_KEY")
         if os.getenv("OPENAI_BASE_URL"):

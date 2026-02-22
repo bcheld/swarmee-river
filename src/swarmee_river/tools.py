@@ -36,6 +36,84 @@ from tools.shell import shell as shell_fallback
 from tools.use_agent import use_agent as use_agent_fallback
 from tools.use_agent import use_llm as use_llm_fallback
 
+_OPTIONAL_STRANDS_TOOL_NAMES: tuple[str, ...] = (
+    "agent_graph",
+    "calculator",
+    "current_time",
+    "editor",
+    "environment",
+    "file_read",
+    "file_write",
+    "generate_image",
+    "http_request",
+    "image_reader",
+    "journal",
+    "load_tool",
+    "memory",
+    "nova_reels",
+    "retrieve",
+    "slack",
+    "speak",
+    "stop",
+    "swarm",
+    "think",
+    "use_aws",
+    # `use_llm` was deprecated in some Strands Tools versions in favor of `use_agent`.
+    "use_agent",
+    "use_llm",
+    "workflow",
+    # Optional / platform-dependent:
+    "cron",
+    "python_repl",
+    "shell",
+)
+
+_FALLBACK_TOOLS: dict[str, Any] = {
+    "shell": shell_fallback,
+    "python_repl": python_repl_fallback,
+    "file_write": file_write_fallback,
+    "editor": editor_fallback,
+    "retrieve": retrieve_fallback,
+    "http_request": http_request_fallback,
+    "calculator": calculator_fallback,
+    "current_time": current_time_fallback,
+    "environment": environment_fallback,
+    "use_agent": use_agent_fallback,
+    "use_llm": use_llm_fallback,
+}
+
+_CUSTOM_TOOLS: dict[str, Any] = {
+    # Core repository navigation primitives (safe, non-shell).
+    "file_list": file_ops.file_list,
+    "file_search": file_ops.file_search,
+    "file_read": file_ops.file_read,
+    "glob": path_ops.glob,
+    "list": path_ops.list,
+    "store_in_kb": store_in_kb,
+    "strand": strand,
+    "welcome": welcome,
+    "sop": sop,
+    "artifact": artifact,
+    "git": git,
+    "patch_apply": patch_apply,
+    "run_checks": run_checks,
+    "todoread": todo.todoread,
+    "todowrite": todo.todowrite,
+    # Override any `strands_tools.agent_graph` with a cancellable implementation.
+    "agent_graph": agent_graph,
+    # Override any `strands_tools.swarm` with a cancellable implementation.
+    "swarm": swarm,
+}
+
+
+def _load_optional_strands_tools() -> dict[str, Any]:
+    tools: dict[str, Any] = {}
+    for tool_name in _OPTIONAL_STRANDS_TOOL_NAMES:
+        loaded = load_optional_attr("strands_tools", tool_name, import_module=importlib.import_module)
+        if loaded is not None:
+            tools[tool_name] = loaded
+    return tools
+
 
 def get_tools() -> dict[str, Any]:
     """
@@ -44,80 +122,11 @@ def get_tools() -> dict[str, Any]:
     This function is intentionally defensive so the package can run across Windows/macOS/Linux
     even when some optional tool modules are not importable on a given platform.
     """
-    tools: dict[str, Any] = {}
+    tools = _load_optional_strands_tools()
+    for name, fallback in _FALLBACK_TOOLS.items():
+        tools.setdefault(name, fallback)
 
-    # Core Strands tools (attempt to load individually)
-    for tool_name in [
-        "agent_graph",
-        "calculator",
-        "current_time",
-        "editor",
-        "environment",
-        "file_read",
-        "file_write",
-        "generate_image",
-        "http_request",
-        "image_reader",
-        "journal",
-        "load_tool",
-        "memory",
-        "nova_reels",
-        "retrieve",
-        "slack",
-        "speak",
-        "stop",
-        "swarm",
-        "think",
-        "use_aws",
-        # `use_llm` was deprecated in some Strands Tools versions in favor of `use_agent`.
-        "use_agent",
-        "use_llm",
-        "workflow",
-        # Optional / platform-dependent:
-        "cron",
-        "python_repl",
-        "shell",
-    ]:
-        loaded = load_optional_attr("strands_tools", tool_name, import_module=importlib.import_module)
-        if loaded is not None:
-            tools[tool_name] = loaded
-
-    # Cross-platform fallbacks (only if the Strands Tools variant isn't available)
-    tools.setdefault("shell", shell_fallback)
-    tools.setdefault("python_repl", python_repl_fallback)
-    tools.setdefault("file_write", file_write_fallback)
-    tools.setdefault("editor", editor_fallback)
-    tools.setdefault("retrieve", retrieve_fallback)
-    tools.setdefault("http_request", http_request_fallback)
-    tools.setdefault("calculator", calculator_fallback)
-    tools.setdefault("current_time", current_time_fallback)
-    tools.setdefault("environment", environment_fallback)
-    tools.setdefault("use_agent", use_agent_fallback)
-    tools.setdefault("use_llm", use_llm_fallback)
-
-    # Packaged custom tools
-    custom_tools: dict[str, Any] = {
-        # Core repository navigation primitives (safe, non-shell).
-        "file_list": file_ops.file_list,
-        "file_search": file_ops.file_search,
-        "file_read": file_ops.file_read,
-        "glob": path_ops.glob,
-        "list": path_ops.list,
-        "store_in_kb": store_in_kb,
-        "strand": strand,
-        "welcome": welcome,
-        "sop": sop,
-        "artifact": artifact,
-        "git": git,
-        "patch_apply": patch_apply,
-        "run_checks": run_checks,
-        "todoread": todo.todoread,
-        "todowrite": todo.todowrite,
-        # Override any `strands_tools.agent_graph` with a cancellable implementation.
-        "agent_graph": agent_graph,
-        # Override any `strands_tools.swarm` with a cancellable implementation.
-        "swarm": swarm,
-    }
+    custom_tools = dict(_CUSTOM_TOOLS)
     if truthy_env("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", False):
         custom_tools["project_context"] = project_context
     tools |= custom_tools

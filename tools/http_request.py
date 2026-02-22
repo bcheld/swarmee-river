@@ -8,11 +8,7 @@ from typing import Any, Optional
 
 from strands import tool
 
-
-def _truncate(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n… (truncated to {max_chars} chars) …"
+from swarmee_river.utils.text_utils import truncate
 
 
 def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str]:
@@ -117,7 +113,7 @@ def http_request(
                     text,
                 ]
             ).strip()
-            return {"status": "success", "content": [{"text": _truncate(content_text, max_chars)}]}
+            return {"status": "success", "content": [{"text": truncate(content_text, max_chars)}]}
     except urllib.error.HTTPError as e:
         try:
             raw = e.read() or b""
@@ -125,7 +121,7 @@ def http_request(
             raw = b""
         text = raw.decode("utf-8", errors="replace") if raw else ""
         payload = f"HTTPError {getattr(e, 'code', None)}: {getattr(e, 'reason', '')}\n\n{text}".strip()
-        return {"status": "error", "content": [{"text": _truncate(payload, max_chars)}]}
+        return {"status": "error", "content": [{"text": truncate(payload, max_chars)}]}
     except urllib.error.URLError as e:
         return {"status": "error", "content": [{"text": f"URLError: {e}"}]}
     except Exception as e:

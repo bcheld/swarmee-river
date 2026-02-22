@@ -7,27 +7,8 @@ from typing import Any
 
 from strands import tool
 
-
-def _safe_cwd(cwd: str | None) -> Path:
-    return Path(cwd or os.getcwd()).expanduser().resolve()
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n... (truncated to {max_chars} chars) ..."
-
-
-def _resolve_target(path: str, *, cwd: str | None) -> tuple[Path, Path]:
-    rel_path = (path or "").strip()
-    if not rel_path:
-        raise ValueError("path is required")
-
-    base = _safe_cwd(cwd)
-    target = (base / rel_path).expanduser().resolve()
-    if base not in target.parents and target != base:
-        raise ValueError("Refusing to edit outside cwd")
-    return base, target
+from swarmee_river.utils.path_utils import resolve_target
+from swarmee_river.utils.text_utils import truncate
 
 
 def _atomic_write_text(path: Path, text: str, *, encoding: str) -> None:
@@ -90,7 +71,7 @@ def editor(
         return {"status": "error", "content": [{"text": "command is required"}]}
 
     try:
-        base, target = _resolve_target(path, cwd=cwd)
+        base, target = resolve_target(path, cwd=cwd)
     except ValueError as exc:
         return {"status": "error", "content": [{"text": str(exc)}]}
 
@@ -100,7 +81,7 @@ def editor(
                 return {"status": "error", "content": [{"text": f"File not found: {path}"}]}
             text = _read_text(target, encoding=encoding)
             rendered = _render_view(text, view_range=view_range)
-            return {"status": "success", "content": [{"text": _truncate(rendered, max_chars)}]}
+            return {"status": "success", "content": [{"text": truncate(rendered, max_chars)}]}
 
         if cmd == "replace":
             if not target.exists() or not target.is_file():

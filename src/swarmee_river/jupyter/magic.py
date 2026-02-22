@@ -21,7 +21,8 @@ from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
 from swarmee_river.tools import get_tools
 from swarmee_river.context.prompt_cache import format_system_reminder, inject_system_reminder
-from swarmee_river.utils.env_utils import load_env_file
+from swarmee_river.utils.agent_runtime_utils import plan_json_for_execution, render_plan_text
+from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt
 from swarmee_river.utils.provider_utils import resolve_model_provider
 
@@ -80,12 +81,6 @@ class _NotebookRuntime:
     base_system_prompt: str
     artifact_store: ArtifactStore
     knowledge_base_id: str | None
-
-
-def _truthy(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
 
 
 def _strip_markdown_images(markdown: str) -> str:
@@ -336,31 +331,6 @@ def _invoke_agent(
     return _run_coroutine(runtime.agent.invoke_async(invoke_query, **invoke_kwargs))
 
 
-def _render_plan(plan: WorkPlan) -> str:
-    lines: list[str] = ["Proposed plan:", f"- Summary: {plan.summary}"]
-    if plan.assumptions:
-        lines.append("- Assumptions:")
-        lines.extend([f"  - {a}" for a in plan.assumptions])
-    if plan.questions:
-        lines.append("- Questions:")
-        lines.extend([f"  - {q}" for q in plan.questions])
-    if plan.steps:
-        lines.append("- Steps:")
-        for i, step in enumerate(plan.steps, start=1):
-            lines.append(f"  {i}. {step.description}")
-            if step.files_to_read:
-                lines.append(f"     - read: {', '.join(step.files_to_read)}")
-            if step.files_to_edit:
-                lines.append(f"     - edit: {', '.join(step.files_to_edit)}")
-            if step.tools_expected:
-                lines.append(f"     - tools: {', '.join(step.tools_expected)}")
-            if step.commands_expected:
-                lines.append(f"     - cmds: {', '.join(step.commands_expected)}")
-            if step.risks:
-                lines.append(f"     - risks: {', '.join(step.risks)}")
-    return "\n".join(lines).strip()
-
-
 def _get_or_create_runtime() -> _NotebookRuntime:
     global _RUNTIME_SINGLETON, _RUNTIME_FINGERPRINT
 
@@ -480,9 +450,9 @@ def _execute_with_plan(runtime: _NotebookRuntime, prompt: str, plan: WorkPlan, *
         }
     }
 
-    plan_json_for_execution = json.dumps(plan.model_dump(exclude={"confirmation_prompt"}), indent=2, ensure_ascii=False)
+    plan_json_payload = plan_json_for_execution(plan)
     approved_plan_section = (
-        "Approved Plan (execute ONLY this plan; if you need changes, regenerate the plan):\n" + plan_json_for_execution
+        "Approved Plan (execute ONLY this plan; if you need changes, regenerate the plan):\n" + plan_json_payload
     )
     reminder = format_system_reminder([approved_plan_section])
     query = inject_system_reminder(user_query=prompt, reminder=reminder)
@@ -514,7 +484,7 @@ def _run_swarmee(
                 "Fix: increase SWARMEE_MAX_TOKENS / STRANDS_MAX_TOKENS, or ask for a shorter plan."
             )
 
-        rendered = _render_plan(plan)
+        rendered = render_plan_text(plan)
         if not auto_approve:
             return rendered + "\n\nPlan generated. Re-run with `%%swarmee --yes` to execute."
 
@@ -585,7 +555,7 @@ def load_ipython_extension(ipython: Any) -> None:
         def swarmee(self, line: str, cell: str) -> str:
             # Allow disabling notebook context for quick one-offs.
             auto_approve, force_plan, no_context, extra = _parse_magic_line(line)
-            include_context = (not no_context) and (not _truthy(os.getenv("SWARMEE_NOTEBOOK_NO_CONTEXT")))
+            include_context = (not no_context) and (not truthy(os.getenv("SWARMEE_NOTEBOOK_NO_CONTEXT")))
 
             prompt = cell
             if extra:

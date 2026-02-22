@@ -7,13 +7,11 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.utils.path_utils import SKIP_DIRS, safe_cwd
+from swarmee_river.utils.text_utils import truncate
+
 from tools.file_ops import file_list as _file_list
 from tools.file_ops import file_search as _file_search
-
-
-def _safe_cwd(cwd: str | None) -> Path:
-    base = Path(cwd or os.getcwd()).expanduser().resolve()
-    return base
 
 
 def _run(cmd: list[str], *, cwd: Path, timeout_s: int = 15) -> tuple[int, str, str]:
@@ -31,29 +29,6 @@ def _run(cmd: list[str], *, cwd: Path, timeout_s: int = 15) -> tuple[int, str, s
     except Exception as e:
         return 1, "", str(e)
     return int(p.returncode), p.stdout or "", p.stderr or ""
-
-
-def _truncate(s: str, limit: int) -> str:
-    if limit <= 0 or len(s) <= limit:
-        return s
-    return s[:limit] + f"\n… (truncated to {limit} chars) …"
-
-
-_SKIP_DIRS = {
-    ".git",
-    ".hg",
-    ".svn",
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-    "__pycache__",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".pytest_cache",
-    ".swarmee",
-    "node_modules",
-}
 
 
 def _top_level_listing(base: Path, *, max_entries: int = 200) -> str:
@@ -83,12 +58,7 @@ def _shallow_tree(base: Path, *, max_depth: int = 2, max_files: int = 5000) -> s
         rel_root = os.path.relpath(root, base)
         rel_parts = () if rel_root == "." else Path(rel_root).parts
 
-        dirnames[:] = sorted([d for d in dirnames if d not in _SKIP_DIRS])
-
-        # `find . -maxdepth 2 -type f` includes:
-        # - ./file (depth=1)
-        # - ./dir/file (depth=2)
-        # but not ./dir/sub/file (depth=3)
+        dirnames[:] = sorted([d for d in dirnames if d not in SKIP_DIRS])
         if len(rel_parts) >= max(1, int(max_depth)):
             dirnames[:] = []
             continue
@@ -123,31 +93,21 @@ def run_project_context(
     cwd: str | None = None,
     max_chars: int = 12000,
 ) -> dict[str, Any]:
-    """
-    Explore the current project context from the working directory.
-
-    Actions:
-    - summary: basic repo summary (pwd, git status, top-level files)
-    - files: list files (uses `rg --files` when available)
-    - tree: shallow tree (depth=2)
-    - search: ripgrep search for `query`
-    - read: read a text file at `path` (first ~400 lines)
-    - git_status: `git status --porcelain -b`
-    """
+    """Explore project context for summary/files/tree/search/read/git_status actions."""
     action = (action or "").strip().lower()
-    base = _safe_cwd(cwd)
+    base = safe_cwd(cwd)
 
     if action == "git_status":
         code, out, err = _run(["git", "status", "--porcelain=v1", "-b"], cwd=base, timeout_s=10)
         text = out.strip() if out.strip() else err.strip()
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "files":
         return _file_list(cwd=str(base), max_chars=max_chars)
 
     if action == "tree":
         text = _shallow_tree(base)
-        return {"status": "success", "content": [{"text": _truncate(text.strip() or "(no files found)", max_chars)}]}
+        return {"status": "success", "content": [{"text": truncate(text.strip() or "(no files found)", max_chars)}]}
 
     if action == "search":
         if not query or not str(query).strip():
@@ -167,7 +127,7 @@ def run_project_context(
         except Exception as e:
             return {"status": "error", "content": [{"text": f"Failed to read: {e}"}]}
         head = "\n".join(lines[:400])
-        return {"status": "success", "content": [{"text": _truncate(head, max_chars)}]}
+        return {"status": "success", "content": [{"text": truncate(head, max_chars)}]}
 
     if action == "summary":
         parts: list[str] = [f"cwd: {base}"]
@@ -180,6 +140,6 @@ def run_project_context(
         listing = _top_level_listing(base)
         if listing:
             parts.append("top_level:\n" + listing)
-        return {"status": "success", "content": [{"text": _truncate("\n\n".join(parts), max_chars)}]}
+        return {"status": "success", "content": [{"text": truncate("\n\n".join(parts), max_chars)}]}
 
     return {"status": "error", "content": [{"text": f"Unknown action: {action}"}]}

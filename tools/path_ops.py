@@ -7,32 +7,8 @@ from typing import Any, List, Optional
 
 from strands import tool
 
-
-def _safe_cwd(cwd: str | None) -> Path:
-    return Path(cwd or os.getcwd()).expanduser().resolve()
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n… (truncated to {max_chars} chars) …"
-
-
-_SKIP_DIRS = {
-    ".git",
-    ".hg",
-    ".svn",
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-    "__pycache__",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".pytest_cache",
-    ".swarmee",
-    "node_modules",
-}
+from swarmee_river.utils.path_utils import SKIP_DIRS, safe_cwd
+from swarmee_river.utils.text_utils import truncate
 
 
 def _contains_parent_traversal(pattern: str) -> bool:
@@ -87,7 +63,7 @@ def list(
     - Hidden entries (starting with `.`) are excluded by default.
     - Output uses `/` suffix for directories.
     """
-    base = _safe_cwd(cwd)
+    base = safe_cwd(cwd)
     raw = (path or ".").strip() or "."
 
     target = (base / raw).expanduser().resolve()
@@ -119,7 +95,7 @@ def list(
         lines.append(name + suffix)
 
     text = "\n".join(lines).strip() if lines else "(no entries)"
-    return {"status": "success", "content": [{"text": _truncate(text, max_chars)}]}
+    return {"status": "success", "content": [{"text": truncate(text, max_chars)}]}
 
 
 @tool
@@ -147,7 +123,7 @@ def glob(
     if _contains_parent_traversal(raw):
         return {"status": "error", "content": [{"text": "Parent traversal ('..') is not allowed in pattern"}]}
 
-    base = _safe_cwd(cwd)
+    base = safe_cwd(cwd)
     normalized = _normalize_glob_pattern(raw)
     if not normalized:
         return {"status": "error", "content": [{"text": "pattern is required"}]}
@@ -201,7 +177,7 @@ def glob(
         # Skip noisy/build dirs; also avoid following symlinked dirs.
         kept_dirnames: List[str] = []
         for d in sorted(dirnames):
-            if d in _SKIP_DIRS:
+            if d in SKIP_DIRS:
                 continue
             p = Path(root) / d
             try:
@@ -238,4 +214,4 @@ def glob(
             break
 
     text = "\n".join(results).strip() if results else "(no matches)"
-    return {"status": "success", "content": [{"text": _truncate(text, max_chars)}]}
+    return {"status": "success", "content": [{"text": truncate(text, max_chars)}]}

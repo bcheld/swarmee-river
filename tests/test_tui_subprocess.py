@@ -27,12 +27,6 @@ def test_build_swarmee_daemon_cmd():
     assert command == [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
 
 
-def test_build_plan_mode_prompt_wraps_user_request():
-    wrapped = tui_app.build_plan_mode_prompt("  fix the failing tests  ")
-    assert wrapped.startswith("Create a concrete work plan")
-    assert wrapped.endswith("Request:\nfix the failing tests")
-
-
 def test_model_select_options_only_includes_configured_provider_tiers(monkeypatch):
     class _Tier:
         def __init__(self, model_id: str) -> None:
@@ -92,6 +86,129 @@ def test_choose_daemon_model_select_value_prefers_pending_then_daemon():
         option_values=values,
     )
     assert selected_no_pending == "openai|balanced"
+
+
+def test_parse_model_select_value_handles_valid_and_special_values():
+    assert tui_app.parse_model_select_value("openai|deep") == ("openai", "deep")
+    assert tui_app.parse_model_select_value(" OPENAI|Deep ") == ("openai", "deep")
+    assert tui_app.parse_model_select_value("__auto__") is None
+    assert tui_app.parse_model_select_value("__loading__") is None
+    assert tui_app.parse_model_select_value("openai") is None
+
+
+def test_classify_copy_command_matrix():
+    cases = {
+        "/copy": "transcript",
+        ":copy": "transcript",
+        "/copy plan": "plan",
+        ":copy plan": "plan",
+        "/copy issues": "issues",
+        ":copy issues": "issues",
+        "/copy artifacts": "artifacts",
+        ":copy artifacts": "artifacts",
+        "/copy last": "last",
+        ":copy last": "last",
+        "/copy all": "all",
+        ":copy all": "all",
+        "/copy nope": None,
+        "copy": None,
+    }
+    for command, expected in cases.items():
+        assert tui_app.classify_copy_command(command) == expected
+
+
+def test_classify_model_command_matrix():
+    cases = {
+        "/model": ("help", None),
+        "/model show": ("show", None),
+        "/model list": ("list", None),
+        "/model reset": ("reset", None),
+        "/model provider openai": ("provider", "openai"),
+        "/model tier deep": ("tier", "deep"),
+        "/model provider": None,
+        "/model tier": None,
+        "/model unknown": None,
+    }
+    for command, expected in cases.items():
+        assert tui_app.classify_model_command(command) == expected
+
+
+def test_classify_pre_run_command_matrix():
+    cases = {
+        "/open 12": ("open", "12"),
+        "/open": ("open_usage", None),
+        "/search bug": ("search", "bug"),
+        "/search": ("search_usage", None),
+        "/stop": ("stop", None),
+        ":stop": ("stop", None),
+        "/exit": ("exit", None),
+        ":exit": ("exit", None),
+        "/daemon restart": ("daemon_restart", None),
+        "/restart-daemon": ("daemon_restart", None),
+        "/consent": ("consent_usage", None),
+        "/consent y": ("consent", "y"),
+        "/model show": ("model:show", None),
+        "/model provider openai": ("model:provider", "openai"),
+        "/approve": None,
+        "hello": None,
+    }
+    for command, expected in cases.items():
+        assert tui_app.classify_pre_run_command(command) == expected
+
+
+def test_classify_post_run_command_matrix():
+    cases = {
+        "/approve": ("approve", None),
+        "/replan": ("replan", None),
+        "/clearplan": ("clearplan", None),
+        "/plan": ("plan_mode", None),
+        "/plan draft": ("plan_prompt", "draft"),
+        "/run": ("run_mode", None),
+        "/run now": ("run_prompt", "now"),
+        "/model show": None,
+        "hello": None,
+    }
+    for command, expected in cases.items():
+        assert tui_app.classify_post_run_command(command) == expected
+
+
+def test_command_classification_precedence_ordering():
+    # copy commands should be recognized before pre/post phases
+    normalized_copy = "/copy all"
+    assert tui_app.classify_copy_command(normalized_copy) == "all"
+    assert tui_app.classify_pre_run_command(normalized_copy) is None
+    assert tui_app.classify_post_run_command(normalized_copy) is None
+
+    # pre-run commands should be recognized before post-run phase
+    model_show = "/model show"
+    assert tui_app.classify_copy_command(model_show) is None
+    assert tui_app.classify_pre_run_command(model_show) == ("model:show", None)
+    assert tui_app.classify_post_run_command(model_show) is None
+
+    # post-run commands should not be mistaken for pre-run commands
+    run_now = "/run now"
+    assert tui_app.classify_copy_command(run_now) is None
+    assert tui_app.classify_pre_run_command(run_now) is None
+    assert tui_app.classify_post_run_command(run_now) == ("run_prompt", "now")
+
+
+def test_should_skip_active_run_tier_warning_only_for_pending_match():
+    assert (
+        tui_app.should_skip_active_run_tier_warning(
+            requested_provider="openai",
+            requested_tier="deep",
+            pending_value="openai|deep",
+        )
+        is True
+    )
+    assert (
+        tui_app.should_skip_active_run_tier_warning(
+            requested_provider="openai",
+            requested_tier="deep",
+            pending_value="openai|fast",
+        )
+        is False
+    )
 
 
 def test_choose_daemon_model_select_value_uses_override_when_available():

@@ -1,8 +1,8 @@
 import atexit
 import contextlib
-import json
 import sys
 import time
+import warnings
 import weakref
 from threading import Event
 from typing import Any
@@ -12,14 +12,7 @@ from halo import Halo
 from rich.status import Status
 
 from swarmee_river.utils.env_utils import truthy_env
-
-
-def _configure_stdio_for_utf8() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if callable(reconfigure):
-            with contextlib.suppress(Exception):
-                reconfigure(encoding="utf-8", errors="replace")
+from swarmee_river.utils.stdio_utils import configure_stdio_for_utf8, write_stdout_jsonl
 
 
 def _safe_print(*parts: Any, end: str = "\n") -> None:
@@ -43,29 +36,8 @@ def _safe_print(*parts: Any, end: str = "\n") -> None:
         stream.flush()
 
 
-def _write_stdout_jsonl(event: dict[str, Any]) -> None:
-    line = json.dumps(event, ensure_ascii=False) + "\n"
-    try:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        return
-    except UnicodeEncodeError:
-        pass
-
-    buffer = getattr(sys.stdout, "buffer", None)
-    if buffer is not None:
-        with contextlib.suppress(Exception):
-            buffer.write(line.encode("utf-8", errors="replace"))
-            buffer.flush()
-            return
-
-    with contextlib.suppress(Exception):
-        sys.stdout.write(line.encode("ascii", errors="replace").decode("ascii"))
-        sys.stdout.flush()
-
-
 # Initialize Colorama
-_configure_stdio_for_utf8()
+configure_stdio_for_utf8()
 init(autoreset=True)
 
 # Configure spinner templates
@@ -116,7 +88,13 @@ class ToolSpinner:
         if text:
             self.current_text = text
         _safe_print()  # Move to new line before starting spinner, prevents spinner from eating the previous line
-        self.spinner.start(f"{self.color}{self.current_text}{Style.RESET_ALL}")
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"setDaemon\(\) is deprecated, set the daemon attribute instead",
+                category=DeprecationWarning,
+            )
+            self.spinner.start(f"{self.color}{self.current_text}{Style.RESET_ALL}")
 
     def update(self, text: str) -> None:
         if not self.enabled:
@@ -351,7 +329,7 @@ class TuiCallbackHandler:
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Write a single JSONL event to stdout."""
-        _write_stdout_jsonl(event)
+        write_stdout_jsonl(event)
 
     def _reset_turn_state(self) -> None:
         self._saw_text_delta = False

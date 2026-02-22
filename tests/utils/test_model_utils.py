@@ -82,6 +82,24 @@ def test_default_model_config_openai():
     assert config["model_id"]
 
 
+def test_default_model_config_openai_includes_max_retries_default_zero(monkeypatch):
+    monkeypatch.delenv("SWARMEE_OPENAI_MAX_RETRIES", raising=False)
+    config = swarmee_river.utils.model_utils.default_model_config("openai")
+    assert config["client_args"]["max_retries"] == 0
+
+
+def test_default_model_config_openai_honors_max_retries_env(monkeypatch):
+    monkeypatch.setenv("SWARMEE_OPENAI_MAX_RETRIES", "2")
+    config = swarmee_river.utils.model_utils.default_model_config("openai")
+    assert config["client_args"]["max_retries"] == 2
+
+
+def test_default_model_config_openai_ignores_invalid_max_retries(monkeypatch):
+    monkeypatch.setenv("SWARMEE_OPENAI_MAX_RETRIES", "abc")
+    config = swarmee_river.utils.model_utils.default_model_config("openai")
+    assert "max_retries" not in config.get("client_args", {})
+
+
 def test_load_model(custom_model_dir):
     model_path = custom_model_dir / "test_model.py"
     model_path.write_text("def instance(**config): return config")

@@ -13,20 +13,19 @@ def _truthy(value: str | None) -> bool:
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
 
 
-def _default_settings_path() -> Path:
-    return Path.cwd() / ".swarmee" / "settings.json"
-
-
-def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Deep merge two dicts (override wins). Lists are replaced, not merged."""
+def deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = dict(base)
     for key, value in override.items():
         out_value = out.get(key)
         if isinstance(value, dict) and isinstance(out_value, dict):
-            out[key] = _deep_merge_dict(out_value, value)
+            out[key] = deep_merge_dict(out_value, value)
         else:
             out[key] = value
     return out
+
+
+def _default_settings_path() -> Path:
+    return Path.cwd() / ".swarmee" / "settings.json"
 
 
 @dataclass(frozen=True)
@@ -424,7 +423,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
             raw = {}
 
     defaults = default_settings_template().to_dict()
-    merged = _deep_merge_dict(defaults, raw) if raw else defaults
+    merged = deep_merge_dict(defaults, raw) if raw else defaults
     settings = SwarmeeSettings.from_dict(merged)
 
     # Apply env overrides into the returned structure (does not persist to disk).

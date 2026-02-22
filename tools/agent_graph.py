@@ -1,94 +1,22 @@
 from __future__ import annotations
 
-import asyncio
 import atexit
 import queue
 import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
-from strands import Agent, tool
+from strands import tool
 
-
-def _null_callback_handler(**_kwargs: Any) -> None:
-    return None
-
-
-def _extract_agent_text(result: Any) -> str:
-    # Best-effort extraction across Strands provider versions.
-    message = getattr(result, "message", None)
-    if isinstance(message, list):
-        for item in message:
-            if isinstance(item, dict) and isinstance(item.get("text"), str) and item.get("text").strip():
-                return str(item.get("text")).strip()
-    if isinstance(result, dict):
-        msg = result.get("message")
-        if isinstance(msg, list):
-            for item in msg:
-                if isinstance(item, dict) and isinstance(item.get("text"), str) and item.get("text").strip():
-                    return str(item.get("text")).strip()
-        content = result.get("content")
-        if isinstance(content, list):
-            for item in content:
-                if isinstance(item, dict) and isinstance(item.get("text"), str) and item.get("text").strip():
-                    return str(item.get("text")).strip()
-    text = str(result or "").strip()
-    return text
-
-
-def _create_sub_agent(*, parent_agent: Any, system_prompt: str) -> Agent:
-    # Intentionally tool-less to avoid recursion and consent/policy entanglement.
-    kwargs: dict[str, Any] = {
-        "model": getattr(parent_agent, "model", None),
-        "tools": [],
-        "system_prompt": system_prompt,
-        "messages": [],
-        "callback_handler": _null_callback_handler,
-        "load_tools_from_directory": False,
-    }
-    try:
-        return Agent(**kwargs)
-    except TypeError:
-        kwargs.pop("load_tools_from_directory", None)
-        return Agent(**kwargs)
-
-
-def _run_coroutine(coro: Any) -> Any:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    out: dict[str, Any] = {}
-    err: dict[str, BaseException] = {}
-
-    def _worker() -> None:
-        try:
-            out["result"] = asyncio.run(coro)
-        except BaseException as e:  # noqa: BLE001
-            err["exc"] = e
-
-    t = threading.Thread(target=_worker, daemon=True, name="agent-graph-llm-invoke")
-    t.start()
-    t.join()
-    if "exc" in err:
-        raise err["exc"]
-    return out.get("result")
+from swarmee_river.utils.agent_utils import create_sub_agent, extract_text, run_coroutine
 
 
 def _invoke_llm_text(*, parent_agent: Any, system_prompt: str, prompt: str) -> str:
     if getattr(parent_agent, "model", None) is None:
         return ""
-    agent = _create_sub_agent(parent_agent=parent_agent, system_prompt=system_prompt)
-    result = _run_coroutine(agent.invoke_async(prompt))
-    return _extract_agent_text(result)
-
-
-@dataclass
-class _GraphMessage:
-    sender: str
-    content: str
+    agent = create_sub_agent(parent_agent=parent_agent, system_prompt=system_prompt)
+    result = run_coroutine(agent.invoke_async(prompt))
+    return extract_text(result)
 
 
 class _AgentNode:
@@ -96,13 +24,13 @@ class _AgentNode:
         self.id = node_id
         self.role = role
         self.system_prompt = system_prompt
-        self.neighbors: list["_AgentNode"] = []
-        self._queue: queue.Queue[_GraphMessage] = queue.Queue(maxsize=100)
+        self.neighbors: list[_AgentNode] = []
+        self._queue: queue.Queue[str] = queue.Queue(maxsize=100)
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
 
-    def add_neighbor(self, neighbor: "_AgentNode") -> None:
+    def add_neighbor(self, neighbor: _AgentNode) -> None:
         with self._lock:
             if neighbor not in self.neighbors:
                 self.neighbors.append(neighbor)
@@ -126,9 +54,9 @@ class _AgentNode:
             self._thread.join(timeout=join_timeout_s)
             self._thread = None
 
-    def send(self, sender: str, content: str) -> bool:
+    def send(self, content: str) -> bool:
         try:
-            self._queue.put_nowait(_GraphMessage(sender=sender, content=content))
+            self._queue.put_nowait(content)
             return True
         except queue.Full:
             return False
@@ -139,7 +67,7 @@ class _AgentNode:
     def _run_loop(self, *, parent_agent: Any, poll_interval_s: float) -> None:
         while not self._stop.is_set():
             try:
-                message = self._queue.get(timeout=poll_interval_s)
+                message_content = self._queue.get(timeout=poll_interval_s)
             except queue.Empty:
                 continue
 
@@ -147,7 +75,7 @@ class _AgentNode:
                 response_text = _invoke_llm_text(
                     parent_agent=parent_agent,
                     system_prompt=self.system_prompt,
-                    prompt=message.content,
+                    prompt=message_content,
                 )
                 if not response_text:
                     continue
@@ -156,7 +84,7 @@ class _AgentNode:
                     neighbors = list(self.neighbors)
 
                 for neighbor in neighbors:
-                    neighbor.send(self.id, response_text)
+                    neighbor.send(response_text)
             except Exception:
                 # Best-effort background processing: never crash the host process.
                 time.sleep(poll_interval_s)
@@ -197,9 +125,7 @@ class _AgentGraph:
     def send_message(self, target_id: str, content: str) -> bool:
         with self._lock:
             node = self._nodes.get(target_id)
-        if node is None:
-            return False
-        return node.send("user", content)
+        return bool(node and node.send(content))
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -266,9 +192,9 @@ class _AgentGraphManager:
 
     def stop_all(self) -> dict[str, Any]:
         with self._lock:
-            graphs = list(self._graphs.items())
+            graphs = list(self._graphs.values())
             self._graphs = {}
-        for _graph_id, graph in graphs:
+        for graph in graphs:
             graph.stop()
         return {"status": "success", "message": f"Stopped {len(graphs)} graphs"}
 
@@ -308,13 +234,22 @@ _MANAGER = _AgentGraphManager()
 atexit.register(lambda: _MANAGER.stop_all())
 
 
+def _tool_response(*, status: str, text: str) -> dict[str, Any]:
+    return {"status": status, "content": [{"text": text}]}
+
+
+def _manager_response(result: dict[str, Any], *, as_text_dump: bool = False) -> dict[str, Any]:
+    text = str(result) if as_text_dump else result.get("message", "")
+    return _tool_response(status=str(result.get("status", "error")), text=text)
+
+
 @tool
 async def agent_graph(
     action: str,
     graph_id: str | None = None,
     topology: dict[str, Any] | None = None,
     message: dict[str, Any] | None = None,
-    agent: Optional[Any] = None,
+    agent: Any | None = None,
 ) -> dict[str, Any]:
     """
     Interrupt-friendly `agent_graph` replacement.
@@ -324,39 +259,33 @@ async def agent_graph(
     """
     action = (action or "").strip().lower()
     if action not in {"create", "stop", "stop_all", "message", "status", "list"}:
-        return {"status": "error", "content": [{"text": f"Unknown action: {action}"}]}
+        return _tool_response(status="error", text=f"Unknown action: {action}")
 
     if action == "list":
-        result = _MANAGER.list()
-        return {"status": result["status"], "content": [{"text": str(result)}]}
+        return _manager_response(_MANAGER.list(), as_text_dump=True)
 
     if action == "stop_all":
-        result = _MANAGER.stop_all()
-        return {"status": result["status"], "content": [{"text": result.get("message", "")}]}
+        return _manager_response(_MANAGER.stop_all())
 
     if not graph_id or not graph_id.strip():
-        return {"status": "error", "content": [{"text": "graph_id is required."}]}
+        return _tool_response(status="error", text="graph_id is required.")
 
     if action == "create":
         if topology is None:
-            return {"status": "error", "content": [{"text": "topology is required for create action."}]}
+            return _tool_response(status="error", text="topology is required for create action.")
         if agent is None:
-            return {"status": "error", "content": [{"text": "agent context is required for create action."}]}
-        result = _MANAGER.create(graph_id, topology, parent_agent=agent)
-        return {"status": result["status"], "content": [{"text": result.get("message", "")}]}
+            return _tool_response(status="error", text="agent context is required for create action.")
+        return _manager_response(_MANAGER.create(graph_id, topology, parent_agent=agent))
 
     if action == "stop":
-        result = _MANAGER.stop(graph_id)
-        return {"status": result["status"], "content": [{"text": result.get("message", "")}]}
+        return _manager_response(_MANAGER.stop(graph_id))
 
     if action == "message":
         if message is None:
-            return {"status": "error", "content": [{"text": "message is required for message action."}]}
-        result = _MANAGER.send(graph_id, message)
-        return {"status": result["status"], "content": [{"text": result.get("message", "")}]}
+            return _tool_response(status="error", text="message is required for message action.")
+        return _manager_response(_MANAGER.send(graph_id, message))
 
     if action == "status":
-        result = _MANAGER.status(graph_id)
-        return {"status": result["status"], "content": [{"text": str(result)}]}
+        return _manager_response(_MANAGER.status(graph_id), as_text_dump=True)
 
-    return {"status": "error", "content": [{"text": "Unsupported operation."}]}
+    return _tool_response(status="error", text="Unsupported operation.")

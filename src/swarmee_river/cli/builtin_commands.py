@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
 
-from swarmee_river.cli.commands import CLIContext, CommandDispatchResult, CommandInvocation, CommandRegistry
+from swarmee_river.cli.commands import (
+    CLIContext,
+    CommandDispatchResult,
+    CommandInvocation,
+    CommandRegistry,
+    handle_common_session_command,
+)
 from swarmee_river.cli.diagnostics import (
-    render_artifact_get,
-    render_artifact_list,
-    render_effective_config,
-    render_git_diff,
-    render_git_status,
-    render_log_tail,
-    render_replay_invocation,
+    render_config_command_for_surface,
+    render_diagnostic_command_for_surface,
 )
 from tools.sop import run_sop
+
+_DIAGNOSTIC_COMMANDS = {"status", "diff", "artifact", "log", "replay"}
 
 
 def register_builtin_commands(registry: CommandRegistry) -> None:
@@ -96,10 +100,8 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
             return CommandDispatchResult(handled=True)
         ctx.pending_plan = ctx.generate_plan(ctx.pending_request)
         ctx.output(ctx.render_plan(ctx.pending_plan))
-        try:
+        with contextlib.suppress(Exception):
             ctx.output(ctx.pending_plan.confirmation_prompt)
-        except Exception:
-            pass
         return CommandDispatchResult(handled=True)
 
     def _plan(ctx: CLIContext, _inv: CommandInvocation) -> CommandDispatchResult:
@@ -149,32 +151,39 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
 
         subcmd = (inv.args[0].lower() if inv.args else "info").strip()
 
-        if subcmd in {"list", "ls"}:
-            entries = store.list()
-            if not entries:
-                ctx.output("No sessions found.")
-                return CommandDispatchResult(handled=True)
-            lines = ["# Sessions", ""]
-            for e in entries:
-                sid = str(e.get("id") or "")
-                updated = str(e.get("updated_at") or e.get("created_at") or "")
-                provider = str(e.get("provider") or "")
-                tier = str(e.get("tier") or "")
-                suffix = " ".join([p for p in [updated, provider, tier] if p]).strip()
-                lines.append(f"- `{sid}`" + (f" ({suffix})" if suffix else ""))
-            ctx.output("\n".join(lines))
-            return CommandDispatchResult(handled=True)
+        output_text, created_session_id, deleted_session_id = handle_common_session_command(
+            store=store,
+            subcmd=subcmd,
+            args=inv.args,
+            create_meta=ctx.build_session_meta,
+            usage_text="Usage: :session new | save [id] | load <id> | list | rm <id> | info [id]",
+            quote_ids=True,
+            new_output_mode="labeled",
+            require_info_arg=False,
+            current_session_id=ctx.current_session_id,
+        )
 
-        if subcmd == "new":
-            meta = ctx.build_session_meta()
-            sid = store.create(meta=meta)
+        if subcmd == "new" and created_session_id:
+            sid = created_session_id
             ctx.current_session_id = sid
             ctx.pending_plan = None
             ctx.pending_request = None
             ctx.last_plan = None
             ctx.swap_agent(None, None)
             ctx.refresh_system_prompt()
-            ctx.output(f"New session: {sid}")
+            if output_text:
+                ctx.output(output_text)
+            return CommandDispatchResult(handled=True)
+
+        if subcmd in {"list", "ls", "rm", "delete", "info"}:
+            if (
+                subcmd in {"rm", "delete"}
+                and deleted_session_id
+                and ctx.current_session_id == deleted_session_id
+            ):
+                ctx.current_session_id = None
+            if output_text:
+                ctx.output(output_text)
             return CommandDispatchResult(handled=True)
 
         if subcmd == "save":
@@ -204,43 +213,24 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
             ctx.output(f"Loaded session: {sid} ({meta.get('updated_at') or meta.get('created_at')})")
             return CommandDispatchResult(handled=True)
 
-        if subcmd in {"rm", "delete"} and len(inv.args) >= 2:
-            sid = inv.args[1].strip()
-            store.delete(sid)
-            if ctx.current_session_id == sid:
-                ctx.current_session_id = None
-            ctx.output(f"Deleted session: {sid}")
-            return CommandDispatchResult(handled=True)
-
-        if subcmd == "info":
-            sid = inv.args[1].strip() if len(inv.args) >= 2 else (ctx.current_session_id or "")
-            if not sid:
-                ctx.output("No current session. Use :session new or :session load <id>.")
-                return CommandDispatchResult(handled=True)
-            meta = store.read_meta(sid)
-            ctx.output(json.dumps(meta, indent=2, ensure_ascii=False))
-            return CommandDispatchResult(handled=True)
-
         ctx.output("Usage: :session new | save [id] | load <id> | list | rm <id> | info [id]")
         return CommandDispatchResult(handled=True)
 
     def _config(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
-        subcmd = (inv.args[0].lower() if inv.args else "show").strip()
-        if subcmd != "show":
-            ctx.output("Usage: :config show")
-            return CommandDispatchResult(handled=True)
-
-        text = render_effective_config(
-            cwd=Path.cwd(),
-            settings_path=Path(str(ctx.settings_path)),
-            settings=ctx.settings,
-            selected_provider=ctx.selected_provider,
-            model_manager=ctx.model_manager,
-            knowledge_base_id=ctx.knowledge_base_id,
-            effective_sop_paths=ctx.effective_sop_paths,
-            auto_approve=ctx.auto_approve,
+        ctx.output(
+            render_config_command_for_surface(
+                args=inv.args,
+                cwd=Path.cwd(),
+                settings_path=Path(str(ctx.settings_path)),
+                settings=ctx.settings,
+                selected_provider=ctx.selected_provider,
+                model_manager=ctx.model_manager,
+                knowledge_base_id=ctx.knowledge_base_id,
+                effective_sop_paths=ctx.effective_sop_paths,
+                auto_approve=ctx.auto_approve,
+                surface="repl",
+            )
         )
-        ctx.output(text)
         return CommandDispatchResult(handled=True)
 
     def _permissions(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
@@ -288,60 +278,17 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
         ctx.output("\n".join(lines))
         return CommandDispatchResult(handled=True)
 
-    def _status(ctx: CLIContext, _inv: CommandInvocation) -> CommandDispatchResult:
-        ctx.output(render_git_status(cwd=Path.cwd()))
-        return CommandDispatchResult(handled=True)
-
-    def _diff(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
-        staged = False
-        paths: list[str] = []
-        for a in inv.args:
-            if a in {"--staged", "--cached"}:
-                staged = True
-            elif a.startswith("-"):
-                continue
-            else:
-                paths.append(a)
-        ctx.output(render_git_diff(cwd=Path.cwd(), staged=staged, paths=paths or None))
-        return CommandDispatchResult(handled=True)
-
-    def _artifact(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
-        subcmd = (inv.args[0].lower() if inv.args else "list").strip()
-        if subcmd in {"list", "ls"}:
-            ctx.output(render_artifact_list(cwd=Path.cwd()))
-            return CommandDispatchResult(handled=True)
-
-        if subcmd == "get":
-            artifact_id = inv.args[1].strip() if len(inv.args) >= 2 else None
-            if not artifact_id:
-                ctx.output("Usage: :artifact get <artifact_id>")
-                return CommandDispatchResult(handled=True)
-            ctx.output(render_artifact_get(cwd=Path.cwd(), artifact_id=artifact_id, path=None))
-            return CommandDispatchResult(handled=True)
-
-        ctx.output("Usage: :artifact list | :artifact get <artifact_id>")
-        return CommandDispatchResult(handled=True)
-
-    def _log(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
-        subcmd = (inv.args[0].lower() if inv.args else "tail").strip()
-        if subcmd != "tail":
-            ctx.output("Usage: :log tail [--lines N]")
-            return CommandDispatchResult(handled=True)
-        n = 50
-        if "--lines" in inv.args:
-            try:
-                idx = inv.args.index("--lines")
-                n = int(inv.args[idx + 1])
-            except Exception:
-                n = 50
-        ctx.output(render_log_tail(cwd=Path.cwd(), lines=n))
-        return CommandDispatchResult(handled=True)
-
-    def _replay(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
-        if not inv.args:
-            ctx.output("Usage: :replay <invocation_id>")
-            return CommandDispatchResult(handled=True)
-        ctx.output(render_replay_invocation(cwd=Path.cwd(), invocation_id=inv.args[0].strip()))
+    def _diagnostic(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
+        if inv.name not in _DIAGNOSTIC_COMMANDS:
+            return CommandDispatchResult(handled=False)
+        ctx.output(
+            render_diagnostic_command_for_surface(
+                cmd=inv.name,
+                args=inv.args,
+                cwd=Path.cwd(),
+                surface="repl",
+            )
+        )
         return CommandDispatchResult(handled=True)
 
     registry.register("help", _help, help="Show available commands")
@@ -357,10 +304,10 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     registry.register("session", _session, help="Manage sessions", usage="new|save|load|list|rm|info")
     registry.register("config", _config, help="Show effective config", usage="show")
     registry.register("permissions", _permissions, help="Show effective permissions", usage="show")
-    registry.register("status", _status, help="Show git status summary")
-    registry.register("diff", _diff, help="Show git diff", usage="[--staged] [paths...]")
-    registry.register("artifact", _artifact, help="List/get artifacts", usage="list|get")
-    registry.register("log", _log, help="Tail Swarmee logs", usage="tail [--lines N]")
-    registry.register("replay", _replay, help="Replay a logged invocation", usage="<invocation_id>")
+    registry.register("status", _diagnostic, help="Show git status summary")
+    registry.register("diff", _diagnostic, help="Show git diff", usage="[--staged] [paths...]")
+    registry.register("artifact", _diagnostic, help="List/get artifacts", usage="list|get")
+    registry.register("log", _diagnostic, help="Tail Swarmee logs", usage="tail [--lines N]")
+    registry.register("replay", _diagnostic, help="Replay a logged invocation", usage="<invocation_id>")
     registry.register("exit", _exit, help="Exit the REPL")
     registry.register("quit", _exit, help="Exit the REPL")

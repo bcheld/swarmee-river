@@ -719,6 +719,7 @@ class TestToolConsentPrompt:
 
     def test_plan_json_for_execution_excludes_confirmation_prompt(self):
         from swarmee_river.planning import PlanStep, WorkPlan
+        from swarmee_river.utils.agent_runtime_utils import plan_json_for_execution
 
         plan = WorkPlan(
             summary="Refactor hooks",
@@ -726,10 +727,20 @@ class TestToolConsentPrompt:
             confirmation_prompt="Approve with :y",
         )
 
-        rendered = swarmee._plan_json_for_execution(plan)
+        rendered = plan_json_for_execution(plan)
 
         assert "confirmation_prompt" not in rendered
         assert '"summary": "Refactor hooks"' in rendered
+
+
+class TestOverflowErrorClassification:
+    def test_context_window_overflow_markers(self):
+        assert swarmee._is_context_window_overflow_error(RuntimeError("OpenAI threw context window overflow error"))
+        assert swarmee._is_context_window_overflow_error(RuntimeError("maximum context length exceeded"))
+        assert swarmee._is_context_window_overflow_error(RuntimeError("too many tokens in request"))
+
+    def test_context_window_overflow_negative(self):
+        assert not swarmee._is_context_window_overflow_error(RuntimeError("rate limit exceeded"))
 
     def test_render_tool_consent_message_preserves_choice_brackets(self):
         if swarmee.Console is None:
