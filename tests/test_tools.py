@@ -20,6 +20,11 @@ def test_tools_include_core_coding_primitives():
     assert "file_list" in tools
     assert "file_search" in tools
     assert "file_read" in tools
+    assert "office" in tools
+    assert "s3_browser" in tools
+    assert "session_s3" in tools
+    assert "snowflake_query" in tools
+    assert "athena_query" in tools
     assert "todoread" in tools
     assert "todowrite" in tools
 

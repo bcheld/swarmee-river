@@ -11,6 +11,8 @@ from strands import tool
 from swarmee_river.utils.path_utils import SKIP_DIRS, safe_cwd
 from swarmee_river.utils.text_utils import truncate
 
+_OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"}
+
 
 def _run_rg(args: list[str], *, cwd: Path, timeout_s: int = 15) -> tuple[int | None, str, str]:
     try:
@@ -195,6 +197,19 @@ def file_read(
         lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     except Exception as e:
         return {"status": "error", "content": [{"text": f"Failed to read file: {e}"}]}
+
+    if target.suffix.lower() in _OFFICE_EXTENSIONS:
+        return {
+            "status": "error",
+            "content": [
+                {
+                    "text": (
+                        "This is a binary Office file. Use the `office` tool instead: "
+                        f"office(action='read', path='{rel_path}')"
+                    )
+                }
+            ],
+        }
 
     start = max(1, int(start_line))
     count = max(1, int(max_lines))

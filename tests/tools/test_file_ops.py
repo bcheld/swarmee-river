@@ -35,6 +35,18 @@ def test_file_read_reads_with_line_numbers(tmp_path: Path) -> None:
     assert "2 | line2" in text
 
 
+def test_file_read_suggests_office_tool_for_office_extensions(tmp_path: Path) -> None:
+    path = tmp_path / "sample.docx"
+    path.write_bytes(b"PK\x03\x04not-a-real-docx")
+
+    result = file_read("sample.docx", cwd=str(tmp_path))
+
+    assert result.get("status") == "error"
+    text = (result.get("content") or [{"text": ""}])[0].get("text", "")
+    assert "This is a binary Office file" in text
+    assert "office(action='read', path='sample.docx')" in text
+
+
 def test_file_search_falls_back_without_rg(tmp_path: Path, monkeypatch) -> None:
     import tools.file_ops as file_ops
 
@@ -81,6 +93,7 @@ def test_file_search_passes_explicit_search_root_to_rg(tmp_path: Path, monkeypat
 
 def test_run_rg_uses_devnull_stdin(tmp_path: Path, monkeypatch) -> None:
     import subprocess
+
     import tools.file_ops as file_ops
 
     class _Completed:

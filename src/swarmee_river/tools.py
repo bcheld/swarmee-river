@@ -14,8 +14,8 @@ from tools import (
     file_ops,
     git,
     patch_apply,
-    plan_progress,
     path_ops,
+    plan_progress,
     project_context,
     run_checks,
     sop,
@@ -25,15 +25,20 @@ from tools import (
     todo,
     welcome,
 )
+from tools.athena_query import athena_query
 from tools.calculator import calculator as calculator_fallback
 from tools.current_time import current_time as current_time_fallback
 from tools.editor import editor as editor_fallback
 from tools.environment import environment as environment_fallback
 from tools.file_write import file_write as file_write_fallback
 from tools.http_request import http_request as http_request_fallback
+from tools.office import office
 from tools.python_repl import python_repl as python_repl_fallback
 from tools.retrieve import retrieve as retrieve_fallback
+from tools.s3_browser import s3_browser
+from tools.session_s3 import session_s3
 from tools.shell import shell as shell_fallback
+from tools.snowflake_query import snowflake_query
 from tools.use_agent import use_agent as use_agent_fallback
 from tools.use_agent import use_llm as use_llm_fallback
 
@@ -88,6 +93,11 @@ _CUSTOM_TOOLS: dict[str, Any] = {
     "file_list": file_ops.file_list,
     "file_search": file_ops.file_search,
     "file_read": file_ops.file_read,
+    "office": office,
+    "s3_browser": s3_browser,
+    "session_s3": session_s3,
+    "snowflake_query": snowflake_query,
+    "athena_query": athena_query,
     "glob": path_ops.glob,
     "list": path_ops.list,
     "store_in_kb": store_in_kb,

@@ -82,6 +82,12 @@ try:
 except Exception:
     _ToolMessageRepairHooks = None  # type: ignore[misc,assignment]
 ToolMessageRepairHooks: Any = _ToolMessageRepairHooks
+
+try:
+    from swarmee_river.hooks.session_s3 import SessionS3Hooks as _SessionS3Hooks
+except Exception:
+    _SessionS3Hooks = None  # type: ignore[misc,assignment]
+SessionS3Hooks: Any = _SessionS3Hooks
 from swarmee_river.agent_runner import invoke_agent
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.cli.builtin_commands import register_builtin_commands
@@ -676,6 +682,8 @@ def _build_runtime_hooks(
     ]
     if ToolMessageRepairHooks is not None:
         hooks.insert(2, ToolMessageRepairHooks())
+    if (os.getenv("SWARMEE_SESSION_S3_BUCKET") or "").strip() and SessionS3Hooks is not None:
+        hooks.append(SessionS3Hooks())
     return hooks
 
 
@@ -807,7 +815,15 @@ def _build_agent_runtime(
 
     def _context_per_source_limit() -> int:
         try:
-            return max(128, int(os.getenv("SWARMEE_USER_CONTEXT_SOURCE_MAX_CHARS", str(_USER_CONTEXT_PER_SOURCE_MAX_CHARS))))
+            return max(
+                128,
+                int(
+                    os.getenv(
+                        "SWARMEE_USER_CONTEXT_SOURCE_MAX_CHARS",
+                        str(_USER_CONTEXT_PER_SOURCE_MAX_CHARS),
+                    )
+                ),
+            )
         except Exception:
             return _USER_CONTEXT_PER_SOURCE_MAX_CHARS
 
@@ -930,7 +946,11 @@ def _build_agent_runtime(
             section = ""
             if source_type == "file":
                 resolved_path = _resolve_context_file_path(source.get("path", ""))
-                text = _load_cached_text_for_path(path=resolved_path, cache=user_context_file_cache, max_chars=per_source_limit)
+                text = _load_cached_text_for_path(
+                    path=resolved_path,
+                    cache=user_context_file_cache,
+                    max_chars=per_source_limit,
+                )
                 if text:
                     section = f"User Context File ({resolved_path}):\n{text}"
                 else:
@@ -943,13 +963,19 @@ def _build_agent_runtime(
                 sop_path = _resolve_sop_file_path(sop_name)
                 sop_text = ""
                 if sop_path is not None:
-                    loaded = _load_cached_text_for_path(path=sop_path, cache=user_context_sop_cache, max_chars=per_source_limit)
+                    loaded = _load_cached_text_for_path(
+                        path=sop_path,
+                        cache=user_context_sop_cache,
+                        max_chars=per_source_limit,
+                    )
                     sop_text = loaded or ""
                 else:
                     try:
                         sop_result = run_sop(action="get", name=sop_name, sop_paths=effective_sop_paths)
                         if sop_result.get("status") == "success":
-                            sop_text = str(sop_result.get("content", [{}])[0].get("text", "")).strip()[:per_source_limit]
+                            sop_text = str(sop_result.get("content", [{}])[0].get("text", "")).strip()[
+                                :per_source_limit
+                            ]
                     except Exception:
                         sop_text = ""
                 if sop_text:
@@ -1286,10 +1312,16 @@ def _build_agent_runtime(
         lines.extend(
             [
                 "",
-                "You are executing the following plan. Before starting each step, emit a brief status message indicating which step you are beginning.",
+                (
+                    "You are executing the following plan. Before starting each step, emit a brief status "
+                    "message indicating which step you are beginning."
+                ),
                 "Format: 'Starting step N: <description>'.",
                 "After completing a step, emit: 'Completed step N.'",
-                "Use the `plan_progress` tool before each step (status=in_progress) and after each step (status=completed).",
+                (
+                    "Use the `plan_progress` tool before each step (status=in_progress) and after each step "
+                    "(status=completed)."
+                ),
                 "The `plan_progress` tool accepts step (1-based) or step_index (0-based), status, and optional note.",
             ]
         )
