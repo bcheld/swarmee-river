@@ -18,6 +18,11 @@ from swarmee_river.packs import enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
 from swarmee_river.project_map import build_context_snapshot
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
+from swarmee_river.runtime_service.client import (
+    RuntimeServiceClient,
+    default_session_id_for_cwd,
+    runtime_discovery_path,
+)
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
 from swarmee_river.tools import get_tools
@@ -63,6 +68,8 @@ _TOOL_USAGE_RULES = (
     "- Do not use shell for ls/find/sed/cat/grep/rg when file tools can do it.\n"
     "- Reserve shell for real command execution tasks."
 )
+_RUNTIME_TEXT_DELTA_EVENTS = {"text_delta", "message_delta", "output_text_delta", "delta"}
+_RUNTIME_TEXT_COMPLETE_EVENTS = {"text_complete", "message_complete", "output_text_complete", "complete"}
 
 
 @dataclass(frozen=True)
@@ -287,6 +294,128 @@ def _run_coroutine(coro: Any) -> Any:
     return out.get("result")
 
 
+def _extract_runtime_text_chunk(event: dict[str, Any]) -> str:
+    for key in ("data", "text", "delta", "content", "output_text", "outputText", "textDelta"):
+        value = event.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _should_use_runtime_broker() -> bool:
+    if not truthy(os.getenv("SWARMEE_NOTEBOOK_USE_RUNTIME")):
+        return False
+    discovery = runtime_discovery_path(cwd=Path.cwd())
+    return discovery.exists()
+
+
+def _run_swarmee_via_runtime(
+    prompt: str,
+    *,
+    force_plan: bool,
+    auto_approve: bool,
+) -> str:
+    attach_cwd = Path.cwd().resolve()
+    discovery = runtime_discovery_path(cwd=attach_cwd)
+    if not discovery.exists():
+        raise RuntimeError(f"runtime discovery file not found: {discovery}")
+
+    session_id = (os.getenv("SWARMEE_SESSION_ID") or "").strip() or default_session_id_for_cwd(attach_cwd)
+    client = RuntimeServiceClient.from_discovery_file(discovery)
+    client.connect()
+
+    try:
+        hello = client.hello(client_name="swarmee-notebook", surface="jupyter")
+        if hello is None:
+            raise RuntimeError("runtime broker closed connection during hello")
+        if str(hello.get("event", "")).strip().lower() == "error":
+            raise RuntimeError(str(hello.get("message", hello)).strip() or "runtime hello failed")
+
+        attach = client.attach(session_id=session_id, cwd=str(attach_cwd))
+        if attach is None:
+            raise RuntimeError("runtime broker closed connection during attach")
+        if str(attach.get("event", "")).strip().lower() == "error":
+            raise RuntimeError(str(attach.get("message", attach)).strip() or "runtime attach failed")
+
+        query_payload: dict[str, Any] = {"cmd": "query", "text": prompt}
+        if force_plan:
+            query_payload["mode"] = "plan"
+        query_payload["auto_approve"] = bool(auto_approve)
+        client.send_command(query_payload)
+
+        delta_chunks: list[str] = []
+        final_chunks: list[str] = []
+        plan_rendered = ""
+        errors: list[str] = []
+        turn_complete_seen = False
+
+        while True:
+            event = client.read_event()
+            if event is None:
+                break
+            etype = str(event.get("event", "")).strip().lower()
+
+            if etype in _RUNTIME_TEXT_DELTA_EVENTS:
+                chunk = _extract_runtime_text_chunk(event)
+                if chunk:
+                    delta_chunks.append(chunk)
+                continue
+
+            if etype in _RUNTIME_TEXT_COMPLETE_EVENTS:
+                chunk = _extract_runtime_text_chunk(event)
+                if chunk:
+                    final_chunks.append(chunk)
+                continue
+
+            if etype == "replay_turn":
+                role = str(event.get("role", "")).strip().lower()
+                if role == "assistant":
+                    replay_text = str(event.get("text", "")).strip()
+                    if replay_text:
+                        final_chunks.append(replay_text)
+                continue
+
+            if etype == "plan":
+                rendered = event.get("rendered")
+                if isinstance(rendered, str) and rendered.strip():
+                    plan_rendered = rendered.strip()
+                continue
+
+            if etype == "error":
+                error_text = str(event.get("message", event.get("text", ""))).strip()
+                if error_text:
+                    errors.append(error_text)
+                continue
+
+            if etype == "turn_complete":
+                turn_complete_seen = True
+                status = str(event.get("exit_status", "ok")).strip().lower()
+                if status not in {"ok", "interrupted"} and not errors:
+                    errors.append(f"runtime turn finished with status={status}")
+                break
+
+        delta_text = "".join(delta_chunks).strip()
+        final_text = "\n".join(chunk.strip() for chunk in final_chunks if isinstance(chunk, str) and chunk.strip()).strip()
+
+        output_parts: list[str] = []
+        if delta_text:
+            output_parts.append(delta_text)
+        if final_text and (not delta_text or final_text not in delta_text):
+            output_parts.append(final_text)
+        if plan_rendered and not output_parts:
+            output_parts.append(plan_rendered)
+        if errors and not output_parts:
+            output_parts.append("\n".join(errors))
+        if errors and output_parts:
+            output_parts.append("\n".join(errors))
+        if not output_parts and not turn_complete_seen:
+            raise RuntimeError("runtime broker connection closed before turn_complete")
+
+        return "\n\n".join(part for part in output_parts if part).strip()
+    finally:
+        client.close()
+
+
 def _invoke_agent(
     runtime: _NotebookRuntime,
     query: str,
@@ -475,12 +604,22 @@ def _run_swarmee(
     force_plan: bool,
     auto_approve: bool,
 ) -> str:
-    runtime = _get_or_create_runtime()
-
     prompt = user_prompt.strip()
     if include_context:
         notebook_context = _collect_notebook_context(ipython)
         prompt = _format_prompt(notebook_context=notebook_context, user_prompt=prompt)
+
+    if _should_use_runtime_broker():
+        try:
+            return _run_swarmee_via_runtime(
+                prompt,
+                force_plan=force_plan,
+                auto_approve=auto_approve,
+            )
+        except Exception as exc:
+            return f"Error: runtime broker invocation failed: {exc}"
+
+    runtime = _get_or_create_runtime()
 
     intent = "work" if force_plan else classify_intent(user_prompt)
     if intent == "work":

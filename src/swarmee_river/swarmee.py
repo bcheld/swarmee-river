@@ -10,6 +10,7 @@ import contextlib
 import json
 import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -116,6 +117,12 @@ from swarmee_river.interrupts import (
 from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
 from swarmee_river.project_map import build_context_snapshot, build_project_map
+from swarmee_river.runtime_service.client import (
+    RuntimeServiceClient,
+    default_session_id_for_cwd,
+    runtime_discovery_path,
+)
+from swarmee_river.runtime_service.server import RuntimeServiceServer
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.session.store import SessionStore
@@ -1526,6 +1533,256 @@ def _run_query_with_optional_plan(
     return plan, execute_with_plan(query_text, plan, welcome_text), True
 
 
+def _build_serve_command_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="swarmee serve", description="Run shared runtime broker.")
+    parser.add_argument("--port", type=int, default=0, help="Port for runtime broker (0 chooses an open port).")
+    parser.add_argument(
+        "--state-dir",
+        type=str,
+        default=None,
+        help="Override runtime state directory (defaults to <cwd>/.swarmee).",
+    )
+    return parser
+
+
+def _build_attach_command_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="swarmee attach", description="Attach to shared runtime broker.")
+    parser.add_argument("--session", type=str, default=None, help="Session ID to attach to.")
+    parser.add_argument("--cwd", type=str, default=None, help="Session cwd for attach command.")
+    parser.add_argument("--tail", action="store_true", help="Tail events only (no interactive prompt loop).")
+    parser.add_argument(
+        "--state-dir",
+        type=str,
+        default=None,
+        help="Override runtime state directory (defaults to <cwd>/.swarmee).",
+    )
+    return parser
+
+
+def _print_attach_event(event: dict[str, Any], *, streaming_state: dict[str, bool]) -> None:
+    etype = str(event.get("event", "")).strip().lower()
+    text = str(event.get("text", event.get("message", "")))
+
+    if etype in {"text_delta", "message_delta", "output_text_delta", "delta"}:
+        chunk = text
+        if chunk:
+            print(chunk, end="", flush=True)
+            streaming_state["open"] = True
+        return
+
+    if etype in {"text_complete", "message_complete", "output_text_complete", "complete"}:
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        return
+
+    if etype == "turn_complete":
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        status = str(event.get("exit_status", "ok")).strip()
+        print(f"[turn] complete ({status})")
+        return
+
+    if etype == "consent_prompt":
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        context = str(event.get("context", "")).strip()
+        print("[consent] prompt received.")
+        if context:
+            print(context)
+        print("Use /consent <y|n|a|v> to respond.")
+        return
+
+    if etype in {"warning", "error"}:
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        prefix = "error" if etype == "error" else "warn"
+        line = text.strip() or json.dumps(event, ensure_ascii=False)
+        print(f"[{prefix}] {line}")
+        return
+
+    if etype in {"ready", "model_info", "attached", "session_available", "session_restored", "replay_complete"}:
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        print(f"[{etype}] {json.dumps(event, ensure_ascii=False)}")
+        return
+
+    if text.strip():
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        print(f"[{etype or 'event'}] {text.strip()}")
+        return
+
+    if streaming_state["open"]:
+        print()
+        streaming_state["open"] = False
+    print(json.dumps(event, ensure_ascii=False))
+
+
+def _run_serve_command(raw_args: list[str]) -> int:
+    parser = _build_serve_command_parser()
+    args = parser.parse_args(raw_args)
+    if isinstance(args.state_dir, str) and args.state_dir.strip():
+        os.environ["SWARMEE_STATE_DIR"] = args.state_dir.strip()
+
+    async def _serve() -> None:
+        server = RuntimeServiceServer(port=int(args.port))
+        await server.start()
+        print(f"[runtime] listening on {server.host}:{server.port}")
+        print(f"[runtime] discovery file: {server.runtime_file}")
+        print("[runtime] press Ctrl+C to stop.")
+
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def _request_stop() -> None:
+            stop_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError, RuntimeError):
+                loop.add_signal_handler(sig, _request_stop)
+
+        try:
+            await stop_event.wait()
+        finally:
+            await server.stop()
+
+    try:
+        asyncio.run(_serve())
+        return 0
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:
+        print(f"Error: failed to start runtime broker: {exc}")
+        return 1
+
+
+def _run_attach_command(raw_args: list[str]) -> int:
+    parser = _build_attach_command_parser()
+    args = parser.parse_args(raw_args)
+    if isinstance(args.state_dir, str) and args.state_dir.strip():
+        os.environ["SWARMEE_STATE_DIR"] = args.state_dir.strip()
+
+    attach_cwd = Path(args.cwd).expanduser() if isinstance(args.cwd, str) and args.cwd.strip() else Path.cwd()
+    attach_cwd = attach_cwd.resolve()
+    if not attach_cwd.exists() or not attach_cwd.is_dir():
+        print(f"Error: attach cwd does not exist or is not a directory: {attach_cwd}")
+        return 1
+
+    session_id = (
+        (str(args.session).strip() if isinstance(args.session, str) else "")
+        or (os.getenv("SWARMEE_SESSION_ID") or "").strip()
+        or default_session_id_for_cwd(attach_cwd)
+    )
+
+    discovery = runtime_discovery_path(cwd=Path.cwd())
+    if not discovery.exists():
+        print(f"Error: runtime discovery file not found: {discovery}")
+        print("Start broker first: swarmee serve")
+        return 1
+
+    try:
+        client = RuntimeServiceClient.from_discovery_file(discovery)
+        client.connect()
+    except Exception as exc:
+        print(f"Error: failed to connect to runtime broker: {exc}")
+        return 1
+
+    try:
+        hello = client.hello(client_name="swarmee-attach", surface="cli")
+        if hello is None:
+            print("Error: runtime broker closed connection during hello.")
+            return 1
+        if str(hello.get("event", "")).strip().lower() == "error":
+            print(f"Error: {hello.get('message', hello)}")
+            return 1
+
+        attach = client.attach(session_id=session_id, cwd=str(attach_cwd))
+        if attach is None:
+            print("Error: runtime broker closed connection during attach.")
+            return 1
+        if str(attach.get("event", "")).strip().lower() == "error":
+            print(f"Error: {attach.get('message', attach)}")
+            return 1
+
+        print(f"[runtime] attached to session {session_id} (cwd={attach_cwd})")
+        streaming_state: dict[str, bool] = {"open": False}
+
+        stop_reader = threading.Event()
+
+        def _reader_loop() -> None:
+            while not stop_reader.is_set():
+                try:
+                    event = client.read_event()
+                except Exception as exc:
+                    if not stop_reader.is_set():
+                        if streaming_state["open"]:
+                            print()
+                            streaming_state["open"] = False
+                        print(f"[runtime] read error: {exc}")
+                    break
+                if event is None:
+                    if not stop_reader.is_set():
+                        if streaming_state["open"]:
+                            print()
+                            streaming_state["open"] = False
+                        print("[runtime] connection closed.")
+                    break
+                _print_attach_event(event, streaming_state=streaming_state)
+
+        reader_thread = threading.Thread(target=_reader_loop, daemon=True, name="swarmee-runtime-attach-reader")
+        reader_thread.start()
+
+        if args.tail:
+            print("[runtime] tail mode active. Ctrl+C to stop.")
+            try:
+                while reader_thread.is_alive():
+                    reader_thread.join(timeout=0.2)
+            except KeyboardInterrupt:
+                pass
+            return 0
+
+        print("Enter prompts to send `query`. Commands: /consent <y|n|a|v>, /stop, /exit")
+        while True:
+            try:
+                line = input("~ ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not line:
+                continue
+            lowered = line.lower()
+            if lowered in {"exit", "quit", "/exit", ":exit"}:
+                break
+            if lowered in {"/stop", ":stop"}:
+                client.send_command({"cmd": "interrupt"})
+                continue
+            if lowered.startswith("/consent "):
+                choice = lowered.split(maxsplit=1)[1].strip()
+                if choice not in {"y", "n", "a", "v"}:
+                    print("Usage: /consent <y|n|a|v>")
+                    continue
+                client.send_command({"cmd": "consent_response", "choice": choice})
+                continue
+            client.send_command({"cmd": "query", "text": line})
+        return 0
+    except Exception as exc:
+        print(f"Error: attach failed: {exc}")
+        return 1
+    finally:
+        stop_reader = locals().get("stop_reader")
+        reader_thread = locals().get("reader_thread")
+        if isinstance(stop_reader, threading.Event):
+            stop_reader.set()
+        client.close()
+        if isinstance(reader_thread, threading.Thread) and reader_thread.is_alive():
+            reader_thread.join(timeout=1.0)
+
+
 def main() -> None:
     # Parse CLI arguments
     parser = argparse.ArgumentParser(description="Swarmee - An enterprise analytics + coding assistant")
@@ -1606,10 +1863,20 @@ def main() -> None:
         default=None,
         help="OS-separated directories containing `*.sop.md` files (overrides SWARMEE_SOP_PATHS)",
     )
-    args = parser.parse_args()
+    args, extra_args = parser.parse_known_args()
 
     # Load .env early for local dev credentials/config.
     load_env_file()
+
+    command = args.query[0].strip().lower() if args.query else ""
+    sub = args.query[1:] if len(args.query) > 1 else []
+
+    if command == "serve":
+        raise SystemExit(_run_serve_command([*sub, *extra_args]))
+    if command == "attach":
+        raise SystemExit(_run_attach_command([*sub, *extra_args]))
+    if extra_args:
+        parser.error(f"unrecognized arguments: {' '.join(extra_args)}")
 
     daemon_session_id: str | None = None
     if args.tui_daemon:
@@ -1633,9 +1900,6 @@ def main() -> None:
     settings = load_settings()
     settings_path_for_project = Path.cwd() / ".swarmee" / "settings.json"
     auto_approve = args.yes or truthy(os.getenv("SWARMEE_AUTO_APPROVE", "false"))
-    command = args.query[0].strip().lower() if args.query else ""
-    sub = args.query[1:] if len(args.query) > 1 else []
-
     # Explicit opt-in to launch the full-screen Textual UI.
     if command == "tui":
         from swarmee_river.tui.app import run_tui

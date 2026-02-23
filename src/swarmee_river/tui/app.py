@@ -30,6 +30,7 @@ from swarmee_river.error_classification import (
     classify_error_message,
     normalize_error_category,
 )
+from swarmee_river.runtime_service.client import RuntimeServiceClient, runtime_discovery_path
 from swarmee_river.state_paths import logs_dir, sessions_dir
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
@@ -109,6 +110,167 @@ class ParsedEvent:
     kind: str
     text: str
     meta: dict[str, str] | None = None
+
+
+class _DaemonTransport:
+    @property
+    def pid(self) -> int:
+        raise NotImplementedError
+
+    def poll(self) -> int | None:
+        raise NotImplementedError
+
+    def wait(self, timeout: float | None = None) -> int:
+        raise NotImplementedError
+
+    def read_line(self) -> str:
+        raise NotImplementedError
+
+    def send_command(self, cmd_dict: dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class _SubprocessTransport(_DaemonTransport):
+    def __init__(self, proc: subprocess.Popen[str]) -> None:
+        self._proc = proc
+
+    @property
+    def pid(self) -> int:
+        return int(self._proc.pid)
+
+    def poll(self) -> int | None:
+        return self._proc.poll()
+
+    def wait(self, timeout: float | None = None) -> int:
+        return int(self._proc.wait(timeout=timeout))
+
+    def read_line(self) -> str:
+        stdout = self._proc.stdout
+        if stdout is None:
+            return ""
+        return stdout.readline()
+
+    def send_command(self, cmd_dict: dict[str, Any]) -> bool:
+        stdin = self._proc.stdin
+        if stdin is None:
+            return False
+        try:
+            payload = _json.dumps(cmd_dict, ensure_ascii=False) + "\n"
+            stdin.write(payload)
+            stdin.flush()
+        except Exception:
+            return False
+        return True
+
+    def close(self) -> None:
+        stop_process(self._proc)
+
+
+class _SocketTransport(_DaemonTransport):
+    def __init__(
+        self,
+        *,
+        client: RuntimeServiceClient,
+        session_id: str,
+        broker_pid: int | None = None,
+        pending_events: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self._client = client
+        self._session_id = session_id
+        self._broker_pid = int(broker_pid) if isinstance(broker_pid, int) else None
+        self._pending_events = list(pending_events or [])
+        self._closed = False
+        self._poll_code: int | None = None
+
+    @classmethod
+    def connect(
+        cls,
+        *,
+        session_id: str,
+        cwd: Path,
+        client_name: str,
+        surface: str,
+    ) -> _SocketTransport:
+        discovery = runtime_discovery_path(cwd=cwd)
+        if not discovery.exists():
+            raise FileNotFoundError(f"Runtime discovery file not found: {discovery}")
+
+        client = RuntimeServiceClient.from_discovery_file(discovery)
+        client.connect()
+        hello = client.hello(client_name=client_name, surface=surface) or {}
+        if str(hello.get("event", "")).strip().lower() == "error":
+            message = str(hello.get("message", hello)).strip() or "hello failed"
+            client.close()
+            raise RuntimeError(message)
+
+        attach = client.attach(session_id=session_id, cwd=str(cwd)) or {}
+        if str(attach.get("event", "")).strip().lower() == "error":
+            message = str(attach.get("message", attach)).strip() or "attach failed"
+            client.close()
+            raise RuntimeError(message)
+
+        broker_pid = hello.get("pid")
+        return cls(
+            client=client,
+            session_id=session_id,
+            broker_pid=(int(broker_pid) if isinstance(broker_pid, int) else None),
+            pending_events=[attach] if isinstance(attach, dict) else [],
+        )
+
+    @property
+    def pid(self) -> int:
+        return int(self._broker_pid) if self._broker_pid is not None else -1
+
+    def poll(self) -> int | None:
+        return self._poll_code if self._closed else None
+
+    def wait(self, timeout: float | None = None) -> int:
+        start = time.monotonic()
+        while not self._closed:
+            if timeout is not None and (time.monotonic() - start) >= timeout:
+                raise subprocess.TimeoutExpired(["runtime-socket"], timeout)
+            time.sleep(0.01)
+        return int(self._poll_code or 0)
+
+    def read_line(self) -> str:
+        if self._pending_events:
+            event = self._pending_events.pop(0)
+            return _json.dumps(event, ensure_ascii=False) + "\n"
+        if self._closed:
+            return ""
+        event = self._client.read_event()
+        if event is None:
+            self._closed = True
+            self._poll_code = 0
+            return ""
+        return _json.dumps(event, ensure_ascii=False) + "\n"
+
+    def send_command(self, cmd_dict: dict[str, Any]) -> bool:
+        if self._closed:
+            return False
+        payload = dict(cmd_dict)
+        cmd = str(payload.get("cmd", "")).strip().lower()
+        if cmd == "shutdown":
+            payload = {"cmd": "shutdown_session"}
+        try:
+            self._client.send_command(payload)
+        except Exception:
+            self._closed = True
+            self._poll_code = 1
+            return False
+        if str(payload.get("cmd", "")).strip().lower() == "shutdown_session":
+            self.close()
+        return True
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._poll_code = 0
+        self._client.close()
 
 
 def _sanitize_context_source_id(value: str) -> str:
@@ -1050,14 +1212,22 @@ def write_to_proc(proc: subprocess.Popen[str], text: str) -> bool:
     return True
 
 
-def send_daemon_command(proc: subprocess.Popen[str], cmd_dict: dict[str, Any]) -> bool:
+def send_daemon_command(proc: Any, cmd_dict: dict[str, Any]) -> bool:
     """Serialize and send a daemon command as JSONL."""
-    if proc.stdin is None:
+    sender = getattr(proc, "send_command", None)
+    if callable(sender):
+        try:
+            return bool(sender(cmd_dict))
+        except Exception:
+            return False
+
+    stdin = getattr(proc, "stdin", None)
+    if stdin is None:
         return False
     try:
         payload = _json.dumps(cmd_dict, ensure_ascii=False) + "\n"
-        proc.stdin.write(payload)
-        proc.stdin.flush()
+        stdin.write(payload)
+        stdin.flush()
     except Exception:
         return False
     return True
@@ -1709,7 +1879,7 @@ def run_tui() -> int:
             ("ctrl+f", "search_transcript", "Search"),
         ]
 
-        _proc: subprocess.Popen[str] | None = None
+        _proc: _DaemonTransport | None = None
         _runner_thread: threading.Thread | None = None
         _last_prompt: str | None = None
         _pending_plan_prompt: str | None = None
@@ -3884,15 +4054,25 @@ def run_tui() -> int:
 
         def _handle_tui_event(self, event: dict[str, Any]) -> None:
             """Process a structured JSONL event from the subprocess."""
-            etype = event.get("event", "")
+            etype = str(event.get("event", "")).strip().lower()
 
-            if etype == "ready":
+            if etype in {"ready", "attached"}:
                 self._daemon_ready = True
                 session_id = str(event.get("session_id", "")).strip()
                 if session_id:
                     self._daemon_session_id = session_id
                     self._save_session()
-                self._write_transcript("Swarmee daemon ready. Enter a prompt to run Swarmee.")
+                if etype == "attached":
+                    clients_raw = event.get("clients")
+                    clients = int(clients_raw) if isinstance(clients_raw, int) else None
+                    if clients is not None and clients > 1:
+                        self._write_transcript_line(
+                            f"[daemon] attached to shared runtime session ({clients} clients connected)."
+                        )
+                    else:
+                        self._write_transcript_line("[daemon] attached to shared runtime session.")
+                else:
+                    self._write_transcript("Swarmee daemon ready. Enter a prompt to run Swarmee.")
                 if self._context_sources or self._context_ready_for_sync:
                     self._sync_context_sources_with_daemon(notify_on_failure=True)
                 if self._active_sop_names or self._sops_ready_for_sync:
@@ -4367,7 +4547,7 @@ def run_tui() -> int:
             self._received_structured_plan = False
             self._save_session()
 
-        def _handle_daemon_exit(self, proc: subprocess.Popen[str], *, return_code: int) -> None:
+        def _handle_daemon_exit(self, proc: _DaemonTransport, *, return_code: int) -> None:
             if self._proc is not proc:
                 return
             was_query_active = self._query_active
@@ -4397,56 +4577,65 @@ def run_tui() -> int:
             self._write_transcript_line(f"[daemon] exited unexpectedly (code {return_code}).")
             self._write_transcript_line("[daemon] run /daemon restart to restart the background agent.")
 
-        def _stream_daemon_output(self, proc: subprocess.Popen[str]) -> None:
-            if proc.stdout is None:
-                self._call_from_thread_safe(
-                    self._write_transcript_line,
-                    "[daemon] error: subprocess stdout unavailable.",
-                )
-                return_code = proc.poll()
-                self._call_from_thread_safe(
-                    self._handle_daemon_exit,
-                    proc,
-                    return_code=(return_code if return_code is not None else 1),
-                )
-                return
-
+        def _stream_daemon_output(self, proc: _DaemonTransport) -> None:
             try:
-                for raw_line in proc.stdout:
+                while True:
+                    raw_line = proc.read_line()
+                    if raw_line == "":
+                        break
                     self._call_from_thread_safe(self._handle_output_line, raw_line.rstrip("\n"), raw_line)
             except Exception as exc:
                 self._call_from_thread_safe(self._write_transcript_line, f"[daemon] output stream error: {exc}")
             finally:
+                return_code = 0
                 with contextlib.suppress(Exception):
-                    proc.stdout.close()
-                return_code = proc.wait()
+                    return_code = proc.wait()
                 self._call_from_thread_safe(self._handle_daemon_exit, proc, return_code=return_code)
+
+        def _shutdown_transport(self, proc: _DaemonTransport) -> None:
+            send_daemon_command(proc, {"cmd": "shutdown"})
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=3.0)
+            if proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    proc.close()
 
         def _spawn_daemon(self, *, restart: bool = False) -> None:
             proc = self._proc
             if proc is not None and proc.poll() is None:
                 if restart:
                     self._pending_model_select_value = None
-                    send_daemon_command(proc, {"cmd": "shutdown"})
-                    with contextlib.suppress(Exception):
-                        proc.wait(timeout=3.0)
-                    if proc.poll() is None:
-                        stop_process(proc)
+                    self._shutdown_transport(proc)
                     self._proc = None
                 else:
                     return
 
+            requested_session_id = (self._daemon_session_id or "").strip() or uuid.uuid4().hex
+            self._daemon_session_id = requested_session_id
+            daemon: _DaemonTransport | None = None
+            broker_error: Exception | None = None
+
             try:
-                requested_session_id = (self._daemon_session_id or "").strip() or uuid.uuid4().hex
-                self._daemon_session_id = requested_session_id
-                daemon = spawn_swarmee_daemon(
+                daemon = _SocketTransport.connect(
                     session_id=requested_session_id,
-                    env_overrides=self._model_env_overrides(),
+                    cwd=Path.cwd(),
+                    client_name="swarmee-tui",
+                    surface="tui",
                 )
             except Exception as exc:
-                self._daemon_ready = False
-                self._write_transcript_line(f"[daemon] failed to start: {exc}")
-                return
+                broker_error = exc
+
+            if daemon is None:
+                try:
+                    daemon_proc = spawn_swarmee_daemon(
+                        session_id=requested_session_id,
+                        env_overrides=self._model_env_overrides(),
+                    )
+                    daemon = _SubprocessTransport(daemon_proc)
+                except Exception as exc:
+                    self._daemon_ready = False
+                    self._write_transcript_line(f"[daemon] failed to start: {exc}")
+                    return
 
             self._proc = daemon
             self._daemon_ready = False
@@ -4459,7 +4648,14 @@ def run_tui() -> int:
                 name="swarmee-tui-daemon-stream",
             )
             self._runner_thread.start()
-            self._write_transcript_line("[daemon] started, waiting for ready event.")
+            if isinstance(daemon, _SocketTransport):
+                self._write_transcript_line("[daemon] connected to runtime broker, waiting for ready event.")
+            else:
+                if broker_error is not None and not isinstance(broker_error, FileNotFoundError):
+                    self._write_transcript_line(
+                        f"[daemon] runtime broker unavailable ({broker_error}); using local daemon."
+                    )
+                self._write_transcript_line("[daemon] started, waiting for ready event.")
             self._save_session()
 
         def _tick_status(self) -> None:
@@ -4623,11 +4819,7 @@ def run_tui() -> int:
             self._clear_pending_tool_starts()
             self._reset_thinking_state()
             if self._proc is not None and self._proc.poll() is None:
-                send_daemon_command(self._proc, {"cmd": "shutdown"})
-                with contextlib.suppress(Exception):
-                    self._proc.wait(timeout=3.0)
-                if self._proc.poll() is None:
-                    stop_process(self._proc)
+                self._shutdown_transport(self._proc)
             if self._runner_thread is not None and self._runner_thread.is_alive():
                 with contextlib.suppress(Exception):
                     self._runner_thread.join(timeout=1.0)

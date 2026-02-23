@@ -80,6 +80,25 @@ Optional: install the upstream Strands Tools pack for additional integrations (S
 pipx install "swarmee-river[strands_tools]"
 ```
 
+## Shared Runtime (MVP)
+
+Run a local shared runtime broker (localhost TCP) and attach a lightweight terminal client:
+
+```bash
+# Start broker (writes .swarmee/runtime.json)
+swarmee serve --port 0
+
+# Attach from the same repo
+swarmee attach
+
+# Tail-only mode (no prompt input loop)
+swarmee attach --tail
+```
+
+Notes:
+- Discovery file lives at `.swarmee/runtime.json` (or under `SWARMEE_STATE_DIR`).
+- `swarmee attach` defaults to `SWARMEE_SESSION_ID` when set; otherwise it derives a stable session id from cwd.
+
 ## Configuration
 
 Swarmee is designed to work without users editing config files.

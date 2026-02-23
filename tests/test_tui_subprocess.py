@@ -585,6 +585,20 @@ def test_send_daemon_command_writes_jsonl_and_flushes():
     assert proc.stdin.flush_calls == 1
 
 
+def test_send_daemon_command_uses_transport_sender_when_available():
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def send_command(self, payload):
+            self.calls.append(payload)
+            return True
+
+    transport = FakeTransport()
+    assert tui_app.send_daemon_command(transport, {"cmd": "interrupt"}) is True
+    assert transport.calls == [{"cmd": "interrupt"}]
+
+
 def test_detect_consent_prompt_matches_cli_prompt():
     assert tui_app.detect_consent_prompt("~ consent> ") is not None
     assert tui_app.detect_consent_prompt("Allow tool 'shell'? [y/n]") is not None
