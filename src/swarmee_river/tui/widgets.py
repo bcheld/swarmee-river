@@ -1089,6 +1089,8 @@ class CommandPalette(Static):
         ("/text", "Toggle transcript text mode"),
         ("/thinking", "Show model reasoning"),
         ("/sop", "Browse and toggle SOPs"),
+        ("/connect", "Connect GitHub Copilot auth"),
+        ("/auth", "List/logout provider auth"),
         ("/copy", "Copy transcript"),
         ("/copy plan", "Copy plan text"),
         ("/copy issues", "Copy issues"),

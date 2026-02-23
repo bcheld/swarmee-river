@@ -28,6 +28,13 @@ def has_github_copilot_token() -> bool:
     for key in ("SWARMEE_GITHUB_COPILOT_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"):
         if (os.getenv(key) or "").strip():
             return True
+    try:
+        from swarmee_river.auth.store import has_provider_record
+
+        if has_provider_record("github_copilot"):
+            return True
+    except Exception:
+        return False
     return False
 
 

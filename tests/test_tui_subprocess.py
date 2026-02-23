@@ -159,6 +159,11 @@ def test_classify_pre_run_command_matrix():
         "/restart-daemon": ("daemon_restart", None),
         "/consent": ("consent_usage", None),
         "/consent y": ("consent", "y"),
+        "/connect": ("connect", "github_copilot"),
+        "/connect github_copilot": ("connect", "github_copilot"),
+        "/auth": ("auth_usage", None),
+        "/auth list": ("auth", "list"),
+        "/auth logout github_copilot": ("auth", "logout github_copilot"),
         "/model show": ("model:show", None),
         "/model provider openai": ("model:provider", "openai"),
         "/approve": None,
@@ -872,7 +877,7 @@ def test_command_palette_move_selection():
 
     palette = CommandPalette()
     palette.filter("/co")
-    assert len(palette._filtered) == 8  # /context, /compact, /copy, /copy plan, /copy issues, /copy last, /copy all, /consent
+    assert len(palette._filtered) == 9
     palette.move_selection(1)
     assert palette._selected_index == 1
 

@@ -433,6 +433,20 @@ swarmee --model-provider github_copilot "Summarize this repo"
 You can also set `SWARMEE_GITHUB_COPILOT_API_KEY` (preferred), `GH_TOKEN`, and per-tier overrides like
 `SWARMEE_GITHUB_COPILOT_DEEP_MODEL_ID`.
 
+For OpenCode-like auth UX, Swarmee supports connect/auth commands:
+
+```bash
+# Device-code login (opens browser, stores auth in ~/.local/share/swarmee/auth.json)
+swarmee connect
+
+# Explicit auth commands
+swarmee auth list
+swarmee auth login github_copilot
+swarmee auth logout github_copilot
+```
+
+In REPL/TUI, you can also run `:connect` / `:auth ...` and `/connect` / `/auth ...`.
+
 If you have implemented a custom model provider ([instructions](https://strandsagents.com/latest/user-guide/concepts/model-providers/custom_model_provider/)) and would like to use it with Swarmee, create a python module under the directory "$CWD/.models" and expose an `instance` function that returns an instance of your provider. As an example, assume you have:
 
 ```bash

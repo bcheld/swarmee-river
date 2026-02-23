@@ -89,6 +89,8 @@ except Exception:
     _SessionS3Hooks = None  # type: ignore[misc,assignment]
 SessionS3Hooks: Any = _SessionS3Hooks
 from swarmee_river.agent_runner import invoke_agent
+from swarmee_river.auth.github_copilot import login_device_flow, save_api_key
+from swarmee_river.auth.store import delete_provider_record, list_auth_records, normalize_provider_name
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.cli.builtin_commands import register_builtin_commands
 from swarmee_river.cli.commands import CLIContext, CommandRegistry, handle_common_session_command, handle_pack_command
@@ -99,6 +101,7 @@ from swarmee_river.cli.diagnostics import (
 from swarmee_river.cli.repl import run_repl
 from swarmee_river.context.prompt_cache import PromptCacheState
 from swarmee_river.error_classification import (
+    ERROR_CATEGORY_AUTH_ERROR,
     ERROR_CATEGORY_FATAL,
     ERROR_CATEGORY_ESCALATABLE,
     ERROR_CATEGORY_TRANSIENT,
@@ -583,6 +586,71 @@ def _build_model_info_event_payload(*, model_manager: SessionModelManager, selec
             for item in tiers
         ],
     }
+
+
+def _render_auth_records_text() -> str:
+    records = list_auth_records(include_opencode=True)
+    if not records:
+        return "No provider credentials found."
+    lines = ["# Auth records", ""]
+    for item in records:
+        provider = str(item.get("provider", ""))
+        source = str(item.get("source", ""))
+        auth_type = str(item.get("type", "unknown"))
+        details: list[str] = [auth_type, source]
+        if item.get("has_key"):
+            details.append("key")
+        if item.get("has_refresh"):
+            details.append("refresh")
+        if item.get("has_access"):
+            details.append("access")
+        lines.append(f"- {provider}: {', '.join(details)}")
+    return "\n".join(lines)
+
+
+def _handle_auth_cli_command(command: str, args: list[str]) -> tuple[bool, str]:
+    cmd = (command or "").strip().lower()
+    if cmd == "connect":
+        result = login_device_flow(status=lambda line: print(line), open_browser=True)
+        return True, f"GitHub Copilot connected.\nSaved credentials to: {result.get('path')}"
+
+    if cmd != "auth":
+        return False, ""
+
+    subcmd = (args[0].strip().lower() if args else "list")
+    if subcmd in {"list", "ls"}:
+        return True, _render_auth_records_text()
+    if subcmd == "logout":
+        provider = normalize_provider_name(args[1] if len(args) >= 2 else "github_copilot")
+        if not provider:
+            return True, "Usage: swarmee auth logout <provider>"
+        deleted = delete_provider_record(provider)
+        if deleted:
+            return True, f"Removed saved credentials for provider: {provider}"
+        return True, f"No saved credentials found for provider: {provider}"
+    if subcmd == "login":
+        provider_raw = "github_copilot"
+        if len(args) >= 2 and not str(args[1]).strip().startswith("-"):
+            provider_raw = args[1]
+        provider = normalize_provider_name(provider_raw)
+        if provider != "github_copilot":
+            return True, "Only github_copilot login is currently supported."
+        if "--api-key" in args:
+            key = (os.getenv("SWARMEE_GITHUB_COPILOT_API_KEY") or "").strip()
+            if not key:
+                return True, (
+                    "Set SWARMEE_GITHUB_COPILOT_API_KEY and re-run `swarmee auth login --api-key` "
+                    "to save it locally."
+                )
+            path = save_api_key(key)
+            return True, f"Saved GitHub Copilot API key to: {path}"
+        result = login_device_flow(status=lambda line: print(line), open_browser=True)
+        return True, f"GitHub Copilot connected.\nSaved credentials to: {result.get('path')}"
+    return (
+        True,
+        "Usage: swarmee auth list | swarmee auth login [github_copilot] [--api-key] | "
+        "swarmee auth logout [provider]",
+    )
 
 
 def _build_conversation_manager(
@@ -1584,6 +1652,12 @@ def main() -> None:
         print(output_text)
         return
 
+    handled_auth, auth_text = _handle_auth_cli_command(command, sub)
+    if handled_auth:
+        if auth_text:
+            print(auth_text)
+        return
+
     # Session management is project-local under `.swarmee/sessions`.
     if command == "session":
         store = SessionStore()
@@ -2119,6 +2193,87 @@ def main() -> None:
                 ctx.refresh_system_prompt()
                 with contextlib.suppress(Exception):
                     session_store.save(active_session_id, meta=ctx.build_session_meta())
+                continue
+
+            if cmd == "connect":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot connect provider while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                provider = normalize_provider_name(payload.get("provider") or "github_copilot")
+                method = str(payload.get("method", "device")).strip().lower()
+                if provider != "github_copilot":
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            f"Unsupported connect provider: {provider}",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    if method == "api":
+                        raw_api_key = payload.get("api_key")
+                        api_key = str(raw_api_key).strip() if isinstance(raw_api_key, str) else ""
+                        if not api_key:
+                            _write_stdout_jsonl(
+                                _build_tui_error_event(
+                                    "connect(api) requires api_key",
+                                    category_hint=ERROR_CATEGORY_FATAL,
+                                )
+                            )
+                            continue
+                        path = save_api_key(api_key)
+                        _write_stdout_jsonl(
+                            {"event": "warning", "text": f"Saved GitHub Copilot API key to: {path}"}
+                        )
+                    else:
+                        open_browser = bool(payload.get("open_browser", True))
+                        result = login_device_flow(
+                            open_browser=open_browser,
+                            status=lambda line: _write_stdout_jsonl({"event": "warning", "text": line}),
+                        )
+                        _write_stdout_jsonl(
+                            {
+                                "event": "warning",
+                                "text": f"GitHub Copilot connected. Saved credentials to: {result.get('path')}",
+                            }
+                        )
+                    _write_stdout_jsonl(_current_model_info_event())
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_AUTH_ERROR))
+                continue
+
+            if cmd == "auth":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot inspect auth while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                action = str(payload.get("action", "list")).strip().lower()
+                if action in {"list", "ls"}:
+                    text = _render_auth_records_text()
+                    _write_stdout_jsonl({"event": "warning", "text": text})
+                    continue
+                if action == "logout":
+                    provider = normalize_provider_name(payload.get("provider") or "github_copilot")
+                    deleted = delete_provider_record(provider)
+                    if deleted:
+                        _write_stdout_jsonl(
+                            {"event": "warning", "text": f"Removed saved credentials for provider: {provider}"}
+                        )
+                    else:
+                        _write_stdout_jsonl(
+                            {"event": "warning", "text": f"No saved credentials found for provider: {provider}"}
+                        )
+                    continue
+                _write_stdout_jsonl({"event": "warning", "text": "Unknown auth action"})
                 continue
 
             if cmd == "restore_session":

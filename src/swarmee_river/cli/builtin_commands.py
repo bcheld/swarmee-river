@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import contextlib
+import getpass
 import json
 import os
 from pathlib import Path
 
+from swarmee_river.auth.github_copilot import login_device_flow, save_api_key
+from swarmee_river.auth.store import delete_provider_record, list_auth_records, normalize_provider_name
 from swarmee_river.cli.commands import (
     CLIContext,
     CommandDispatchResult,
@@ -16,6 +19,7 @@ from swarmee_river.cli.diagnostics import (
     render_config_command_for_surface,
     render_diagnostic_command_for_surface,
 )
+from swarmee_river.utils.provider_utils import normalize_provider_name as normalize_provider_name_runtime
 from tools.sop import run_sop
 
 _DIAGNOSTIC_COMMANDS = {"status", "diff", "artifact", "log", "replay"}
@@ -278,6 +282,86 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
         ctx.output("\n".join(lines))
         return CommandDispatchResult(handled=True)
 
+    def _auth(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
+        subcmd = (inv.args[0].lower() if inv.args else "list").strip()
+
+        if subcmd in {"list", "ls"}:
+            records = list_auth_records(include_opencode=True)
+            if not records:
+                ctx.output("No provider credentials found.")
+                return CommandDispatchResult(handled=True)
+            lines = ["# Auth records", ""]
+            for item in records:
+                provider = str(item.get("provider", ""))
+                source = str(item.get("source", ""))
+                auth_type = str(item.get("type", "unknown"))
+                details: list[str] = [auth_type, source]
+                if item.get("has_key"):
+                    details.append("key")
+                if item.get("has_refresh"):
+                    details.append("refresh")
+                if item.get("has_access"):
+                    details.append("access")
+                lines.append(f"- {provider}: {', '.join(details)}")
+            ctx.output("\n".join(lines))
+            return CommandDispatchResult(handled=True)
+
+        if subcmd == "logout":
+            provider_raw = inv.args[1] if len(inv.args) >= 2 else "github_copilot"
+            provider = normalize_provider_name(provider_raw)
+            if not provider:
+                ctx.output("Usage: :auth logout <provider>")
+                return CommandDispatchResult(handled=True)
+            deleted = delete_provider_record(provider)
+            if deleted:
+                ctx.output(f"Removed saved credentials for provider: {provider}")
+            else:
+                ctx.output(f"No saved credentials found for provider: {provider}")
+            return CommandDispatchResult(handled=True)
+
+        if subcmd == "login":
+            provider_raw = "github_copilot"
+            if len(inv.args) >= 2 and not str(inv.args[1]).strip().startswith("-"):
+                provider_raw = inv.args[1]
+            provider = normalize_provider_name(provider_raw)
+            if provider != "github_copilot":
+                ctx.output("Only github_copilot login is currently supported.")
+                return CommandDispatchResult(handled=True)
+
+            if "--api-key" in inv.args:
+                key = ""
+                with contextlib.suppress(Exception):
+                    key = getpass.getpass("GitHub Copilot API key: ").strip()
+                if not key:
+                    ctx.output("No API key entered.")
+                    return CommandDispatchResult(handled=True)
+                path = save_api_key(key)
+                ctx.output(f"Saved GitHub Copilot API key to: {path}")
+            else:
+                result = login_device_flow(status=ctx.output, open_browser=True)
+                ctx.output("GitHub Copilot connected.")
+                ctx.output(f"Saved credentials to: {result.get('path')}")
+
+            with contextlib.suppress(Exception):
+                current = str(ctx.model_manager.current_tier).strip().lower()
+                if current:
+                    ctx.model_manager.set_tier(ctx.agent, current)
+                    ctx.agent_kwargs["model"] = ctx.agent.model
+            return CommandDispatchResult(handled=True)
+
+        ctx.output("Usage: :auth list | :auth login [github_copilot] [--api-key] | :auth logout [provider]")
+        return CommandDispatchResult(handled=True)
+
+    def _connect(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
+        provider = inv.args[0].strip() if inv.args else "github_copilot"
+        normalized = normalize_provider_name_runtime(provider)
+        proxy_invocation = CommandInvocation(
+            name="auth",
+            args=["login", normalized],
+            raw=f":auth login {normalized}",
+        )
+        return _auth(ctx, proxy_invocation)
+
     def _diagnostic(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
         if inv.name not in _DIAGNOSTIC_COMMANDS:
             return CommandDispatchResult(handled=False)
@@ -303,6 +387,8 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     registry.register("sop", _sop, help="Manage SOPs", usage="list | use <name> | clear | show")
     registry.register("session", _session, help="Manage sessions", usage="new|save|load|list|rm|info")
     registry.register("config", _config, help="Show effective config", usage="show")
+    registry.register("auth", _auth, help="Manage provider credentials", usage="list|login|logout")
+    registry.register("connect", _connect, help="Connect a provider (alias for :auth login)")
     registry.register("permissions", _permissions, help="Show effective permissions", usage="show")
     registry.register("status", _diagnostic, help="Show git status summary")
     registry.register("diff", _diagnostic, help="Show git diff", usage="[--staged] [paths...]")

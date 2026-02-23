@@ -43,6 +43,8 @@ _PROVIDER_NOISE_PREFIX = "[provider]"
 _PROVIDER_FALLBACK_PHRASE = "falling back to"
 _MODEL_USAGE_TEXT = "Usage: /model show | /model list | /model provider <name> | /model tier <name> | /model reset"
 _CONSENT_USAGE_TEXT = "Usage: /consent <y|n|a|v>"
+_CONNECT_USAGE_TEXT = "Usage: /connect [github_copilot]"
+_AUTH_USAGE_TEXT = "Usage: /auth list | /auth logout [provider]"
 _SEARCH_USAGE_TEXT = "Usage: /search <term>"
 _OPEN_USAGE_TEXT = "Usage: /open <number>"
 _EXPAND_USAGE_TEXT = "Usage: /expand <tool_use_id>"
@@ -806,6 +808,14 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
         return "consent_usage", None
     if normalized.startswith("/consent "):
         return "consent", normalized.split(maxsplit=1)[1].strip()
+    if normalized == "/connect":
+        return "connect", "github_copilot"
+    if normalized.startswith("/connect "):
+        return "connect", normalized.split(maxsplit=1)[1].strip()
+    if normalized == "/auth":
+        return "auth_usage", None
+    if normalized.startswith("/auth "):
+        return "auth", text[len("/auth "):].strip()
     model = classify_model_command(normalized)
     if model is not None:
         action, argument = model
@@ -1951,6 +1961,7 @@ def run_tui() -> int:
                         "- /context add/list/remove/clear",
                         "- /sop list, /sop activate <name>, /sop deactivate <name>, /sop preview <name>",
                         "- /approve, /replan, /clearplan",
+                        "- /connect [github_copilot], /auth list, /auth logout [provider]",
                         "- /model, /text, /thinking, /stop, /daemon restart, /expand <tool_id>, /exit",
                         "",
                         "Consent:",
@@ -5234,6 +5245,48 @@ def run_tui() -> int:
                 return True
             if action == "consent":
                 self._submit_consent_choice((argument or "").strip())
+                return True
+            if action == "connect":
+                provider = (argument or "").strip() or "github_copilot"
+                proc = self._proc
+                if not self._daemon_ready or proc is None or proc.poll() is not None:
+                    self._write_transcript_line("[connect] daemon is not ready.")
+                    return True
+                if self._query_active:
+                    self._write_transcript_line("[connect] cannot connect while a run is active.")
+                    return True
+                self._write_transcript_line(f"[connect] starting provider auth for {provider}...")
+                if not send_daemon_command(
+                    proc,
+                    {"cmd": "connect", "provider": provider, "method": "device", "open_browser": True},
+                ):
+                    self._write_transcript_line("[connect] failed to send command.")
+                return True
+            if action == "auth_usage":
+                self._write_transcript_line(_AUTH_USAGE_TEXT)
+                return True
+            if action == "auth":
+                raw = (argument or "").strip()
+                normalized = raw.lower()
+                proc = self._proc
+                if not self._daemon_ready or proc is None or proc.poll() is not None:
+                    self._write_transcript_line("[auth] daemon is not ready.")
+                    return True
+                if self._query_active:
+                    self._write_transcript_line("[auth] cannot run while a run is active.")
+                    return True
+                if not raw:
+                    self._write_transcript_line(_AUTH_USAGE_TEXT)
+                    return True
+                if normalized in {"list", "ls"}:
+                    send_daemon_command(proc, {"cmd": "auth", "action": "list"})
+                    return True
+                if normalized.startswith("logout"):
+                    parts = raw.split()
+                    provider = parts[1].strip() if len(parts) >= 2 else "github_copilot"
+                    send_daemon_command(proc, {"cmd": "auth", "action": "logout", "provider": provider})
+                    return True
+                self._write_transcript_line(_AUTH_USAGE_TEXT)
                 return True
             if action.startswith("model:"):
                 normalized = text.lower()

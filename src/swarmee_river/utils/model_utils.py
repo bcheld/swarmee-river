@@ -82,22 +82,40 @@ def default_model_config(provider: str) -> dict[str, Any]:
         if max_retries.isdigit():
             client_args["max_retries"] = int(max_retries)
 
+        base_url = os.getenv("SWARMEE_GITHUB_COPILOT_BASE_URL", "https://api.githubcopilot.com").strip().rstrip("/")
+
+        integration_id = os.getenv("SWARMEE_GITHUB_COPILOT_INTEGRATION_ID", "").strip()
+        if integration_id:
+            client_args["default_headers"] = {"Copilot-Integration-Id": integration_id}
+
         api_key = (
             os.getenv("SWARMEE_GITHUB_COPILOT_API_KEY")
             or os.getenv("GITHUB_TOKEN")
             or os.getenv("GH_TOKEN")
             or ""
         ).strip()
+        if not api_key:
+            try:
+                from swarmee_river.auth.github_copilot import resolve_runtime_credentials
+
+                creds = resolve_runtime_credentials(refresh=True)
+                api_key = creds.access_token
+                if not os.getenv("SWARMEE_GITHUB_COPILOT_BASE_URL"):
+                    base_url = creds.base_url
+                if creds.headers:
+                    existing_headers = client_args.get("default_headers")
+                    merged_headers: dict[str, Any] = {}
+                    if isinstance(existing_headers, dict):
+                        merged_headers.update(existing_headers)
+                    merged_headers.update(creds.headers)
+                    client_args["default_headers"] = merged_headers
+            except Exception:
+                pass
+
         if api_key:
             client_args["api_key"] = api_key
-
-        base_url = os.getenv("SWARMEE_GITHUB_COPILOT_BASE_URL", "https://api.githubcopilot.com").strip().rstrip("/")
         if base_url:
             client_args["base_url"] = base_url
-
-        integration_id = os.getenv("SWARMEE_GITHUB_COPILOT_INTEGRATION_ID", "").strip()
-        if integration_id:
-            client_args["default_headers"] = {"Copilot-Integration-Id": integration_id}
 
         config = {"model_id": model_id}
         if params:

@@ -111,6 +111,8 @@ def run_repl(
                         "Hint: Bedrock requires AWS credentials (AWS_PROFILE or AWS_ACCESS_KEY_ID/"
                         "AWS_SECRET_ACCESS_KEY). Or run with `--model-provider openai`."
                     )
+                elif (ctx.selected_provider or "").strip().lower() == "github_copilot":
+                    ctx.output("Hint: run `:connect` to authenticate GitHub Copilot, then retry.")
                 elif ctx.knowledge_base_id:
                     ctx.output(
                         "Hint: Knowledge Base operations require AWS credentials even when model provider is OpenAI."
