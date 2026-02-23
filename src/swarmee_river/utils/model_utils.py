@@ -70,6 +70,42 @@ def default_model_config(provider: str) -> dict[str, Any]:
             config["client_args"] = client_args
         return config
 
+    if provider == "github_copilot":
+        model_id = os.getenv("SWARMEE_GITHUB_COPILOT_MODEL_ID", "gpt-4o")
+        max_tokens = os.getenv("SWARMEE_MAX_TOKENS")
+        params: dict[str, Any] = {}
+        if max_tokens and max_tokens.isdigit():
+            params["max_completion_tokens"] = int(max_tokens)
+
+        client_args: dict[str, Any] = {}
+        max_retries = os.getenv("SWARMEE_GITHUB_COPILOT_MAX_RETRIES", "0").strip()
+        if max_retries.isdigit():
+            client_args["max_retries"] = int(max_retries)
+
+        api_key = (
+            os.getenv("SWARMEE_GITHUB_COPILOT_API_KEY")
+            or os.getenv("GITHUB_TOKEN")
+            or os.getenv("GH_TOKEN")
+            or ""
+        ).strip()
+        if api_key:
+            client_args["api_key"] = api_key
+
+        base_url = os.getenv("SWARMEE_GITHUB_COPILOT_BASE_URL", "https://api.githubcopilot.com").strip().rstrip("/")
+        if base_url:
+            client_args["base_url"] = base_url
+
+        integration_id = os.getenv("SWARMEE_GITHUB_COPILOT_INTEGRATION_ID", "").strip()
+        if integration_id:
+            client_args["default_headers"] = {"Copilot-Integration-Id": integration_id}
+
+        config = {"model_id": model_id}
+        if params:
+            config["params"] = params
+        if client_args:
+            config["client_args"] = client_args
+        return config
+
     return {}
 
 

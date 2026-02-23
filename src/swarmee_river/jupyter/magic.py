@@ -13,6 +13,7 @@ from typing import Any
 from strands import Agent
 
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
+from swarmee_river.context.prompt_cache import format_system_reminder, inject_system_reminder
 from swarmee_river.packs import enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
 from swarmee_river.project_map import build_context_snapshot
@@ -20,7 +21,6 @@ from swarmee_river.runtime_env import detect_runtime_environment, render_runtime
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
 from swarmee_river.tools import get_tools
-from swarmee_river.context.prompt_cache import format_system_reminder, inject_system_reminder
 from swarmee_river.utils.agent_runtime_utils import plan_json_for_execution, render_plan_text
 from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt
@@ -208,6 +208,11 @@ def _runtime_fingerprint() -> str:
         "SWARMEE_MAX_TOKENS",
         "OPENAI_API_KEY",
         "SWARMEE_OPENAI_MODEL_ID",
+        "SWARMEE_GITHUB_COPILOT_API_KEY",
+        "SWARMEE_GITHUB_COPILOT_MODEL_ID",
+        "SWARMEE_GITHUB_COPILOT_BASE_URL",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
         "STRANDS_MODEL_ID",
         "SWARMEE_OLLAMA_HOST",
         "SWARMEE_OLLAMA_MODEL_ID",

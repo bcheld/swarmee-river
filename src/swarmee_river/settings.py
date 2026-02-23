@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.utils.provider_utils import normalize_provider_name
+
 
 def _truthy(value: str | None) -> bool:
     if value is None:
@@ -40,7 +42,7 @@ class ModelTier:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], *, default_provider: str | None = None) -> "ModelTier":
-        provider = str(raw.get("provider") or default_provider or "").strip()
+        provider = normalize_provider_name(raw.get("provider") or default_provider)
         model_id = raw.get("model_id")
         display_name = raw.get("display_name")
         description = raw.get("description")
@@ -175,13 +177,13 @@ class ModelsConfig:
             for provider_name, provider_value in providers_raw.items():
                 if not isinstance(provider_name, str) or not isinstance(provider_value, dict):
                     continue
-                key = provider_name.strip().lower()
+                key = normalize_provider_name(provider_name.strip())
                 providers[key] = ProviderModels.from_dict(provider_value, provider=key)
 
         auto = raw.get("auto_escalation")
         availability = raw.get("availability")
         return cls(
-            provider=str(provider).strip().lower() if isinstance(provider, str) and provider.strip() else None,
+            provider=normalize_provider_name(provider) if isinstance(provider, str) and provider.strip() else None,
             default_tier=default_tier,
             tiers=tiers,
             providers=providers,
@@ -412,7 +414,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
     Environment overrides:
     - SWARMEE_MODEL_TIER: force the active tier in the CLI
     - SWARMEE_TIER_AUTO: enable/disable auto escalation
-    - SWARMEE_MODEL_PROVIDER: choose the default provider (bedrock|openai|ollama)
+    - SWARMEE_MODEL_PROVIDER: choose the default provider (bedrock|openai|ollama|github_copilot)
     """
     settings_path = path or _default_settings_path()
     raw: dict[str, Any] = {}
@@ -434,7 +436,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
     models = settings.models
     if forced_provider and forced_provider.strip():
         models = ModelsConfig(
-            provider=forced_provider.strip().lower(),
+            provider=normalize_provider_name(forced_provider.strip()),
             default_tier=models.default_tier,
             tiers=models.tiers,
             providers=models.providers,
@@ -601,6 +603,48 @@ def default_settings_template() -> SwarmeeSettings:
                             model_id="llama3.1",
                             display_name="llama3.1",
                             description="Local long tier (override via SWARMEE_OLLAMA_LONG_MODEL_ID).",
+                        ),
+                    },
+                ),
+                "github_copilot": ProviderModels(
+                    display_name="GitHub Copilot",
+                    description=(
+                        "OpenAI-compatible endpoint for GitHub Copilot. "
+                        "Uses SWARMEE_GITHUB_COPILOT_API_KEY or GITHUB_TOKEN."
+                    ),
+                    tiers={
+                        "fast": ModelTier(
+                            provider="github_copilot",
+                            model_id="gpt-4o-mini",
+                            display_name="GPT-4o mini (Copilot)",
+                            description=(
+                                "Lower latency default for Copilot "
+                                "(override via SWARMEE_GITHUB_COPILOT_FAST_MODEL_ID)."
+                            ),
+                        ),
+                        "balanced": ModelTier(
+                            provider="github_copilot",
+                            model_id="gpt-4o",
+                            display_name="GPT-4o (Copilot)",
+                            description="Default Copilot tier for most coding tasks.",
+                        ),
+                        "deep": ModelTier(
+                            provider="github_copilot",
+                            model_id="gpt-5",
+                            display_name="GPT-5 (Copilot)",
+                            description=(
+                                "Stronger reasoning where available "
+                                "(override via SWARMEE_GITHUB_COPILOT_DEEP_MODEL_ID)."
+                            ),
+                        ),
+                        "long": ModelTier(
+                            provider="github_copilot",
+                            model_id="gpt-5",
+                            display_name="GPT-5 (Copilot long)",
+                            description=(
+                                "Long-form outputs on Copilot "
+                                "(override via SWARMEE_GITHUB_COPILOT_LONG_MODEL_ID)."
+                            ),
                         ),
                     },
                 ),

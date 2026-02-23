@@ -8,6 +8,7 @@ from strands.models import Model
 
 from swarmee_river.settings import ModelTier, ProviderModels, SwarmeeSettings
 from swarmee_river.utils import model_utils
+from swarmee_river.utils.provider_utils import has_github_copilot_token, normalize_provider_name
 
 _TIER_ORDER: list[str] = ["fast", "balanced", "deep", "long"]
 
@@ -33,7 +34,7 @@ class SessionModelManager:
 
     def __init__(self, settings: SwarmeeSettings, *, fallback_provider: str | None = None) -> None:
         self._settings = settings
-        chosen_provider = (fallback_provider or settings.models.provider or "bedrock").strip().lower()
+        chosen_provider = normalize_provider_name(fallback_provider or settings.models.provider or "bedrock")
         self._fallback_provider = chosen_provider
         self._default_provider = chosen_provider
         self._fallback_config: dict[str, Any] | None = None
@@ -104,8 +105,8 @@ class SessionModelManager:
     def _build_model_for_tier(self, tier_name: str) -> Model:
         tier = self._resolve_tier(tier_name)
 
-        provider = (tier.provider or "").strip().lower()
-        if provider not in {"bedrock", "openai", "ollama"}:
+        provider = normalize_provider_name(tier.provider)
+        if provider not in {"bedrock", "openai", "ollama", "github_copilot"}:
             raise ValueError(f"Unsupported provider {provider!r} for tier {tier_name!r}")
 
         base = model_utils.default_model_config(provider)
@@ -168,7 +169,7 @@ class SessionModelManager:
 
         provider = self._default_provider
         if global_override and global_override.provider and global_override.provider.strip():
-            provider = global_override.provider.strip().lower()
+            provider = normalize_provider_name(global_override.provider)
 
         provider_tier = self._provider_tier(provider, tier_name)
         resolved = provider_tier
@@ -181,7 +182,7 @@ class SessionModelManager:
         return resolved
 
     def _provider_tier(self, provider: str, tier_name: str) -> ModelTier:
-        provider = (provider or "").strip().lower()
+        provider = normalize_provider_name(provider)
         tier_name = (tier_name or "").strip().lower()
 
         pm = self._settings.models.providers.get(provider)
@@ -192,7 +193,7 @@ class SessionModelManager:
         return ModelTier(provider=provider)
 
     def _effective_model_id(self, tier: ModelTier, *, tier_name: str) -> str | None:
-        provider = (tier.provider or "").strip().lower()
+        provider = normalize_provider_name(tier.provider)
         tier_name = (tier_name or "").strip().lower()
         env_tier_model_id = self._env_tier_model_id(provider, tier_name)
         if env_tier_model_id:
@@ -203,7 +204,7 @@ class SessionModelManager:
         return tier.model_id
 
     def _env_tier_model_id(self, provider: str, tier_name: str) -> str | None:
-        provider = (provider or "").strip().upper()
+        provider = normalize_provider_name(provider).upper()
         tier_name = (tier_name or "").strip().upper()
         if not provider or not tier_name:
             return None
@@ -212,7 +213,7 @@ class SessionModelManager:
         return val.strip() if isinstance(val, str) and val.strip() else None
 
     def _provider_env_model_id(self, provider: str) -> str | None:
-        provider = (provider or "").strip().lower()
+        provider = normalize_provider_name(provider)
         if provider == "bedrock":
             val = os.getenv("STRANDS_MODEL_ID")
             return val.strip() if isinstance(val, str) and val.strip() else None
@@ -222,11 +223,18 @@ class SessionModelManager:
         if provider == "ollama":
             val = os.getenv("SWARMEE_OLLAMA_MODEL_ID") or os.getenv("OLLAMA_MODEL")
             return val.strip() if isinstance(val, str) and val.strip() else None
+        if provider == "github_copilot":
+            val = (
+                os.getenv("SWARMEE_GITHUB_COPILOT_MODEL_ID")
+                or os.getenv("SWARMEE_GHCP_MODEL_ID")
+                or os.getenv("GITHUB_COPILOT_MODEL")
+            )
+            return val.strip() if isinstance(val, str) and val.strip() else None
         return None
 
     def _merge_tiers(self, base: ModelTier, override: ModelTier, *, default_provider: str) -> ModelTier:
-        provider = (
-            override.provider.strip().lower() if override.provider and override.provider.strip() else base.provider
+        provider = normalize_provider_name(
+            override.provider if override.provider and override.provider.strip() else base.provider
         )
         if not provider:
             provider = default_provider
@@ -285,10 +293,16 @@ class SessionModelManager:
         return out
 
     def _is_tier_available(self, tier: ModelTier) -> tuple[bool, str | None]:
-        provider = (tier.provider or "").strip().lower()
+        provider = normalize_provider_name(tier.provider)
         if not provider:
             return False, "provider missing"
         if provider == "openai":
             if not (tier.client_args and tier.client_args.get("api_key")) and not os.getenv("OPENAI_API_KEY"):
                 return False, "OPENAI_API_KEY missing"
+        if provider == "github_copilot":
+            has_inline_key = isinstance(tier.client_args, dict) and bool(
+                str(tier.client_args.get("api_key") or "").strip()
+            )
+            if not has_inline_key and not has_github_copilot_token():
+                return False, "SWARMEE_GITHUB_COPILOT_API_KEY or GITHUB_TOKEN missing"
         return True, None

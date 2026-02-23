@@ -55,6 +55,11 @@ export SWARMEE_MODEL_PROVIDER="openai"
 # export SWARMEE_MODEL_PROVIDER="ollama"
 # export SWARMEE_OLLAMA_HOST="http://localhost:11434"
 # export SWARMEE_OLLAMA_MODEL_ID="llama3.1"
+#
+# GitHub Copilot (enterprise):
+# export SWARMEE_MODEL_PROVIDER="github_copilot"
+# export GITHUB_TOKEN="..."
+# export SWARMEE_GITHUB_COPILOT_MODEL_ID="gpt-4o"
 
 # Run interactive mode
 swarmee
@@ -379,7 +384,7 @@ As an example, if you wanted to use the packaged Ollama provider with a specific
 swarmee --model-provider ollama --model-config '{"model_id": "<ID>"}'
 ```
 
-Swarmee River is packaged with `bedrock`, `ollama`, and `openai`.
+Swarmee River is packaged with `bedrock`, `ollama`, `openai`, and `github_copilot`.
 
 ### OpenAI (low-cost default)
 
@@ -407,6 +412,26 @@ To override the model/limits:
 ```bash
 swarmee --model-provider openai --model-config '{"model_id":"gpt-5-nano","params":{"max_completion_tokens":256}}' "Summarize this repo"
 ```
+
+### GitHub Copilot (enterprise-compatible)
+
+Swarmee includes a packaged `github_copilot` provider that uses the OpenAI-compatible GitHub Copilot endpoint.
+
+```bash
+echo "SWARMEE_MODEL_PROVIDER=github_copilot" > .env
+echo "GITHUB_TOKEN=..." >> .env
+echo "SWARMEE_GITHUB_COPILOT_MODEL_ID=gpt-4o" >> .env
+echo "SWARMEE_GITHUB_COPILOT_BASE_URL=https://api.githubcopilot.com" >> .env
+```
+
+Then run:
+
+```bash
+swarmee --model-provider github_copilot "Summarize this repo"
+```
+
+You can also set `SWARMEE_GITHUB_COPILOT_API_KEY` (preferred), `GH_TOKEN`, and per-tier overrides like
+`SWARMEE_GITHUB_COPILOT_DEEP_MODEL_ID`.
 
 If you have implemented a custom model provider ([instructions](https://strandsagents.com/latest/user-guide/concepts/model-providers/custom_model_provider/)) and would like to use it with Swarmee, create a python module under the directory "$CWD/.models" and expose an `instance` function that returns an instance of your provider. As an example, assume you have:
 

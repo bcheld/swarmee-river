@@ -49,7 +49,7 @@ def test_load_path_custom(custom_model_dir):
     assert tru_path == exp_path
 
 
-@pytest.mark.parametrize("name", ["bedrock", "ollama", "openai"])
+@pytest.mark.parametrize("name", ["bedrock", "ollama", "openai", "github_copilot"])
 def test_load_path_packaged(name, packaged_model_dir):
     tru_path = swarmee_river.utils.model_utils.load_path(name).resolve()
     exp_path = packaged_model_dir / f"{name}.py"
@@ -98,6 +98,34 @@ def test_default_model_config_openai_ignores_invalid_max_retries(monkeypatch):
     monkeypatch.setenv("SWARMEE_OPENAI_MAX_RETRIES", "abc")
     config = swarmee_river.utils.model_utils.default_model_config("openai")
     assert "max_retries" not in config.get("client_args", {})
+
+
+def test_default_model_config_github_copilot_defaults(monkeypatch):
+    monkeypatch.delenv("SWARMEE_GITHUB_COPILOT_MODEL_ID", raising=False)
+    monkeypatch.delenv("SWARMEE_GITHUB_COPILOT_API_KEY", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "token-1")
+
+    config = swarmee_river.utils.model_utils.default_model_config("github_copilot")
+
+    assert config["model_id"] == "gpt-4o"
+    assert config["client_args"]["api_key"] == "token-1"
+    assert config["client_args"]["base_url"] == "https://api.githubcopilot.com"
+    assert config["client_args"]["max_retries"] == 0
+
+
+def test_default_model_config_github_copilot_honors_swarmee_token_and_retries(monkeypatch):
+    monkeypatch.setenv("SWARMEE_GITHUB_COPILOT_API_KEY", "preferred")
+    monkeypatch.setenv("GITHUB_TOKEN", "ignored")
+    monkeypatch.setenv("SWARMEE_GITHUB_COPILOT_MAX_RETRIES", "2")
+    monkeypatch.setenv("SWARMEE_GITHUB_COPILOT_BASE_URL", "https://internal.example/copilot")
+    monkeypatch.setenv("SWARMEE_MAX_TOKENS", "256")
+
+    config = swarmee_river.utils.model_utils.default_model_config("github_copilot")
+
+    assert config["client_args"]["api_key"] == "preferred"
+    assert config["client_args"]["max_retries"] == 2
+    assert config["client_args"]["base_url"] == "https://internal.example/copilot"
+    assert config["params"]["max_completion_tokens"] == 256
 
 
 def test_load_model(custom_model_dir):

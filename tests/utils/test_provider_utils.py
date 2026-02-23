@@ -37,3 +37,27 @@ def test_resolve_model_provider_keeps_explicit_env_provider(monkeypatch) -> None
     )
     assert provider == "bedrock"
     assert notice is None
+
+
+def test_resolve_model_provider_normalizes_copilot_aliases() -> None:
+    provider, notice = provider_utils.resolve_model_provider(
+        cli_provider="github-copilot",
+        env_provider=None,
+        settings_provider=None,
+    )
+    assert provider == "github_copilot"
+    assert notice is None
+
+
+def test_resolve_model_provider_falls_back_to_github_copilot_when_bedrock_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(provider_utils, "has_aws_credentials", lambda: False)
+    monkeypatch.setattr(provider_utils, "has_openai_api_key", lambda: False)
+    monkeypatch.setattr(provider_utils, "has_github_copilot_token", lambda: True)
+
+    provider, notice = provider_utils.resolve_model_provider(
+        cli_provider=None,
+        env_provider=None,
+        settings_provider="bedrock",
+    )
+    assert provider == "github_copilot"
+    assert notice is not None

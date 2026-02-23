@@ -10,4 +10,9 @@ try:
 except Exception:  # pragma: no cover
     openai = None  # type: ignore[assignment]
 
-__all__ = ["bedrock", "ollama", "openai"]
+try:
+    from . import github_copilot  # noqa: F401
+except Exception:  # pragma: no cover
+    github_copilot = None  # type: ignore[assignment]
+
+__all__ = ["bedrock", "ollama", "openai", "github_copilot"]
