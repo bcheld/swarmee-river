@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, load_profile, save_profile
+
+
+def test_profiles_store_roundtrip(tmp_path: Path) -> None:
+    root_dir = tmp_path / "profiles"
+
+    saved = save_profile(
+        {
+            "id": "researcher",
+            "name": "Researcher",
+            "provider": "OpenAI",
+            "tier": "Deep",
+            "system_prompt_snippets": ["Be concise", "Cite assumptions"],
+            "context_sources": [{"type": "file", "path": "notes/today.md", "id": "notes-today-md"}],
+            "active_sops": ["investigation"],
+            "knowledge_base_id": "KB-001",
+        },
+        root_dir=root_dir,
+    )
+
+    assert saved.id == "researcher"
+    assert saved.provider == "openai"
+    assert saved.tier == "deep"
+
+    listed = list_profiles(root_dir=root_dir)
+    assert [item.id for item in listed] == ["researcher"]
+
+    loaded = load_profile("researcher", root_dir=root_dir)
+    assert loaded.to_dict() == saved.to_dict()
+
+
+def test_save_profile_replaces_existing_profile_id(tmp_path: Path) -> None:
+    root_dir = tmp_path / "profiles"
+
+    save_profile({"id": "writer", "name": "Writer"}, root_dir=root_dir)
+    save_profile({"id": "writer", "name": "Writer 2", "tier": "balanced"}, root_dir=root_dir)
+
+    listed = list_profiles(root_dir=root_dir)
+    assert len(listed) == 1
+    assert listed[0].id == "writer"
+    assert listed[0].name == "Writer 2"
+    assert listed[0].tier == "balanced"
+
+
+def test_delete_profile_and_missing_profile_behavior(tmp_path: Path) -> None:
+    root_dir = tmp_path / "profiles"
+
+    save_profile({"id": "ops", "name": "Ops"}, root_dir=root_dir)
+
+    assert delete_profile("ops", root_dir=root_dir) is True
+    assert delete_profile("ops", root_dir=root_dir) is False
+    with pytest.raises(FileNotFoundError):
+        load_profile("ops", root_dir=root_dir)
+
+
+def test_list_profiles_ignores_corrupt_or_invalid_entries(tmp_path: Path) -> None:
+    root_dir = tmp_path / "profiles"
+    root_dir.mkdir(parents=True, exist_ok=True)
+    catalog_path = root_dir / "profiles.json"
+    catalog_path.write_text(
+        '{"version":1,"profiles":[{"id":"ok","name":"OK"},{"name":"missing-id"},"bad-entry"]}',
+        encoding="utf-8",
+    )
+
+    listed = list_profiles(root_dir=root_dir)
+    assert [item.id for item in listed] == ["ok"]
+
+    catalog_path.write_text("{not-json", encoding="utf-8")
+    assert list_profiles(root_dir=root_dir) == []
+
+
+def test_profile_schema_normalizes_context_sources_and_lists() -> None:
+    profile = AgentProfile.from_dict(
+        {
+            "id": "qa",
+            "name": "QA",
+            "system_prompt_snippets": ["  Use checklists  ", "", "Use checklists"],
+            "context_sources": [
+                {"type": "file", "path": " /tmp/plan.md "},
+                {"type": "file", "path": "/tmp/plan.md", "id": "duplicate"},
+                {"type": "note", "text": "  release criteria  "},
+                {"type": "kb", "kb_id": "kb-55"},
+                {"type": "url", "path": "https://example.com/brief"},
+                {"type": "invalid", "foo": "bar"},
+            ],
+            "active_sops": ["  verify  ", "", "verify", "triage"],
+        }
+    )
+
+    assert profile.system_prompt_snippets == ["Use checklists"]
+    assert profile.active_sops == ["verify", "triage"]
+    assert profile.context_sources[0] == {"type": "file", "path": "/tmp/plan.md", "id": "tmp-plan.md"}
+    assert profile.context_sources[1]["type"] == "note"
+    assert profile.context_sources[1]["text"] == "release criteria"
+    assert profile.context_sources[2] == {"type": "kb", "id": "kb-55"}
+    assert profile.context_sources[3]["type"] == "url"
+    assert profile.context_sources[3]["url"] == "https://example.com/brief"
+
+
+def test_default_state_dir_profiles_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state_root = tmp_path / "state-root"
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(state_root))
+
+    save_profile({"id": "stateful", "name": "Stateful"})
+
+    catalog = state_root / "profiles" / "profiles.json"
+    assert catalog.exists()
+    listed = list_profiles()
+    assert [item.id for item in listed] == ["stateful"]

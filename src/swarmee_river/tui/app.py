@@ -30,6 +30,7 @@ from swarmee_river.error_classification import (
     classify_error_message,
     normalize_error_category,
 )
+from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, save_profile
 from swarmee_river.runtime_service.client import RuntimeServiceClient, runtime_discovery_path
 from swarmee_river.state_paths import logs_dir, sessions_dir
 
@@ -58,6 +59,7 @@ _CONTEXT_USAGE_TEXT = (
 )
 _SOP_USAGE_TEXT = "Usage: /sop list | /sop activate <name> | /sop deactivate <name> | /sop preview <name>"
 _RUN_ACTIVE_TIER_WARNING = "[model] cannot change tier while a run is active."
+_AGENT_PROFILE_SELECT_NONE = "__agent_profile_none__"
 _CONTEXT_SOURCE_ICONS: dict[str, str] = {
     "file": "📄",
     "url": "🌐",
@@ -103,6 +105,21 @@ _COPY_COMMAND_MAP: dict[str, str] = {
     "/copy all": "all",
     ":copy all": "all",
 }
+
+
+def _sanitize_profile_token(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (value or "").strip())
+    return token.strip("-") or uuid.uuid4().hex[:12]
+
+
+def _default_profile_id(now: datetime | None = None) -> str:
+    ts = now or datetime.now()
+    return f"profile-{ts.strftime('%Y%m%d-%H%M%S')}"
+
+
+def _default_profile_name(now: datetime | None = None) -> str:
+    ts = now or datetime.now()
+    return f"Profile {ts.strftime('%Y-%m-%d %H:%M')}"
 
 
 @dataclass(frozen=True)
@@ -290,8 +307,14 @@ def _normalize_context_source(source: dict[str, Any]) -> dict[str, str] | None:
     if source_id:
         normalized["id"] = _sanitize_context_source_id(source_id)
     else:
+        source_seed = (
+            source.get("path", "")
+            or source.get("text", "")
+            or source.get("name", "")
+            or source.get("kb_id", "")
+        )
         seed = (
-            str(source.get("path", "") or source.get("text", "") or source.get("name", "") or source.get("kb_id", "")).strip()
+            str(source_seed).strip()
             or uuid.uuid4().hex
         )
         normalized["id"] = _sanitize_context_source_id(f"{source_type}-{seed}")
@@ -1169,6 +1192,150 @@ def add_recent_artifacts(existing: list[str], new_paths: list[str], *, max_items
     return updated
 
 
+def normalize_artifact_index_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize an artifact index record for TUI list/detail rendering."""
+    if not isinstance(entry, dict):
+        return None
+    raw_path = str(entry.get("path", "")).strip()
+    if not raw_path:
+        return None
+
+    meta_raw = entry.get("meta")
+    meta = meta_raw if isinstance(meta_raw, dict) else {}
+    artifact_id = str(entry.get("id", "")).strip() or Path(raw_path).name
+    name = str(meta.get("name", meta.get("title", ""))).strip()
+    if not name:
+        name = artifact_id
+
+    kind = str(entry.get("kind", "")).strip() or "unknown"
+    created_at = str(entry.get("created_at", "")).strip()
+    bytes_value = entry.get("bytes")
+    chars_value = entry.get("chars")
+
+    return {
+        "item_id": raw_path,
+        "id": artifact_id,
+        "name": name,
+        "kind": kind,
+        "created_at": created_at,
+        "path": raw_path,
+        "bytes": int(bytes_value) if isinstance(bytes_value, int) else None,
+        "chars": int(chars_value) if isinstance(chars_value, int) else None,
+        "meta": meta,
+    }
+
+
+def build_artifact_sidebar_items(entries: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Build SidebarList item payloads from normalized artifact entries."""
+    items: list[dict[str, str]] = []
+    for entry in entries:
+        normalized = normalize_artifact_index_entry(entry)
+        if normalized is None:
+            continue
+        kind = str(normalized.get("kind", "unknown")).strip() or "unknown"
+        artifact_id = str(normalized.get("id", "")).strip() or "(no-id)"
+        name = str(normalized.get("name", normalized.get("id", ""))).strip() or "(unnamed)"
+        label = f"{name} ({artifact_id})" if name != artifact_id else artifact_id
+        created_at = str(normalized.get("created_at", "")).strip() or "unknown time"
+        path = str(normalized.get("path", "")).strip()
+        items.append(
+            {
+                "id": str(normalized.get("item_id", path)).strip() or path,
+                "title": f"{kind} · {label}",
+                "subtitle": f"{created_at} · {path}",
+                "state": "default",
+            }
+        )
+    return items
+
+
+def artifact_context_source_payload(path: str, *, source_id: str | None = None) -> dict[str, str]:
+    """Build a file context-source payload for an artifact path."""
+    normalized_path = str(path or "").strip()
+    if not normalized_path:
+        raise ValueError("artifact path is required")
+    return {
+        "type": "file",
+        "path": normalized_path,
+        "id": _sanitize_context_source_id(source_id or uuid.uuid4().hex),
+    }
+
+
+def build_session_issue_sidebar_items(issues: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Build SidebarList payloads from structured session issues."""
+    def _truncate_text(value: str, *, max_chars: int = 88) -> str:
+        text = value.strip().replace("\n", " ")
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 1].rstrip() + "…"
+
+    items: list[dict[str, str]] = []
+    for issue in issues:
+        issue_id = str(issue.get("id", "")).strip()
+        if not issue_id:
+            continue
+        severity = str(issue.get("severity", "warning")).strip().lower()
+        if severity not in {"warning", "error"}:
+            severity = "warning"
+        title = str(issue.get("title", "")).strip() or "Issue"
+        created_at = str(issue.get("created_at", "")).strip()
+        text = str(issue.get("text", "")).strip()
+        subtitle_parts = []
+        if created_at:
+            subtitle_parts.append(created_at)
+        if text:
+            subtitle_parts.append(_truncate_text(text, max_chars=88))
+        subtitle = " | ".join(subtitle_parts)
+        items.append(
+            {
+                "id": issue_id,
+                "title": title,
+                "subtitle": subtitle,
+                "state": "error" if severity == "error" else "warning",
+            }
+        )
+    return items
+
+
+def render_session_issue_detail_text(issue: dict[str, Any] | None) -> str:
+    """Render a detail panel body for a selected session issue."""
+    if not isinstance(issue, dict):
+        return "(no issue selected)"
+    lines = [
+        f"Severity: {str(issue.get('severity', 'warning')).strip() or 'warning'}",
+        f"Title: {str(issue.get('title', 'Issue')).strip() or 'Issue'}",
+        f"When: {str(issue.get('created_at', '')).strip() or '(unknown)'}",
+        "",
+        str(issue.get("text", "")).strip() or "(no details)",
+    ]
+    tool_use_id = str(issue.get("tool_use_id", "")).strip()
+    if tool_use_id:
+        lines.append("")
+        lines.append(f"Tool Use ID: {tool_use_id}")
+    tool_name = str(issue.get("tool_name", "")).strip()
+    if tool_name:
+        lines.append(f"Tool: {tool_name}")
+    next_tier = str(issue.get("next_tier", "")).strip()
+    if next_tier:
+        lines.append(f"Suggested tier: {next_tier}")
+    return "\n".join(lines)
+
+
+def session_issue_actions(issue: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Return available action buttons for a selected session issue."""
+    if not isinstance(issue, dict):
+        return []
+    category = str(issue.get("category", "")).strip().lower()
+    tool_use_id = str(issue.get("tool_use_id", "")).strip()
+    actions: list[dict[str, str]] = []
+    if category == "tool_failure" and tool_use_id:
+        actions.append({"id": "session_issue_retry_tool", "label": "Retry", "variant": "default"})
+        actions.append({"id": "session_issue_skip_tool", "label": "Skip", "variant": "default"})
+        actions.append({"id": "session_issue_escalate_tier", "label": "Escalate", "variant": "default"})
+        actions.append({"id": "session_issue_interrupt", "label": "Interrupt", "variant": "default"})
+    return actions
+
+
 def detect_consent_prompt(line: str) -> str | None:
     """Detect consent-related subprocess output lines."""
     normalized = line.strip().lower()
@@ -1396,15 +1563,20 @@ def run_tui() -> int:
 
     from swarmee_river.tui.widgets import (
         ActionSheet,
+        AgentProfileActions,
         CommandPalette,
-        ContextBudgetBar,
         ConsentPrompt,
+        ContextBudgetBar,
         ErrorActionPrompt,
         PlanActions,
+        SidebarDetail,
+        SidebarHeader,
+        SidebarList,
         StatusBar,
         ThinkingBar,
         extract_consent_tool_name,
         format_tool_input_oneliner,
+        render_agent_profile_summary_text,
         render_assistant_message,
         render_plan_panel,
         render_system_message,
@@ -1482,7 +1654,11 @@ def run_tui() -> int:
                     return
 
             # ── Ctrl+K / Ctrl+Space: action sheet ──
-            if key in {"ctrl+k", "ctrl+space", "ctrl+@"} and app is not None and hasattr(app, "action_open_action_sheet"):
+            if (
+                key in {"ctrl+k", "ctrl+space", "ctrl+@"}
+                and app is not None
+                and hasattr(app, "action_open_action_sheet")
+            ):
                 event.stop()
                 event.prevent_default()
                 app.action_open_action_sheet()
@@ -1658,7 +1834,7 @@ def run_tui() -> int:
             height: 1fr;
         }
 
-        #plan, #issues, #artifacts {
+        #plan, #agent_summary {
             height: 1fr;
             border: round $accent;
             padding: 0 1;
@@ -1682,6 +1858,82 @@ def run_tui() -> int:
             border: round $accent;
             padding: 0 1;
             layout: vertical;
+        }
+
+        #artifacts_panel {
+            height: 1fr;
+            border: round $accent;
+            padding: 0 1;
+            layout: vertical;
+        }
+
+        #artifacts_list {
+            margin: 0 0 1 0;
+            min-height: 10;
+        }
+
+        #artifacts_detail {
+            height: 1fr;
+        }
+
+        #session_panel {
+            height: 1fr;
+            border: round $accent;
+            padding: 0 1;
+            layout: vertical;
+        }
+
+        #session_issue_list {
+            margin: 0 0 1 0;
+            min-height: 10;
+        }
+
+        #session_issue_detail {
+            height: 1fr;
+        }
+
+        #agent_panel {
+            height: 1fr;
+            border: round $accent;
+            padding: 0 1;
+            layout: vertical;
+        }
+
+        #agent_summary_header, #agent_profiles_header {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
+        #agent_profile_list {
+            width: 1fr;
+            margin: 0 0 1 0;
+            min-height: 8;
+        }
+
+        #agent_profile_meta_row {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #agent_profile_id, #agent_profile_name {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #agent_profile_name {
+            margin: 0;
+        }
+
+        #agent_profile_actions {
+            height: auto;
+            margin: 0 0 1 0;
+        }
+
+        #agent_profile_status {
+            height: auto;
+            color: $text-muted;
         }
 
         #context_header {
@@ -1900,8 +2152,12 @@ def run_tui() -> int:
         _sop_toggle_id_to_name: dict[str, str] = {}
         _sops_ready_for_sync: bool = False
         _artifacts: list[str] = []
+        _artifact_entries: list[dict[str, Any]] = []
+        _artifact_selected_item_id: str | None = None
         _plan_text: str = ""
         _issues_lines: list[str] = []
+        _session_issues: list[dict[str, Any]] = []
+        _session_selected_issue_id: str | None = None
         _issues_repeat_line: str | None = None
         _issues_repeat_count: int = 0
         _warning_count: int = 0
@@ -1945,6 +2201,12 @@ def run_tui() -> int:
         _sop_list: Any = None  # VerticalScroll | None
         _context_input: Any = None  # Input | None
         _context_sop_select: Any = None  # Select | None
+        _session_header: Any = None  # SidebarHeader | None
+        _session_issue_list: Any = None  # SidebarList | None
+        _session_issue_detail: Any = None  # SidebarDetail | None
+        _artifacts_header: Any = None  # SidebarHeader | None
+        _artifacts_list: Any = None  # SidebarList | None
+        _artifacts_detail: Any = None  # SidebarDetail | None
         _command_palette: Any = None  # CommandPalette | None
         _action_sheet: Any = None  # ActionSheet | None
         _action_sheet_mode: str = "root"
@@ -1985,7 +2247,15 @@ def run_tui() -> int:
         _last_cost_usd: float | None = None
         _last_prompt_tokens_est: int | None = None
         _last_budget_tokens: int | None = None
-        _help_text: str = ""
+        _saved_profiles: list[AgentProfile] = []
+        _effective_profile: AgentProfile | None = None
+        _agent_draft_dirty: bool = False
+        _agent_form_syncing: bool = False
+        _agent_summary: Any = None  # TextArea | None
+        _agent_profile_list: Any = None  # SidebarList | None
+        _agent_profile_id_input: Any = None  # Input | None
+        _agent_profile_name_input: Any = None  # Input | None
+        _agent_profile_status: Any = None  # Static | None
         _run_active_tier_warning_emitted: bool = False
 
         def compose(self) -> Any:
@@ -2038,29 +2308,38 @@ def run_tui() -> int:
                                 yield Static("Available SOPs", id="sops_header")
                                 yield VerticalScroll(id="sop_list")
                         with TabPane("Artifacts", id="tab_artifacts"):
-                            yield TextArea(
-                                text="",
-                                read_only=True,
-                                show_cursor=False,
-                                id="artifacts",
-                                soft_wrap=True,
-                            )
-                        with TabPane("Issues", id="tab_issues"):
-                            yield TextArea(
-                                text="",
-                                read_only=True,
-                                show_cursor=False,
-                                id="issues",
-                                soft_wrap=True,
-                            )
-                        with TabPane("Help", id="tab_help"):
-                            yield TextArea(
-                                text="",
-                                read_only=True,
-                                show_cursor=False,
-                                id="help",
-                                soft_wrap=True,
-                            )
+                            with Vertical(id="artifacts_panel"):
+                                yield SidebarHeader("Artifacts", id="artifacts_header")
+                                yield SidebarList(id="artifacts_list")
+                                yield SidebarDetail(id="artifacts_detail")
+                        with TabPane("Session", id="tab_session"):
+                            with Vertical(id="session_panel"):
+                                yield SidebarHeader("Session", id="session_header")
+                                yield SidebarList(id="session_issue_list")
+                                yield SidebarDetail(id="session_issue_detail")
+                        with TabPane("Agent", id="tab_agent"):
+                            with Vertical(id="agent_panel"):
+                                yield Static("Effective Session Profile", id="agent_summary_header")
+                                yield TextArea(
+                                    text="",
+                                    read_only=True,
+                                    show_cursor=False,
+                                    id="agent_summary",
+                                    soft_wrap=True,
+                                )
+                                yield Static("Saved Profiles", id="agent_profiles_header")
+                                yield SidebarList(id="agent_profile_list")
+                                with Horizontal(id="agent_profile_meta_row"):
+                                    yield Input(
+                                        placeholder="Profile id",
+                                        id="agent_profile_id",
+                                    )
+                                    yield Input(
+                                        placeholder="Profile name",
+                                        id="agent_profile_name",
+                                    )
+                                yield AgentProfileActions(id="agent_profile_actions")
+                                yield Static("", id="agent_profile_status")
             yield CommandPalette(id="command_palette")
             yield ActionSheet(id="action_sheet")
             yield ThinkingBar(id="thinking_bar")
@@ -2095,10 +2374,20 @@ def run_tui() -> int:
             self._sop_list = self.query_one("#sop_list", VerticalScroll)
             self._context_input = self.query_one("#context_input", Input)
             self._context_sop_select = self.query_one("#context_sop_select", Select)
+            self._session_header = self.query_one("#session_header", SidebarHeader)
+            self._session_issue_list = self.query_one("#session_issue_list", SidebarList)
+            self._session_issue_detail = self.query_one("#session_issue_detail", SidebarDetail)
+            self._artifacts_header = self.query_one("#artifacts_header", SidebarHeader)
+            self._artifacts_list = self.query_one("#artifacts_list", SidebarList)
+            self._artifacts_detail = self.query_one("#artifacts_detail", SidebarDetail)
+            self._agent_summary = self.query_one("#agent_summary", TextArea)
+            self._agent_profile_list = self.query_one("#agent_profile_list", SidebarList)
+            self._agent_profile_id_input = self.query_one("#agent_profile_id", Input)
+            self._agent_profile_name_input = self.query_one("#agent_profile_name", Input)
+            self._agent_profile_status = self.query_one("#agent_profile_status", Static)
             self._prompt_metrics = self.query_one("#prompt_metrics", ContextBudgetBar)
             self._status_bar.set_model(self._current_model_summary())
             self.query_one("#prompt", PromptTextArea).focus()
-            self._reset_help_panel()
             self._reset_plan_panel()
             self._reset_issues_panel()
             self._reset_artifacts_panel()
@@ -2109,6 +2398,12 @@ def run_tui() -> int:
             self._render_context_sources_panel()
             self._refresh_sop_catalog()
             self._render_sop_panel()
+            self._reload_saved_profiles()
+            if self._saved_profiles:
+                self._load_profile_into_draft(self._saved_profiles[0])
+            else:
+                self._new_agent_profile_draft(announce=False)
+            self._refresh_agent_summary()
             self._refresh_model_select()
             self.title = "Swarmee"
             self.sub_title = self._current_model_summary()
@@ -2120,41 +2415,7 @@ def run_tui() -> int:
                 self._mount_transcript_widget(banner_line, plain_text=banner_line)
             self._write_transcript("Starting Swarmee daemon...")
             self._write_transcript(self.sub_title)
-            self._write_transcript("Tips: see the Help tab for commands/keys/copy shortcuts.")
-            self._set_help_panel(
-                "\n".join(
-                    [
-                        "Commands:",
-                        "- /plan <prompt>, /run <prompt>",
-                        "- /restore, /new",
-                        "- /compact",
-                        "- /context add/list/remove/clear",
-                        "- /sop list, /sop activate <name>, /sop deactivate <name>, /sop preview <name>",
-                        "- /approve, /replan, /clearplan",
-                        "- /connect [github_copilot], /auth list, /auth logout [provider]",
-                        "- /model, /text, /thinking, /stop, /daemon restart, /expand <tool_id>, /exit",
-                        "",
-                        "Consent:",
-                        "- /consent <y|n|a|v> (or press y/n/a/v when prompted)",
-                        "- Inline consent buttons appear above the prompt box",
-                        "",
-                        "Keys:",
-                        "- Enter submit, Shift+Enter newline (Ctrl+J/Alt+Enter fallback)",
-                        "- Ctrl+Left/Right (or F6/F7) resize panes, F5 submit",
-                        "- Ctrl+T toggles transcript rich/text mode",
-                        "- Ctrl+K or Ctrl+Space opens action sheet",
-                        "- Esc interrupt run, Ctrl+C/Cmd+C copy selection",
-                        "",
-                        "Copy/export:",
-                        "- /copy, /copy plan, /copy issues, /copy all",
-                        "",
-                        "Notes:",
-                        "- Model selector is in the prompt box footer dropdown.",
-                        "- Transcript supports native mouse/keyboard text selection.",
-                        "- Ctrl+C/Cmd+C copies selected text; /copy exports full transcript.",
-                    ]
-                )
-            )
+            self._write_transcript("Tips: use /commands in the prompt and the Agent tab for profile actions.")
             transcript = self.query_one("#transcript", RichLog)
             with contextlib.suppress(Exception):
                 transcript.auto_scroll = True
@@ -2162,6 +2423,7 @@ def run_tui() -> int:
                 transcript.max_lines = self._TRANSCRIPT_MAX_LINES
             self._set_transcript_mode("rich", notify=False)
             self._load_session()
+            self._refresh_agent_summary()
             self._spawn_daemon()
 
         def _record_transcript_fallback(self, text: str) -> None:
@@ -2337,7 +2599,10 @@ def run_tui() -> int:
         def _ensure_thinking_animation_timer(self) -> None:
             if self._thinking_animation_timer is not None:
                 return
-            self._thinking_animation_timer = self.set_interval(_THINKING_ANIMATION_INTERVAL_S, self._on_thinking_animation_tick)
+            self._thinking_animation_timer = self.set_interval(
+                _THINKING_ANIMATION_INTERVAL_S,
+                self._on_thinking_animation_tick,
+            )
 
         def _reset_thinking_state(self) -> None:
             self._cancel_thinking_display_timer()
@@ -2406,7 +2671,10 @@ def run_tui() -> int:
 
         def _schedule_streaming_flush(self) -> None:
             if self._streaming_flush_timer is None:
-                self._streaming_flush_timer = self.set_timer(_STREAMING_FLUSH_INTERVAL_S, self._on_streaming_flush_timer)
+                self._streaming_flush_timer = self.set_timer(
+                    _STREAMING_FLUSH_INTERVAL_S,
+                    self._on_streaming_flush_timer,
+                )
 
         def _on_streaming_flush_timer(self) -> None:
             self._streaming_flush_timer = None
@@ -2719,15 +2987,255 @@ def run_tui() -> int:
             self._set_plan_panel("\n".join(text_lines))
             self._refresh_plan_status_bar()
 
-        def _set_help_panel(self, content: str) -> None:
-            self._help_text = content
-            panel = self.query_one("#help", TextArea)
-            text = content if content.strip() else "(no help yet)"
-            panel.load_text(text)
-            panel.scroll_home(animate=False)
+        def _selected_agent_profile_id(self) -> str | None:
+            sidebar_list = self._agent_profile_list
+            if sidebar_list is None:
+                return None
+            getter = getattr(sidebar_list, "selected_id", None)
+            if not callable(getter):
+                return None
+            value = str(getter() or "").strip()
+            if not value or value == _AGENT_PROFILE_SELECT_NONE:
+                return None
+            return value
 
-        def _reset_help_panel(self) -> None:
-            self._set_help_panel("(help)")
+        def _lookup_saved_profile(self, profile_id: str | None) -> AgentProfile | None:
+            target = str(profile_id or "").strip()
+            if not target:
+                return None
+            for profile in self._saved_profiles:
+                if profile.id == target:
+                    return profile
+            return None
+
+        def _set_agent_form_values(self, *, profile_id: str, profile_name: str) -> None:
+            self._agent_form_syncing = True
+            try:
+                if self._agent_profile_id_input is not None:
+                    self._agent_profile_id_input.value = profile_id
+                if self._agent_profile_name_input is not None:
+                    self._agent_profile_name_input.value = profile_name
+            finally:
+                self._agent_form_syncing = False
+
+        def _kb_id_from_context_sources(self) -> str | None:
+            for source in self._context_sources:
+                source_type = str(source.get("type", "")).strip().lower()
+                if source_type != "kb":
+                    continue
+                kb_id = str(source.get("id", "")).strip()
+                if kb_id:
+                    return kb_id
+            return None
+
+        def _session_effective_profile(self) -> AgentProfile:
+            provider_name, tier_name, _model_id = choose_model_summary_parts(
+                daemon_provider=self._daemon_provider,
+                daemon_tier=self._daemon_tier,
+                daemon_model_id=self._daemon_model_id,
+                daemon_tiers=self._daemon_tiers,
+                pending_value=self._pending_model_select_value,
+                override_provider=self._model_provider_override,
+                override_tier=self._model_tier_override,
+            )
+            current = self._effective_profile
+            return AgentProfile(
+                id=(current.id if current is not None else "session-effective"),
+                name=(current.name if current is not None else "Session Effective"),
+                provider=provider_name,
+                tier=tier_name,
+                system_prompt_snippets=(list(current.system_prompt_snippets) if current is not None else []),
+                context_sources=self._context_sources_payload(),
+                active_sops=sorted(self._active_sop_names),
+                knowledge_base_id=(
+                    self._kb_id_from_context_sources() or (current.knowledge_base_id if current else None)
+                ),
+            )
+
+        def _set_agent_status(self, message: str) -> None:
+            widget = self._agent_profile_status
+            if widget is None:
+                return
+            text = message.strip() if isinstance(message, str) else ""
+            widget.update(text)
+
+        def _set_agent_draft_dirty(self, dirty: bool, *, note: str | None = None) -> None:
+            self._agent_draft_dirty = bool(dirty)
+            if self._agent_draft_dirty:
+                base = "Draft changes pending."
+            else:
+                base = "Draft synced."
+            if isinstance(note, str) and note.strip():
+                self._set_agent_status(f"{base} {note.strip()}")
+            else:
+                self._set_agent_status(base)
+            if self._agent_profile_list is not None:
+                self._reload_saved_profiles()
+
+        def _reload_saved_profiles(self, *, selected_id: str | None = None) -> None:
+            self._saved_profiles = sorted(
+                list_profiles(),
+                key=lambda item: (item.name.lower(), item.id.lower()),
+            )
+            sidebar_list = self._agent_profile_list
+            if sidebar_list is None:
+                return
+
+            items: list[dict[str, str]] = [
+                {
+                    "id": _AGENT_PROFILE_SELECT_NONE,
+                    "title": "Draft / Session",
+                    "subtitle": "Unsaved local draft",
+                    "state": "syncing" if self._agent_draft_dirty else "default",
+                }
+            ]
+            for profile in self._saved_profiles:
+                profile_subtitle_parts = [profile.id]
+                model_summary = "/".join(
+                    part for part in [str(profile.provider or "").strip(), str(profile.tier or "").strip()] if part
+                )
+                if model_summary:
+                    profile_subtitle_parts.append(model_summary)
+                items.append(
+                    {
+                        "id": profile.id,
+                        "title": profile.name,
+                        "subtitle": " | ".join(profile_subtitle_parts),
+                        "state": (
+                            "active"
+                            if self._effective_profile and self._effective_profile.id == profile.id
+                            else "default"
+                        ),
+                    }
+                )
+
+            getter = getattr(sidebar_list, "selected_id", None)
+            current_value = str(getter() or "").strip() if callable(getter) else ""
+            candidate = selected_id if selected_id else current_value
+            saved_ids = {profile.id for profile in self._saved_profiles}
+            if candidate == _AGENT_PROFILE_SELECT_NONE:
+                pass
+            elif candidate not in saved_ids:
+                candidate = self._saved_profiles[0].id if self._saved_profiles else _AGENT_PROFILE_SELECT_NONE
+
+            self._agent_form_syncing = True
+            try:
+                setter = getattr(sidebar_list, "set_items", None)
+                if callable(setter):
+                    setter(items, selected_id=candidate, emit=False)
+            finally:
+                self._agent_form_syncing = False
+
+        def _refresh_agent_summary(self) -> None:
+            summary = self._agent_summary
+            if summary is None:
+                return
+            effective = self._session_effective_profile()
+            self._effective_profile = effective
+            summary.load_text(render_agent_profile_summary_text(effective.to_dict()))
+            summary.scroll_home(animate=False)
+
+        def _new_agent_profile_draft(self, *, announce: bool = True) -> None:
+            snapshot = self._session_effective_profile()
+            draft = AgentProfile(
+                id=_default_profile_id(),
+                name=_default_profile_name(),
+                provider=snapshot.provider,
+                tier=snapshot.tier,
+                system_prompt_snippets=list(snapshot.system_prompt_snippets),
+                context_sources=[dict(source) for source in snapshot.context_sources],
+                active_sops=list(snapshot.active_sops),
+                knowledge_base_id=snapshot.knowledge_base_id,
+            )
+            sidebar_list = self._agent_profile_list
+            if sidebar_list is not None:
+                self._agent_form_syncing = True
+                try:
+                    select_by_id = getattr(sidebar_list, "select_by_id", None)
+                    if callable(select_by_id):
+                        select_by_id(_AGENT_PROFILE_SELECT_NONE, emit=False)
+                finally:
+                    self._agent_form_syncing = False
+            self._set_agent_form_values(profile_id=draft.id, profile_name=draft.name)
+            self._set_agent_draft_dirty(True, note=("New profile draft." if announce else None))
+
+        def _load_profile_into_draft(self, profile: AgentProfile) -> None:
+            sidebar_list = self._agent_profile_list
+            if sidebar_list is not None:
+                self._agent_form_syncing = True
+                try:
+                    select_by_id = getattr(sidebar_list, "select_by_id", None)
+                    if callable(select_by_id):
+                        select_by_id(profile.id, emit=False)
+                finally:
+                    self._agent_form_syncing = False
+            self._set_agent_form_values(profile_id=profile.id, profile_name=profile.name)
+            self._set_agent_draft_dirty(False, note=f"Loaded profile '{profile.name}'.")
+
+        def _profile_from_draft(self) -> AgentProfile:
+            selected_profile = self._lookup_saved_profile(self._selected_agent_profile_id())
+            seed = selected_profile if selected_profile is not None else self._session_effective_profile()
+
+            raw_id = str(getattr(self._agent_profile_id_input, "value", "")).strip()
+            raw_name = str(getattr(self._agent_profile_name_input, "value", "")).strip()
+            profile_id = _sanitize_profile_token(raw_id or seed.id or _default_profile_id())
+            profile_name = raw_name or seed.name or _default_profile_name()
+
+            return AgentProfile.from_dict(
+                {
+                    "id": profile_id,
+                    "name": profile_name,
+                    "provider": seed.provider,
+                    "tier": seed.tier,
+                    "system_prompt_snippets": list(seed.system_prompt_snippets),
+                    "context_sources": [dict(source) for source in seed.context_sources],
+                    "active_sops": list(seed.active_sops),
+                    "knowledge_base_id": seed.knowledge_base_id,
+                }
+            )
+
+        def _save_agent_profile_draft(self) -> None:
+            profile = self._profile_from_draft()
+            saved = save_profile(profile)
+            self._reload_saved_profiles(selected_id=saved.id)
+            self._set_agent_form_values(profile_id=saved.id, profile_name=saved.name)
+            self._set_agent_draft_dirty(False, note=f"Saved profile '{saved.name}'.")
+
+        def _delete_selected_agent_profile(self) -> None:
+            selected_id = self._selected_agent_profile_id()
+            if not selected_id:
+                self._notify("Select a saved profile first.", severity="warning")
+                return
+            removed = delete_profile(selected_id)
+            if not removed:
+                self._notify("Profile not found.", severity="warning")
+                return
+            self._reload_saved_profiles()
+            if self._saved_profiles:
+                self._load_profile_into_draft(self._saved_profiles[0])
+                self._set_agent_draft_dirty(False, note=f"Deleted profile '{selected_id}'.")
+            else:
+                self._new_agent_profile_draft(announce=False)
+                self._set_agent_draft_dirty(True, note=f"Deleted profile '{selected_id}'.")
+
+        def _apply_agent_profile_draft(self) -> None:
+            if self._query_active:
+                self._write_transcript_line("[agent] cannot apply profile while a run is active.")
+                return
+            if not self._daemon_ready:
+                self._write_transcript_line("[agent] daemon is not ready.")
+                return
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                self._write_transcript_line("[agent] daemon is not running.")
+                self._daemon_ready = False
+                return
+            profile = self._profile_from_draft()
+            payload = {"cmd": "set_profile", "profile": profile.to_dict()}
+            if not send_daemon_command(proc, payload):
+                self._write_transcript_line("[agent] failed to send set_profile.")
+                return
+            self._set_agent_status(f"Applying profile '{profile.name}'...")
 
         def _reset_plan_panel(self) -> None:
             self._set_plan_panel("(no plan)")
@@ -2743,13 +3251,128 @@ def run_tui() -> int:
 
         def _reset_issues_panel(self) -> None:
             self._issues_lines = []
+            self._session_issues = []
+            self._session_selected_issue_id = None
             self._issues_repeat_line = None
             self._issues_repeat_count = 0
             self._warning_count = 0
             self._error_count = 0
-            panel = self.query_one("#issues", TextArea)
-            panel.load_text("(no issues yet)")
+            self._render_session_panel()
             self._update_header_status()
+
+        def _session_issue_by_id(self, issue_id: str | None) -> dict[str, Any] | None:
+            target = str(issue_id or "").strip()
+            if not target:
+                return None
+            for issue in self._session_issues:
+                if str(issue.get("id", "")).strip() == target:
+                    return issue
+            return None
+
+        def _append_session_issue(
+            self,
+            *,
+            severity: str,
+            title: str,
+            text: str,
+            category: str = "issue",
+            tool_use_id: str | None = None,
+            tool_name: str | None = None,
+            next_tier: str | None = None,
+        ) -> None:
+            normalized_severity = severity.strip().lower()
+            if normalized_severity not in {"warning", "error"}:
+                normalized_severity = "warning"
+            issue = {
+                "id": uuid.uuid4().hex[:12],
+                "severity": normalized_severity,
+                "title": title.strip() or "Issue",
+                "text": text.strip(),
+                "category": category.strip().lower() or "issue",
+                "tool_use_id": (tool_use_id or "").strip(),
+                "tool_name": (tool_name or "").strip(),
+                "next_tier": (next_tier or "").strip().lower(),
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            self._session_issues.append(issue)
+            if len(self._session_issues) > 500:
+                self._session_issues = self._session_issues[-500:]
+            self._render_session_panel()
+
+        def _session_issue_from_line(self, line: str) -> dict[str, Any]:
+            text = line.strip()
+            lowered = text.lower()
+            severity = "error" if lowered.startswith("error:") else "warning"
+            title = "Error" if severity == "error" else "Warning"
+            category = "issue"
+            tool_use_id = ""
+            tool_name = ""
+            next_tier = ""
+
+            match = re.search(
+                r"^error:\s*tool (?P<tool>.+?) failed \((?P<status>.+?)\)\s*\[(?P<tool_use_id>[^\]]+)\]",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                category = "tool_failure"
+                title = f"Tool Failed: {match.group('tool').strip()}"
+                tool_use_id = match.group("tool_use_id").strip()
+                tool_name = match.group("tool").strip()
+                next_tier = self._next_available_tier_name() or ""
+            return {
+                "severity": severity,
+                "title": title,
+                "text": text,
+                "category": category,
+                "tool_use_id": tool_use_id,
+                "tool_name": tool_name,
+                "next_tier": next_tier,
+            }
+
+        def _set_session_issue_selection(self, issue: dict[str, Any] | None) -> None:
+            detail = self._session_issue_detail
+            if detail is None:
+                return
+            if issue is None:
+                self._session_selected_issue_id = None
+                detail.set_preview("(no issues yet)")
+                detail.set_actions([])
+                return
+            self._session_selected_issue_id = str(issue.get("id", "")).strip() or None
+            detail.set_preview(render_session_issue_detail_text(issue))
+            detail.set_actions(session_issue_actions(issue))
+
+        def _render_session_panel(self) -> None:
+            issues = list(self._session_issues)
+            items = build_session_issue_sidebar_items(issues)
+            list_widget = self._session_issue_list
+            if list_widget is not None:
+                selected_id = self._session_selected_issue_id
+                if not selected_id and issues:
+                    selected_id = str(issues[-1].get("id", "")).strip()
+                list_widget.set_items(items, selected_id=selected_id, emit=False)
+                selected_id = list_widget.selected_id()
+                selected_issue = self._session_issue_by_id(selected_id)
+                if selected_issue is None and issues:
+                    selected_issue = issues[-1]
+                    with contextlib.suppress(Exception):
+                        list_widget.select_by_id(str(selected_issue.get("id", "")), emit=False)
+                self._set_session_issue_selection(selected_issue)
+            else:
+                self._set_session_issue_selection(issues[-1] if issues else None)
+            self._refresh_session_header()
+
+        def _refresh_session_header(self) -> None:
+            header = self._session_header
+            if header is None:
+                return
+            badges = [
+                f"warn {self._warning_count}",
+                f"err {self._error_count}",
+                f"issues {len(self._session_issues)}",
+            ]
+            header.set_badges(badges)
 
         def _write_issue(self, line: str) -> None:
             if self._issues_repeat_line == line:
@@ -2763,13 +3386,16 @@ def run_tui() -> int:
             self._issues_lines.append(line)
             if len(self._issues_lines) > 2000:
                 self._issues_lines = self._issues_lines[-2000:]
-            self._render_issues_panel()
-
-        def _render_issues_panel(self) -> None:
-            issues_panel = self.query_one("#issues", TextArea)
-            text = "\n".join(self._issues_lines) if self._issues_lines else "(no issues yet)"
-            issues_panel.load_text(text)
-            issues_panel.scroll_end(animate=False)
+            issue_meta = self._session_issue_from_line(line)
+            self._append_session_issue(
+                severity=str(issue_meta.get("severity", "warning")),
+                title=str(issue_meta.get("title", "Issue")),
+                text=str(issue_meta.get("text", line)),
+                category=str(issue_meta.get("category", "issue")),
+                tool_use_id=str(issue_meta.get("tool_use_id", "")) or None,
+                tool_name=str(issue_meta.get("tool_name", "")) or None,
+                next_tier=str(issue_meta.get("next_tier", "")) or None,
+            )
 
         def _flush_issue_repeats(self) -> None:
             if self._issues_repeat_line is None or self._issues_repeat_count <= 0:
@@ -2780,7 +3406,12 @@ def run_tui() -> int:
             self._issues_lines.append(repeated)
             self._issues_repeat_line = None
             self._issues_repeat_count = 0
-            self._render_issues_panel()
+            self._append_session_issue(
+                severity="warning",
+                title="Repeated Issue",
+                text=repeated,
+                category="issue",
+            )
 
         def _update_header_status(self) -> None:
             counts = []
@@ -2792,6 +3423,7 @@ def run_tui() -> int:
             self.sub_title = f"{self._current_model_summary()}{suffix}"
             if self._status_bar is not None:
                 self._status_bar.set_counts(warnings=self._warning_count, errors=self._error_count)
+            self._refresh_session_header()
 
         def _current_model_summary(self) -> str:
             provider_name, tier_name, model_id = choose_model_summary_parts(
@@ -2909,6 +3541,7 @@ def run_tui() -> int:
             self._update_header_status()
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
+            self._refresh_agent_summary()
 
         def _update_prompt_placeholder(self) -> None:
             input_widget = self.query_one("#prompt", PromptTextArea)
@@ -2978,7 +3611,7 @@ def run_tui() -> int:
                 tier_actions: list[dict[str, str]] = [
                     {"id": "tiers:back", "icon": "←", "label": "Back", "shortcut": "Esc"},
                 ]
-                for label, value in options:
+                for _label, value in options:
                     parsed = parse_model_select_value(value)
                     if parsed is None:
                         continue
@@ -3010,7 +3643,7 @@ def run_tui() -> int:
                     [
                         {"id": "run:stop", "icon": "■", "label": "Stop run", "shortcut": "Esc"},
                         {"id": "view:plan", "icon": "▶", "label": "View plan progress", "shortcut": "P"},
-                        {"id": "view:issues", "icon": "⚠", "label": "View issues", "shortcut": "I"},
+                        {"id": "view:issues", "icon": "⚠", "label": "View session issues", "shortcut": "I"},
                     ],
                 )
 
@@ -3112,7 +3745,7 @@ def run_tui() -> int:
                 self._switch_side_tab("tab_plan")
                 return
             if action == "view:issues":
-                self._switch_side_tab("tab_issues")
+                self._switch_side_tab("tab_session")
                 return
 
             if action.startswith("consent:"):
@@ -3234,11 +3867,14 @@ def run_tui() -> int:
                 "# Plan",
                 (self._plan_text or "").rstrip() or "(no plan)",
                 "",
-                "# Issues",
+                "# Session Issues",
                 "\n".join(self._issues_lines).rstrip() or "(no issues)",
                 "",
                 "# Artifacts",
-                "\n".join(self._artifacts).rstrip() or "(no artifacts)",
+                self._get_artifacts_text().rstrip() or "(no artifacts)",
+                "",
+                "# Agent Profile",
+                render_agent_profile_summary_text(self._session_effective_profile().to_dict()),
                 "",
                 "# Context Sources",
                 "\n".join(self._context_list_lines()).rstrip() or "(no context sources)",
@@ -3249,31 +3885,173 @@ def run_tui() -> int:
             ]
             return "\n".join(parts).rstrip() + "\n"
 
+        def _load_indexed_artifact_entries(self, *, limit: int = 200) -> list[dict[str, Any]]:
+            entries: list[dict[str, Any]] = []
+            seen_paths: set[str] = set()
+            try:
+                store = ArtifactStore()
+                indexed = store.list(limit=limit)
+            except Exception:
+                indexed = []
+
+            for raw in indexed:
+                normalized = normalize_artifact_index_entry(raw if isinstance(raw, dict) else {})
+                if normalized is None:
+                    continue
+                path = str(normalized.get("path", "")).strip()
+                if not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                entries.append(normalized)
+
+            # Keep compatibility with legacy in-memory artifact paths that may not
+            # have an index record (e.g., session logs).
+            for raw_path in self._artifacts:
+                path = str(raw_path or "").strip()
+                if not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                entries.append(
+                    {
+                        "item_id": path,
+                        "id": Path(path).name,
+                        "name": Path(path).name,
+                        "kind": "path",
+                        "created_at": "",
+                        "path": path,
+                        "bytes": None,
+                        "chars": None,
+                        "meta": {},
+                    }
+                )
+            return entries
+
+        def _artifact_entry_by_item_id(self, item_id: str | None) -> dict[str, Any] | None:
+            target = str(item_id or "").strip()
+            if not target:
+                return None
+            for entry in self._artifact_entries:
+                if str(entry.get("item_id", "")).strip() == target:
+                    return entry
+            return None
+
+        def _artifact_looks_textual(self, entry: dict[str, Any]) -> bool:
+            path = str(entry.get("path", "")).strip()
+            kind = str(entry.get("kind", "")).strip().lower()
+            if kind in {"tui_transcript", "tool_result", "diagnostic", "project_map"}:
+                return True
+            suffix = Path(path).suffix.lower()
+            if suffix in {".txt", ".md", ".json", ".jsonl", ".log", ".yaml", ".yml", ".csv", ".patch", ".diff"}:
+                return True
+            if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip", ".gz", ".tar", ".bz2"}:
+                return False
+            return True
+
+        def _artifact_metadata_preview(self, entry: dict[str, Any]) -> str:
+            lines = [
+                f"Kind: {entry.get('kind', 'unknown')}",
+                f"ID: {entry.get('id', '(none)')}",
+                f"Name: {entry.get('name', '(none)')}",
+                f"Created: {entry.get('created_at', '(unknown)')}",
+                f"Path: {entry.get('path', '(none)')}",
+            ]
+            bytes_value = entry.get("bytes")
+            chars_value = entry.get("chars")
+            if isinstance(bytes_value, int):
+                lines.append(f"Bytes: {bytes_value}")
+            if isinstance(chars_value, int):
+                lines.append(f"Chars: {chars_value}")
+            meta = entry.get("meta")
+            if isinstance(meta, dict) and meta:
+                try:
+                    lines.append("")
+                    lines.append("Meta:")
+                    lines.append(_json.dumps(meta, indent=2, ensure_ascii=False))
+                except Exception:
+                    pass
+            return "\n".join(lines)
+
+        def _artifact_preview_text(self, entry: dict[str, Any]) -> str:
+            path = str(entry.get("path", "")).strip()
+            if not path:
+                return self._artifact_metadata_preview(entry)
+            artifact_path = Path(path).expanduser()
+            if not artifact_path.exists() or not artifact_path.is_file():
+                return self._artifact_metadata_preview(entry) + "\n\nFile not found."
+            if not self._artifact_looks_textual(entry):
+                return self._artifact_metadata_preview(entry)
+            try:
+                store = ArtifactStore()
+                body = store.read_text(artifact_path, max_chars=5000)
+            except Exception as exc:
+                return self._artifact_metadata_preview(entry) + f"\n\nFailed to read artifact: {exc}"
+            header = self._artifact_metadata_preview(entry)
+            return f"{header}\n\nPreview:\n{body}"
+
+        def _set_artifact_selection(self, entry: dict[str, Any] | None) -> None:
+            detail = self._artifacts_detail
+            if detail is None:
+                return
+            if entry is None:
+                self._artifact_selected_item_id = None
+                detail.set_preview("(no artifacts yet)")
+                detail.set_actions([])
+                return
+            self._artifact_selected_item_id = str(entry.get("item_id", "")).strip() or None
+            detail.set_preview(self._artifact_preview_text(entry))
+            detail.set_actions(
+                [
+                    {"id": "artifact_action_open", "label": "Open", "variant": "default"},
+                    {"id": "artifact_action_copy_path", "label": "Copy path", "variant": "default"},
+                    {"id": "artifact_action_add_context", "label": "Add context", "variant": "default"},
+                ]
+            )
+
         def _render_artifacts_panel(self) -> None:
-            panel = self.query_one("#artifacts", TextArea)
-            with contextlib.suppress(Exception):
-                panel.soft_wrap = True
-            if not self._artifacts:
-                panel.load_text("(no artifacts yet)")
-            else:
-                lines = [f"{i + 1}. {path}" for i, path in enumerate(self._artifacts)]
-                panel.load_text("\n".join(lines))
-            panel.scroll_end(animate=False)
+            self._artifact_entries = self._load_indexed_artifact_entries(limit=200)
+            if self._artifacts_header is not None:
+                badge_count = len(self._artifact_entries)
+                self._artifacts_header.set_badges([f"{badge_count} item{'s' if badge_count != 1 else ''}"])
+            list_widget = self._artifacts_list
+            if list_widget is None:
+                return
+            items = build_artifact_sidebar_items(self._artifact_entries)
+            selected_id = self._artifact_selected_item_id
+            if not selected_id and self._artifact_entries:
+                selected_id = str(self._artifact_entries[0].get("item_id", "")).strip()
+            list_widget.set_items(items, selected_id=selected_id, emit=False)
+            selected_item_id = list_widget.selected_id()
+            selected_entry = self._artifact_entry_by_item_id(selected_item_id)
+            if selected_entry is None and self._artifact_entries:
+                selected_entry = self._artifact_entries[0]
+                list_widget.select_by_id(str(selected_entry.get("item_id", "")), emit=False)
+            self._set_artifact_selection(selected_entry)
 
         def _get_artifacts_text(self) -> str:
-            if not self._artifacts:
+            entries = self._artifact_entries or self._load_indexed_artifact_entries(limit=200)
+            if not entries:
                 return "(no artifacts)\n"
-            return "\n".join(self._artifacts).rstrip() + "\n"
+            lines: list[str] = []
+            for index, entry in enumerate(entries, start=1):
+                kind = str(entry.get("kind", "unknown")).strip() or "unknown"
+                artifact_id = str(entry.get("id", "")).strip() or "(no-id)"
+                name = str(entry.get("name", "")).strip() or artifact_id
+                created_at = str(entry.get("created_at", "")).strip() or "unknown time"
+                path = str(entry.get("path", "")).strip() or "(no-path)"
+                lines.append(f"{index}. {kind} | {name} | {created_at} | {path}")
+            return "\n".join(lines).rstrip() + "\n"
 
         def _reset_artifacts_panel(self) -> None:
             self._artifacts = []
+            self._artifact_entries = []
+            self._artifact_selected_item_id = None
             self._render_artifacts_panel()
 
         def _add_artifact_paths(self, paths: list[str]) -> None:
             updated = add_recent_artifacts(self._artifacts, paths, max_items=20)
             if updated != self._artifacts:
                 self._artifacts = updated
-                self._render_artifacts_panel()
+            self._render_artifacts_panel()
 
         def _context_source_label(self, source: dict[str, str]) -> str:
             source_type = source.get("type", "")
@@ -3442,6 +4220,7 @@ def run_tui() -> int:
 
             self._render_sop_panel()
             self._save_session()
+            self._refresh_agent_summary()
 
             if sync:
                 proc = self._proc
@@ -3519,7 +4298,10 @@ def run_tui() -> int:
                     self._write_transcript_line(f"[sop] no content available for {name}")
                     return True
                 markdown = f"# SOP: {name}\n\n[dim]Source: {source}[/dim]\n\n{content}"
-                self._mount_transcript_widget(render_assistant_message(markdown), plain_text=f"SOP: {name}\n\n{content}")
+                self._mount_transcript_widget(
+                    render_assistant_message(markdown),
+                    plain_text=f"SOP: {name}\n\n{content}",
+                )
                 return True
 
             self._write_transcript_line(_SOP_USAGE_TEXT)
@@ -3607,6 +4389,7 @@ def run_tui() -> int:
             self._context_sources = _normalize_context_sources(sources)
             self._render_context_sources_panel()
             self._save_session()
+            self._refresh_agent_summary()
             if sync:
                 self._sync_context_sources_with_daemon(notify_on_failure=True)
 
@@ -3712,9 +4495,21 @@ def run_tui() -> int:
                 return True
 
             if source_type == "file":
-                self._add_context_source({"type": "file", "path": value, "id": _sanitize_context_source_id(uuid.uuid4().hex)})
+                self._add_context_source(
+                    {
+                        "type": "file",
+                        "path": value,
+                        "id": _sanitize_context_source_id(uuid.uuid4().hex),
+                    }
+                )
             elif source_type == "note":
-                self._add_context_source({"type": "note", "text": value, "id": _sanitize_context_source_id(uuid.uuid4().hex)})
+                self._add_context_source(
+                    {
+                        "type": "note",
+                        "text": value,
+                        "id": _sanitize_context_source_id(uuid.uuid4().hex),
+                    }
+                )
             elif source_type == "sop":
                 self._add_context_source(
                     {"type": "sop", "name": value, "id": _sanitize_context_source_id(f"sop-{value}")}
@@ -4077,6 +4872,7 @@ def run_tui() -> int:
                     self._sync_context_sources_with_daemon(notify_on_failure=True)
                 if self._active_sop_names or self._sops_ready_for_sync:
                     self._sync_active_sops_with_daemon(notify_on_failure=True)
+                self._refresh_agent_summary()
 
             elif etype == "session_available":
                 session_id = str(event.get("session_id", "")).strip()
@@ -4134,6 +4930,19 @@ def run_tui() -> int:
 
             elif etype == "model_info":
                 self._handle_model_info(event)
+
+            elif etype == "profile_applied":
+                raw_profile = event.get("profile")
+                try:
+                    applied_profile = AgentProfile.from_dict(raw_profile)
+                except Exception:
+                    self._write_transcript_line("[agent] received invalid profile_applied payload.")
+                    return
+                self._effective_profile = applied_profile
+                self._refresh_agent_summary()
+                self._reload_saved_profiles(selected_id=applied_profile.id)
+                self._set_agent_form_values(profile_id=applied_profile.id, profile_name=applied_profile.name)
+                self._set_agent_draft_dirty(False, note=f"Applied profile '{applied_profile.name}'.")
 
             elif etype == "context":
                 prompt_tokens_est = event.get("prompt_tokens_est")
@@ -4883,7 +5692,7 @@ def run_tui() -> int:
                     self._notify("transcript: nothing to copy.", severity="warning")
                     return
                 focused_text = (getattr(focused, "text", "") or "").strip()
-                if focused.id in {"issues", "plan", "artifacts", "help"} and focused_text:
+                if focused.id in {"issues", "plan", "artifacts", "agent_summary"} and focused_text:
                     self._copy_text(focused_text + "\n", label=f"{focused.id} pane")
                     return
                 self._notify("Select text first.", severity="warning")
@@ -5000,30 +5809,115 @@ def run_tui() -> int:
                 plain_text=_json.dumps(record, indent=2, ensure_ascii=False),
             )
 
+        def _open_artifact_path(self, path: str) -> None:
+            resolved = str(path or "").strip()
+            if not resolved:
+                self._write_transcript_line("[open] invalid artifact path.")
+                return
+            editor = os.environ.get("EDITOR", "")
+            try:
+                if editor:
+                    subprocess.Popen([editor, resolved])
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", resolved])
+                elif shutil.which("xdg-open"):
+                    subprocess.Popen(["xdg-open", resolved])
+                else:
+                    self._write_transcript_line(f"[open] set $EDITOR. Path: {resolved}")
+                    return
+                self._write_transcript_line(f"[open] opened: {resolved}")
+            except Exception as exc:
+                self._write_transcript_line(f"[open] failed: {exc}")
+
         def _open_artifact(self, index_str: str) -> None:
             try:
                 index = int(index_str.strip()) - 1
             except ValueError:
                 self._write_transcript_line("Usage: /open <number>")
                 return
-            if index < 0 or index >= len(self._artifacts):
-                self._write_transcript_line(f"[open] invalid index. {len(self._artifacts)} artifacts available.")
+            self._render_artifacts_panel()
+            entries = self._artifact_entries
+            if index < 0 or index >= len(entries):
+                self._write_transcript_line(f"[open] invalid index. {len(entries)} artifacts available.")
                 return
-            path = self._artifacts[index]
-            editor = os.environ.get("EDITOR", "")
-            try:
-                if editor:
-                    subprocess.Popen([editor, path])
-                elif sys.platform == "darwin":
-                    subprocess.Popen(["open", path])
-                elif shutil.which("xdg-open"):
-                    subprocess.Popen(["xdg-open", path])
-                else:
-                    self._write_transcript_line(f"[open] set $EDITOR. Path: {path}")
-                    return
-                self._write_transcript_line(f"[open] opened: {path}")
-            except Exception as exc:
-                self._write_transcript_line(f"[open] failed: {exc}")
+            path = str(entries[index].get("path", "")).strip()
+            self._open_artifact_path(path)
+
+        def _copy_selected_artifact_path(self) -> None:
+            selected = self._artifact_entry_by_item_id(self._artifact_selected_item_id)
+            if selected is None:
+                self._notify("Select an artifact first.", severity="warning")
+                return
+            path = str(selected.get("path", "")).strip()
+            if not path:
+                self._notify("Selected artifact has no path.", severity="warning")
+                return
+            self._copy_text(path, label="artifact path")
+
+        def _add_selected_artifact_as_context(self) -> None:
+            selected = self._artifact_entry_by_item_id(self._artifact_selected_item_id)
+            if selected is None:
+                self._notify("Select an artifact first.", severity="warning")
+                return
+            path = str(selected.get("path", "")).strip()
+            if not path:
+                self._notify("Selected artifact has no path.", severity="warning")
+                return
+            payload = artifact_context_source_payload(path)
+            self._add_context_source(payload)
+            self._write_transcript_line(f"[context] added file source from artifact: {path}")
+
+        def _session_retry_tool(self, tool_use_id: str) -> None:
+            tool_id = str(tool_use_id or "").strip()
+            if not tool_id:
+                self._notify("Issue has no tool_use_id.", severity="warning")
+                return
+            proc = self._proc
+            if not self._daemon_ready or proc is None or proc.poll() is not None:
+                self._write_transcript_line("[session] daemon is not ready.")
+                return
+            if send_daemon_command(proc, {"cmd": "retry_tool", "tool_use_id": tool_id}):
+                self._write_transcript_line(f"[session] retry requested for tool {tool_id}.")
+            else:
+                self._write_transcript_line("[session] failed to send retry request.")
+
+        def _session_skip_tool(self, tool_use_id: str) -> None:
+            tool_id = str(tool_use_id or "").strip()
+            if not tool_id:
+                self._notify("Issue has no tool_use_id.", severity="warning")
+                return
+            proc = self._proc
+            if not self._daemon_ready or proc is None or proc.poll() is not None:
+                self._write_transcript_line("[session] daemon is not ready.")
+                return
+            if send_daemon_command(proc, {"cmd": "skip_tool", "tool_use_id": tool_id}):
+                self._write_transcript_line(f"[session] skip requested for tool {tool_id}.")
+            else:
+                self._write_transcript_line("[session] failed to send skip request.")
+
+        def _session_escalate_tier(self, tier_name: str | None = None) -> None:
+            next_tier = str(tier_name or "").strip().lower() or (self._next_available_tier_name() or "")
+            if not next_tier:
+                self._write_transcript_line("[session] no higher tier available.")
+                return
+            proc = self._proc
+            if not self._daemon_ready or proc is None or proc.poll() is not None:
+                self._write_transcript_line("[session] daemon is not ready.")
+                return
+            if send_daemon_command(proc, {"cmd": "set_tier", "tier": next_tier}):
+                self._write_transcript_line(f"[session] tier change requested: {next_tier}")
+            else:
+                self._write_transcript_line("[session] failed to send tier change request.")
+
+        def _session_interrupt(self) -> None:
+            proc = self._proc
+            if not self._daemon_ready or proc is None or proc.poll() is not None:
+                self._write_transcript_line("[session] daemon is not ready.")
+                return
+            if send_daemon_command(proc, {"cmd": "interrupt"}):
+                self._write_transcript_line("[session] interrupt requested.")
+            else:
+                self._write_transcript_line("[session] failed to send interrupt.")
 
         def _save_session(self) -> None:
             try:
@@ -5129,10 +6023,11 @@ def run_tui() -> int:
             self._set_sop_active(sop_name, value, sync=True, announce=True)
 
         def on_select_changed(self, event: Any) -> None:
-            if self._model_select_syncing:
-                return
             select_widget = getattr(event, "select", None)
-            if getattr(select_widget, "id", None) != "model_select":
+            select_id = str(getattr(select_widget, "id", "")).strip().lower()
+            if select_id != "model_select":
+                return
+            if self._model_select_syncing:
                 return
 
             value = str(getattr(event, "value", "")).strip()
@@ -5195,7 +6090,86 @@ def run_tui() -> int:
             self._update_prompt_placeholder()
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
+            self._refresh_agent_summary()
             # The model selector is always visible; avoid transient notifications.
+
+        def on_sidebar_list_selection_changed(self, event: Any) -> None:
+            sidebar_list = getattr(event, "sidebar_list", None)
+            if sidebar_list is None:
+                return
+
+            if sidebar_list is self._session_issue_list:
+                selected_id = str(getattr(event, "item_id", "")).strip()
+                selected_issue = self._session_issue_by_id(selected_id)
+                self._set_session_issue_selection(selected_issue)
+                return
+
+            if sidebar_list is self._artifacts_list:
+                selected_id = str(getattr(event, "item_id", "")).strip()
+                selected_entry = self._artifact_entry_by_item_id(selected_id)
+                self._set_artifact_selection(selected_entry)
+                return
+
+            if sidebar_list is self._agent_profile_list:
+                if self._agent_form_syncing:
+                    return
+                selected_id = str(getattr(event, "item_id", "")).strip()
+                if not selected_id or selected_id == _AGENT_PROFILE_SELECT_NONE:
+                    return
+                profile = self._lookup_saved_profile(selected_id)
+                if profile is None:
+                    return
+                self._load_profile_into_draft(profile)
+
+        def on_sidebar_detail_action_selected(self, event: Any) -> None:
+            detail = getattr(event, "detail", None)
+            action_id = str(getattr(event, "action_id", "")).strip().lower()
+            if detail is None or not action_id:
+                return
+
+            if detail is self._session_issue_detail:
+                issue = self._session_issue_by_id(self._session_selected_issue_id)
+                if issue is None:
+                    self._notify("Select an issue first.", severity="warning")
+                    return
+                tool_use_id = str(issue.get("tool_use_id", "")).strip()
+                if action_id == "session_issue_retry_tool":
+                    self._session_retry_tool(tool_use_id)
+                    return
+                if action_id == "session_issue_skip_tool":
+                    self._session_skip_tool(tool_use_id)
+                    return
+                if action_id == "session_issue_escalate_tier":
+                    self._session_escalate_tier(str(issue.get("next_tier", "")).strip())
+                    return
+                if action_id == "session_issue_interrupt":
+                    self._session_interrupt()
+                    return
+
+            if detail is self._artifacts_detail:
+                selected = self._artifact_entry_by_item_id(self._artifact_selected_item_id)
+                if selected is None:
+                    self._notify("Select an artifact first.", severity="warning")
+                    return
+                path = str(selected.get("path", "")).strip()
+                if action_id == "artifact_action_open":
+                    self._open_artifact_path(path)
+                    return
+                if action_id == "artifact_action_copy_path":
+                    self._copy_selected_artifact_path()
+                    return
+                if action_id == "artifact_action_add_context":
+                    self._add_selected_artifact_as_context()
+                    return
+
+        def on_input_changed(self, event: Any) -> None:
+            input_widget = getattr(event, "input", None)
+            input_id = str(getattr(input_widget, "id", "")).strip().lower()
+            if input_id not in {"agent_profile_id", "agent_profile_name"}:
+                return
+            if self._agent_form_syncing:
+                return
+            self._set_agent_draft_dirty(True)
 
         def _sync_selected_model_before_run(self) -> None:
             selected_value: str | None = None
@@ -5212,7 +6186,12 @@ def run_tui() -> int:
 
             current_provider = (self._daemon_provider or "").strip().lower()
             current_tier = (self._daemon_tier or "").strip().lower()
-            if current_provider and current_tier and requested_provider == current_provider and requested_tier == current_tier:
+            if (
+                current_provider
+                and current_tier
+                and requested_provider == current_provider
+                and requested_tier == current_tier
+            ):
                 self._pending_model_select_value = None
                 return
             self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
@@ -5608,6 +6587,18 @@ def run_tui() -> int:
                 return
             if button_id == "plan_action_clear":
                 self._dispatch_plan_action("clearplan")
+                return
+            if button_id == "agent_profile_new":
+                self._new_agent_profile_draft()
+                return
+            if button_id == "agent_profile_save":
+                self._save_agent_profile_draft()
+                return
+            if button_id == "agent_profile_delete":
+                self._delete_selected_agent_profile()
+                return
+            if button_id == "agent_profile_apply":
+                self._apply_agent_profile_draft()
                 return
 
         def _handle_user_input(self, text: str) -> None:

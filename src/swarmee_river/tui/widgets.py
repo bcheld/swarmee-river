@@ -234,7 +234,11 @@ def render_plan_panel_with_status(
             else:
                 desc = str(step)
             marker = "☐"
-            status = step_statuses[index - 1] if isinstance(step_statuses, list) and index - 1 < len(step_statuses) else ""
+            status = (
+                step_statuses[index - 1]
+                if isinstance(step_statuses, list) and index - 1 < len(step_statuses)
+                else ""
+            )
             if status == "in_progress":
                 marker = "▶"
             elif status == "completed":
@@ -245,6 +249,74 @@ def render_plan_panel_with_status(
     lines.append("")
     lines.append("/approve  /replan  /clearplan")
     return RichPanel(RichText("\n".join(lines)), title="Plan", border_style="green")
+
+
+def render_agent_profile_summary_text(profile: dict[str, Any] | None) -> str:
+    """Render a read-only summary for the currently effective session profile."""
+    if not isinstance(profile, dict):
+        return "(no effective profile yet)"
+
+    profile_id = str(profile.get("id", "")).strip() or "session-effective"
+    name = str(profile.get("name", "")).strip() or "Session Effective"
+    provider = str(profile.get("provider", "")).strip() or "(auto)"
+    tier = str(profile.get("tier", "")).strip() or "(auto)"
+    snippets_raw = profile.get("system_prompt_snippets")
+    snippets = snippets_raw if isinstance(snippets_raw, list) else []
+    sources_raw = profile.get("context_sources")
+    context_sources = sources_raw if isinstance(sources_raw, list) else []
+    sops_raw = profile.get("active_sops")
+    active_sops = [str(item).strip() for item in sops_raw] if isinstance(sops_raw, list) else []
+    active_sops = [item for item in active_sops if item]
+    kb_id = str(profile.get("knowledge_base_id", "")).strip() or "(none)"
+
+    lines = [
+        f"Name: {name}",
+        f"ID: {profile_id}",
+        f"Model: {provider}/{tier}",
+        f"KB: {kb_id}",
+        "",
+        f"System snippets ({len(snippets)}):",
+    ]
+    if snippets:
+        for snippet in snippets[:3]:
+            one_line = _truncate_single_line(str(snippet), max_len=96)
+            lines.append(f"- {one_line}")
+        if len(snippets) > 3:
+            lines.append(f"- ... +{len(snippets) - 3} more")
+    else:
+        lines.append("- (none)")
+
+    lines.append("")
+    lines.append(f"Context sources ({len(context_sources)}):")
+    if context_sources:
+        for source in context_sources[:5]:
+            if not isinstance(source, dict):
+                continue
+            source_type = str(source.get("type", "unknown")).strip().lower() or "unknown"
+            label = (
+                str(source.get("path", "")).strip()
+                or str(source.get("text", "")).strip()
+                or str(source.get("name", "")).strip()
+                or str(source.get("url", "")).strip()
+                or str(source.get("id", "")).strip()
+            )
+            lines.append(f"- {source_type}: {_truncate_single_line(label, max_len=88)}")
+        if len(context_sources) > 5:
+            lines.append(f"- ... +{len(context_sources) - 5} more")
+    else:
+        lines.append("- (none)")
+
+    lines.append("")
+    lines.append(f"Active SOPs ({len(active_sops)}):")
+    if active_sops:
+        for sop_name in active_sops[:8]:
+            lines.append(f"- {sop_name}")
+        if len(active_sops) > 8:
+            lines.append(f"- ... +{len(active_sops) - 8} more")
+    else:
+        lines.append("- (none)")
+
+    return "\n".join(lines)
 
 
 _CONSENT_TOOL_RE = re.compile(r"allow tool ['\"](?P<tool>[^'\"]+)['\"]", re.IGNORECASE)
@@ -521,6 +593,468 @@ class ErrorActionPrompt(Vertical):
                 show = button_id in visible
                 button.disabled = not show
                 button.styles.display = "block" if show else "none"
+
+
+class SidebarHeader(Horizontal):
+    """Compact header primitive with title, optional badges, and optional actions."""
+
+    DEFAULT_CSS = """
+    SidebarHeader {
+        height: auto;
+        layout: horizontal;
+        margin: 0 0 1 0;
+    }
+    SidebarHeader .sidebar-header-title {
+        width: 1fr;
+        color: $text;
+    }
+    SidebarHeader .sidebar-header-badge {
+        width: auto;
+        color: $text-muted;
+        margin: 0 1 0 0;
+    }
+    SidebarHeader .sidebar-header-action {
+        width: auto;
+        min-width: 8;
+        margin: 0 0 0 1;
+    }
+    """
+
+    def __init__(
+        self,
+        title: str,
+        *,
+        badges: list[str] | None = None,
+        actions: list[dict[str, Any]] | None = None,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._title = str(title or "").strip()
+        self._badges = [str(item).strip() for item in (badges or []) if str(item).strip()]
+        self._actions = [dict(item) for item in (actions or []) if isinstance(item, dict)]
+
+    def compose(self):  # type: ignore[override]
+        yield Static(self._title, classes="sidebar-header-title")
+        for badge in self._badges:
+            yield Static(badge, classes="sidebar-header-badge")
+        for action in self._actions:
+            action_id = str(action.get("id", "")).strip()
+            if not action_id:
+                continue
+            label = str(action.get("label", action_id)).strip() or action_id
+            variant = str(action.get("variant", "default")).strip() or "default"
+            compact = bool(action.get("compact", True))
+            yield Button(
+                label,
+                id=action_id,
+                variant=variant,
+                compact=compact,
+                classes="sidebar-header-action",
+            )
+
+    def set_title(self, title: str) -> None:
+        self._title = str(title or "").strip()
+        with contextlib.suppress(Exception):
+            self.query_one(".sidebar-header-title", Static).update(self._title)
+
+    def set_badges(self, badges: list[str] | None) -> None:
+        self._badges = [str(item).strip() for item in (badges or []) if str(item).strip()]
+        with contextlib.suppress(Exception):
+            self.refresh(recompose=True)
+
+    def set_actions(self, actions: list[dict[str, Any]] | None) -> None:
+        self._actions = [dict(item) for item in (actions or []) if isinstance(item, dict)]
+        with contextlib.suppress(Exception):
+            self.refresh(recompose=True)
+
+
+class SidebarListItem(Static):
+    """Selectable sidebar list row with title/subtitle and visual state."""
+
+    DEFAULT_CSS = """
+    SidebarListItem {
+        height: auto;
+        padding: 0 1;
+        margin: 0;
+        color: $text;
+    }
+    SidebarListItem.-selected {
+        background: $accent 20%;
+    }
+    SidebarListItem.-state-default {
+        color: $text;
+    }
+    SidebarListItem.-state-active {
+        color: green;
+    }
+    SidebarListItem.-state-warning {
+        color: yellow;
+    }
+    SidebarListItem.-state-error {
+        color: red;
+    }
+    SidebarListItem.-state-syncing {
+        color: $text-muted;
+    }
+    """
+
+    class Pressed(Message):
+        def __init__(self, item: SidebarListItem, *, item_id: str) -> None:
+            super().__init__()
+            self.item = item
+            self.item_id = item_id
+
+    _ALLOWED_STATES = {"default", "active", "warning", "error", "syncing"}
+    _STATE_CLASS_MAP = {
+        "default": "-state-default",
+        "active": "-state-active",
+        "warning": "-state-warning",
+        "error": "-state-error",
+        "syncing": "-state-syncing",
+    }
+
+    def __init__(
+        self,
+        *,
+        item_id: str,
+        title: str,
+        subtitle: str | None = None,
+        state: str = "default",
+        **kwargs: object,
+    ) -> None:
+        super().__init__("", **kwargs)
+        self._item_id = str(item_id).strip()
+        self._title = str(title).strip()
+        self._subtitle = str(subtitle or "").strip()
+        self._state = self._normalize_state(state)
+        self._selected = False
+        self.can_focus = True
+
+    @property
+    def item_id(self) -> str:
+        return self._item_id
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    def on_mount(self) -> None:
+        self._render_text()
+        self._apply_classes()
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = bool(selected)
+        self._apply_classes()
+
+    def set_state(self, state: str) -> None:
+        self._state = self._normalize_state(state)
+        self._apply_classes()
+
+    def set_text(self, *, title: str, subtitle: str | None = None) -> None:
+        self._title = str(title).strip()
+        self._subtitle = str(subtitle or "").strip()
+        self._render_text()
+
+    def on_click(self, _event: Any) -> None:
+        self.post_message(self.Pressed(self, item_id=self._item_id))
+
+    def _normalize_state(self, state: str) -> str:
+        normalized = str(state or "").strip().lower()
+        return normalized if normalized in self._ALLOWED_STATES else "default"
+
+    def _apply_classes(self) -> None:
+        for class_name in self._STATE_CLASS_MAP.values():
+            with contextlib.suppress(Exception):
+                self.remove_class(class_name)
+        with contextlib.suppress(Exception):
+            self.add_class(self._STATE_CLASS_MAP[self._state])
+        if self._selected:
+            with contextlib.suppress(Exception):
+                self.add_class("-selected")
+        else:
+            with contextlib.suppress(Exception):
+                self.remove_class("-selected")
+
+    def _render_text(self) -> None:
+        rendered = RichText(self._title)
+        if self._subtitle:
+            rendered.append(f"\n{self._subtitle}", style="dim")
+        self.update(rendered)
+
+
+class SidebarList(Vertical):
+    """Reusable list primitive with keyboard navigation and selection events."""
+
+    DEFAULT_CSS = """
+    SidebarList {
+        border: round #3b3b3b;
+        padding: 0;
+        height: 1fr;
+    }
+    SidebarList #sidebar_list_scroll {
+        height: 1fr;
+    }
+    SidebarList .sidebar-list-empty {
+        color: $text-muted;
+        padding: 0 1;
+    }
+    """
+
+    class SelectionChanged(Message):
+        def __init__(self, sidebar_list: SidebarList, *, item: dict[str, str]) -> None:
+            super().__init__()
+            self.sidebar_list = sidebar_list
+            self.item = item
+            self.item_id = str(item.get("id", "")).strip()
+
+    def __init__(self, *, items: list[dict[str, Any]] | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._items: list[dict[str, str]] = []
+        self._selected_index: int = -1
+        self.can_focus = True
+        self.set_items(items or [], emit=False)
+
+    def compose(self):  # type: ignore[override]
+        yield VerticalScroll(id="sidebar_list_scroll")
+
+    def set_items(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        selected_id: str | None = None,
+        emit: bool = False,
+    ) -> None:
+        normalized: list[dict[str, str]] = []
+        for raw_item in items:
+            item_id = str((raw_item or {}).get("id", "")).strip()
+            title = str((raw_item or {}).get("title", "")).strip()
+            if not item_id or not title:
+                continue
+            subtitle = str((raw_item or {}).get("subtitle", "")).strip()
+            state = str((raw_item or {}).get("state", "default")).strip().lower() or "default"
+            normalized.append(
+                {
+                    "id": item_id,
+                    "title": title,
+                    "subtitle": subtitle,
+                    "state": state,
+                }
+            )
+
+        self._items = normalized
+        self._selected_index = -1
+        if self._items:
+            if selected_id:
+                for index, item in enumerate(self._items):
+                    if item["id"] == selected_id:
+                        self._selected_index = index
+                        break
+            if self._selected_index < 0:
+                self._selected_index = 0
+
+        self._render_items()
+        self._sync_item_selection_styles()
+        self._emit_selection_changed(enabled=emit)
+
+    def selected_item(self) -> dict[str, str] | None:
+        if self._selected_index < 0 or self._selected_index >= len(self._items):
+            return None
+        return dict(self._items[self._selected_index])
+
+    def selected_id(self) -> str | None:
+        item = self.selected_item()
+        if item is None:
+            return None
+        selected_id = str(item.get("id", "")).strip()
+        return selected_id or None
+
+    def select_by_id(self, item_id: str, *, emit: bool = True) -> bool:
+        target = str(item_id or "").strip()
+        if not target:
+            return False
+        for index, item in enumerate(self._items):
+            if item.get("id") != target:
+                continue
+            self._selected_index = index
+            self._sync_item_selection_styles()
+            self._emit_selection_changed(enabled=emit)
+            return True
+        return False
+
+    def move_selection(self, delta: int, *, emit: bool = True) -> None:
+        if not self._items:
+            return
+        if self._selected_index < 0:
+            self._selected_index = 0
+        next_index = self._selected_index + int(delta)
+        next_index = min(len(self._items) - 1, max(0, next_index))
+        if next_index == self._selected_index:
+            return
+        self._selected_index = next_index
+        self._sync_item_selection_styles()
+        self._emit_selection_changed(enabled=emit)
+
+    def on_focus(self) -> None:
+        if self._items and self._selected_index < 0:
+            self._selected_index = 0
+            self._sync_item_selection_styles()
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).strip().lower()
+        if key == "up":
+            event.stop()
+            event.prevent_default()
+            self.move_selection(-1, emit=True)
+            return
+        if key == "down":
+            event.stop()
+            event.prevent_default()
+            self.move_selection(1, emit=True)
+            return
+        if key == "home":
+            event.stop()
+            event.prevent_default()
+            if self._items:
+                self._selected_index = 0
+                self._sync_item_selection_styles()
+                self._emit_selection_changed(enabled=True)
+            return
+        if key == "end":
+            event.stop()
+            event.prevent_default()
+            if self._items:
+                self._selected_index = len(self._items) - 1
+                self._sync_item_selection_styles()
+                self._emit_selection_changed(enabled=True)
+            return
+        if key in {"enter", "return"}:
+            event.stop()
+            event.prevent_default()
+            self._emit_selection_changed(enabled=True)
+
+    def on_sidebar_list_item_pressed(self, event: SidebarListItem.Pressed) -> None:
+        if self.select_by_id(event.item_id, emit=True):
+            event.stop()
+
+    def _emit_selection_changed(self, *, enabled: bool) -> None:
+        if not enabled:
+            return
+        item = self.selected_item()
+        if item is None:
+            return
+        self.post_message(self.SelectionChanged(self, item=item))
+
+    def _render_items(self) -> None:
+        if not getattr(self, "is_mounted", False):
+            return
+        container = self.query_one("#sidebar_list_scroll", VerticalScroll)
+        for child in list(container.children):
+            with contextlib.suppress(Exception):
+                child.remove()
+
+        if not self._items:
+            container.mount(Static("(no items)", classes="sidebar-list-empty"))
+            return
+
+        for index, item in enumerate(self._items):
+            entry = SidebarListItem(
+                item_id=item["id"],
+                title=item["title"],
+                subtitle=item.get("subtitle", ""),
+                state=item.get("state", "default"),
+            )
+            entry.set_selected(index == self._selected_index)
+            container.mount(entry)
+
+    def _sync_item_selection_styles(self) -> None:
+        if not getattr(self, "is_mounted", False):
+            return
+        container = self.query_one("#sidebar_list_scroll", VerticalScroll)
+        item_widgets = [child for child in container.children if isinstance(child, SidebarListItem)]
+        for index, widget in enumerate(item_widgets):
+            widget.set_selected(index == self._selected_index)
+        if 0 <= self._selected_index < len(item_widgets):
+            with contextlib.suppress(Exception):
+                container.scroll_to_widget(item_widgets[self._selected_index], animate=False)
+
+
+class SidebarDetail(Vertical):
+    """Reusable detail panel with preview text and optional action buttons."""
+
+    DEFAULT_CSS = """
+    SidebarDetail {
+        border: round #3b3b3b;
+        padding: 0 1;
+        height: auto;
+    }
+    SidebarDetail .sidebar-detail-preview {
+        height: auto;
+        color: $text;
+    }
+    SidebarDetail .sidebar-detail-actions {
+        layout: horizontal;
+        height: auto;
+        margin: 1 0 0 0;
+    }
+    SidebarDetail .sidebar-detail-actions Button {
+        width: 1fr;
+        min-width: 8;
+        margin: 0 1 0 0;
+    }
+    """
+
+    class ActionSelected(Message):
+        def __init__(self, detail: SidebarDetail, *, action_id: str) -> None:
+            super().__init__()
+            self.detail = detail
+            self.action_id = action_id
+
+    def __init__(
+        self,
+        *,
+        preview: str = "",
+        actions: list[dict[str, Any]] | None = None,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._preview = str(preview or "").strip()
+        self._actions = [dict(item) for item in (actions or []) if isinstance(item, dict)]
+        self._action_button_ids: dict[str, str] = {}
+
+    def compose(self):  # type: ignore[override]
+        text = self._preview if self._preview else "(no selection)"
+        yield Static(text, classes="sidebar-detail-preview")
+        with Horizontal(classes="sidebar-detail-actions"):
+            self._action_button_ids = {}
+            for index, action in enumerate(self._actions):
+                action_id = str(action.get("id", "")).strip()
+                if not action_id:
+                    continue
+                button_id = f"sidebar_detail_action_{index}"
+                self._action_button_ids[button_id] = action_id
+                label = str(action.get("label", action_id)).strip() or action_id
+                variant = str(action.get("variant", "default")).strip() or "default"
+                compact = bool(action.get("compact", True))
+                yield Button(label, id=button_id, variant=variant, compact=compact)
+
+    def set_preview(self, preview: str) -> None:
+        self._preview = str(preview or "").strip()
+        text = self._preview if self._preview else "(no selection)"
+        with contextlib.suppress(Exception):
+            self.query_one(".sidebar-detail-preview", Static).update(text)
+
+    def set_actions(self, actions: list[dict[str, Any]] | None) -> None:
+        self._actions = [dict(item) for item in (actions or []) if isinstance(item, dict)]
+        with contextlib.suppress(Exception):
+            self.refresh(recompose=True)
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        action_id = self._action_button_ids.get(button_id)
+        if not action_id:
+            return
+        event.stop()
+        self.post_message(self.ActionSelected(self, action_id=action_id))
 
 
 class UserMessage(Static):
@@ -929,6 +1463,45 @@ class PlanActions(Static):
         yield Button("Clear", id="plan_action_clear", compact=True, variant="default")
 
 
+class AgentProfileActions(Static):
+    """Button row for profile CRUD/apply actions in the Agent tab."""
+
+    DEFAULT_CSS = """
+    AgentProfileActions {
+        layout: horizontal;
+        height: auto;
+        padding: 0;
+        margin: 0;
+    }
+    AgentProfileActions Button {
+        width: 1fr;
+        min-width: 10;
+        margin: 0;
+        padding: 0 1;
+        background: transparent;
+        color: $accent;
+        border: round $accent;
+    }
+    AgentProfileActions Button:hover {
+        background: transparent;
+        color: $accent;
+        border: round $accent;
+    }
+    AgentProfileActions Button.-active,
+    AgentProfileActions Button:focus {
+        background: transparent;
+        color: $accent;
+        border: round $accent;
+    }
+    """
+
+    def compose(self):  # type: ignore[override]
+        yield Button("New", id="agent_profile_new", compact=True, variant="default")
+        yield Button("Save", id="agent_profile_save", compact=True, variant="default")
+        yield Button("Delete", id="agent_profile_delete", compact=True, variant="default")
+        yield Button("Apply", id="agent_profile_apply", compact=True, variant="default")
+
+
 class ContextBudgetBar(Static):
     """Single-line context budget visualization with optional prompt estimate."""
 
@@ -954,7 +1527,9 @@ class ContextBudgetBar(Static):
         self._render_bar()
 
     def set_context(self, *, prompt_tokens_est: int | None, budget_tokens: int | None, animate: bool = True) -> None:
-        self._prompt_tokens_est = prompt_tokens_est if isinstance(prompt_tokens_est, int) and prompt_tokens_est >= 0 else None
+        self._prompt_tokens_est = (
+            prompt_tokens_est if isinstance(prompt_tokens_est, int) and prompt_tokens_est >= 0 else None
+        )
         self._budget_tokens = budget_tokens if isinstance(budget_tokens, int) and budget_tokens > 0 else None
         ratio = self._ratio()
         self._target_ratio = ratio
@@ -970,7 +1545,11 @@ class ContextBudgetBar(Static):
         self._render_bar()
 
     def _ratio(self) -> float:
-        if not isinstance(self._prompt_tokens_est, int) or not isinstance(self._budget_tokens, int) or self._budget_tokens <= 0:
+        if (
+            not isinstance(self._prompt_tokens_est, int)
+            or not isinstance(self._budget_tokens, int)
+            or self._budget_tokens <= 0
+        ):
             return 0.0
         return max(0.0, min(1.0, float(self._prompt_tokens_est) / float(self._budget_tokens)))
 
@@ -1040,8 +1619,12 @@ class ContextBudgetBar(Static):
         rendered.append("] ", style="dim")
 
         pct = int(round(ratio_actual * 100.0)) if budget_known and estimate_known else 0
+        context_line = (
+            f"Context: {self._format_tokens(self._prompt_tokens_est)} / "
+            f"{self._format_tokens(self._budget_tokens)} ({pct}%)"
+        )
         rendered.append(
-            f"Context: {self._format_tokens(self._prompt_tokens_est)} / {self._format_tokens(self._budget_tokens)} ({pct}%)",
+            context_line,
             style="default",
         )
         if isinstance(self._prompt_input_tokens_est, int):

@@ -585,6 +585,34 @@ def test_send_daemon_command_writes_jsonl_and_flushes():
     assert proc.stdin.flush_calls == 1
 
 
+def test_send_daemon_command_writes_set_profile_payload():
+    class FakeStdin:
+        def __init__(self) -> None:
+            self.payload = ""
+            self.flush_calls = 0
+
+        def write(self, text: str) -> None:
+            self.payload += text
+
+        def flush(self) -> None:
+            self.flush_calls += 1
+
+    class FakeProc:
+        def __init__(self) -> None:
+            self.stdin = FakeStdin()
+
+    proc = FakeProc()
+    payload = {
+        "cmd": "set_profile",
+        "profile": {"id": "qa", "name": "QA", "active_sops": ["review"]},
+    }
+    assert tui_app.send_daemon_command(proc, payload) is True
+    assert proc.stdin.payload == (
+        '{"cmd": "set_profile", "profile": {"id": "qa", "name": "QA", "active_sops": ["review"]}}\n'
+    )
+    assert proc.stdin.flush_calls == 1
+
+
 def test_send_daemon_command_uses_transport_sender_when_available():
     class FakeTransport:
         def __init__(self) -> None:
@@ -597,6 +625,28 @@ def test_send_daemon_command_uses_transport_sender_when_available():
     transport = FakeTransport()
     assert tui_app.send_daemon_command(transport, {"cmd": "interrupt"}) is True
     assert transport.calls == [{"cmd": "interrupt"}]
+
+
+def test_socket_transport_send_command_forwards_set_profile():
+    class FakeClient:
+        def __init__(self) -> None:
+            self.commands: list[dict[str, object]] = []
+            self.closed = False
+
+        def send_command(self, payload):
+            self.commands.append(payload)
+
+        def close(self) -> None:
+            self.closed = True
+
+        def read_event(self):
+            return None
+
+    client = FakeClient()
+    transport = tui_app._SocketTransport(client=client, session_id="sess-1", broker_pid=123)
+    payload = {"cmd": "set_profile", "profile": {"id": "qa", "name": "QA"}}
+    assert transport.send_command(payload) is True
+    assert client.commands == [payload]
 
 
 def test_detect_consent_prompt_matches_cli_prompt():
@@ -676,6 +726,110 @@ def test_add_recent_artifacts_dedupes_and_caps():
     existing = ["a.txt", "b.txt", "c.txt"]
     updated = tui_app.add_recent_artifacts(existing, ["b.txt", "d.txt", "e.txt"], max_items=4)
     assert updated == ["c.txt", "b.txt", "d.txt", "e.txt"]
+
+
+def test_normalize_artifact_index_entry_keeps_kind_id_timestamp_and_path():
+    normalized = tui_app.normalize_artifact_index_entry(
+        {
+            "id": "abc123",
+            "kind": "tui_transcript",
+            "path": "/tmp/artifacts/a.txt",
+            "created_at": "2026-02-23T10:00:00",
+            "meta": {"name": "Run transcript"},
+        }
+    )
+    assert normalized is not None
+    assert normalized["id"] == "abc123"
+    assert normalized["name"] == "Run transcript"
+    assert normalized["kind"] == "tui_transcript"
+    assert normalized["created_at"] == "2026-02-23T10:00:00"
+    assert normalized["path"] == "/tmp/artifacts/a.txt"
+
+
+def test_build_artifact_sidebar_items_renders_required_fields():
+    items = tui_app.build_artifact_sidebar_items(
+        [
+            {
+                "id": "abc123",
+                "kind": "tool_result",
+                "path": "/tmp/artifacts/tool.txt",
+                "created_at": "2026-02-23T10:01:00",
+                "meta": {"name": "Tool output"},
+            }
+        ]
+    )
+    assert len(items) == 1
+    item = items[0]
+    assert item["title"] == "tool_result · Tool output (abc123)"
+    assert "2026-02-23T10:01:00" in item["subtitle"]
+    assert "/tmp/artifacts/tool.txt" in item["subtitle"]
+
+
+def test_artifact_context_source_payload_builds_file_source():
+    payload = tui_app.artifact_context_source_payload("/tmp/artifacts/tool.txt", source_id="artifact-tool")
+    assert payload == {
+        "type": "file",
+        "path": "/tmp/artifacts/tool.txt",
+        "id": "artifact-tool",
+    }
+
+
+def test_build_session_issue_sidebar_items_marks_warning_and_error_states():
+    items = tui_app.build_session_issue_sidebar_items(
+        [
+            {
+                "id": "w1",
+                "severity": "warning",
+                "title": "Rate limit warning",
+                "text": "WARN: throttling",
+                "created_at": "2026-02-23 10:00:00",
+            },
+            {
+                "id": "e1",
+                "severity": "error",
+                "title": "Tool failed",
+                "text": "ERROR: tool shell failed (error) [tool-123]",
+                "created_at": "2026-02-23 10:01:00",
+            },
+        ]
+    )
+    assert len(items) == 2
+    assert items[0]["state"] == "warning"
+    assert items[1]["state"] == "error"
+    assert "2026-02-23 10:01:00" in items[1]["subtitle"]
+
+
+def test_render_session_issue_detail_text_includes_tool_metadata():
+    text = tui_app.render_session_issue_detail_text(
+        {
+            "severity": "error",
+            "title": "Tool Failed: shell",
+            "created_at": "2026-02-23 10:02:00",
+            "text": "ERROR: tool shell failed (error) [tool-123]",
+            "tool_use_id": "tool-123",
+            "tool_name": "shell",
+            "next_tier": "deep",
+        }
+    )
+    assert "Severity: error" in text
+    assert "Tool Use ID: tool-123" in text
+    assert "Suggested tier: deep" in text
+
+
+def test_session_issue_actions_for_tool_failure_include_recovery_buttons():
+    actions = tui_app.session_issue_actions(
+        {
+            "category": "tool_failure",
+            "tool_use_id": "tool-123",
+        }
+    )
+    action_ids = [item["id"] for item in actions]
+    assert action_ids == [
+        "session_issue_retry_tool",
+        "session_issue_skip_tool",
+        "session_issue_escalate_tier",
+        "session_issue_interrupt",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -866,6 +1020,103 @@ def test_plan_actions_exposes_approve_replan_clear_buttons():
     buttons = list(actions.compose())
     ids = [getattr(button, "id", None) for button in buttons]
     assert ids == ["plan_action_approve", "plan_action_replan", "plan_action_clear"]
+
+
+def test_agent_profile_actions_exposes_new_save_delete_apply_buttons():
+    from swarmee_river.tui.widgets import AgentProfileActions
+
+    actions = AgentProfileActions()
+    buttons = list(actions.compose())
+    ids = [getattr(button, "id", None) for button in buttons]
+    assert ids == ["agent_profile_new", "agent_profile_save", "agent_profile_delete", "agent_profile_apply"]
+
+
+def test_sidebar_header_compose_supports_badges_and_actions():
+    from textual.widgets import Button, Static
+
+    from swarmee_river.tui.widgets import SidebarHeader
+
+    header = SidebarHeader(
+        "Saved Profiles",
+        badges=["2 active"],
+        actions=[{"id": "header_refresh", "label": "Refresh"}],
+    )
+    children = list(header.compose())
+    static_children = [child for child in children if isinstance(child, Static)]
+    assert any("Saved Profiles" in str(getattr(child, "_Static__content", "")) for child in static_children)
+    assert any("2 active" in str(getattr(child, "_Static__content", "")) for child in static_children)
+    buttons = [child for child in children if isinstance(child, Button)]
+    assert len(buttons) == 1
+    assert buttons[0].id == "header_refresh"
+
+
+def test_sidebar_list_item_state_normalization():
+    from swarmee_river.tui.widgets import SidebarListItem
+
+    item = SidebarListItem(item_id="qa", title="QA", subtitle="Quality", state="warning")
+    assert item.item_id == "qa"
+    assert item.state == "warning"
+    item.set_state("error")
+    assert item.state == "error"
+    item.set_state("not-a-state")
+    assert item.state == "default"
+
+
+def test_sidebar_list_selection_navigation():
+    from swarmee_river.tui.widgets import SidebarList
+
+    sidebar_list = SidebarList()
+    sidebar_list.set_items(
+        [
+            {"id": "qa", "title": "QA", "subtitle": "openai/deep"},
+            {"id": "ops", "title": "Ops", "subtitle": "openai/balanced"},
+        ],
+        selected_id="qa",
+        emit=False,
+    )
+    assert sidebar_list.selected_id() == "qa"
+    sidebar_list.move_selection(1, emit=False)
+    assert sidebar_list.selected_id() == "ops"
+    assert sidebar_list.select_by_id("qa", emit=False) is True
+    assert sidebar_list.selected_id() == "qa"
+    assert sidebar_list.select_by_id("missing", emit=False) is False
+
+
+def test_sidebar_detail_compose_supports_preview_and_actions():
+    from swarmee_river.tui.widgets import SidebarDetail
+
+    detail = SidebarDetail(
+        preview="Profile details",
+        actions=[{"id": "apply_profile", "label": "Apply"}],
+    )
+    assert detail._preview == "Profile details"
+    assert detail._actions[0]["id"] == "apply_profile"
+    detail.set_preview("Updated preview")
+    assert detail._preview == "Updated preview"
+    detail.set_actions([{"id": "open_profile", "label": "Open"}])
+    assert detail._actions[0]["id"] == "open_profile"
+
+
+def test_render_agent_profile_summary_text_includes_core_sections():
+    from swarmee_river.tui.widgets import render_agent_profile_summary_text
+
+    summary = render_agent_profile_summary_text(
+        {
+            "id": "qa",
+            "name": "QA",
+            "provider": "openai",
+            "tier": "deep",
+            "system_prompt_snippets": ["Use strict validation."],
+            "context_sources": [{"type": "kb", "id": "kb-123"}],
+            "active_sops": ["review"],
+            "knowledge_base_id": "kb-123",
+        }
+    )
+    assert "Name: QA" in summary
+    assert "Model: openai/deep" in summary
+    assert "System snippets (1):" in summary
+    assert "Context sources (1):" in summary
+    assert "Active SOPs (1):" in summary
 
 
 def test_command_palette_filter():

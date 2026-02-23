@@ -563,6 +563,15 @@ class RuntimeServiceServer:
                 await self._send_error(client, "invalid_tier", "set_tier.tier is required")
                 return
             forwarded = {"cmd": "set_tier", "tier": tier.strip()}
+        elif cmd == "set_profile":
+            if session.query_active:
+                await self._send_error(client, "query_active", "Cannot set profile while a query is running")
+                return
+            profile = payload.get("profile")
+            if not isinstance(profile, dict):
+                await self._send_error(client, "invalid_profile", "set_profile.profile must be an object")
+                return
+            forwarded = {"cmd": "set_profile", "profile": profile}
         elif cmd == "interrupt":
             forwarded = {"cmd": "interrupt"}
         elif cmd == "restore_session":
@@ -618,6 +627,7 @@ class RuntimeServiceServer:
             "set_context_sources",
             "set_sop",
             "set_tier",
+            "set_profile",
             "interrupt",
             "restore_session",
         }:

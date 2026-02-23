@@ -459,6 +459,129 @@ class TestTuiDaemonMode:
         assert any("bugfix" in list(meta.get("active_sops", [])) for meta in saved_meta)
         assert any(meta.get("active_sop") == "bugfix" for meta in saved_meta)
 
+    def test_tui_daemon_set_profile_invalid_payload_emits_error(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"set_profile"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        error_events = [event for event in events if event.get("event") == "error"]
+        assert error_events
+        assert any(event.get("message") == "set_profile.profile is required" for event in error_events)
+        assert not any(event.get("event") == "profile_applied" for event in events)
+
+    def test_tui_daemon_set_profile_emits_profile_applied(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                '{"cmd":"set_profile","profile":{"id":"qa","name":"QA","tier":"deep",'
+                '"system_prompt_snippets":["Keep answers short"],'
+                '"context_sources":[{"type":"note","text":"release checklist"},{"type":"kb","id":"kb-old"}],'
+                '"knowledge_base_id":"kb-new","active_sops":[]}}\n{"cmd":"shutdown"}\n'
+            ),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        applied_events = [event for event in events if event.get("event") == "profile_applied"]
+        assert applied_events
+        applied = applied_events[-1]["profile"]
+        assert applied["id"] == "qa"
+        assert applied["name"] == "QA"
+        assert applied["tier"] == "deep"
+        assert applied["knowledge_base_id"] == "kb-new"
+        assert applied["system_prompt_snippets"] == ["Keep answers short"]
+        assert {"type": "note", "text": "release checklist", "id": "release-checklist"} in applied["context_sources"]
+        assert {"type": "kb", "id": "kb-new"} in applied["context_sources"]
+        assert not any(item.get("id") == "kb-old" for item in applied["context_sources"] if item.get("type") == "kb")
+
+    def test_tui_daemon_set_profile_replaces_stale_sop_overrides(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+        tmp_path,
+    ):
+        saved_meta: list[dict[str, object]] = []
+
+        class _FakeStore:
+            def save(self, session_id, *, meta=None, messages=None, state=None, last_plan=None):
+                del session_id, messages, state, last_plan
+                if isinstance(meta, dict):
+                    saved_meta.append(dict(meta))
+                return None
+
+            def list(self, *, limit=50):
+                del limit
+                return []
+
+            def load_messages(self, session_id, *, max_messages=200, expected_version=1):
+                del session_id, max_messages, expected_version
+                return []
+
+            def save_messages(self, session_id, messages, *, max_messages=200, version=1):
+                del session_id, messages, max_messages, version
+                return {"version": 1, "message_count": 0, "turn_count": 0}
+
+        def _fake_run_sop(*, action, name, sop_paths=None):
+            del sop_paths
+            if action == "get" and name == "review":
+                return {"status": "success", "content": [{"text": "Use review SOP"}]}
+            return {"status": "error", "content": []}
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
+        monkeypatch.setattr(swarmee, "run_sop", _fake_run_sop)
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                '{"cmd":"set_sop","name":"bugfix","content":"Use bugfix SOP"}\n'
+                '{"cmd":"set_profile","profile":{"id":"ops","name":"Ops","active_sops":["review"]}}\n'
+                '{"cmd":"shutdown"}\n'
+            ),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert saved_meta
+        final_meta = saved_meta[-1]
+        assert final_meta.get("active_sop") == "review"
+        assert final_meta.get("active_sops") == ["review"]
+        assert "bugfix" not in list(final_meta.get("active_sops", []))
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        applied_events = [event for event in events if event.get("event") == "profile_applied"]
+        assert applied_events
+        assert applied_events[-1]["profile"]["active_sops"] == ["review"]
+
     def test_tui_daemon_compact_emits_completion_event(
         self,
         mock_agent,

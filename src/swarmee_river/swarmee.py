@@ -116,6 +116,7 @@ from swarmee_river.interrupts import (
 )
 from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
+from swarmee_river.profiles.models import AgentProfile
 from swarmee_river.project_map import build_context_snapshot, build_project_map
 from swarmee_river.runtime_service.client import (
     RuntimeServiceClient,
@@ -866,6 +867,7 @@ def _build_agent_runtime(
     prompt_cache = PromptCacheState()
     active_knowledge_base_id: str | None = knowledge_base_id
     user_context_sources: list[dict[str, str]] = []
+    active_profile_system_prompt_snippets: list[str] = []
     user_context_active_reminder_keys: set[str] = set()
     user_context_file_cache: dict[str, dict[str, Any]] = {}
     user_context_sop_cache: dict[str, dict[str, Any]] = {}
@@ -984,21 +986,76 @@ def _build_agent_runtime(
             return dict(active_sop_overrides)
 
     def _list_active_sop_names() -> list[str]:
-        names: dict[str, str] = {}
+        names: list[str] = []
+        seen: set[str] = set()
         if not daemon_managed_sops and ctx.active_sop_name:
             base = ctx.active_sop_name.strip()
             if base:
-                names[base.lower()] = base
+                lowered = base.lower()
+                seen.add(lowered)
+                names.append(base)
         for name in _snapshot_active_sop_overrides().keys():
             normalized = name.strip()
             if normalized:
-                names.setdefault(normalized.lower(), normalized)
-        return [names[key] for key in sorted(names.keys())]
+                lowered = normalized.lower()
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                names.append(normalized)
+        return names
+
+    def _provider_for_tier_name(tier_name: str) -> str | None:
+        requested_tier = (tier_name or "").strip().lower()
+        if not requested_tier:
+            return None
+        for item in model_manager.list_tiers():
+            if item.name.strip().lower() != requested_tier:
+                continue
+            provider = normalize_provider_name(item.provider)
+            return provider or None
+        return None
+
+    def _current_provider_name() -> str | None:
+        return _provider_for_tier_name(model_manager.current_tier)
+
+    def _resolve_sop_content(name: str) -> str | None:
+        sop_name = name.strip()
+        if not sop_name:
+            return None
+        try:
+            sop_result = run_sop(action="get", name=sop_name, sop_paths=effective_sop_paths)
+        except Exception:
+            return None
+        if not isinstance(sop_result, dict):
+            return None
+        if str(sop_result.get("status", "")).strip().lower() != "success":
+            return None
+        content_entries = sop_result.get("content")
+        if not isinstance(content_entries, list) or not content_entries:
+            return None
+        first_entry = content_entries[0]
+        if not isinstance(first_entry, dict):
+            return None
+        text = str(first_entry.get("text", "")).strip()
+        return text or None
 
     def _set_daemon_sop_override(name: str, content: str | None) -> None:
         nonlocal daemon_managed_sops
         daemon_managed_sops = True
         _set_active_sop_override(name, content)
+
+    def _replace_daemon_sop_overrides(sop_stack: list[tuple[str, str]]) -> list[str]:
+        nonlocal daemon_managed_sops
+        daemon_managed_sops = True
+        with active_sop_lock:
+            active_sop_overrides.clear()
+            for raw_name, raw_content in sop_stack:
+                sop_name = raw_name.strip()
+                sop_content = raw_content.strip()
+                if not sop_name or not sop_content:
+                    continue
+                active_sop_overrides[sop_name] = sop_content
+            return list(active_sop_overrides.keys())
 
     def _queue_user_context_reminders() -> str | None:
         nonlocal user_context_active_reminder_keys, user_context_last_warning
@@ -1171,6 +1228,13 @@ def _build_agent_runtime(
         prompt_cache.queue_if_changed("project_map", project_map_prompt_section)
         prompt_cache.queue_if_changed("preflight", preflight_prompt_section)
         prompt_cache.queue_if_changed("active_plan", active_plan_prompt_section)
+        snippet_sections: list[str] = []
+        for idx, snippet in enumerate(active_profile_system_prompt_snippets, start=1):
+            text = snippet.strip()
+            if not text:
+                continue
+            snippet_sections.append(f"Profile System Snippet {idx}:\n{text}")
+        prompt_cache.queue_if_changed("profile_system_prompt_snippets", "\n\n".join(snippet_sections))
         if args.include_welcome_in_prompt and welcome_text_local:
             prompt_cache.queue_if_changed("welcome", f"Welcome Text Reference:\n{welcome_text_local}")
 
@@ -1203,8 +1267,8 @@ def _build_agent_runtime(
             _append_active_sop_section(ctx.active_sop_name, sop_text)
 
         override_snapshot = _snapshot_active_sop_overrides()
-        for sop_name in sorted(override_snapshot.keys(), key=lambda item: item.lower()):
-            _append_active_sop_section(sop_name, override_snapshot.get(sop_name, ""))
+        for sop_name, sop_content in override_snapshot.items():
+            _append_active_sop_section(sop_name, sop_content)
 
         if active_sop_sections:
             prompt_cache.queue_if_changed("active_sop", "\n\n".join(active_sop_sections))
@@ -1477,6 +1541,67 @@ def _build_agent_runtime(
     def _current_model_info_event() -> dict[str, Any]:
         return _build_model_info_event_payload(model_manager=model_manager, selected_provider=selected_provider)
 
+    def apply_profile(raw_profile: Any) -> dict[str, Any]:
+        nonlocal active_profile_system_prompt_snippets
+
+        normalized = AgentProfile.from_dict(raw_profile)
+        requested_tier = (normalized.tier or "").strip().lower()
+        requested_provider = normalize_provider_name(normalized.provider)
+
+        if requested_tier:
+            tier_provider = _provider_for_tier_name(requested_tier)
+            if tier_provider is None:
+                raise ValueError(f"Unknown tier: {requested_tier}")
+            if requested_provider and requested_provider != tier_provider:
+                raise ValueError(
+                    "set_profile.profile.provider does not match the requested tier's provider"
+                )
+        elif requested_provider:
+            current_provider = _current_provider_name()
+            if current_provider and requested_provider != current_provider:
+                raise ValueError(
+                    "set_profile.profile.provider requires a matching profile.tier for runtime apply"
+                )
+
+        resolved_sops: list[tuple[str, str]] = []
+        for sop_name in normalized.active_sops:
+            sop_content = _resolve_sop_content(sop_name)
+            if sop_content is None:
+                raise ValueError(f"set_profile.active_sops contains unknown SOP: {sop_name}")
+            resolved_sops.append((sop_name, sop_content))
+
+        next_context_sources = [dict(item) for item in normalized.context_sources]
+        if normalized.knowledge_base_id:
+            next_context_sources = [
+                item for item in next_context_sources if str(item.get("type", "")).strip().lower() != "kb"
+            ]
+            next_context_sources.append({"type": "kb", "id": normalized.knowledge_base_id})
+        normalized_sources = _normalize_daemon_context_sources(next_context_sources)
+
+        if requested_tier:
+            model_manager.set_tier(ctx.agent, requested_tier)
+            agent_kwargs["model"] = ctx.agent.model
+            _refresh_query_context(interactive=True)
+
+        active_profile_system_prompt_snippets = list(normalized.system_prompt_snippets)
+        applied_sources = set_user_context_sources(normalized_sources)
+        _replace_daemon_sop_overrides(resolved_sops)
+        ctx.refresh_system_prompt()
+
+        current_provider = _current_provider_name()
+        current_kb = current_knowledge_base_id()
+        current_kb = current_kb.strip() if isinstance(current_kb, str) else None
+        return {
+            "id": normalized.id,
+            "name": normalized.name,
+            "provider": current_provider,
+            "tier": model_manager.current_tier,
+            "system_prompt_snippets": list(active_profile_system_prompt_snippets),
+            "context_sources": [dict(item) for item in applied_sources],
+            "active_sops": _list_active_sop_names(),
+            "knowledge_base_id": current_kb or None,
+        }
+
     return {
         "selected_provider": selected_provider,
         "provider_notice": provider_notice,
@@ -1496,6 +1621,7 @@ def _build_agent_runtime(
         "set_daemon_sop_override": _set_daemon_sop_override,
         "current_knowledge_base_id": current_knowledge_base_id,
         "compact_context": compact_context,
+        "apply_profile": apply_profile,
     }
 
 
@@ -2048,6 +2174,7 @@ def main() -> None:
     _set_daemon_sop_override = runtime["set_daemon_sop_override"]
     _current_knowledge_base_id = runtime["current_knowledge_base_id"]
     _compact_context = runtime["compact_context"]
+    _apply_profile = runtime["apply_profile"]
 
     def _best_effort_retrieve(query_text: str, *, warn_on_error: bool) -> None:
         kb_for_turn = _current_knowledge_base_id()
@@ -2457,6 +2584,44 @@ def main() -> None:
                 ctx.refresh_system_prompt()
                 with contextlib.suppress(Exception):
                     session_store.save(active_session_id, meta=ctx.build_session_meta())
+                continue
+
+            if cmd == "set_profile":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot apply profile while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                raw_profile = payload.get("profile")
+                if not isinstance(raw_profile, dict):
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "set_profile.profile is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                before_model_info = _current_model_info_event()
+                try:
+                    applied_profile = _apply_profile(raw_profile)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+
+                with contextlib.suppress(Exception):
+                    session_store.save(active_session_id, meta=ctx.build_session_meta())
+
+                after_model_info = _current_model_info_event()
+                if (
+                    before_model_info.get("provider") != after_model_info.get("provider")
+                    or before_model_info.get("tier") != after_model_info.get("tier")
+                    or before_model_info.get("model_id") != after_model_info.get("model_id")
+                ):
+                    _write_stdout_jsonl(after_model_info)
+                _write_stdout_jsonl({"event": "profile_applied", "profile": applied_profile})
                 continue
 
             if cmd == "connect":
