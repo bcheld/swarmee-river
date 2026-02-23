@@ -48,6 +48,7 @@ _OPEN_USAGE_TEXT = "Usage: /open <number>"
 _EXPAND_USAGE_TEXT = "Usage: /expand <tool_use_id>"
 _COMPACT_USAGE_TEXT = "Usage: /compact"
 _TEXT_USAGE_TEXT = "Usage: /text"
+_THINKING_USAGE_TEXT = "Usage: /thinking"
 _CONTEXT_USAGE_TEXT = (
     "Usage: /context add file <path> | /context add note <text> | /context add sop <name> | "
     "/context add kb <id> | /context remove <index> | /context list | /context clear"
@@ -71,6 +72,11 @@ _STREAMING_FLUSH_INTERVAL_S = 0.15
 _TOOL_PROGRESS_RENDER_INTERVAL_S = 0.15
 _TOOL_HEARTBEAT_RENDER_MIN_STEP_S = 0.5
 _TOOL_OUTPUT_RETENTION_MAX_CHARS = 4096
+_TOOL_START_COALESCE_INTERVAL_S = 0.1
+_TOOL_FAST_COMPLETE_SUPPRESS_START_S = 0.5
+_THINKING_DISPLAY_DEBOUNCE_S = 0.2
+_THINKING_ANIMATION_INTERVAL_S = 0.5
+_THINKING_EXPORT_MAX_CHARS = 5000
 _TRANSIENT_TOAST_TIMEOUT_S = 5.0
 _FATAL_TOAST_TIMEOUT_S = 3600.0
 _SOP_SOURCE_LOCAL = "local"
@@ -782,6 +788,10 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
         return "text", None
     if normalized.startswith("/text "):
         return "text_usage", None
+    if normalized == "/thinking":
+        return "thinking", None
+    if normalized.startswith("/thinking "):
+        return "thinking_usage", None
     if normalized == "/compact":
         return "compact", None
     if normalized.startswith("/compact "):
@@ -1212,16 +1222,17 @@ def run_tui() -> int:
         ErrorActionPrompt,
         PlanActions,
         StatusBar,
+        ThinkingBar,
         extract_consent_tool_name,
+        format_tool_input_oneliner,
         render_assistant_message,
         render_plan_panel,
         render_system_message,
-        render_thinking_message,
         render_tool_details_panel,
         render_tool_heartbeat_line,
         render_tool_progress_chunk,
         render_tool_result_line,
-        render_tool_start_line,
+        render_tool_start_line_with_input,
         render_user_message,
     )
 
@@ -1729,7 +1740,16 @@ def run_tui() -> int:
         _current_assistant_timestamp: str | None = None
         _assistant_placeholder_written: bool = False
         _current_thinking: bool = False
+        _thinking_buffer: list[str] = []
+        _thinking_char_count: int = 0
+        _thinking_display_timer: Any = None
+        _thinking_animation_timer: Any = None
+        _thinking_started_mono: float | None = None
+        _thinking_frame_index: int = 0
+        _last_thinking_text: str = ""
         _tool_blocks: dict[str, dict[str, Any]] = {}
+        _tool_pending_start: dict[str, float] = {}
+        _tool_pending_start_timers: dict[str, Any] = {}
         _transcript_mode: str = "rich"
         _current_plan_steps_total: int = 0
         _current_plan_summary: str = ""
@@ -1750,6 +1770,7 @@ def run_tui() -> int:
         _action_sheet_mode: str = "root"
         _action_sheet_previous_focus: Any = None
         _status_bar: Any = None  # StatusBar | None
+        _thinking_bar: Any = None  # ThinkingBar | None
         _prompt_metrics: Any = None  # ContextBudgetBar | None
         _prompt_input_tokens_est: int | None = None
         _prompt_estimate_timer: Any = None
@@ -1862,6 +1883,7 @@ def run_tui() -> int:
                             )
             yield CommandPalette(id="command_palette")
             yield ActionSheet(id="action_sheet")
+            yield ThinkingBar(id="thinking_bar")
             yield StatusBar(id="status_bar")
             yield ErrorActionPrompt(id="error_action_prompt")
             yield ConsentPrompt(id="consent_prompt")
@@ -1885,6 +1907,7 @@ def run_tui() -> int:
         def on_mount(self) -> None:
             self._command_palette = self.query_one("#command_palette", CommandPalette)
             self._action_sheet = self.query_one("#action_sheet", ActionSheet)
+            self._thinking_bar = self.query_one("#thinking_bar", ThinkingBar)
             self._status_bar = self.query_one("#status_bar", StatusBar)
             self._consent_prompt_widget = self.query_one("#consent_prompt", ConsentPrompt)
             self._error_action_prompt_widget = self.query_one("#error_action_prompt", ErrorActionPrompt)
@@ -1928,7 +1951,7 @@ def run_tui() -> int:
                         "- /context add/list/remove/clear",
                         "- /sop list, /sop activate <name>, /sop deactivate <name>, /sop preview <name>",
                         "- /approve, /replan, /clearplan",
-                        "- /model, /text, /stop, /daemon restart, /expand <tool_id>, /exit",
+                        "- /model, /text, /thinking, /stop, /daemon restart, /expand <tool_id>, /exit",
                         "",
                         "Consent:",
                         "- /consent <y|n|a|v> (or press y/n/a/v when prompted)",
@@ -1968,13 +1991,14 @@ def run_tui() -> int:
             if len(self._transcript_fallback_lines) > self._TRANSCRIPT_MAX_LINES:
                 self._transcript_fallback_lines = self._transcript_fallback_lines[-self._TRANSCRIPT_MAX_LINES :]
 
-        def _sync_transcript_text_widget(self) -> None:
+        def _sync_transcript_text_widget(self, *, scroll_to_end: bool = True) -> None:
             text_widget = self.query_one("#transcript_text", TextArea)
             text = "\n".join(self._transcript_fallback_lines).rstrip()
             if text:
                 text += "\n"
             text_widget.load_text(text)
-            self._scroll_transcript_text_to_end()
+            if scroll_to_end:
+                self._scroll_transcript_text_to_end()
 
         def _scroll_transcript_text_to_end(self) -> None:
             text_widget = self.query_one("#transcript_text", TextArea)
@@ -1987,6 +2011,40 @@ def run_tui() -> int:
                         method()
                         break
 
+        def _get_scroll_proportion(self, widget: Any) -> float:
+            """Get 0.0-1.0 proportion of current scroll position."""
+            try:
+                scroll_y = float(getattr(getattr(widget, "scroll_offset", None), "y", 0.0) or 0.0)
+                virtual_h = float(getattr(getattr(widget, "virtual_size", None), "height", 0.0) or 0.0)
+                viewport_h = float(getattr(getattr(widget, "size", None), "height", 0.0) or 0.0)
+                max_scroll = virtual_h - viewport_h
+                if max_scroll <= 0:
+                    return 1.0
+                return min(1.0, max(0.0, scroll_y / max_scroll))
+            except Exception:
+                return 1.0
+
+        def _set_scroll_proportion(self, widget: Any, proportion: float) -> None:
+            """Set scroll position from 0.0-1.0 proportion."""
+            try:
+                normalized = min(1.0, max(0.0, float(proportion)))
+                virtual_h = float(getattr(getattr(widget, "virtual_size", None), "height", 0.0) or 0.0)
+                viewport_h = float(getattr(getattr(widget, "size", None), "height", 0.0) or 0.0)
+                max_scroll = virtual_h - viewport_h
+                if max_scroll <= 0:
+                    return
+                target = int(normalized * max_scroll)
+                scroll_to = getattr(widget, "scroll_to", None)
+                if callable(scroll_to):
+                    scroll_to(0, target, animate=False)
+                    return
+                scroll_relative = getattr(widget, "scroll_relative", None)
+                if callable(scroll_relative):
+                    current_y = float(getattr(getattr(widget, "scroll_offset", None), "y", 0.0) or 0.0)
+                    scroll_relative(y=target - current_y, animate=False)
+            except Exception:
+                pass
+
         def _set_transcript_mode(self, mode: str, *, notify: bool = True) -> None:
             normalized = mode.strip().lower()
             if normalized not in {"rich", "text"}:
@@ -1994,19 +2052,29 @@ def run_tui() -> int:
             rich_widget = self.query_one("#transcript", RichLog)
             text_widget = self.query_one("#transcript_text", TextArea)
             if normalized == "text":
-                self._sync_transcript_text_widget()
+                proportion = self._get_scroll_proportion(rich_widget)
+                at_bottom = proportion > 0.95
+                self._sync_transcript_text_widget(scroll_to_end=at_bottom)
                 rich_widget.styles.display = "none"
                 text_widget.styles.display = "block"
-                self._scroll_transcript_text_to_end()
+                if at_bottom:
+                    self._scroll_transcript_text_to_end()
+                else:
+                    self.set_timer(0.05, lambda p=proportion: self._set_scroll_proportion(text_widget, p))
                 self._transcript_mode = "text"
                 if notify:
                     self._notify("Text mode: select text with mouse. /text to return.", severity="information")
                 return
 
+            proportion = self._get_scroll_proportion(text_widget)
+            at_bottom = proportion > 0.95
             text_widget.styles.display = "none"
             rich_widget.styles.display = "block"
-            with contextlib.suppress(Exception):
-                rich_widget.scroll_end(animate=False)
+            if at_bottom:
+                with contextlib.suppress(Exception):
+                    rich_widget.scroll_end(animate=False)
+            else:
+                self.set_timer(0.05, lambda p=proportion: self._set_scroll_proportion(rich_widget, p))
             self._transcript_mode = "rich"
             if notify:
                 self._notify("Rich mode restored.", severity="information")
@@ -2032,9 +2100,121 @@ def run_tui() -> int:
             """Write a system/info message to the transcript."""
             self._mount_transcript_widget(render_system_message(line), plain_text=line)
 
-        def _dismiss_thinking(self) -> None:
-            """Mark the thinking placeholder as dismissed."""
+        def _cancel_thinking_display_timer(self) -> None:
+            timer = self._thinking_display_timer
+            self._thinking_display_timer = None
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+
+        def _cancel_thinking_animation_timer(self) -> None:
+            timer = self._thinking_animation_timer
+            self._thinking_animation_timer = None
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+
+        def _thinking_elapsed_s(self) -> float:
+            started = self._thinking_started_mono
+            if not isinstance(started, float):
+                return 0.0
+            return max(0.0, time.monotonic() - started)
+
+        def _thinking_preview(self) -> str:
+            for chunk in reversed(self._thinking_buffer):
+                text = sanitize_output_text(str(chunk or "")).strip()
+                if text:
+                    return text
+            return ""
+
+        def _render_thinking_bar(self) -> None:
+            bar = self._thinking_bar
+            if bar is None:
+                return
+            bar.show_thinking(
+                char_count=max(0, int(self._thinking_char_count)),
+                elapsed_s=self._thinking_elapsed_s(),
+                preview=self._thinking_preview(),
+                frame_index=self._thinking_frame_index,
+            )
+
+        def _on_thinking_display_timer(self) -> None:
+            self._thinking_display_timer = None
+            if self._current_thinking:
+                self._render_thinking_bar()
+
+        def _schedule_thinking_display_update(self) -> None:
+            self._cancel_thinking_display_timer()
+            self._thinking_display_timer = self.set_timer(_THINKING_DISPLAY_DEBOUNCE_S, self._on_thinking_display_timer)
+
+        def _on_thinking_animation_tick(self) -> None:
+            if not self._current_thinking:
+                return
+            self._thinking_frame_index = (self._thinking_frame_index + 1) % 3
+            self._render_thinking_bar()
+
+        def _ensure_thinking_animation_timer(self) -> None:
+            if self._thinking_animation_timer is not None:
+                return
+            self._thinking_animation_timer = self.set_interval(_THINKING_ANIMATION_INTERVAL_S, self._on_thinking_animation_tick)
+
+        def _reset_thinking_state(self) -> None:
+            self._cancel_thinking_display_timer()
+            self._cancel_thinking_animation_timer()
             self._current_thinking = False
+            self._thinking_buffer = []
+            self._thinking_char_count = 0
+            self._thinking_started_mono = None
+            self._thinking_frame_index = 0
+            bar = self._thinking_bar
+            if bar is not None:
+                with contextlib.suppress(Exception):
+                    bar.hide_thinking()
+
+        def _record_thinking_event(self, thinking_text: str) -> None:
+            chunk = sanitize_output_text(str(thinking_text or ""))
+            first_event = not self._current_thinking and not self._thinking_buffer and self._thinking_char_count == 0
+            if first_event:
+                self._current_thinking = True
+                self._thinking_started_mono = time.monotonic()
+                self._thinking_frame_index = 0
+                self._ensure_thinking_animation_timer()
+            else:
+                self._current_thinking = True
+            if chunk:
+                self._thinking_buffer.append(chunk)
+                self._thinking_char_count += len(chunk)
+            self._render_thinking_bar()
+            self._schedule_thinking_display_update()
+
+        def _dismiss_thinking(self, *, emit_summary: bool = False) -> None:
+            """Hide thinking indicator and optionally persist a transcript summary."""
+            had_thinking = bool(
+                self._current_thinking
+                or self._thinking_started_mono is not None
+                or self._thinking_char_count > 0
+                or self._thinking_buffer
+            )
+            if not had_thinking:
+                bar = self._thinking_bar
+                if bar is not None:
+                    with contextlib.suppress(Exception):
+                        bar.hide_thinking()
+                return
+
+            elapsed_s = self._thinking_elapsed_s()
+            full_thinking = "".join(self._thinking_buffer)
+            self._last_thinking_text = full_thinking
+            char_count = self._thinking_char_count
+
+            if emit_summary:
+                elapsed_label = max(0, int(round(elapsed_s)))
+                summary_line = f"💭 Thought for {elapsed_label}s"
+                if char_count > 0:
+                    summary_line += f" ({char_count:,} chars)"
+                self._mount_transcript_widget(render_system_message(summary_line), plain_text=summary_line)
+
+            self._reset_thinking_state()
 
         def _cancel_streaming_flush_timer(self) -> None:
             timer = self._streaming_flush_timer
@@ -2103,6 +2283,76 @@ def run_tui() -> int:
                 self._turn_output_chunks.append(sanitize_output_text(f"[tui] {line}\n"))
             self._write_transcript(line)
 
+        def _tool_input_summary(self, tool_name: str, tool_input: Any) -> str:
+            if not isinstance(tool_input, dict):
+                return ""
+            return format_tool_input_oneliner(tool_name, tool_input)
+
+        def _tool_start_plain_text(self, tool_name: str, tool_input: Any) -> str:
+            summary = self._tool_input_summary(tool_name, tool_input)
+            if summary:
+                return f"⚙ {tool_name} — {summary} ..."
+            return f"⚙ {tool_name} ..."
+
+        def _tool_result_plain_text(self, tool_name: str, status: str, duration_s: float, tool_input: Any) -> str:
+            succeeded = status == "success"
+            glyph = "✓" if succeeded else "✗"
+            summary = self._tool_input_summary(tool_name, tool_input)
+            base = f"{glyph} {tool_name} ({duration_s:.1f}s)"
+            if summary:
+                base = f"{base} — {summary}"
+            if not succeeded:
+                label = (status or "error").strip()
+                base = f"{base} ({label})"
+            return base
+
+        def _cancel_tool_start_timer(self, tool_use_id: str) -> None:
+            timer = self._tool_pending_start_timers.pop(tool_use_id, None)
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+
+        def _clear_pending_tool_starts(self) -> None:
+            for tool_use_id in list(self._tool_pending_start_timers.keys()):
+                self._cancel_tool_start_timer(tool_use_id)
+            self._tool_pending_start_timers = {}
+            self._tool_pending_start = {}
+
+        def _emit_tool_start_line(self, tool_use_id: str) -> bool:
+            record = self._tool_blocks.get(tool_use_id)
+            if record is None:
+                self._tool_pending_start.pop(tool_use_id, None)
+                self._cancel_tool_start_timer(tool_use_id)
+                return False
+            if bool(record.get("start_rendered")):
+                self._tool_pending_start.pop(tool_use_id, None)
+                self._cancel_tool_start_timer(tool_use_id)
+                return False
+            tool_name = str(record.get("tool", "unknown"))
+            tool_input = record.get("input")
+            self._mount_transcript_widget(
+                render_tool_start_line_with_input(tool_name, tool_input=tool_input, tool_use_id=tool_use_id),
+                plain_text=self._tool_start_plain_text(tool_name, tool_input),
+            )
+            record["start_rendered"] = True
+            self._tool_pending_start.pop(tool_use_id, None)
+            self._cancel_tool_start_timer(tool_use_id)
+            return True
+
+        def _on_tool_start_coalesce_timer(self, tool_use_id: str) -> None:
+            self._tool_pending_start_timers.pop(tool_use_id, None)
+            self._emit_tool_start_line(tool_use_id)
+
+        def _schedule_tool_start_line(self, tool_use_id: str) -> None:
+            if not tool_use_id:
+                return
+            self._tool_pending_start[tool_use_id] = time.monotonic()
+            self._cancel_tool_start_timer(tool_use_id)
+            self._tool_pending_start_timers[tool_use_id] = self.set_timer(
+                _TOOL_START_COALESCE_INTERVAL_S,
+                lambda tid=tool_use_id: self._on_tool_start_coalesce_timer(tid),
+            )
+
         def _append_tool_output(self, record: dict[str, Any], chunk: str) -> None:
             text = sanitize_output_text(str(chunk or ""))
             if not text:
@@ -2165,7 +2415,7 @@ def run_tui() -> int:
             tool_name = str(record.get("tool", "unknown"))
             self._mount_transcript_widget(
                 render_tool_heartbeat_line(tool_name, elapsed_s=elapsed_s, tool_use_id=tool_use_id),
-                plain_text=f"⚙ {tool_name} [{tool_use_id}] running... ({elapsed_s:.1f}s)",
+                plain_text=f"⚙ {tool_name} running... ({elapsed_s:.1f}s)",
             )
             record["last_progress_render_mono"] = now
             record["last_heartbeat_rendered_s"] = elapsed_s
@@ -3305,6 +3555,25 @@ def run_tui() -> int:
             if len(self._consent_history_lines) > 200:
                 self._consent_history_lines = self._consent_history_lines[-200:]
 
+        def _show_thinking_text(self) -> None:
+            current_text = "".join(self._thinking_buffer).strip()
+            text = current_text or (self._last_thinking_text or "").strip()
+            if not text:
+                self._write_transcript_line("No thinking content from this turn.")
+                return
+
+            total_chars = len(text)
+            if total_chars > _THINKING_EXPORT_MAX_CHARS:
+                shown = text[-_THINKING_EXPORT_MAX_CHARS :]
+                self._write_transcript_line(
+                    f"[thinking] showing last {_THINKING_EXPORT_MAX_CHARS:,} of {total_chars:,} chars."
+                )
+                text = shown
+            else:
+                self._write_transcript_line(f"[thinking] showing {total_chars:,} chars.")
+
+            self._mount_transcript_widget(render_system_message(text), plain_text=text)
+
         def _cancel_consent_hide_timer(self) -> None:
             timer = self._consent_hide_timer
             self._consent_hide_timer = None
@@ -3535,7 +3804,6 @@ def run_tui() -> int:
                 self._current_assistant_model = None
                 self._current_assistant_timestamp = None
                 self._assistant_placeholder_written = False
-                self._dismiss_thinking()
                 return
 
             full_text = "".join(self._current_assistant_chunks)
@@ -3556,7 +3824,6 @@ def run_tui() -> int:
             self._current_assistant_model = None
             self._current_assistant_timestamp = None
             self._assistant_placeholder_written = False
-            self._dismiss_thinking()
 
         def _handle_output_line(self, line: str, raw_line: str | None = None) -> None:
             if self._query_active:
@@ -3722,10 +3989,7 @@ def run_tui() -> int:
                 chunk = sanitize_output_text(extract_tui_text_chunk(event))
                 if not chunk:
                     return
-                if not self._assistant_placeholder_written:
-                    self._mount_transcript_widget(render_thinking_message(), plain_text="thinking...")
-                    self._assistant_placeholder_written = True
-                    self._current_thinking = True
+                self._dismiss_thinking(emit_summary=True)
                 if not self._current_assistant_chunks and not self._streaming_buffer:
                     self._current_assistant_model = self._current_daemon_model
                     self._current_assistant_timestamp = self._turn_timestamp()
@@ -3738,10 +4002,10 @@ def run_tui() -> int:
                 self._finalize_assistant_message()
 
             elif etype == "thinking":
-                self._current_thinking = True
+                self._record_thinking_event(str(event.get("text", "")))
 
             elif etype == "tool_start":
-                self._dismiss_thinking()
+                self._dismiss_thinking(emit_summary=True)
                 tid = str(event.get("tool_use_id", "")).strip() or f"tool-{self._run_tool_count + 1}"
                 tool_name = str(event.get("tool", "unknown"))
                 self._tool_blocks[tid] = {
@@ -3756,11 +4020,9 @@ def run_tui() -> int:
                     "elapsed_s": 0.0,
                     "last_progress_render_mono": 0.0,
                     "last_heartbeat_rendered_s": 0.0,
+                    "start_rendered": False,
                 }
-                self._mount_transcript_widget(
-                    render_tool_start_line(tool_name, tool_use_id=tid),
-                    plain_text=f"⚙ {tool_name} [{tid}] running...",
-                )
+                self._schedule_tool_start_line(tid)
                 self._run_tool_count += 1
                 if self._status_bar is not None:
                     self._status_bar.set_tool_count(self._run_tool_count)
@@ -3782,12 +4044,10 @@ def run_tui() -> int:
                         "elapsed_s": 0.0,
                         "last_progress_render_mono": 0.0,
                         "last_heartbeat_rendered_s": 0.0,
+                        "start_rendered": False,
                     }
                     self._tool_blocks[tid] = record
-                    self._mount_transcript_widget(
-                        render_tool_start_line(fallback_tool_name, tool_use_id=tid),
-                        plain_text=f"⚙ {fallback_tool_name} [{tid}] running...",
-                    )
+                    self._schedule_tool_start_line(tid)
                 if record is not None:
                     chars = event.get("chars")
                     if isinstance(chars, int):
@@ -3806,6 +4066,8 @@ def run_tui() -> int:
                 record = self._tool_blocks.get(tid)
                 if record is not None:
                     record["input"] = event.get("input", {})
+                    if tid in self._tool_pending_start:
+                        self._emit_tool_start_line(tid)
 
             elif etype == "tool_result":
                 tid = str(event.get("tool_use_id", "")).strip()
@@ -3822,11 +4084,24 @@ def run_tui() -> int:
                     record["duration_s"] = duration_s
                     record["elapsed_s"] = duration_s
                     tool_name = str(record.get("tool", tool_name))
+                    pending_since = self._tool_pending_start.get(tid)
+                    if pending_since is not None:
+                        self._tool_pending_start.pop(tid, None)
+                        self._cancel_tool_start_timer(tid)
+                        if duration_s >= _TOOL_FAST_COMPLETE_SUPPRESS_START_S:
+                            self._emit_tool_start_line(tid)
                     self._tool_progress_pending_ids.discard(tid)
                     self._flush_tool_progress_render(tid, force=True)
-                plain = f"⚙ {tool_name} ({duration_s:.1f}s) {'✓' if status == 'success' else '✗'} [{tid}]"
+                tool_input = record.get("input") if isinstance(record, dict) else None
+                plain = self._tool_result_plain_text(tool_name, status, duration_s, tool_input)
                 self._mount_transcript_widget(
-                    render_tool_result_line(tool_name, status=status, duration_s=duration_s, tool_use_id=tid),
+                    render_tool_result_line(
+                        tool_name,
+                        status=status,
+                        duration_s=duration_s,
+                        tool_input=tool_input if isinstance(tool_input, dict) else None,
+                        tool_use_id=tid,
+                    ),
                     plain_text=plain,
                 )
                 if status != "success":
@@ -4040,6 +4315,7 @@ def run_tui() -> int:
                 self._status_bar.set_plan_step(current=None, total=None)
             self._run_start_time = None
             self._query_active = False
+            self._clear_pending_tool_starts()
             self._cancel_tool_progress_flush_timer()
             self._tool_progress_pending_ids = set()
             for tool_use_id in list(self._tool_blocks.keys()):
@@ -4050,7 +4326,7 @@ def run_tui() -> int:
             )
 
             self._finalize_assistant_message()
-            self._dismiss_thinking()
+            self._dismiss_thinking(emit_summary=True)
 
             output_text = "".join(self._turn_output_chunks)
             self._turn_output_chunks = []
@@ -4091,6 +4367,7 @@ def run_tui() -> int:
             self._sops_ready_for_sync = bool(self._active_sop_names)
             self._reset_consent_panel()
             self._reset_error_action_prompt()
+            self._clear_pending_tool_starts()
             self._proc = None
             self._runner_thread = None
 
@@ -4102,6 +4379,8 @@ def run_tui() -> int:
 
             if was_query_active:
                 self._finalize_turn(exit_status="error")
+            else:
+                self._reset_thinking_state()
             if self._is_shutting_down:
                 return
             self._write_transcript_line(f"[daemon] exited unexpectedly (code {return_code}).")
@@ -4202,8 +4481,10 @@ def run_tui() -> int:
             self._current_assistant_model = None
             self._current_assistant_timestamp = None
             self._assistant_placeholder_written = False
-            self._current_thinking = False
+            self._reset_thinking_state()
+            self._last_thinking_text = ""
             self._tool_blocks = {}
+            self._clear_pending_tool_starts()
             self._tool_progress_pending_ids = set()
             self._cancel_tool_progress_flush_timer()
             self._run_tool_count = 0
@@ -4296,6 +4577,8 @@ def run_tui() -> int:
                 self._reset_error_action_prompt()
                 return
             self._flush_all_streaming_buffers()
+            self._clear_pending_tool_starts()
+            self._dismiss_thinking(emit_summary=True)
             if send_daemon_command(proc, {"cmd": "interrupt"}):
                 self._write_transcript_line("[run] interrupt requested.")
             else:
@@ -4326,6 +4609,8 @@ def run_tui() -> int:
                     timer.stop()
             self._cancel_streaming_flush_timer()
             self._cancel_tool_progress_flush_timer()
+            self._clear_pending_tool_starts()
+            self._reset_thinking_state()
             if self._proc is not None and self._proc.poll() is None:
                 send_daemon_command(self._proc, {"cmd": "shutdown"})
                 with contextlib.suppress(Exception):
@@ -4373,6 +4658,8 @@ def run_tui() -> int:
                 self._reset_error_action_prompt()
                 return
             self._flush_all_streaming_buffers()
+            self._clear_pending_tool_starts()
+            self._dismiss_thinking(emit_summary=True)
             send_daemon_command(proc, {"cmd": "interrupt"})
             self._write_transcript_line("[run] interrupted.")
             self._reset_consent_panel()
@@ -4920,6 +5207,12 @@ def run_tui() -> int:
                 return True
             if action == "text_usage":
                 self._write_transcript_line(_TEXT_USAGE_TEXT)
+                return True
+            if action == "thinking":
+                self._show_thinking_text()
+                return True
+            if action == "thinking_usage":
+                self._write_transcript_line(_THINKING_USAGE_TEXT)
                 return True
             if action == "compact":
                 self._request_context_compact()

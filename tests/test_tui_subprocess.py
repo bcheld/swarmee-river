@@ -141,6 +141,8 @@ def test_classify_pre_run_command_matrix():
         "/search": ("search_usage", None),
         "/text": ("text", None),
         "/text extra": ("text_usage", None),
+        "/thinking": ("thinking", None),
+        "/thinking full": ("thinking_usage", None),
         "/compact": ("compact", None),
         "/compact now": ("compact_usage", None),
         "/restore": ("restore", None),
@@ -771,6 +773,47 @@ def test_format_tool_input_generic():
     assert '"value"' in result
 
 
+def test_format_tool_input_oneliner_shell():
+    from swarmee_river.tui.widgets import _format_tool_input_oneliner
+
+    result = _format_tool_input_oneliner("shell", {"command": "git status"})
+    assert result == "$ git status"
+
+
+def test_format_tool_input_oneliner_file_read():
+    from swarmee_river.tui.widgets import _format_tool_input_oneliner
+
+    result = _format_tool_input_oneliner("file_read", {"path": "src/main.py"})
+    assert result == "← src/main.py"
+
+
+def test_render_tool_start_line_with_input_hides_tool_id():
+    from swarmee_river.tui.widgets import render_tool_start_line_with_input
+
+    rendered = render_tool_start_line_with_input(
+        "shell",
+        tool_input={"command": "git status"},
+        tool_use_id="tool-abc123",
+    )
+    assert "tool-abc123" not in rendered.plain
+    assert "$ git status" in rendered.plain
+
+
+def test_render_tool_result_line_includes_input_summary():
+    from swarmee_river.tui.widgets import render_tool_result_line
+
+    rendered = render_tool_result_line(
+        "shell",
+        status="success",
+        duration_s=2.3,
+        tool_input={"command": "git status"},
+        tool_use_id="tool-abc123",
+    )
+    assert rendered.plain.startswith("✓ shell (2.3s)")
+    assert "$ git status" in rendered.plain
+    assert "tool-abc123" not in rendered.plain
+
+
 def test_plan_card_renders_steps():
     from swarmee_river.tui.widgets import PlanCard
 
@@ -954,6 +997,26 @@ def test_command_palette_includes_text_toggle():
     palette.filter("/te")
     assert len(palette._filtered) == 1
     assert palette._filtered[0][0] == "/text"
+
+
+def test_command_palette_includes_thinking():
+    from swarmee_river.tui.widgets import CommandPalette
+
+    palette = CommandPalette()
+    palette.filter("/th")
+    assert len(palette._filtered) == 1
+    assert palette._filtered[0][0] == "/thinking"
+
+
+def test_render_thinking_indicator_includes_counts_and_preview():
+    from swarmee_river.tui.widgets import render_thinking_indicator
+
+    rendered = render_thinking_indicator(char_count=1247, elapsed_s=8.1, preview="line one\nline two")
+    plain = rendered.plain
+    assert "Thinking" in plain
+    assert "1,247 chars" in plain
+    assert "8s" in plain
+    assert "line two" in plain
 
 
 def test_action_sheet_selection_wraps():

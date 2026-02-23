@@ -36,6 +36,32 @@ def render_thinking_message() -> RichText:
     return RichText("thinking...", style="dim")
 
 
+def render_thinking_indicator(
+    *,
+    char_count: int = 0,
+    preview: str | None = None,
+    elapsed_s: float = 0.0,
+    frame_index: int = 0,
+) -> RichText:
+    """Dynamic thinking indicator with optional content preview."""
+    frames = (".", "..", "...")
+    suffix = frames[frame_index % len(frames)]
+    rendered = RichText()
+    rendered.append("💭 ", style="dim")
+    rendered.append(f"Thinking{suffix}", style="bold dim")
+    if char_count > 0:
+        rendered.append(f" ({char_count:,} chars)", style="dim")
+    if elapsed_s > 0:
+        rendered.append(f" · {elapsed_s:.0f}s", style="dim")
+    if preview:
+        truncated = str(preview).replace("\n", " ").strip()
+        if truncated:
+            if len(truncated) > 60:
+                truncated = "…" + truncated[-59:]
+            rendered.append(f"\n  ╰ {truncated}", style="dim italic")
+    return rendered
+
+
 def render_assistant_message(
     text: str,
     *,
@@ -54,10 +80,32 @@ def render_assistant_message(
     return RichGroup(body, RichText(" · ".join(meta_parts), style="dim"))
 
 
-def render_tool_start_line(tool_name: str, *, tool_use_id: str | None = None) -> RichText:
+def render_tool_start_line(
+    tool_name: str,
+    *,
+    tool_use_id: str | None = None,
+    tool_input: dict | None = None,
+) -> RichText:
     """Render a compact tool start line."""
-    suffix = f" [{tool_use_id}]" if isinstance(tool_use_id, str) and tool_use_id.strip() else ""
-    return RichText(f"⚙ {tool_name}{suffix} running...", style="dim")
+    return render_tool_start_line_with_input(tool_name, tool_use_id=tool_use_id, tool_input=tool_input)
+
+
+def render_tool_start_line_with_input(
+    tool_name: str,
+    *,
+    tool_input: dict | None = None,
+    tool_use_id: str | None = None,
+) -> RichText:
+    """Render tool start with inline input summary."""
+    _ = tool_use_id  # intentionally not shown in default transcript UI
+    rendered = RichText()
+    rendered.append("⚙ ", style="dim")
+    rendered.append(tool_name, style="dim")
+    summary = _format_tool_input_oneliner(tool_name, tool_input)
+    if summary:
+        rendered.append(f" — {summary}", style="dim")
+    rendered.append(" ...", style="dim")
+    return rendered
 
 
 def render_tool_result_line(
@@ -65,21 +113,26 @@ def render_tool_result_line(
     *,
     status: str,
     duration_s: float,
+    tool_input: dict | None = None,
     tool_use_id: str | None = None,
 ) -> RichText:
-    """Render a compact tool result line."""
+    """Render a compact tool result line with inline input summary."""
+    _ = tool_use_id  # intentionally not shown in default transcript UI
     succeeded = status == "success"
     status_glyph = "✓" if succeeded else "✗"
     status_style = "green" if succeeded else "red"
-    suffix = f" [{tool_use_id}]" if isinstance(tool_use_id, str) and tool_use_id.strip() else ""
     rendered = RichText()
-    rendered.append("⚙ ")
-    rendered.append(tool_name)
-    rendered.append(suffix)
-    rendered.append(f" ({duration_s:.1f}s) ")
     rendered.append(status_glyph, style=f"bold {status_style}")
+    rendered.append(" ")
+    rendered.append(tool_name)
+    rendered.append(f" ({duration_s:.1f}s)")
+    summary = _format_tool_input_oneliner(tool_name, tool_input)
+    if summary:
+        rendered.append(" — ", style="dim")
+        rendered.append(summary, style="dim")
     if not succeeded:
-        rendered.append(f" ({status})", style="dim")
+        label = (status or "error").strip()
+        rendered.append(f" ({label})", style="dim red")
     return rendered
 
 
@@ -107,8 +160,8 @@ def render_tool_progress_chunk(content: str, *, stream: str = "stdout") -> RichT
 
 def render_tool_heartbeat_line(tool_name: str, *, elapsed_s: float, tool_use_id: str | None = None) -> RichText:
     """Render a lightweight running heartbeat line for long-running tools."""
-    suffix = f" [{tool_use_id}]" if isinstance(tool_use_id, str) and tool_use_id.strip() else ""
-    return RichText(f"⚙ {tool_name}{suffix} running... ({elapsed_s:.1f}s)", style="dim")
+    _ = tool_use_id  # intentionally not shown in default transcript UI
+    return RichText(f"⚙ {tool_name} running... ({elapsed_s:.1f}s)", style="dim")
 
 
 def render_tool_details_panel(tool_record: dict[str, Any]) -> RichPanel:
@@ -545,6 +598,69 @@ def _format_tool_input(tool_name: str, tool_input: dict) -> str:
     return _json.dumps(tool_input, indent=2)
 
 
+def _truncate_single_line(text: str, *, max_len: int) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) <= max_len:
+        return cleaned
+    return cleaned[: max(0, max_len - 1)].rstrip() + "…"
+
+
+def _format_tool_input_oneliner(tool_name: str, tool_input: dict | None) -> str:
+    """Format tool input as a compact one-line summary."""
+    if not isinstance(tool_input, dict) or not tool_input:
+        return ""
+
+    canonical = str(tool_name or "").strip().lower()
+
+    if canonical in {"shell", "bash", "python_repl"}:
+        command = str(tool_input.get("command", tool_input.get("cmd", ""))).strip()
+        if command:
+            return _truncate_single_line(f"$ {command[:80]}", max_len=100)
+
+    if canonical in {"file_read", "read"}:
+        path = str(tool_input.get("path", "")).strip()
+        if path:
+            return _truncate_single_line(f"← {path}", max_len=100)
+
+    if canonical in {"file_write", "write"}:
+        path = str(tool_input.get("path", "")).strip()
+        if path:
+            return _truncate_single_line(f"→ {path}", max_len=100)
+
+    if canonical in {"editor", "edit", "file_edit"}:
+        path = str(tool_input.get("path", tool_input.get("file_path", ""))).strip()
+        if path:
+            return _truncate_single_line(f"✎ {path}", max_len=100)
+
+    if canonical == "http_request":
+        method = str(tool_input.get("method", "GET")).strip().upper() or "GET"
+        url = str(tool_input.get("url", "")).strip()
+        if url:
+            return _truncate_single_line(f"{method} {url[:60]}", max_len=100)
+
+    if canonical in {"glob", "file_search", "file_list"}:
+        pattern = str(tool_input.get("pattern", tool_input.get("query", ""))).strip()
+        if pattern:
+            return _truncate_single_line(pattern[:60], max_len=100)
+
+    if canonical == "retrieve":
+        query = str(tool_input.get("query", "")).strip()
+        if query:
+            return _truncate_single_line(f"? {query[:60]}", max_len=100)
+
+    for key, value in tool_input.items():
+        val_str = str(value).strip()
+        if val_str and len(val_str) < 80:
+            return _truncate_single_line(f"{key}: {val_str[:60]}", max_len=100)
+        break
+    return ""
+
+
+def format_tool_input_oneliner(tool_name: str, tool_input: dict | None) -> str:
+    """Public wrapper for compact tool input summaries."""
+    return _format_tool_input_oneliner(tool_name, tool_input)
+
+
 class ToolCallBlock(Static):
     """Collapsible tool call block: shows header with status, expands to show input details."""
 
@@ -645,6 +761,43 @@ class ThinkingIndicator(Static):
     def _animate(self) -> None:
         self._frame_index = (self._frame_index + 1) % len(self._FRAMES)
         self.update(f"[dim]{self._FRAMES[self._frame_index]}[/dim]")
+
+
+class ThinkingBar(Static):
+    """Bottom-docked live thinking status with char count and preview."""
+
+    DEFAULT_CSS = """
+    ThinkingBar {
+        dock: bottom;
+        height: auto;
+        max-height: 2;
+        padding: 0 1;
+        background: $surface;
+        color: $text-muted;
+        display: none;
+    }
+    """
+
+    def show_thinking(
+        self,
+        *,
+        char_count: int,
+        elapsed_s: float,
+        preview: str = "",
+        frame_index: int = 0,
+    ) -> None:
+        self.update(
+            render_thinking_indicator(
+                char_count=char_count,
+                preview=preview,
+                elapsed_s=elapsed_s,
+                frame_index=frame_index,
+            )
+        )
+        self.styles.display = "block"
+
+    def hide_thinking(self) -> None:
+        self.styles.display = "none"
 
 
 class ConsentCard(Static):
@@ -934,6 +1087,7 @@ class CommandPalette(Static):
         ("/context", "Manage context sources"),
         ("/compact", "Summarize context"),
         ("/text", "Toggle transcript text mode"),
+        ("/thinking", "Show model reasoning"),
         ("/sop", "Browse and toggle SOPs"),
         ("/copy", "Copy transcript"),
         ("/copy plan", "Copy plan text"),
