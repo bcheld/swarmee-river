@@ -239,6 +239,50 @@ def test_runtime_service_attach_tracks_per_session_clients(monkeypatch, tmp_path
     asyncio.run(_scenario())
 
 
+def test_runtime_service_shutdown_service_command(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "shutdown-token"
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        runtime_file = state_root / "runtime.json"
+        assert runtime_file.exists()
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", service.port)
+            try:
+                writer.write(
+                    json.dumps(
+                        {"cmd": "hello", "token": token, "client_name": "shutdown-test", "surface": "tests"},
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+                hello_event = await _read_event(reader)
+                assert hello_event["event"] == "hello_ack"
+
+                writer.write(json.dumps({"cmd": "shutdown_service"}, ensure_ascii=False).encode("utf-8") + b"\n")
+                await writer.drain()
+                ack_event = await _read_event(reader)
+                assert ack_event["event"] == "shutdown_ack"
+                assert ack_event["scope"] == "service"
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+            await asyncio.wait_for(service._stopped.wait(), timeout=2.0)
+        finally:
+            await service.stop()
+
+        assert not runtime_file.exists()
+
+    asyncio.run(_scenario())
+
+
 def test_runtime_service_query_broadcast_and_controller_consent(monkeypatch, tmp_path: Path) -> None:
     state_root = tmp_path / ".swarmee"
     token = "stream-token"

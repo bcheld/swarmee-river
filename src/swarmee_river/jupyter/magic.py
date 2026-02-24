@@ -21,7 +21,8 @@ from swarmee_river.runtime_env import detect_runtime_environment, render_runtime
 from swarmee_river.runtime_service.client import (
     RuntimeServiceClient,
     default_session_id_for_cwd,
-    runtime_discovery_path,
+    ensure_runtime_broker,
+    shutdown_runtime_broker,
 )
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
@@ -303,10 +304,10 @@ def _extract_runtime_text_chunk(event: dict[str, Any]) -> str:
 
 
 def _should_use_runtime_broker() -> bool:
-    if not truthy(os.getenv("SWARMEE_NOTEBOOK_USE_RUNTIME")):
-        return False
-    discovery = runtime_discovery_path(cwd=Path.cwd())
-    return discovery.exists()
+    raw = os.getenv("SWARMEE_NOTEBOOK_USE_RUNTIME")
+    if raw is None:
+        return True
+    return truthy(raw)
 
 
 def _run_swarmee_via_runtime(
@@ -316,9 +317,7 @@ def _run_swarmee_via_runtime(
     auto_approve: bool,
 ) -> str:
     attach_cwd = Path.cwd().resolve()
-    discovery = runtime_discovery_path(cwd=attach_cwd)
-    if not discovery.exists():
-        raise RuntimeError(f"runtime discovery file not found: {discovery}")
+    discovery = ensure_runtime_broker(cwd=attach_cwd)
 
     session_id = (os.getenv("SWARMEE_SESSION_ID") or "").strip() or default_session_id_for_cwd(attach_cwd)
     client = RuntimeServiceClient.from_discovery_file(discovery)
@@ -395,7 +394,9 @@ def _run_swarmee_via_runtime(
                 break
 
         delta_text = "".join(delta_chunks).strip()
-        final_text = "\n".join(chunk.strip() for chunk in final_chunks if isinstance(chunk, str) and chunk.strip()).strip()
+        final_text = "\n".join(
+            chunk.strip() for chunk in final_chunks if isinstance(chunk, str) and chunk.strip()
+        ).strip()
 
         output_parts: list[str] = []
         if delta_text:
@@ -414,6 +415,13 @@ def _run_swarmee_via_runtime(
         return "\n\n".join(part for part in output_parts if part).strip()
     finally:
         client.close()
+
+
+def _shutdown_runtime_from_notebook() -> str:
+    stopped = shutdown_runtime_broker(cwd=Path.cwd().resolve())
+    if stopped:
+        return "Runtime daemon stopped."
+    return "Runtime daemon is not running."
 
 
 def _invoke_agent(
@@ -658,7 +666,7 @@ def _run_swarmee(
     return str(result)
 
 
-def _parse_magic_line(line: str) -> tuple[bool, bool, bool, str]:
+def _parse_magic_line(line: str) -> tuple[bool, bool, bool, bool, str]:
     """
     Parse a `%%swarmee` magic line.
 
@@ -666,13 +674,15 @@ def _parse_magic_line(line: str) -> tuple[bool, bool, bool, str]:
     - --yes: auto-approve plan + tool consent for this invocation
     - --plan: force plan mode even for "info" prompts
     - --no-context: do not inject notebook context
+    - --daemon-stop: stop the shared runtime daemon for this scope
 
-    Returns: (auto_approve, force_plan, no_context, extra_text)
+    Returns: (auto_approve, force_plan, no_context, daemon_stop, extra_text)
     """
     tokens = shlex.split(line or "")
     auto_approve = False
     force_plan = False
     no_context = False
+    daemon_stop = False
     extra: list[str] = []
 
     for tok in tokens:
@@ -685,9 +695,12 @@ def _parse_magic_line(line: str) -> tuple[bool, bool, bool, str]:
         if tok == "--no-context":
             no_context = True
             continue
+        if tok == "--daemon-stop":
+            daemon_stop = True
+            continue
         extra.append(tok)
 
-    return auto_approve, force_plan, no_context, " ".join(extra).strip()
+    return auto_approve, force_plan, no_context, daemon_stop, " ".join(extra).strip()
 
 
 def load_ipython_extension(ipython: Any) -> None:
@@ -701,7 +714,11 @@ def load_ipython_extension(ipython: Any) -> None:
         @cell_magic  # type: ignore[untyped-decorator]
         def swarmee(self, line: str, cell: str) -> str:
             # Allow disabling notebook context for quick one-offs.
-            auto_approve, force_plan, no_context, extra = _parse_magic_line(line)
+            auto_approve, force_plan, no_context, daemon_stop, extra = _parse_magic_line(line)
+            if daemon_stop:
+                text = _shutdown_runtime_from_notebook()
+                print(text)
+                return text
             include_context = (not no_context) and (not truthy(os.getenv("SWARMEE_NOTEBOOK_NO_CONTEXT")))
 
             prompt = cell

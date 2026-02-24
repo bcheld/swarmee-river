@@ -43,7 +43,7 @@ def test_run_swarmee_uses_runtime_when_enabled(monkeypatch, tmp_path: Path):
     discovery.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("SWARMEE_NOTEBOOK_USE_RUNTIME", "true")
     monkeypatch.setenv("SWARMEE_SESSION_ID", "session-from-env")
-    monkeypatch.setattr(magic, "runtime_discovery_path", lambda *, cwd=None: discovery)
+    monkeypatch.setattr(magic, "ensure_runtime_broker", lambda *, cwd=None: discovery)
 
     fake_client = _FakeRuntimeClient(
         [
@@ -84,7 +84,7 @@ def test_run_swarmee_runtime_returns_plan_when_no_text(monkeypatch, tmp_path: Pa
     discovery.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("SWARMEE_NOTEBOOK_USE_RUNTIME", "1")
     monkeypatch.delenv("SWARMEE_SESSION_ID", raising=False)
-    monkeypatch.setattr(magic, "runtime_discovery_path", lambda *, cwd=None: discovery)
+    monkeypatch.setattr(magic, "ensure_runtime_broker", lambda *, cwd=None: discovery)
     monkeypatch.setattr(magic, "default_session_id_for_cwd", lambda _cwd: "cwd-derived-session")
 
     fake_client = _FakeRuntimeClient(
@@ -112,7 +112,7 @@ def test_run_swarmee_runtime_returns_plan_when_no_text(monkeypatch, tmp_path: Pa
 
 
 def test_run_swarmee_falls_back_to_local_runtime_when_runtime_not_configured(monkeypatch):
-    monkeypatch.delenv("SWARMEE_NOTEBOOK_USE_RUNTIME", raising=False)
+    monkeypatch.setenv("SWARMEE_NOTEBOOK_USE_RUNTIME", "0")
     monkeypatch.setattr(magic, "_get_or_create_runtime", lambda: object())
     monkeypatch.setattr(magic, "classify_intent", lambda _prompt: "info")
     monkeypatch.setattr(

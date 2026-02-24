@@ -51,6 +51,7 @@ def test_main_dispatches_session_command(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_session_list_and_index_build_graph_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
     store = SessionStore()
     session_id = "sid-index"
     store.create(meta={"cwd": str(tmp_path), "turn_count": 2}, session_id=session_id)
@@ -93,6 +94,7 @@ def test_session_list_and_index_build_graph_index(tmp_path: Path, monkeypatch: p
 
 def test_session_export_markdown_and_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
     store = SessionStore()
     session_id = "sid-export"
     store.create(meta={"cwd": str(tmp_path)}, session_id=session_id)
@@ -151,6 +153,7 @@ def test_session_export_markdown_and_json(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_session_branch_uses_user_turns_and_wont_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
     store = SessionStore()
     source_sid = "sid-source"
     store.create(meta={"cwd": str(tmp_path)}, session_id=source_sid)

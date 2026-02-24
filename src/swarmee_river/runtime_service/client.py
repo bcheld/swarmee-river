@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import os
 import socket
+import subprocess
+import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from swarmee_river.state_paths import state_dir
+from swarmee_river.state_paths import scope_root, state_dir
 
 
 @dataclass(frozen=True)
@@ -21,13 +26,115 @@ class RuntimeDiscovery:
 
 
 def default_session_id_for_cwd(cwd: Path) -> str:
-    resolved = cwd.expanduser().resolve()
+    resolved = scope_root(cwd=cwd)
     digest = hashlib.sha1(str(resolved).encode("utf-8", errors="replace")).hexdigest()[:16]
     return f"cwd-{digest}"
 
 
 def runtime_discovery_path(*, cwd: Path | None = None) -> Path:
     return state_dir(cwd=cwd) / "runtime.json"
+
+
+def _discovery_is_reachable(path: Path, *, timeout_s: float = 0.5) -> bool:
+    if not path.exists():
+        return False
+    try:
+        discovery = load_runtime_discovery(path)
+    except Exception:
+        return False
+    try:
+        sock = socket.create_connection((discovery.host, discovery.port), timeout=max(0.1, float(timeout_s)))
+    except OSError:
+        return False
+    with contextlib.suppress(Exception):
+        sock.close()
+    return True
+
+
+def ensure_runtime_broker(
+    *,
+    cwd: Path | None = None,
+    timeout_s: float = 6.0,
+    poll_interval_s: float = 0.1,
+) -> Path:
+    """
+    Ensure a runtime broker is running for the current state scope.
+
+    Starts `python -m swarmee_river.swarmee serve` in the background when no
+    reachable broker is discovered, then waits for discovery readiness.
+    """
+    discovery = runtime_discovery_path(cwd=cwd)
+    if _discovery_is_reachable(discovery):
+        return discovery
+
+    with contextlib.suppress(Exception):
+        if discovery.exists():
+            discovery.unlink()
+
+    resolved_state_dir = state_dir(cwd=cwd)
+    resolved_state_dir.mkdir(parents=True, exist_ok=True)
+
+    env = dict(os.environ)
+    env["SWARMEE_STATE_DIR"] = str(resolved_state_dir)
+    popen_kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "env": env,
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    process = subprocess.Popen(
+        [sys.executable, "-u", "-m", "swarmee_river.swarmee", "serve"],
+        **popen_kwargs,
+    )
+
+    deadline = time.monotonic() + max(0.5, float(timeout_s))
+    interval = max(0.02, float(poll_interval_s))
+    while time.monotonic() < deadline:
+        if _discovery_is_reachable(discovery):
+            return discovery
+        if process.poll() is not None:
+            raise RuntimeError(f"runtime broker exited during startup (code {process.returncode})")
+        time.sleep(interval)
+
+    raise RuntimeError(f"runtime broker did not become ready within {timeout_s:.1f}s")
+
+
+def shutdown_runtime_broker(*, cwd: Path | None = None, timeout_s: float = 6.0) -> bool:
+    """
+    Request runtime broker shutdown for the current scope.
+
+    Returns True if shutdown is confirmed (broker no longer reachable), else False.
+    """
+    discovery_path = runtime_discovery_path(cwd=cwd)
+    if not discovery_path.exists():
+        return False
+    if not _discovery_is_reachable(discovery_path):
+        with contextlib.suppress(Exception):
+            discovery_path.unlink()
+        return True
+
+    client = RuntimeServiceClient.from_discovery_file(discovery_path, timeout_s=2.0)
+    try:
+        client.connect()
+        hello = client.hello(client_name="swarmee-runtime-control", surface="control")
+        if not isinstance(hello, dict) or str(hello.get("event", "")).strip().lower() != "hello_ack":
+            return False
+        client.send_command({"cmd": "shutdown_service"})
+    except Exception:
+        return False
+    finally:
+        client.close()
+
+    deadline = time.monotonic() + max(0.5, float(timeout_s))
+    while time.monotonic() < deadline:
+        if not _discovery_is_reachable(discovery_path):
+            with contextlib.suppress(Exception):
+                discovery_path.unlink()
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def load_runtime_discovery(path: Path) -> RuntimeDiscovery:
@@ -147,4 +254,8 @@ class RuntimeServiceClient:
 
     def attach(self, *, session_id: str, cwd: str) -> dict[str, Any] | None:
         self.send_command({"cmd": "attach", "session_id": session_id, "cwd": cwd})
+        return self.read_event()
+
+    def shutdown_service(self) -> dict[str, Any] | None:
+        self.send_command({"cmd": "shutdown_service"})
         return self.read_event()

@@ -28,6 +28,7 @@ def test_session_graph_index_builds_and_persists_with_corruption_tolerance(
 ) -> None:
     session_id = "session-graph-mvp"
     state_root = tmp_path / ".swarmee"
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(state_root))
     messages_log = state_root / "sessions" / session_id / "messages.jsonl"
 
     final_messages = [

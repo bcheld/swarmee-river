@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 from typing import Any
 
@@ -10,6 +9,7 @@ from strands.hooks.events import AfterInvocationEvent, AfterModelCallEvent
 
 from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.pricing import resolve_pricing
+from swarmee_river.utils.stdio_utils import write_stdout_jsonl
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
@@ -20,11 +20,8 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 
 
 def _write_stdout_jsonl(event: dict[str, Any]) -> None:
-    line = json.dumps(event, ensure_ascii=False) + "\n"
-    with contextlib.suppress(UnicodeEncodeError):
-        os.write(1, line.encode("utf-8"))  # stdout fd=1
-        return
-    os.write(1, line.encode("ascii", errors="replace"))
+    with contextlib.suppress(Exception):
+        write_stdout_jsonl(event)
 
 
 def _as_int(value: Any) -> int | None:

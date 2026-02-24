@@ -157,6 +157,7 @@ def test_classify_pre_run_command_matrix():
         ":exit": ("exit", None),
         "/daemon restart": ("daemon_restart", None),
         "/restart-daemon": ("daemon_restart", None),
+        "/daemon stop": ("daemon_stop", None),
         "/consent": ("consent_usage", None),
         "/consent y": ("consent", "y"),
         "/connect": ("connect", "github_copilot"),

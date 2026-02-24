@@ -31,6 +31,7 @@ from swarmee_river.error_classification import (
     normalize_error_category,
 )
 from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, save_profile
+from swarmee_river.runtime_service.client import ensure_runtime_broker
 from swarmee_river.session.graph_index import (
     build_session_graph_index,
     load_session_graph_index,
@@ -1771,6 +1772,9 @@ def run_tui() -> int:
             if not text:
                 return
             self._current_assistant_chunks.append(text)
+            # Render streamed assistant text incrementally; avoid waiting for text_complete.
+            self._mount_transcript_widget(text, plain_text=text)
+            self._assistant_placeholder_written = True
 
         def _cancel_tool_progress_flush_timer(self) -> None:
             timer = self._tool_progress_flush_timer
@@ -4422,10 +4426,14 @@ def run_tui() -> int:
             meta_parts = [part for part in [model, timestamp] if isinstance(part, str) and part.strip()]
             if meta_parts:
                 plain_lines.append(" · ".join(meta_parts))
-            self._mount_transcript_widget(
-                render_assistant_message(full_text, model=model, timestamp=timestamp),
-                plain_text="\n".join(plain_lines),
-            )
+            if not self._assistant_placeholder_written:
+                self._mount_transcript_widget(
+                    render_assistant_message(full_text, model=model, timestamp=timestamp),
+                    plain_text="\n".join(plain_lines),
+                )
+            elif meta_parts:
+                meta_line = " · ".join(meta_parts)
+                self._mount_transcript_widget(render_system_message(meta_line), plain_text=meta_line)
 
             self._current_assistant_chunks = []
             self._streaming_buffer = []
@@ -4664,7 +4672,23 @@ def run_tui() -> int:
                 with contextlib.suppress(Exception):
                     proc.close()
 
+        def _request_daemon_shutdown(self) -> None:
+            proc = self.state.daemon.proc
+            if proc is None or proc.poll() is not None:
+                self.state.daemon.ready = False
+                self._write_transcript_line("[daemon] already stopped.")
+                return
+            self.state.daemon.ready = False
+            self.state.daemon.is_shutting_down = True
+            payload = {"cmd": "shutdown_service"} if isinstance(proc, _SocketTransport) else {"cmd": "shutdown"}
+            if send_daemon_command(proc, payload):
+                self._write_transcript_line("[daemon] shutdown requested.")
+                return
+            self.state.daemon.is_shutting_down = False
+            self._write_transcript_line("[daemon] failed to send shutdown command.")
+
         def _spawn_daemon(self, *, restart: bool = False) -> None:
+            self.state.daemon.is_shutting_down = False
             proc = self.state.daemon.proc
             if proc is not None and proc.poll() is None:
                 if restart:
@@ -4680,6 +4704,11 @@ def run_tui() -> int:
             broker_error: Exception | None = None
 
             try:
+                ensure_runtime_broker(cwd=Path.cwd())
+            except Exception as exc:
+                broker_error = exc
+
+            try:
                 daemon = _SocketTransport.connect(
                     session_id=requested_session_id,
                     cwd=Path.cwd(),
@@ -4687,7 +4716,8 @@ def run_tui() -> int:
                     surface="tui",
                 )
             except Exception as exc:
-                broker_error = exc
+                if broker_error is None:
+                    broker_error = exc
 
             if daemon is None:
                 try:
@@ -5749,6 +5779,9 @@ def run_tui() -> int:
                 return True
             if action == "daemon_restart":
                 self._spawn_daemon(restart=True)
+                return True
+            if action == "daemon_stop":
+                self._request_daemon_shutdown()
                 return True
             if action == "consent_usage":
                 self._write_transcript_line(_CONSENT_USAGE_TEXT)

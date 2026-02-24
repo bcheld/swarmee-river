@@ -39,3 +39,20 @@ def test_main_dispatches_attach_command(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert exc.value.code == 0
     assert captured["args"] == ["--session", "abc", "--tail"]
+
+
+def test_main_dispatches_daemon_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def _fake_run(args: list[str]) -> int:
+        captured["args"] = list(args)
+        return 0
+
+    monkeypatch.setattr(swarmee, "_run_daemon_command", _fake_run)
+    monkeypatch.setattr(sys, "argv", ["swarmee", "daemon", "stop"])
+
+    with pytest.raises(SystemExit) as exc:
+        swarmee.main()
+
+    assert exc.value.code == 0
+    assert captured["args"] == ["stop"]

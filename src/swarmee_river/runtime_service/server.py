@@ -498,6 +498,13 @@ class RuntimeServiceServer:
             return
         await self._send_event(client, {"event": "pong", "ts": utc_now_iso()})
 
+    async def _handle_shutdown_service(self, client: ClientState) -> None:
+        if not client.authenticated:
+            await self._send_error(client, "unauthorized", "Send hello with a valid token first")
+            return
+        await self._send_event(client, {"event": "shutdown_ack", "scope": "service"})
+        asyncio.create_task(self.stop(), name="runtime-service-stop")
+
     async def _handle_session_proxy_command(self, client: ClientState, payload: dict[str, Any], *, cmd: str) -> None:
         session = self._require_session_for_client(client)
         if session is None:
@@ -639,6 +646,9 @@ class RuntimeServiceServer:
             return
         if cmd == "ping":
             await self._handle_ping(client)
+            return
+        if cmd == "shutdown_service":
+            await self._handle_shutdown_service(client)
             return
         if cmd in {
             "query",

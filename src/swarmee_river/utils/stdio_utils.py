@@ -6,13 +6,12 @@ import sys
 from collections.abc import Iterator
 from threading import Lock
 
+_STDOUT_JSONL_LOCK = Lock()
+
 
 @contextlib.contextmanager
 def _lock_context(lock: Lock | None) -> Iterator[None]:
-    if lock is None:
-        yield
-        return
-    with lock:
+    with (lock or _STDOUT_JSONL_LOCK):
         yield
 
 

@@ -101,6 +101,8 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
         return "exit", None
     if normalized in {"/daemon restart", "/restart-daemon"}:
         return "daemon_restart", None
+    if normalized in {"/daemon stop", "/daemon shutdown"}:
+        return "daemon_stop", None
     if normalized == "/consent":
         return "consent_usage", None
     if normalized.startswith("/consent "):

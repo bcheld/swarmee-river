@@ -121,7 +121,9 @@ from swarmee_river.project_map import build_context_snapshot, build_project_map
 from swarmee_river.runtime_service.client import (
     RuntimeServiceClient,
     default_session_id_for_cwd,
+    ensure_runtime_broker,
     runtime_discovery_path,
+    shutdown_runtime_broker,
 )
 from swarmee_river.runtime_service.server import RuntimeServiceServer
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
@@ -1786,6 +1788,25 @@ def _build_attach_command_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _build_daemon_command_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="swarmee daemon", description="Manage shared runtime daemon.")
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=["start", "stop", "status"],
+        default="status",
+        help="Daemon action (default: status).",
+    )
+    parser.add_argument("--cwd", type=str, default=None, help="Scope cwd for daemon state resolution.")
+    parser.add_argument(
+        "--state-dir",
+        type=str,
+        default=None,
+        help="Override runtime state directory.",
+    )
+    return parser
+
+
 def _print_attach_event(event: dict[str, Any], *, streaming_state: dict[str, bool]) -> None:
     etype = str(event.get("event", "")).strip().lower()
     text = str(event.get("text", event.get("message", "")))
@@ -1907,10 +1928,10 @@ def _run_attach_command(raw_args: list[str]) -> int:
         or default_session_id_for_cwd(attach_cwd)
     )
 
-    discovery = runtime_discovery_path(cwd=Path.cwd())
-    if not discovery.exists():
-        print(f"Error: runtime discovery file not found: {discovery}")
-        print("Start broker first: swarmee serve")
+    try:
+        discovery = ensure_runtime_broker(cwd=attach_cwd)
+    except Exception as exc:
+        print(f"Error: failed to start runtime broker: {exc}")
         return 1
 
     try:
@@ -1974,7 +1995,7 @@ def _run_attach_command(raw_args: list[str]) -> int:
                 pass
             return 0
 
-        print("Enter prompts to send `query`. Commands: /consent <y|n|a|v>, /stop, /exit")
+        print("Enter prompts to send `query`. Commands: /consent <y|n|a|v>, /stop, /shutdown, /exit")
         while True:
             try:
                 line = input("~ ").strip()
@@ -1988,6 +2009,9 @@ def _run_attach_command(raw_args: list[str]) -> int:
             if lowered in {"/stop", ":stop"}:
                 client.send_command({"cmd": "interrupt"})
                 continue
+            if lowered in {"/shutdown", ":shutdown", "/daemon stop"}:
+                client.send_command({"cmd": "shutdown_service"})
+                break
             if lowered.startswith("/consent "):
                 choice = lowered.split(maxsplit=1)[1].strip()
                 if choice not in {"y", "n", "a", "v"}:
@@ -2008,6 +2032,59 @@ def _run_attach_command(raw_args: list[str]) -> int:
         client.close()
         if isinstance(reader_thread, threading.Thread) and reader_thread.is_alive():
             reader_thread.join(timeout=1.0)
+
+
+def _run_daemon_command(raw_args: list[str]) -> int:
+    parser = _build_daemon_command_parser()
+    args = parser.parse_args(raw_args)
+    if isinstance(args.state_dir, str) and args.state_dir.strip():
+        os.environ["SWARMEE_STATE_DIR"] = args.state_dir.strip()
+
+    daemon_cwd = Path(args.cwd).expanduser() if isinstance(args.cwd, str) and args.cwd.strip() else Path.cwd()
+    daemon_cwd = daemon_cwd.resolve()
+    if not daemon_cwd.exists() or not daemon_cwd.is_dir():
+        print(f"Error: cwd does not exist or is not a directory: {daemon_cwd}")
+        return 1
+
+    action = str(args.action or "status").strip().lower()
+    if action == "start":
+        try:
+            discovery = ensure_runtime_broker(cwd=daemon_cwd)
+            print(f"[daemon] running (discovery: {discovery})")
+            return 0
+        except Exception as exc:
+            print(f"Error: failed to start runtime broker: {exc}")
+            return 1
+
+    if action == "stop":
+        stopped = shutdown_runtime_broker(cwd=daemon_cwd)
+        if stopped:
+            print("[daemon] stopped.")
+            return 0
+        print("[daemon] not running.")
+        return 0
+
+    discovery = runtime_discovery_path(cwd=daemon_cwd)
+    if not discovery.exists():
+        print("[daemon] not running.")
+        return 0
+    client: RuntimeServiceClient | None = None
+    try:
+        client = RuntimeServiceClient.from_discovery_file(discovery, timeout_s=1.0)
+        client.connect()
+        hello = client.hello(client_name="swarmee-daemon-status", surface="cli")
+        running = isinstance(hello, dict) and str(hello.get("event", "")).strip().lower() == "hello_ack"
+    except Exception:
+        running = False
+    finally:
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close()
+    if running:
+        print(f"[daemon] running (discovery: {discovery})")
+    else:
+        print("[daemon] not running.")
+    return 0
 
 
 def _build_session_command_parser() -> argparse.ArgumentParser:
@@ -2382,6 +2459,8 @@ def main() -> None:
         raise SystemExit(_run_serve_command([*sub, *extra_args]))
     if command == "attach":
         raise SystemExit(_run_attach_command([*sub, *extra_args]))
+    if command == "daemon":
+        raise SystemExit(_run_daemon_command([*sub, *extra_args]))
     if command == "session":
         raise SystemExit(_run_session_command([*sub, *extra_args]))
     if extra_args:
