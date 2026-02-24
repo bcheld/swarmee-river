@@ -16,7 +16,6 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,39 +31,125 @@ from swarmee_river.error_classification import (
     normalize_error_category,
 )
 from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, save_profile
-from swarmee_river.runtime_service.client import RuntimeServiceClient, runtime_discovery_path
 from swarmee_river.session.graph_index import (
     build_session_graph_index,
     load_session_graph_index,
     write_session_graph_index,
 )
-from swarmee_river.settings import load_settings
 from swarmee_river.state_paths import logs_dir, sessions_dir
+from swarmee_river.tui.agent_studio import (
+    _normalized_tool_name_list,
+    _policy_tier_profile,
+    build_agent_policy_lens,
+    build_agent_team_sidebar_items,
+    build_agent_tools_safety_sidebar_items,
+    build_team_preset_run_prompt,
+    normalize_agent_studio_view_mode,
+    normalize_session_safety_overrides,
+    normalize_team_preset,
+    normalize_team_presets,
+    render_agent_team_detail_text,
+    render_agent_tools_safety_detail_text,
+)
+from swarmee_river.tui.commands import (
+    _AUTH_USAGE_TEXT,
+    _COMPACT_USAGE_TEXT,
+    _CONNECT_USAGE_TEXT,
+    _CONSENT_USAGE_TEXT,
+    _CONTEXT_USAGE_TEXT,
+    _EXPAND_USAGE_TEXT,
+    _MODEL_USAGE_TEXT,
+    _OPEN_USAGE_TEXT,
+    _SEARCH_USAGE_TEXT,
+    _SOP_USAGE_TEXT,
+    _TEXT_USAGE_TEXT,
+    _THINKING_USAGE_TEXT,
+    classify_copy_command,
+    classify_model_command,
+    classify_post_run_command,
+    classify_pre_run_command,
+)
+from swarmee_river.tui.event_router import handle_daemon_event as _handle_daemon_event_router
+from swarmee_river.tui.event_types import (
+    ParsedEvent,
+    extract_tui_text_chunk,
+    parse_output_line,
+    parse_tui_event,
+)
+from swarmee_river.tui.event_types import (
+    detect_consent_prompt as _event_detect_consent_prompt,
+)
+from swarmee_river.tui.event_types import (
+    update_consent_capture as _event_update_consent_capture,
+)
+from swarmee_river.tui.model_select import (
+    _MODEL_AUTO_VALUE,
+    _MODEL_LOADING_VALUE,
+    choose_daemon_model_select_value,
+    choose_model_summary_parts,
+    daemon_model_select_options,
+    model_select_options,
+    parse_model_select_value,
+    resolve_model_config_summary,
+)
+from swarmee_river.tui.sidebar_artifacts import (
+    add_recent_artifacts,
+    artifact_context_source_payload,
+    build_artifact_sidebar_items,
+    normalize_artifact_index_entry,
+)
+from swarmee_river.tui.sidebar_session import (
+    build_session_issue_sidebar_items,
+    build_session_timeline_sidebar_items,
+    classify_session_timeline_event_kind,
+    normalize_session_view_mode,
+    render_session_issue_detail_text,
+    render_session_timeline_detail_text,
+    session_issue_actions,
+    session_timeline_actions,
+    summarize_session_timeline_event,
+)
+from swarmee_river.tui.sops import (
+    _SOP_FILE_SUFFIX,
+    _first_sop_paragraph,
+    _load_sop_file,
+    _strip_sop_frontmatter,
+    discover_available_sop_names,
+    discover_available_sops,
+)
+from swarmee_river.tui.state import AppState
+from swarmee_river.tui.text_sanitize import (
+    extract_plan_section,
+    extract_plan_section_from_output,
+    looks_like_plan_output,
+    render_tui_hint_after_plan,
+    sanitize_output_text,
+)
+from swarmee_river.tui.transport import (
+    _build_swarmee_subprocess_env as _transport_build_swarmee_subprocess_env,
+)
+from swarmee_river.tui.transport import (
+    _DaemonTransport,
+    _SocketTransport,
+    _SubprocessTransport,
+)
+from swarmee_river.tui.transport import (
+    send_daemon_command as _transport_send_daemon_command,
+)
+from swarmee_river.tui.transport import (
+    spawn_swarmee as _transport_spawn_swarmee,
+)
+from swarmee_river.tui.transport import (
+    spawn_swarmee_daemon as _transport_spawn_swarmee_daemon,
+)
+from swarmee_river.tui.transport import (
+    stop_process as _transport_stop_process,
+)
+from swarmee_river.tui.transport import (
+    write_to_proc as _transport_write_to_proc,
+)
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
-_MODEL_AUTO_VALUE = "__auto__"
-_MODEL_LOADING_VALUE = "__loading__"
-_TRUNCATED_ARTIFACT_RE = re.compile(r"full output saved to (?P<path>[^\]]+)")
-_PATH_TOKEN_RE = re.compile(r"[A-Za-z]:\\[^\s,;]+|/(?:[^\s,;]+)|\./[^\s,;]+|\.\./[^\s,;]+")
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_OSC_ESCAPE_RE = re.compile(r"\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)")
-_PROVIDER_NOISE_PREFIX = "[provider]"
-_PROVIDER_FALLBACK_PHRASE = "falling back to"
-_MODEL_USAGE_TEXT = "Usage: /model show | /model list | /model provider <name> | /model tier <name> | /model reset"
-_CONSENT_USAGE_TEXT = "Usage: /consent <y|n|a|v>"
-_CONNECT_USAGE_TEXT = "Usage: /connect [github_copilot]"
-_AUTH_USAGE_TEXT = "Usage: /auth list | /auth logout [provider]"
-_SEARCH_USAGE_TEXT = "Usage: /search <term>"
-_OPEN_USAGE_TEXT = "Usage: /open <number>"
-_EXPAND_USAGE_TEXT = "Usage: /expand <tool_use_id>"
-_COMPACT_USAGE_TEXT = "Usage: /compact"
-_TEXT_USAGE_TEXT = "Usage: /text"
-_THINKING_USAGE_TEXT = "Usage: /thinking"
-_CONTEXT_USAGE_TEXT = (
-    "Usage: /context add file <path> | /context add note <text> | /context add sop <name> | "
-    "/context add kb <id> | /context remove <index> | /context list | /context clear"
-)
-_SOP_USAGE_TEXT = "Usage: /sop list | /sop activate <name> | /sop deactivate <name> | /sop preview <name>"
 _RUN_ACTIVE_TIER_WARNING = "[model] cannot change tier while a run is active."
 _AGENT_PROFILE_SELECT_NONE = "__agent_profile_none__"
 _AGENT_TOOL_CONSENT_VALUES = {"ask", "allow", "deny"}
@@ -77,7 +162,6 @@ _CONTEXT_SOURCE_ICONS: dict[str, str] = {
 }
 _CONTEXT_SOURCE_TYPES = {"file", "note", "sop", "kb", "url"}
 _CONTEXT_SOURCE_MAX_LABEL = 72
-_SOP_FILE_SUFFIX = ".sop.md"
 _CONTEXT_SELECT_PLACEHOLDER = "__context_select_none__"
 _CONTEXT_INPUT_SOURCE_TYPES = {"file", "note", "kb"}
 _CONTEXT_SOP_SOURCE_TYPE = "sop"
@@ -92,27 +176,74 @@ _THINKING_ANIMATION_INTERVAL_S = 0.5
 _THINKING_EXPORT_MAX_CHARS = 5000
 _TRANSIENT_TOAST_TIMEOUT_S = 5.0
 _FATAL_TOAST_TIMEOUT_S = 3600.0
-_SOP_SOURCE_LOCAL = "local"
-_SOP_SOURCE_STRANDS = "strands-sops"
-_SOP_SOURCE_PRIORITY: dict[str, int] = {
-    _SOP_SOURCE_LOCAL: 0,
-    "pack": 1,
-    _SOP_SOURCE_STRANDS: 2,
-}
-_COPY_COMMAND_MAP: dict[str, str] = {
-    "/copy": "transcript",
-    ":copy": "transcript",
-    "/copy plan": "plan",
-    ":copy plan": "plan",
-    "/copy issues": "issues",
-    ":copy issues": "issues",
-    "/copy artifacts": "artifacts",
-    ":copy artifacts": "artifacts",
-    "/copy last": "last",
-    ":copy last": "last",
-    "/copy all": "all",
-    ":copy all": "all",
-}
+
+# Compatibility re-exports for callers importing pure helpers from tui.app.
+_COMPAT_REEXPORTS = (
+    _AUTH_USAGE_TEXT,
+    _COMPACT_USAGE_TEXT,
+    _CONNECT_USAGE_TEXT,
+    _CONSENT_USAGE_TEXT,
+    _CONTEXT_USAGE_TEXT,
+    _EXPAND_USAGE_TEXT,
+    _MODEL_AUTO_VALUE,
+    _MODEL_LOADING_VALUE,
+    _MODEL_USAGE_TEXT,
+    _OPEN_USAGE_TEXT,
+    _SEARCH_USAGE_TEXT,
+    _SOP_FILE_SUFFIX,
+    _SOP_USAGE_TEXT,
+    _TEXT_USAGE_TEXT,
+    _THINKING_USAGE_TEXT,
+    _first_sop_paragraph,
+    _load_sop_file,
+    _normalized_tool_name_list,
+    _policy_tier_profile,
+    _strip_sop_frontmatter,
+    add_recent_artifacts,
+    artifact_context_source_payload,
+    build_agent_policy_lens,
+    build_agent_team_sidebar_items,
+    build_agent_tools_safety_sidebar_items,
+    build_artifact_sidebar_items,
+    build_session_issue_sidebar_items,
+    build_session_timeline_sidebar_items,
+    build_team_preset_run_prompt,
+    choose_daemon_model_select_value,
+    choose_model_summary_parts,
+    classify_copy_command,
+    classify_model_command,
+    classify_post_run_command,
+    classify_pre_run_command,
+    classify_session_timeline_event_kind,
+    daemon_model_select_options,
+    discover_available_sop_names,
+    discover_available_sops,
+    extract_plan_section,
+    extract_plan_section_from_output,
+    looks_like_plan_output,
+    model_select_options,
+    normalize_agent_studio_view_mode,
+    normalize_artifact_index_entry,
+    normalize_session_safety_overrides,
+    normalize_session_view_mode,
+    normalize_team_preset,
+    normalize_team_presets,
+    ParsedEvent,
+    parse_output_line,
+    parse_tui_event,
+    extract_tui_text_chunk,
+    parse_model_select_value,
+    render_tui_hint_after_plan,
+    render_agent_team_detail_text,
+    render_agent_tools_safety_detail_text,
+    render_session_issue_detail_text,
+    render_session_timeline_detail_text,
+    resolve_model_config_summary,
+    sanitize_output_text,
+    session_issue_actions,
+    session_timeline_actions,
+    summarize_session_timeline_event,
+)
 
 
 def _sanitize_profile_token(value: str) -> str:
@@ -140,245 +271,6 @@ def _default_team_preset_name(now: datetime | None = None) -> str:
     return f"Team Preset {ts.strftime('%Y-%m-%d %H:%M')}"
 
 
-def _normalize_team_preset_spec(raw: Any) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-    try:
-        encoded = _json.dumps(raw, ensure_ascii=False, sort_keys=True)
-        decoded = _json.loads(encoded)
-    except Exception:
-        return None
-    return decoded if isinstance(decoded, dict) else None
-
-
-def normalize_team_preset(raw: Any) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-
-    raw_name = str(raw.get("name", "")).strip()
-    if not raw_name:
-        return None
-
-    raw_id = str(raw.get("id", "")).strip()
-    preset_id = _sanitize_profile_token(raw_id or raw_name)
-    if not preset_id:
-        return None
-
-    spec = _normalize_team_preset_spec(raw.get("spec"))
-    if spec is None:
-        return None
-
-    return {
-        "id": preset_id,
-        "name": raw_name,
-        "description": str(raw.get("description", "")).strip(),
-        "spec": spec,
-    }
-
-
-def normalize_team_presets(raw_presets: Any) -> list[dict[str, Any]]:
-    if not isinstance(raw_presets, list):
-        return []
-
-    normalized: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for raw_preset in raw_presets:
-        preset = normalize_team_preset(raw_preset)
-        if preset is None:
-            continue
-        preset_id = str(preset.get("id", "")).strip()
-        if not preset_id or preset_id in seen_ids:
-            continue
-        seen_ids.add(preset_id)
-        normalized.append(preset)
-    return normalized
-
-
-def build_team_preset_run_prompt(preset: dict[str, Any]) -> str:
-    normalized = normalize_team_preset(preset)
-    if normalized is None:
-        return ""
-
-    spec_json = _json.dumps(normalized["spec"], ensure_ascii=False, indent=2, sort_keys=True)
-    return (
-        f"Run team preset '{normalized['name']}' (id: {normalized['id']}).\n"
-        "Call the `swarm` tool exactly once with the JSON `spec` object below.\n"
-        "After the tool returns, summarize results and next actions.\n\n"
-        "spec:\n"
-        "```json\n"
-        f"{spec_json}\n"
-        "```"
-    )
-
-
-@dataclass(frozen=True)
-class ParsedEvent:
-    kind: str
-    text: str
-    meta: dict[str, str] | None = None
-
-
-class _DaemonTransport:
-    @property
-    def pid(self) -> int:
-        raise NotImplementedError
-
-    def poll(self) -> int | None:
-        raise NotImplementedError
-
-    def wait(self, timeout: float | None = None) -> int:
-        raise NotImplementedError
-
-    def read_line(self) -> str:
-        raise NotImplementedError
-
-    def send_command(self, cmd_dict: dict[str, Any]) -> bool:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        raise NotImplementedError
-
-
-class _SubprocessTransport(_DaemonTransport):
-    def __init__(self, proc: subprocess.Popen[str]) -> None:
-        self._proc = proc
-
-    @property
-    def pid(self) -> int:
-        return int(self._proc.pid)
-
-    def poll(self) -> int | None:
-        return self._proc.poll()
-
-    def wait(self, timeout: float | None = None) -> int:
-        return int(self._proc.wait(timeout=timeout))
-
-    def read_line(self) -> str:
-        stdout = self._proc.stdout
-        if stdout is None:
-            return ""
-        return stdout.readline()
-
-    def send_command(self, cmd_dict: dict[str, Any]) -> bool:
-        stdin = self._proc.stdin
-        if stdin is None:
-            return False
-        try:
-            payload = _json.dumps(cmd_dict, ensure_ascii=False) + "\n"
-            stdin.write(payload)
-            stdin.flush()
-        except Exception:
-            return False
-        return True
-
-    def close(self) -> None:
-        stop_process(self._proc)
-
-
-class _SocketTransport(_DaemonTransport):
-    def __init__(
-        self,
-        *,
-        client: RuntimeServiceClient,
-        session_id: str,
-        broker_pid: int | None = None,
-        pending_events: list[dict[str, Any]] | None = None,
-    ) -> None:
-        self._client = client
-        self._session_id = session_id
-        self._broker_pid = int(broker_pid) if isinstance(broker_pid, int) else None
-        self._pending_events = list(pending_events or [])
-        self._closed = False
-        self._poll_code: int | None = None
-
-    @classmethod
-    def connect(
-        cls,
-        *,
-        session_id: str,
-        cwd: Path,
-        client_name: str,
-        surface: str,
-    ) -> _SocketTransport:
-        discovery = runtime_discovery_path(cwd=cwd)
-        if not discovery.exists():
-            raise FileNotFoundError(f"Runtime discovery file not found: {discovery}")
-
-        client = RuntimeServiceClient.from_discovery_file(discovery)
-        client.connect()
-        hello = client.hello(client_name=client_name, surface=surface) or {}
-        if str(hello.get("event", "")).strip().lower() == "error":
-            message = str(hello.get("message", hello)).strip() or "hello failed"
-            client.close()
-            raise RuntimeError(message)
-
-        attach = client.attach(session_id=session_id, cwd=str(cwd)) or {}
-        if str(attach.get("event", "")).strip().lower() == "error":
-            message = str(attach.get("message", attach)).strip() or "attach failed"
-            client.close()
-            raise RuntimeError(message)
-
-        broker_pid = hello.get("pid")
-        return cls(
-            client=client,
-            session_id=session_id,
-            broker_pid=(int(broker_pid) if isinstance(broker_pid, int) else None),
-            pending_events=[attach] if isinstance(attach, dict) else [],
-        )
-
-    @property
-    def pid(self) -> int:
-        return int(self._broker_pid) if self._broker_pid is not None else -1
-
-    def poll(self) -> int | None:
-        return self._poll_code if self._closed else None
-
-    def wait(self, timeout: float | None = None) -> int:
-        start = time.monotonic()
-        while not self._closed:
-            if timeout is not None and (time.monotonic() - start) >= timeout:
-                raise subprocess.TimeoutExpired(["runtime-socket"], timeout)
-            time.sleep(0.01)
-        return int(self._poll_code or 0)
-
-    def read_line(self) -> str:
-        if self._pending_events:
-            event = self._pending_events.pop(0)
-            return _json.dumps(event, ensure_ascii=False) + "\n"
-        if self._closed:
-            return ""
-        event = self._client.read_event()
-        if event is None:
-            self._closed = True
-            self._poll_code = 0
-            return ""
-        return _json.dumps(event, ensure_ascii=False) + "\n"
-
-    def send_command(self, cmd_dict: dict[str, Any]) -> bool:
-        if self._closed:
-            return False
-        payload = dict(cmd_dict)
-        cmd = str(payload.get("cmd", "")).strip().lower()
-        if cmd == "shutdown":
-            payload = {"cmd": "shutdown_session"}
-        try:
-            self._client.send_command(payload)
-        except Exception:
-            self._closed = True
-            self._poll_code = 1
-            return False
-        if str(payload.get("cmd", "")).strip().lower() == "shutdown_session":
-            self.close()
-        return True
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._poll_code = 0
-        self._client.close()
-
-
 def _sanitize_context_source_id(value: str) -> str:
     token = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (value or "").strip())
     return token.strip("-") or uuid.uuid4().hex[:12]
@@ -397,15 +289,9 @@ def _normalize_context_source(source: dict[str, Any]) -> dict[str, str] | None:
         normalized["id"] = _sanitize_context_source_id(source_id)
     else:
         source_seed = (
-            source.get("path", "")
-            or source.get("text", "")
-            or source.get("name", "")
-            or source.get("kb_id", "")
+            source.get("path", "") or source.get("text", "") or source.get("name", "") or source.get("kb_id", "")
         )
-        seed = (
-            str(source_seed).strip()
-            or uuid.uuid4().hex
-        )
+        seed = str(source_seed).strip() or uuid.uuid4().hex
         normalized["id"] = _sanitize_context_source_id(f"{source_type}-{seed}")
 
     if source_type == "file":
@@ -467,168 +353,6 @@ def _normalize_context_sources(raw_sources: Any) -> list[dict[str, str]]:
     return normalized
 
 
-def _strip_sop_frontmatter(markdown: str) -> tuple[dict[str, str], str]:
-    text = (markdown or "").lstrip("\ufeff")
-    if not text.startswith("---\n"):
-        return {}, text.strip()
-    end = text.find("\n---\n", 4)
-    if end < 0:
-        return {}, text.strip()
-    header = text[4:end].strip()
-    body = text[end + len("\n---\n") :].strip()
-    meta: dict[str, str] = {}
-    for line in header.splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        k = key.strip().lower()
-        v = value.strip()
-        if k and v:
-            meta[k] = v
-    return meta, body
-
-
-def _first_sop_paragraph(markdown: str) -> str:
-    _meta, body = _strip_sop_frontmatter(markdown)
-    lines = [line.rstrip() for line in body.splitlines()]
-    paragraph_lines: list[str] = []
-    started = False
-    for raw in lines:
-        line = raw.strip()
-        if not line:
-            if started:
-                break
-            continue
-        if line.startswith("#") and not started:
-            continue
-        paragraph_lines.append(line)
-        started = True
-    preview = " ".join(paragraph_lines).strip()
-    if not preview:
-        return "(no preview available)"
-    if len(preview) > 220:
-        return preview[:219].rstrip() + "…"
-    return preview
-
-
-def _load_sop_file(path: Path) -> tuple[str, str]:
-    raw = path.read_text(encoding="utf-8", errors="replace")
-    meta, body = _strip_sop_frontmatter(raw)
-    file_name = path.name
-    derived = file_name[: -len(_SOP_FILE_SUFFIX)] if file_name.endswith(_SOP_FILE_SUFFIX) else path.stem
-    name = str(meta.get("name", derived)).strip() or derived
-    return name, body.strip()
-
-
-def discover_available_sops() -> list[dict[str, str]]:
-    records: dict[str, dict[str, str]] = {}
-
-    def _record_source_priority(source: str) -> int:
-        if source == _SOP_SOURCE_LOCAL:
-            return _SOP_SOURCE_PRIORITY[_SOP_SOURCE_LOCAL]
-        if source.startswith("pack:"):
-            return _SOP_SOURCE_PRIORITY["pack"]
-        return _SOP_SOURCE_PRIORITY[_SOP_SOURCE_STRANDS]
-
-    def _add_record(*, name: str, path: str, source: str, content: str) -> None:
-        sop_name = name.strip()
-        if not sop_name:
-            return
-        existing = records.get(sop_name)
-        priority = _record_source_priority(source)
-        if existing is not None:
-            existing_priority = _record_source_priority(existing.get("source", ""))
-            if existing_priority <= priority:
-                return
-        body = content.strip()
-        preview = _first_sop_paragraph(body)
-        records[sop_name] = {
-            "name": sop_name,
-            "path": path.strip(),
-            "source": source.strip(),
-            "first_paragraph_preview": preview,
-            "content": body,
-        }
-
-    local_dirs: list[Path] = []
-    for candidate in (Path.cwd() / "sops", Path(__file__).resolve().parents[1] / "sops"):
-        if candidate.exists() and candidate.is_dir():
-            local_dirs.append(candidate.resolve())
-    seen_local: set[str] = set()
-    for directory in local_dirs:
-        key = str(directory)
-        if key in seen_local:
-            continue
-        seen_local.add(key)
-        for file_path in sorted(directory.glob(f"*{_SOP_FILE_SUFFIX}")):
-            if not file_path.is_file():
-                continue
-            with contextlib.suppress(Exception):
-                name, content = _load_sop_file(file_path)
-                _add_record(name=name, path=str(file_path.resolve()), source=_SOP_SOURCE_LOCAL, content=content)
-
-    try:
-        from swarmee_river.packs import iter_packs
-        from swarmee_river.settings import load_settings
-
-        settings = load_settings()
-        for pack in iter_packs(settings):
-            if not pack.enabled:
-                continue
-            sop_dir = pack.sops_dir
-            if not sop_dir.exists() or not sop_dir.is_dir():
-                continue
-            source_label = f"pack:{pack.name}"
-            for file_path in sorted(sop_dir.glob(f"*{_SOP_FILE_SUFFIX}")):
-                if not file_path.is_file():
-                    continue
-                with contextlib.suppress(Exception):
-                    name, content = _load_sop_file(file_path)
-                    _add_record(name=name, path=str(file_path.resolve()), source=source_label, content=content)
-    except Exception:
-        pass
-
-    try:
-        import strands_agents_sops as strands_sops
-
-        module_path = Path(getattr(strands_sops, "__file__", "")).resolve().parent
-        candidate_dirs = [module_path / "sops", module_path]
-        saw_file = False
-        for directory in candidate_dirs:
-            if not directory.exists() or not directory.is_dir():
-                continue
-            for file_path in sorted(directory.glob(f"*{_SOP_FILE_SUFFIX}")):
-                if not file_path.is_file():
-                    continue
-                saw_file = True
-                with contextlib.suppress(Exception):
-                    name, content = _load_sop_file(file_path)
-                    _add_record(name=name, path=str(file_path.resolve()), source=_SOP_SOURCE_STRANDS, content=content)
-        if not saw_file:
-            for attr_name in dir(strands_sops):
-                if attr_name.startswith("_"):
-                    continue
-                value = getattr(strands_sops, attr_name, None)
-                if not isinstance(value, str) or len(value.strip()) < 40:
-                    continue
-                meta, body = _strip_sop_frontmatter(value)
-                name = str(meta.get("name", attr_name)).strip() or attr_name
-                _add_record(
-                    name=name,
-                    path=f"{strands_sops.__name__}.{attr_name}",
-                    source=_SOP_SOURCE_STRANDS,
-                    content=body.strip(),
-                )
-    except Exception:
-        pass
-
-    return [records[name] for name in sorted(records.keys())]
-
-
-def discover_available_sop_names() -> list[str]:
-    return [record["name"] for record in discover_available_sops()]
-
-
 def build_swarmee_cmd(prompt: str, *, auto_approve: bool) -> list[str]:
     """Build a subprocess command for a one-shot Swarmee run."""
     command = [sys.executable, "-u", "-m", "swarmee_river.swarmee"]
@@ -643,45 +367,6 @@ def build_swarmee_daemon_cmd() -> list[str]:
     return [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
 
 
-def extract_plan_section(output: str) -> str | None:
-    """Extract the one-shot plan block beginning at 'Proposed plan:' if present."""
-    marker = "Proposed plan:"
-    marker_index = output.find(marker)
-    if marker_index < 0:
-        return None
-
-    trailing_hint_prefix = "Plan generated. Re-run with --yes"
-    candidate = output[marker_index:]
-    extracted_lines: list[str] = []
-    for line in candidate.splitlines():
-        if not extracted_lines:
-            local_index = line.find(marker)
-            if local_index >= 0:
-                line = line[local_index:]
-        if line.strip().startswith(trailing_hint_prefix):
-            break
-        extracted_lines.append(line.rstrip())
-
-    while extracted_lines and not extracted_lines[-1].strip():
-        extracted_lines.pop()
-
-    if not extracted_lines:
-        return None
-
-    extracted = "\n".join(extracted_lines).strip()
-    return extracted or None
-
-
-def looks_like_plan_output(text: str) -> bool:
-    """Detect whether one-shot output likely contains a generated plan."""
-    return extract_plan_section(text) is not None
-
-
-def render_tui_hint_after_plan() -> str:
-    """Hint shown when a plan-only run is detected."""
-    return "Plan detected. Type /approve to execute, /replan to regenerate, /clearplan to clear."
-
-
 def is_multiline_newline_key(event: Any) -> bool:
     """Detect Shift+Enter, Alt+Enter, or Ctrl+J — NOT plain Enter."""
     key = str(getattr(event, "key", "")).lower()
@@ -691,8 +376,11 @@ def is_multiline_newline_key(event: Any) -> bool:
     # Explicit modifier+enter combinations only.
     # Plain Enter must NOT match — it submits the prompt.
     modifier_enter_keys = {
-        "shift+enter", "shift+return", "shift+ctrl+m",
-        "alt+enter", "alt+return",
+        "shift+enter",
+        "shift+return",
+        "shift+ctrl+m",
+        "alt+enter",
+        "alt+return",
         "ctrl+j",
     }
     if key in modifier_enter_keys:
@@ -702,163 +390,6 @@ def is_multiline_newline_key(event: Any) -> bool:
     if any(alias in modifier_enter_keys for alias in aliases):
         return True
     return False
-
-
-def _extract_paths_from_text(text: str) -> list[str]:
-    return [match.strip() for match in _PATH_TOKEN_RE.findall(text) if match.strip()]
-
-
-def sanitize_output_text(text: str) -> str:
-    """Remove common control sequences that render poorly in a TUI transcript."""
-    cleaned = text.replace("\r", "")
-    cleaned = _OSC_ESCAPE_RE.sub("", cleaned)
-    cleaned = _ANSI_ESCAPE_RE.sub("", cleaned)
-    # Remove any stray ESC bytes left by malformed or partial sequences.
-    return cleaned.replace("\x1b", "")
-
-
-def resolve_model_config_summary(*, provider_override: str | None = None, tier_override: str | None = None) -> str:
-    """
-    Best-effort summary of the configured model selection (provider/tier/model_id) for display in the TUI.
-
-    This is intentionally approximate: final provider/model can still vary at runtime based on CLI args,
-    environment variables, and credential availability.
-    """
-    try:
-        from swarmee_river.settings import load_settings
-        from swarmee_river.utils.provider_utils import resolve_model_provider
-    except Exception:
-        return "Model: (unavailable)"
-
-    try:
-        settings = load_settings()
-    except Exception:
-        return "Model: (unavailable)"
-
-    selected_provider, notice = resolve_model_provider(
-        cli_provider=None,
-        env_provider=provider_override if provider_override is not None else os.getenv("SWARMEE_MODEL_PROVIDER"),
-        settings_provider=settings.models.provider,
-    )
-    tier = (
-        tier_override
-        if tier_override is not None
-        else (os.getenv("SWARMEE_MODEL_TIER") or settings.models.default_tier)
-    )
-    tier = (tier or "balanced").strip().lower()
-
-    model_id: str | None = None
-    try:
-        # Provider-specific tiers are the primary source.
-        provider_cfg = settings.models.providers.get(selected_provider)
-        if provider_cfg:
-            tier_cfg = provider_cfg.tiers.get(tier)
-            if tier_cfg and tier_cfg.model_id:
-                model_id = tier_cfg.model_id
-        # Global tier overrides.
-        if model_id is None:
-            global_tier_cfg = settings.models.tiers.get(tier)
-            if global_tier_cfg and global_tier_cfg.model_id:
-                model_id = global_tier_cfg.model_id
-    except Exception:
-        model_id = None
-
-    suffix = f" ({model_id})" if model_id else ""
-    fallback = " (fallback)" if notice else ""
-    return f"Model: {selected_provider}/{tier}{suffix}{fallback}"
-
-
-def _model_option_model_id(
-    *,
-    settings: Any,
-    provider_name: str,
-    tier_name: str,
-) -> str | None:
-    model_id: str | None = None
-    provider_cfg = settings.models.providers.get(provider_name)
-    if provider_cfg is not None:
-        provider_tier_cfg = provider_cfg.tiers.get(tier_name)
-        if provider_tier_cfg is not None and provider_tier_cfg.model_id:
-            model_id = provider_tier_cfg.model_id
-    if model_id is None:
-        global_tier_cfg = settings.models.tiers.get(tier_name)
-        if global_tier_cfg is not None and global_tier_cfg.model_id:
-            model_id = global_tier_cfg.model_id
-    return model_id
-
-
-def model_select_options(
-    *,
-    provider_override: str | None = None,
-    tier_override: str | None = None,
-) -> tuple[list[tuple[str, str]], str]:
-    """
-    Build model selector dropdown options and the currently selected option value.
-
-    Returns:
-        (options, selected_value)
-    """
-    auto_summary = resolve_model_config_summary().removeprefix("Model: ").strip()
-    options: list[tuple[str, str]] = [(f"Auto ({auto_summary})", _MODEL_AUTO_VALUE)]
-    selected_value = _MODEL_AUTO_VALUE
-
-    try:
-        from swarmee_river.settings import load_settings
-        from swarmee_river.utils.provider_utils import resolve_model_provider
-    except Exception:
-        return options, selected_value
-
-    try:
-        settings = load_settings()
-    except Exception:
-        return options, selected_value
-
-    selected_provider, _ = resolve_model_provider(
-        cli_provider=None,
-        env_provider=provider_override if provider_override is not None else os.getenv("SWARMEE_MODEL_PROVIDER"),
-        settings_provider=settings.models.provider,
-    )
-    selected_tier = (
-        tier_override
-        if tier_override is not None
-        else (os.getenv("SWARMEE_MODEL_TIER") or settings.models.default_tier)
-    )
-    selected_provider = (selected_provider or "").strip().lower()
-    selected_tier = (selected_tier or "").strip().lower()
-
-    provider_cfg = settings.models.providers.get(selected_provider)
-    tier_names = sorted(provider_cfg.tiers.keys()) if provider_cfg and provider_cfg.tiers else []
-
-    for tier_name in tier_names:
-        value = f"{selected_provider}|{tier_name}"
-        model_id = _model_option_model_id(settings=settings, provider_name=selected_provider, tier_name=tier_name)
-        suffix = f" ({model_id})" if model_id else ""
-        options.append((f"{selected_provider}/{tier_name}{suffix}", value))
-        if tier_name == selected_tier:
-            selected_value = value
-
-    if provider_override is None and tier_override is None:
-        selected_value = _MODEL_AUTO_VALUE
-
-    available_values = {value for _, value in options}
-    if selected_value not in available_values:
-        selected_value = _MODEL_AUTO_VALUE
-    return options, selected_value
-
-
-def parse_model_select_value(value: str | None) -> tuple[str, str] | None:
-    """Parse a model selector value like ``provider|tier``."""
-    selected = (value or "").strip().lower()
-    if not selected or selected in {_MODEL_AUTO_VALUE, _MODEL_LOADING_VALUE}:
-        return None
-    if "|" not in selected:
-        return None
-    provider, tier = selected.split("|", 1)
-    provider_name = provider.strip().lower()
-    tier_name = tier.strip().lower()
-    if not provider_name or not tier_name:
-        return None
-    return provider_name, tier_name
 
 
 def should_skip_active_run_tier_warning(
@@ -871,250 +402,6 @@ def should_skip_active_run_tier_warning(
     requested = f"{requested_provider.strip().lower()}|{requested_tier.strip().lower()}"
     pending = (pending_value or "").strip().lower()
     return bool(requested) and requested == pending
-
-
-def choose_daemon_model_select_value(
-    *,
-    provider: str,
-    tier: str,
-    option_values: list[str],
-    pending_value: str | None = None,
-    override_provider: str | None = None,
-    override_tier: str | None = None,
-) -> str | None:
-    """Choose which model-select value should be shown for daemon-backed options."""
-    available = [str(v).strip().lower() for v in option_values if isinstance(v, str) and str(v).strip()]
-    if not available:
-        return None
-
-    provider_name = (provider or "").strip().lower()
-    tier_name = (tier or "").strip().lower()
-
-    pending = (pending_value or "").strip().lower()
-    if pending and pending in available:
-        return pending
-
-    override_provider_name = (override_provider or "").strip().lower()
-    override_tier_name = (override_tier or "").strip().lower()
-    if provider_name and override_provider_name == provider_name and override_tier_name:
-        override_value = f"{provider_name}|{override_tier_name}"
-        if override_value in available:
-            return override_value
-
-    daemon_value = f"{provider_name}|{tier_name}" if provider_name and tier_name else ""
-    if daemon_value and daemon_value in available:
-        return daemon_value
-    return available[0]
-
-
-def daemon_model_select_options(
-    *,
-    provider: str,
-    tier: str,
-    tiers: list[dict[str, Any]],
-    pending_value: str | None = None,
-    override_provider: str | None = None,
-    override_tier: str | None = None,
-) -> tuple[list[tuple[str, str]], str]:
-    """Build model selector options for daemon-backed provider/tier metadata."""
-    provider_name = (provider or "").strip().lower()
-
-    options: list[tuple[str, str]] = []
-    for item in tiers:
-        item_provider = str(item.get("provider", "")).strip().lower()
-        item_tier = str(item.get("name", "")).strip().lower()
-        if not item_tier or item_provider != provider_name:
-            continue
-        if not bool(item.get("available", False)):
-            continue
-        model_id = str(item.get("model_id", "")).strip()
-        suffix = f" ({model_id})" if model_id else ""
-        value = f"{item_provider}|{item_tier}"
-        options.append((f"{item_provider}/{item_tier}{suffix}", value))
-
-    if not options:
-        return [("No available tiers", _MODEL_LOADING_VALUE)], _MODEL_LOADING_VALUE
-
-    selected_value = choose_daemon_model_select_value(
-        provider=provider_name,
-        tier=tier,
-        option_values=[value for _label, value in options],
-        pending_value=pending_value,
-        override_provider=override_provider,
-        override_tier=override_tier,
-    )
-    if selected_value is None:
-        selected_value = options[0][1]
-    return options, selected_value
-
-
-def choose_model_summary_parts(
-    *,
-    daemon_provider: str | None,
-    daemon_tier: str | None,
-    daemon_model_id: str | None,
-    daemon_tiers: list[dict[str, Any]] | None = None,
-    pending_value: str | None = None,
-    override_provider: str | None = None,
-    override_tier: str | None = None,
-) -> tuple[str | None, str | None, str | None]:
-    """Choose provider/tier/model_id for top-level model summary display."""
-    def _lookup_model_id(provider_name: str, tier_name: str) -> str | None:
-        tiers = daemon_tiers if isinstance(daemon_tiers, list) else []
-        for item in tiers:
-            item_provider = str(item.get("provider", "")).strip().lower()
-            item_tier = str(item.get("name", "")).strip().lower()
-            if item_provider != provider_name or item_tier != tier_name:
-                continue
-            model_id_value = str(item.get("model_id", "")).strip()
-            if model_id_value:
-                return model_id_value
-        return None
-
-    pending = (pending_value or "").strip().lower()
-    if pending and "|" in pending:
-        pending_provider, pending_tier = pending.split("|", 1)
-        pending_provider = pending_provider.strip().lower()
-        pending_tier = pending_tier.strip().lower()
-        if pending_provider and pending_tier:
-            # Keep selected tier stable in header while daemon confirmation is in-flight.
-            if (
-                daemon_provider
-                and daemon_tier
-                and daemon_model_id
-                and pending_provider == daemon_provider.strip().lower()
-                and pending_tier == daemon_tier.strip().lower()
-            ):
-                return pending_provider, pending_tier, daemon_model_id
-            return pending_provider, pending_tier, _lookup_model_id(pending_provider, pending_tier)
-
-    override_provider_name = (override_provider or "").strip().lower()
-    override_tier_name = (override_tier or "").strip().lower()
-    if override_provider_name and override_tier_name:
-        if (
-            daemon_provider
-            and daemon_tier
-            and daemon_model_id
-            and override_provider_name == daemon_provider.strip().lower()
-            and override_tier_name == daemon_tier.strip().lower()
-        ):
-            return override_provider_name, override_tier_name, daemon_model_id
-        return override_provider_name, override_tier_name, _lookup_model_id(override_provider_name, override_tier_name)
-
-    provider_name = (daemon_provider or "").strip().lower()
-    tier_name = (daemon_tier or "").strip().lower()
-    if provider_name and tier_name:
-        model_id = str(daemon_model_id).strip() if daemon_model_id is not None else None
-        if not model_id:
-            model_id = _lookup_model_id(provider_name, tier_name)
-        return provider_name, tier_name, (model_id or None)
-    return None, None, None
-
-
-def classify_copy_command(normalized: str) -> str | None:
-    """Classify copy command variants into action keys."""
-    return _COPY_COMMAND_MAP.get(normalized)
-
-
-def classify_model_command(normalized: str) -> tuple[str, str | None] | None:
-    """Classify /model commands into action + optional argument."""
-    if normalized == "/model":
-        return "help", None
-    if normalized == "/model show":
-        return "show", None
-    if normalized == "/model list":
-        return "list", None
-    if normalized == "/model reset":
-        return "reset", None
-    if normalized.startswith("/model provider "):
-        return "provider", normalized.split(maxsplit=2)[2].strip()
-    if normalized.startswith("/model tier "):
-        return "tier", normalized.split(maxsplit=2)[2].strip()
-    return None
-
-
-def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
-    """Classify commands handled before active-run gating."""
-    normalized = text.lower()
-    if normalized == "/restore":
-        return "restore", None
-    if normalized == "/new":
-        return "new", None
-    if normalized == "/context":
-        return "context_usage", None
-    if normalized.startswith("/context "):
-        return "context", text[len("/context "):]
-    if normalized == "/sop":
-        return "sop_usage", None
-    if normalized.startswith("/sop "):
-        return "sop", text[len("/sop "):]
-    if normalized.startswith("/open "):
-        return "open", text[len("/open "):]
-    if normalized == "/open":
-        return "open_usage", None
-    if normalized.startswith("/expand "):
-        return "expand", text[len("/expand "):]
-    if normalized == "/expand":
-        return "expand_usage", None
-    if normalized.startswith("/search "):
-        return "search", text[len("/search "):]
-    if normalized == "/search":
-        return "search_usage", None
-    if normalized == "/text":
-        return "text", None
-    if normalized.startswith("/text "):
-        return "text_usage", None
-    if normalized == "/thinking":
-        return "thinking", None
-    if normalized.startswith("/thinking "):
-        return "thinking_usage", None
-    if normalized == "/compact":
-        return "compact", None
-    if normalized.startswith("/compact "):
-        return "compact_usage", None
-    if normalized in {"/stop", ":stop"}:
-        return "stop", None
-    if normalized in {"/exit", ":exit"}:
-        return "exit", None
-    if normalized in {"/daemon restart", "/restart-daemon"}:
-        return "daemon_restart", None
-    if normalized == "/consent":
-        return "consent_usage", None
-    if normalized.startswith("/consent "):
-        return "consent", normalized.split(maxsplit=1)[1].strip()
-    if normalized == "/connect":
-        return "connect", "github_copilot"
-    if normalized.startswith("/connect "):
-        return "connect", normalized.split(maxsplit=1)[1].strip()
-    if normalized == "/auth":
-        return "auth_usage", None
-    if normalized.startswith("/auth "):
-        return "auth", text[len("/auth "):].strip()
-    model = classify_model_command(normalized)
-    if model is not None:
-        action, argument = model
-        return f"model:{action}", argument
-    return None
-
-
-def classify_post_run_command(text: str) -> tuple[str, str | None] | None:
-    """Classify commands handled after active-run gating."""
-    normalized = text.lower()
-    if normalized == "/approve":
-        return "approve", None
-    if normalized == "/replan":
-        return "replan", None
-    if normalized == "/clearplan":
-        return "clearplan", None
-    if normalized == "/plan":
-        return "plan_mode", None
-    if text.startswith("/plan "):
-        return "plan_prompt", text[len("/plan "):].strip()
-    if normalized == "/run":
-        return "run_mode", None
-    if text.startswith("/run "):
-        return "run_prompt", text[len("/run "):].strip()
-    return None
 
 
 def classify_tui_error_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -1167,88 +454,6 @@ def summarize_error_for_toast(error_info: dict[str, Any]) -> tuple[str, str, flo
     return "Fatal error", "error", _FATAL_TOAST_TIMEOUT_S
 
 
-def parse_output_line(line: str) -> ParsedEvent | None:
-    """Best-effort parser for notable subprocess output events."""
-    text = line.rstrip("\n")
-    stripped = text.strip()
-    lower = stripped.lower()
-
-    if stripped.startswith(_PROVIDER_NOISE_PREFIX) and _PROVIDER_FALLBACK_PHRASE in lower:
-        return ParsedEvent(kind="noise", text=text)
-
-    if "~ consent>" in lower:
-        return ParsedEvent(kind="consent_prompt", text=text)
-
-    if stripped.startswith("Proposed plan:"):
-        return ParsedEvent(kind="plan_header", text=text)
-
-    if "[tool result truncated:" in lower:
-        match = _TRUNCATED_ARTIFACT_RE.search(text)
-        if match:
-            path = match.group("path").strip()
-            return ParsedEvent(kind="artifact", text=text, meta={"path": path})
-        return ParsedEvent(kind="tool_truncated", text=text)
-
-    if lower.startswith("patch:"):
-        path = stripped.split(":", 1)[1].strip()
-        if path:
-            return ParsedEvent(kind="artifact", text=text, meta={"path": path})
-        return ParsedEvent(kind="patch", text=text)
-
-    if lower.startswith("backups:"):
-        rest = stripped.split(":", 1)[1].strip()
-        paths = _extract_paths_from_text(rest)
-        if paths:
-            return ParsedEvent(kind="artifact", text=text, meta={"paths": ",".join(paths)})
-        return ParsedEvent(kind="backups", text=text)
-
-    if stripped.startswith("Error:") or stripped.startswith("ERROR:"):
-        return ParsedEvent(kind="error", text=text)
-
-    if "operation not permitted" in lower and "/bin/ps" in lower:
-        return ParsedEvent(kind="warning", text=text)
-
-    if "warning" in lower or "deprecationwarning" in lower or "runtimewarning" in lower or "userwarning" in lower:
-        return ParsedEvent(kind="warning", text=text)
-
-    if lower.startswith("[tool ") and any(token in lower for token in {" start", " started", " running"}):
-        return ParsedEvent(kind="tool_start", text=text)
-
-    if lower.startswith("[tool ") and any(token in lower for token in {" done", " end", " finished", " stopped"}):
-        return ParsedEvent(kind="tool_stop", text=text)
-
-    return None
-
-
-def parse_tui_event(line: str) -> dict[str, Any] | None:
-    """Parse a JSONL event line emitted by TuiCallbackHandler. Returns None for non-JSON lines."""
-    stripped = sanitize_output_text(line).strip()
-    if not stripped.startswith("{"):
-        return None
-    try:
-        parsed = _json.loads(stripped)
-        return parsed if isinstance(parsed, dict) else None
-    except (ValueError, _json.JSONDecodeError):
-        return None
-
-
-def extract_tui_text_chunk(event: dict[str, Any]) -> str:
-    """Extract a text chunk from a structured TUI event payload."""
-    for key in ("data", "text", "delta", "content", "output_text", "outputText", "textDelta"):
-        value = event.get(key)
-        if isinstance(value, str):
-            return value
-    return ""
-
-
-def extract_plan_section_from_output(output: str) -> str | None:
-    """Extract plan text from mixed output by ignoring structured JSONL event lines."""
-    plain_lines = [line for line in output.splitlines() if parse_tui_event(line) is None]
-    if not plain_lines:
-        return None
-    return extract_plan_section("\n".join(plain_lines))
-
-
 def artifact_paths_from_event(event: ParsedEvent) -> list[str]:
     """Extract artifact paths from a parsed event."""
     if event.meta is None:
@@ -1266,496 +471,9 @@ def artifact_paths_from_event(event: ParsedEvent) -> list[str]:
     return result
 
 
-def add_recent_artifacts(existing: list[str], new_paths: list[str], *, max_items: int = 20) -> list[str]:
-    """Dedupe and cap artifact paths while preserving recency."""
-    updated = list(existing)
-    for item in new_paths:
-        path = item.strip()
-        if not path:
-            continue
-        if path in updated:
-            updated.remove(path)
-        updated.append(path)
-    if len(updated) > max_items:
-        updated = updated[-max_items:]
-    return updated
-
-
-def normalize_artifact_index_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize an artifact index record for TUI list/detail rendering."""
-    if not isinstance(entry, dict):
-        return None
-    raw_path = str(entry.get("path", "")).strip()
-    if not raw_path:
-        return None
-
-    meta_raw = entry.get("meta")
-    meta = meta_raw if isinstance(meta_raw, dict) else {}
-    artifact_id = str(entry.get("id", "")).strip() or Path(raw_path).name
-    name = str(meta.get("name", meta.get("title", ""))).strip()
-    if not name:
-        name = artifact_id
-
-    kind = str(entry.get("kind", "")).strip() or "unknown"
-    created_at = str(entry.get("created_at", "")).strip()
-    bytes_value = entry.get("bytes")
-    chars_value = entry.get("chars")
-
-    return {
-        "item_id": raw_path,
-        "id": artifact_id,
-        "name": name,
-        "kind": kind,
-        "created_at": created_at,
-        "path": raw_path,
-        "bytes": int(bytes_value) if isinstance(bytes_value, int) else None,
-        "chars": int(chars_value) if isinstance(chars_value, int) else None,
-        "meta": meta,
-    }
-
-
-def build_artifact_sidebar_items(entries: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Build SidebarList item payloads from normalized artifact entries."""
-    items: list[dict[str, str]] = []
-    for entry in entries:
-        normalized = normalize_artifact_index_entry(entry)
-        if normalized is None:
-            continue
-        kind = str(normalized.get("kind", "unknown")).strip() or "unknown"
-        artifact_id = str(normalized.get("id", "")).strip() or "(no-id)"
-        name = str(normalized.get("name", normalized.get("id", ""))).strip() or "(unnamed)"
-        label = f"{name} ({artifact_id})" if name != artifact_id else artifact_id
-        created_at = str(normalized.get("created_at", "")).strip() or "unknown time"
-        path = str(normalized.get("path", "")).strip()
-        items.append(
-            {
-                "id": str(normalized.get("item_id", path)).strip() or path,
-                "title": f"{kind} · {label}",
-                "subtitle": f"{created_at} · {path}",
-                "state": "default",
-            }
-        )
-    return items
-
-
-def artifact_context_source_payload(path: str, *, source_id: str | None = None) -> dict[str, str]:
-    """Build a file context-source payload for an artifact path."""
-    normalized_path = str(path or "").strip()
-    if not normalized_path:
-        raise ValueError("artifact path is required")
-    return {
-        "type": "file",
-        "path": normalized_path,
-        "id": _sanitize_context_source_id(source_id or uuid.uuid4().hex),
-    }
-
-
-def build_session_issue_sidebar_items(issues: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Build SidebarList payloads from structured session issues."""
-    def _truncate_text(value: str, *, max_chars: int = 88) -> str:
-        text = value.strip().replace("\n", " ")
-        if len(text) <= max_chars:
-            return text
-        return text[: max_chars - 1].rstrip() + "…"
-
-    items: list[dict[str, str]] = []
-    for issue in issues:
-        issue_id = str(issue.get("id", "")).strip()
-        if not issue_id:
-            continue
-        severity = str(issue.get("severity", "warning")).strip().lower()
-        if severity not in {"warning", "error"}:
-            severity = "warning"
-        title = str(issue.get("title", "")).strip() or "Issue"
-        created_at = str(issue.get("created_at", "")).strip()
-        text = str(issue.get("text", "")).strip()
-        subtitle_parts = []
-        if created_at:
-            subtitle_parts.append(created_at)
-        if text:
-            subtitle_parts.append(_truncate_text(text, max_chars=88))
-        subtitle = " | ".join(subtitle_parts)
-        items.append(
-            {
-                "id": issue_id,
-                "title": title,
-                "subtitle": subtitle,
-                "state": "error" if severity == "error" else "warning",
-            }
-        )
-    return items
-
-
-def render_session_issue_detail_text(issue: dict[str, Any] | None) -> str:
-    """Render a detail panel body for a selected session issue."""
-    if not isinstance(issue, dict):
-        return "(no issue selected)"
-    lines = [
-        f"Severity: {str(issue.get('severity', 'warning')).strip() or 'warning'}",
-        f"Title: {str(issue.get('title', 'Issue')).strip() or 'Issue'}",
-        f"When: {str(issue.get('created_at', '')).strip() or '(unknown)'}",
-        "",
-        str(issue.get("text", "")).strip() or "(no details)",
-    ]
-    tool_use_id = str(issue.get("tool_use_id", "")).strip()
-    if tool_use_id:
-        lines.append("")
-        lines.append(f"Tool Use ID: {tool_use_id}")
-    tool_name = str(issue.get("tool_name", "")).strip()
-    if tool_name:
-        lines.append(f"Tool: {tool_name}")
-    next_tier = str(issue.get("next_tier", "")).strip()
-    if next_tier:
-        lines.append(f"Suggested tier: {next_tier}")
-    return "\n".join(lines)
-
-
-def session_issue_actions(issue: dict[str, Any] | None) -> list[dict[str, str]]:
-    """Return available action buttons for a selected session issue."""
-    if not isinstance(issue, dict):
-        return []
-    category = str(issue.get("category", "")).strip().lower()
-    tool_use_id = str(issue.get("tool_use_id", "")).strip()
-    actions: list[dict[str, str]] = []
-    if category == "tool_failure" and tool_use_id:
-        actions.append({"id": "session_issue_retry_tool", "label": "Retry", "variant": "default"})
-        actions.append({"id": "session_issue_skip_tool", "label": "Skip", "variant": "default"})
-        actions.append({"id": "session_issue_escalate_tier", "label": "Escalate", "variant": "default"})
-        actions.append({"id": "session_issue_interrupt", "label": "Interrupt", "variant": "default"})
-    return actions
-
-
-def normalize_session_view_mode(mode: str | None) -> str:
-    """Normalize session panel mode for Timeline/Issues toggle."""
-    normalized = str(mode or "").strip().lower()
-    if normalized == "issues":
-        return "issues"
-    return "timeline"
-
-
-def classify_session_timeline_event_kind(event: dict[str, Any] | None) -> str:
-    """Classify timeline event kind used for badges/icons."""
-    if not isinstance(event, dict):
-        return "event"
-    name = str(event.get("event", "")).strip().lower()
-    has_error = bool(str(event.get("error", "")).strip())
-    if name == "after_tool_call":
-        if has_error or event.get("success") is False:
-            return "error"
-        return "tool"
-    if name == "after_model_call":
-        return "model"
-    if name == "after_invocation":
-        return "invocation"
-    if has_error:
-        return "error"
-    return "event"
-
-
-def summarize_session_timeline_event(event: dict[str, Any] | None) -> str:
-    """Render compact one-line timeline summary."""
-    if not isinstance(event, dict):
-        return "event"
-    kind = classify_session_timeline_event_kind(event)
-    duration = event.get("duration_s")
-    duration_text = ""
-    if isinstance(duration, (int, float)):
-        duration_text = f" ({float(duration):.1f}s)"
-    if kind in {"tool", "error"}:
-        tool = str(event.get("tool", "")).strip() or "unknown"
-        label = f"tool: {tool}{duration_text}"
-        if kind == "error":
-            return f"{label} error"
-        return label
-    if kind == "model":
-        return f"model call{duration_text}"
-    if kind == "invocation":
-        return f"invocation{duration_text}"
-    return (str(event.get("event", "")).strip() or "event") + duration_text
-
-
-def build_session_timeline_sidebar_items(events: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Build SidebarList payload for session timeline events."""
-    icon_map = {
-        "tool": "⚙",
-        "model": "◉",
-        "invocation": "▶",
-        "error": "✖",
-        "event": "•",
-    }
-    state_map = {
-        "tool": "default",
-        "model": "default",
-        "invocation": "active",
-        "error": "error",
-        "event": "default",
-    }
-    items: list[dict[str, str]] = []
-    for index, event in enumerate(events):
-        if not isinstance(event, dict):
-            continue
-        event_id = str(event.get("id", "")).strip() or f"timeline-{index + 1}"
-        kind = classify_session_timeline_event_kind(event)
-        summary = summarize_session_timeline_event(event)
-        ts = str(event.get("ts", "")).strip()
-        label = str(event.get("event", "")).strip().lower()
-        subtitle = ts if ts else label
-        if ts and label:
-            subtitle = f"{ts} | {label}"
-        items.append(
-            {
-                "id": event_id,
-                "title": f"{icon_map.get(kind, '•')} {summary}",
-                "subtitle": subtitle,
-                "state": state_map.get(kind, "default"),
-            }
-        )
-    return items
-
-
-def render_session_timeline_detail_text(event: dict[str, Any] | None) -> str:
-    """Render detail body for selected timeline event."""
-    if not isinstance(event, dict):
-        return "(no timeline event selected)"
-    payload = dict(event)
-    payload.pop("id", None)
-    summary = summarize_session_timeline_event(event)
-    try:
-        rendered = _json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
-    except Exception:
-        rendered = str(payload)
-    return f"Summary: {summary}\n\nPayload:\n{rendered}"
-
-
-def session_timeline_actions(event: dict[str, Any] | None) -> list[dict[str, str]]:
-    """Actions available for selected timeline event."""
-    if not isinstance(event, dict):
-        return []
-    return [
-        {"id": "session_timeline_copy_json", "label": "Copy JSON", "variant": "default"},
-        {"id": "session_timeline_copy_summary", "label": "Copy summary", "variant": "default"},
-    ]
-
-
-def normalize_agent_studio_view_mode(mode: str | None) -> str:
-    """Normalize Agent Studio sub-view mode."""
-    normalized = str(mode or "").strip().lower()
-    if normalized in {"profile", "tools", "team"}:
-        return normalized
-    return "profile"
-
-
-def _normalized_tool_name_list(raw_values: Any) -> list[str]:
-    values = raw_values if isinstance(raw_values, list) else []
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for item in values:
-        token = str(item).strip()
-        if not token:
-            continue
-        lowered = token.lower()
-        if lowered in seen:
-            continue
-        seen.add(lowered)
-        normalized.append(token)
-    return normalized
-
-
-def normalize_session_safety_overrides(raw_overrides: Any) -> dict[str, Any]:
-    if not isinstance(raw_overrides, dict):
-        return {}
-    normalized: dict[str, Any] = {}
-    consent = str(raw_overrides.get("tool_consent", "")).strip().lower()
-    if consent in _AGENT_TOOL_CONSENT_VALUES:
-        normalized["tool_consent"] = consent
-    allow = _normalized_tool_name_list(raw_overrides.get("tool_allowlist"))
-    if allow:
-        normalized["tool_allowlist"] = allow
-    block = _normalized_tool_name_list(raw_overrides.get("tool_blocklist"))
-    if block:
-        normalized["tool_blocklist"] = block
-    return normalized
-
-
-def _env_tool_list(var_name: str) -> list[str]:
-    raw = os.getenv(var_name, "")
-    if not isinstance(raw, str) or not raw.strip():
-        return []
-    return _normalized_tool_name_list([token for token in raw.split(",")])
-
-
-def _policy_tier_profile(tier_name: str | None) -> tuple[list[str], list[str], str]:
-    tier = str(tier_name or "").strip().lower()
-    try:
-        settings = load_settings()
-    except Exception:
-        return [], [], "ask"
-    profile = settings.harness.tier_profiles.get(tier)
-    allow = list(profile.tool_allowlist) if profile is not None else []
-    block = list(profile.tool_blocklist) if profile is not None else []
-    default_consent = str(settings.safety.tool_consent or "ask").strip().lower()
-    if default_consent not in _AGENT_TOOL_CONSENT_VALUES:
-        default_consent = "ask"
-    return _normalized_tool_name_list(allow), _normalized_tool_name_list(block), default_consent
-
-
-def build_agent_policy_lens(*, tier_name: str | None, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    tier_allow, tier_block, default_consent = _policy_tier_profile(tier_name)
-    normalized_overrides = normalize_session_safety_overrides(overrides)
-
-    effective_allow = (
-        _normalized_tool_name_list(normalized_overrides.get("tool_allowlist"))
-        if "tool_allowlist" in normalized_overrides
-        else list(tier_allow)
-    )
-    effective_block = (
-        _normalized_tool_name_list(normalized_overrides.get("tool_blocklist"))
-        if "tool_blocklist" in normalized_overrides
-        else list(tier_block)
-    )
-    effective_consent = str(normalized_overrides.get("tool_consent", default_consent)).strip().lower()
-    if effective_consent not in _AGENT_TOOL_CONSENT_VALUES:
-        effective_consent = default_consent
-
-    return {
-        "tier": str(tier_name or "").strip().lower() or None,
-        "default": {
-            "tool_consent": default_consent,
-            "tool_allowlist": list(tier_allow),
-            "tool_blocklist": list(tier_block),
-        },
-        "session_overrides": dict(normalized_overrides),
-        "effective": {
-            "tool_consent": effective_consent,
-            "tool_allowlist": list(effective_allow),
-            "tool_blocklist": list(effective_block),
-        },
-        "env": {
-            "enable_tools": _env_tool_list("SWARMEE_ENABLE_TOOLS"),
-            "disable_tools": _env_tool_list("SWARMEE_DISABLE_TOOLS"),
-        },
-    }
-
-
-def build_agent_tools_safety_sidebar_items(policy_lens: dict[str, Any] | None = None) -> list[dict[str, str]]:
-    """Return sidebar items for Tools & Safety Agent Studio view."""
-    lens = policy_lens if isinstance(policy_lens, dict) else {}
-    effective = lens.get("effective", {}) if isinstance(lens.get("effective"), dict) else {}
-    overrides = lens.get("session_overrides", {}) if isinstance(lens.get("session_overrides"), dict) else {}
-    consent = str(effective.get("tool_consent", "ask")).strip().lower() or "ask"
-    effective_allow = _normalized_tool_name_list(effective.get("tool_allowlist"))
-    effective_block = _normalized_tool_name_list(effective.get("tool_blocklist"))
-    override_count = len(overrides)
-    return [
-        {
-            "id": "policy_lens",
-            "title": "Policy Lens",
-            "subtitle": f"consent={consent} | allow={len(effective_allow)} | block={len(effective_block)}",
-            "state": "active",
-        },
-        {
-            "id": "session_overrides",
-            "title": "Session Overrides",
-            "subtitle": f"active fields={override_count}",
-            "state": "warning" if override_count else "default",
-        },
-    ]
-
-
-def render_agent_tools_safety_detail_text(
-    item: dict[str, Any] | None,
-    policy_lens: dict[str, Any] | None = None,
-) -> str:
-    """Render detail text for Tools & Safety records."""
-    if not isinstance(item, dict):
-        return "(no tools/safety item selected)"
-    lens = policy_lens if isinstance(policy_lens, dict) else {}
-    item_id = str(item.get("id", "")).strip()
-    if item_id == "policy_lens":
-        rendered = _json.dumps(lens, ensure_ascii=False, indent=2, sort_keys=True) if lens else "{}"
-        return (
-            "Tools & Safety: Policy Lens\n\n"
-            "Effective tool/safety posture across tier defaults, session overrides, and env controls.\n\n"
-            f"{rendered}"
-        )
-    if item_id == "session_overrides":
-        overrides = lens.get("session_overrides", {}) if isinstance(lens.get("session_overrides"), dict) else {}
-        rendered = _json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True)
-        return (
-            "Tools & Safety: Session Overrides\n\n"
-            "Session-only overrides are layered above tier defaults.\n"
-            "Use the form below to apply or reset tool_consent/tool_allowlist/tool_blocklist.\n\n"
-            f"{rendered}"
-        )
-    return str(item.get("title", "Tools & Safety")).strip() or "(no details)"
-
-
-def build_agent_team_sidebar_items(team_presets: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Return Team Agent Studio sidebar items from profile team presets."""
-    normalized = normalize_team_presets(team_presets or [])
-    if not normalized:
-        return [
-            {
-                "id": "team_preset_none",
-                "title": "No Team Presets",
-                "subtitle": "Create a preset to compose a multi-agent run.",
-                "state": "default",
-            }
-        ]
-
-    items: list[dict[str, Any]] = []
-    for preset in normalized:
-        description = str(preset.get("description", "")).strip()
-        spec = preset.get("spec", {})
-        key_count = len(spec) if isinstance(spec, dict) else 0
-        subtitle = description or f"spec keys: {key_count}"
-        items.append(
-            {
-                "id": str(preset.get("id", "")).strip(),
-                "title": str(preset.get("name", "")).strip() or "Unnamed Team Preset",
-                "subtitle": subtitle,
-                "state": "active" if key_count else "default",
-                "preset": dict(preset),
-            }
-        )
-    return items
-
-
-def render_agent_team_detail_text(item: dict[str, Any] | None) -> str:
-    """Render detail text for Team preset records."""
-    if not isinstance(item, dict):
-        return "(no team item selected)"
-    item_id = str(item.get("id", "")).strip()
-    if item_id == "team_preset_none":
-        return (
-            "Team Presets\n\n"
-            "Create and save a preset to compose multi-agent execution via `swarm`.\n"
-            "Use Save Profile after editing to persist the preset catalog."
-        )
-
-    preset = normalize_team_preset(item.get("preset"))
-    if preset is None:
-        return str(item.get("title", "Team")).strip() or "(no details)"
-    spec_json = _json.dumps(preset.get("spec", {}), ensure_ascii=False, indent=2, sort_keys=True)
-    description = str(preset.get("description", "")).strip() or "(none)"
-    return (
-        "Team Preset\n\n"
-        f"ID: {preset['id']}\n"
-        f"Name: {preset['name']}\n"
-        f"Description: {description}\n\n"
-        "Spec:\n"
-        f"{spec_json}"
-    )
-
-
 def detect_consent_prompt(line: str) -> str | None:
     """Detect consent-related subprocess output lines."""
-    normalized = line.strip().lower()
-    if "~ consent>" in normalized:
-        return "prompt"
-    if "allow tool '" in normalized:
-        return "header"
-    return None
+    return _event_detect_consent_prompt(line)
 
 
 def update_consent_capture(
@@ -1766,101 +484,39 @@ def update_consent_capture(
     max_lines: int = 20,
 ) -> tuple[bool, list[str]]:
     """Update consent capture state from a single output line."""
-    kind = detect_consent_prompt(line)
-    if kind is None and not consent_active:
-        return consent_active, consent_buffer
-
-    updated = list(consent_buffer)
-    updated.append(line.rstrip("\n"))
-    if len(updated) > max_lines:
-        updated = updated[-max_lines:]
-    return True, updated
+    return _event_update_consent_capture(
+        consent_active,
+        consent_buffer,
+        line,
+        max_lines=max_lines,
+    )
 
 
 def write_to_proc(proc: subprocess.Popen[str], text: str) -> bool:
     """Write a response line to a subprocess stdin."""
-    if proc.stdin is None:
-        return False
-
-    payload = text if text.endswith("\n") else f"{text}\n"
-    try:
-        proc.stdin.write(payload)
-        proc.stdin.flush()
-    except Exception:
-        return False
-    return True
+    return _transport_write_to_proc(proc, text)
 
 
 def send_daemon_command(proc: Any, cmd_dict: dict[str, Any]) -> bool:
     """Serialize and send a daemon command as JSONL."""
-    sender = getattr(proc, "send_command", None)
-    if callable(sender):
-        try:
-            return bool(sender(cmd_dict))
-        except Exception:
-            return False
-
-    stdin = getattr(proc, "stdin", None)
-    if stdin is None:
-        return False
-    try:
-        payload = _json.dumps(cmd_dict, ensure_ascii=False) + "\n"
-        stdin.write(payload)
-        stdin.flush()
-    except Exception:
-        return False
-    return True
+    return _transport_send_daemon_command(
+        proc,
+        cmd_dict,
+        json_module=_json,
+        write_to_proc_fn=write_to_proc,
+    )
 
 
 def _build_swarmee_subprocess_env(
     *,
     session_id: str | None = None,
     env_overrides: dict[str, str] | None = None,
+    os_module: Any = os,
 ) -> dict[str, str]:
-    env = dict(os.environ)
-    env["PYTHONUNBUFFERED"] = "1"
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    # The CLI callback handler prints spinners using ANSI + carriage returns; disable for TUI subprocess capture.
-    env["SWARMEE_SPINNERS"] = "0"
-    # Enable structured JSONL event output for TUI consumption.
-    env["SWARMEE_TUI_EVENTS"] = "1"
-    existing_warning_filters = env.get("PYTHONWARNINGS", "").strip()
-    tui_warning_filters = [
-        # `PYTHONWARNINGS` is parsed via `warnings._setoption`, which `re.escape`s message+module.
-        # Use exact (literal) values, not regex patterns.
-        'ignore:Field name "json" in "Http_requestTool" shadows an attribute in parent "BaseModel"'
-        ":UserWarning:pydantic.main",
-    ]
-    env["PYTHONWARNINGS"] = ",".join(
-        [item for item in [*tui_warning_filters, existing_warning_filters] if isinstance(item, str) and item.strip()]
-    )
-    if env_overrides:
-        env.update(env_overrides)
-    if session_id:
-        env["SWARMEE_SESSION_ID"] = session_id
-    return env
-
-
-def _spawn_swarmee_process(
-    command: list[str],
-    *,
-    session_id: str | None = None,
-    env_overrides: dict[str, str] | None = None,
-) -> subprocess.Popen[str]:
-    env = _build_swarmee_subprocess_env(session_id=session_id, env_overrides=env_overrides)
-    return subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        env=env,
-        # Isolate child subprocesses from the interactive terminal session to
-        # prevent terminal-title churn while tools (git/rg/etc.) execute.
-        start_new_session=True,
+    return _transport_build_swarmee_subprocess_env(
+        session_id=session_id,
+        env_overrides=env_overrides,
+        os_module=os_module,
     )
 
 
@@ -1872,10 +528,16 @@ def spawn_swarmee(
     env_overrides: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
     """Spawn Swarmee as a subprocess with line-buffered merged output."""
-    return _spawn_swarmee_process(
-        build_swarmee_cmd(prompt, auto_approve=auto_approve),
+    return _transport_spawn_swarmee(
+        prompt,
+        auto_approve=auto_approve,
         session_id=session_id,
         env_overrides=env_overrides,
+        popen=subprocess.Popen,
+        subprocess_module=subprocess,
+        os_module=os,
+        build_swarmee_cmd_fn=build_swarmee_cmd,
+        env_builder=_build_swarmee_subprocess_env,
     )
 
 
@@ -1885,59 +547,27 @@ def spawn_swarmee_daemon(
     env_overrides: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
     """Spawn Swarmee daemon with line-buffered merged output."""
-    return _spawn_swarmee_process(
-        build_swarmee_daemon_cmd(),
+    return _transport_spawn_swarmee_daemon(
         session_id=session_id,
         env_overrides=env_overrides,
+        popen=subprocess.Popen,
+        subprocess_module=subprocess,
+        os_module=os,
+        build_swarmee_daemon_cmd_fn=build_swarmee_daemon_cmd,
+        env_builder=_build_swarmee_subprocess_env,
     )
 
 
 def stop_process(proc: subprocess.Popen[str], *, timeout_s: float = 2.0) -> None:
     """Stop a running subprocess, escalating from interrupt to terminate to kill."""
-    if proc.poll() is not None:
-        return
-
-    if os.name == "posix" and hasattr(signal, "SIGINT"):
-        signaled = False
-        if hasattr(os, "killpg"):
-            with contextlib.suppress(Exception):
-                os.killpg(proc.pid, signal.SIGINT)
-                signaled = True
-        if not signaled:
-            with contextlib.suppress(Exception):
-                proc.send_signal(signal.SIGINT)
-        try:
-            proc.wait(timeout=timeout_s)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-
-    terminated = False
-    if os.name == "posix" and hasattr(os, "killpg") and hasattr(signal, "SIGTERM"):
-        with contextlib.suppress(Exception):
-            os.killpg(proc.pid, signal.SIGTERM)
-            terminated = True
-    if not terminated:
-        with contextlib.suppress(Exception):
-            proc.terminate()
-    try:
-        proc.wait(timeout=timeout_s)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    except Exception:
-        return
-
-    killed = False
-    if os.name == "posix" and hasattr(os, "killpg") and hasattr(signal, "SIGKILL"):
-        with contextlib.suppress(Exception):
-            os.killpg(proc.pid, signal.SIGKILL)
-            killed = True
-    if not killed:
-        with contextlib.suppress(Exception):
-            proc.kill()
-    with contextlib.suppress(Exception):
-        proc.wait(timeout=timeout_s)
+    _transport_stop_process(
+        proc,
+        timeout_s=timeout_s,
+        os_module=os,
+        signal_module=signal,
+        subprocess_module=subprocess,
+        contextlib_module=contextlib,
+    )
 
 
 def run_tui() -> int:
@@ -1970,17 +600,17 @@ def run_tui() -> int:
     Select = textual_widgets.Select
     Static = textual_widgets.Static
     TabbedContent = textual_widgets.TabbedContent
-    TabPane = textual_widgets.TabPane
     TextArea = textual_widgets.TextArea
 
+    from swarmee_river.tui.views.agent_studio import wire_agent_studio_widgets
+    from swarmee_river.tui.views.session import wire_session_widgets
+    from swarmee_river.tui.views.sidebar import compose_sidebar
     from swarmee_river.tui.widgets import (
         ActionSheet,
-        AgentProfileActions,
         CommandPalette,
         ConsentPrompt,
         ContextBudgetBar,
         ErrorActionPrompt,
-        PlanActions,
         SidebarDetail,
         SidebarHeader,
         SidebarList,
@@ -2671,10 +1301,8 @@ def run_tui() -> int:
             ("ctrl+f", "search_transcript", "Search"),
         ]
 
-        _proc: _DaemonTransport | None = None
-        _runner_thread: threading.Thread | None = None
+        state: AppState
         _last_prompt: str | None = None
-        _pending_plan_prompt: str | None = None
         _last_run_auto_approve: bool = False
         _default_auto_approve: bool = False
         _consent_active: bool = False
@@ -2691,28 +1319,6 @@ def run_tui() -> int:
         _active_sop_names: set[str] = set()
         _sop_toggle_id_to_name: dict[str, str] = {}
         _sops_ready_for_sync: bool = False
-        _artifacts: list[str] = []
-        _artifact_entries: list[dict[str, Any]] = []
-        _artifact_selected_item_id: str | None = None
-        _plan_text: str = ""
-        _issues_lines: list[str] = []
-        _session_issues: list[dict[str, Any]] = []
-        _session_selected_issue_id: str | None = None
-        _session_view_mode: str = "timeline"
-        _session_timeline_index: dict[str, Any] | None = None
-        _session_timeline_events: list[dict[str, Any]] = []
-        _session_timeline_selected_event_id: str | None = None
-        _session_timeline_refresh_timer: Any = None
-        _session_timeline_refresh_inflight: bool = False
-        _session_timeline_refresh_pending: bool = False
-        _issues_repeat_line: str | None = None
-        _issues_repeat_count: int = 0
-        _warning_count: int = 0
-        _error_count: int = 0
-        _model_provider_override: str | None = None
-        _model_tier_override: str | None = None
-        _model_select_syncing: bool = False
-        _pending_model_select_value: str | None = None
         # Conversation view state
         _current_assistant_chunks: list[str] = []
         _streaming_buffer: list[str] = []
@@ -2734,12 +1340,6 @@ def run_tui() -> int:
         _tool_pending_start: dict[str, float] = {}
         _tool_pending_start_timers: dict[str, Any] = {}
         _transcript_mode: str = "rich"
-        _current_plan_steps_total: int = 0
-        _current_plan_summary: str = ""
-        _current_plan_steps: list[str] = []
-        _current_plan_step_statuses: list[str] = []
-        _current_plan_active_step: int | None = None
-        _plan_updates_seen: bool = False
         _transcript_fallback_lines: list[str] = []
         _consent_prompt_widget: Any = None  # ConsentPrompt | None
         _error_action_prompt_widget: Any = None  # ErrorActionPrompt | None
@@ -2771,9 +1371,6 @@ def run_tui() -> int:
         _prompt_input_tokens_est: int | None = None
         _prompt_estimate_timer: Any = None
         _pending_prompt_estimate_text: str = ""
-        _run_tool_count: int = 0
-        _run_start_time: float | None = None
-        _status_timer: Any = None
         _last_assistant_text: str = ""
         _prompt_history: list[str] = []
         _history_index: int = -1
@@ -2781,40 +1378,6 @@ def run_tui() -> int:
         _TRANSCRIPT_MAX_LINES: int = 5000
         _split_ratio: int = 2
         _search_active: bool = False
-        _plan_step_counter: int = 0
-        _plan_completion_announced: bool = False
-        _received_structured_plan: bool = False
-        _daemon_ready: bool = False
-        _query_active: bool = False
-        _daemon_tiers: list[dict[str, Any]] = []
-        _daemon_provider: str | None = None
-        _daemon_tier: str | None = None
-        _daemon_model_id: str | None = None
-        _current_daemon_model: str | None = None
-        _turn_output_chunks: list[str] = []
-        _daemon_session_id: str | None = None
-        _available_restore_session_id: str | None = None
-        _available_restore_turn_count: int = 0
-        _last_restored_turn_count: int = 0
-        _is_shutting_down: bool = False
-        _last_usage: dict[str, Any] | None = None
-        _last_cost_usd: float | None = None
-        _last_prompt_tokens_est: int | None = None
-        _last_budget_tokens: int | None = None
-        _saved_profiles: list[AgentProfile] = []
-        _effective_profile: AgentProfile | None = None
-        _agent_draft_dirty: bool = False
-        _agent_form_syncing: bool = False
-        _agent_studio_view_mode: str = "profile"
-        _agent_tools_items: list[dict[str, Any]] = []
-        _agent_team_presets: list[dict[str, Any]] = []
-        _agent_team_items: list[dict[str, Any]] = []
-        _agent_tools_selected_item_id: str | None = None
-        _agent_team_selected_item_id: str | None = None
-        _session_safety_overrides: dict[str, Any] = {}
-        _agent_tools_policy_lens: dict[str, Any] = {}
-        _agent_tools_form_syncing: bool = False
-        _agent_team_form_syncing: bool = False
         _agent_view_profile_button: Any = None  # Button | None
         _agent_view_tools_button: Any = None  # Button | None
         _agent_view_team_button: Any = None  # Button | None
@@ -2841,7 +1404,10 @@ def run_tui() -> int:
         _agent_profile_id_input: Any = None  # Input | None
         _agent_profile_name_input: Any = None  # Input | None
         _agent_profile_status: Any = None  # Static | None
-        _run_active_tier_warning_emitted: bool = False
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.state = AppState()
 
         def compose(self) -> Any:
             yield Header()
@@ -2854,177 +1420,7 @@ def run_tui() -> int:
                     id="transcript_text",
                     soft_wrap=True,
                 )
-                with Vertical(id="side"):
-                    with TabbedContent(id="side_tabs"):
-                        with TabPane("Plan", id="tab_plan"):
-                            yield TextArea(
-                                text="",
-                                language="markdown",
-                                read_only=True,
-                                show_cursor=False,
-                                id="plan",
-                                soft_wrap=True,
-                            )
-                            yield PlanActions(id="plan_actions")
-                        with TabPane("Context", id="tab_context"):
-                            with Vertical(id="context_panel"):
-                                yield Static("Active Context Sources", id="context_header")
-                                yield VerticalScroll(id="context_sources_list")
-                                with Horizontal(id="context_add_row"):
-                                    yield Button("File", id="context_add_file", compact=True, variant="default")
-                                    yield Button("Note", id="context_add_note", compact=True, variant="default")
-                                    yield Button("SOP", id="context_add_sop", compact=True, variant="default")
-                                    yield Button("KB", id="context_add_kb", compact=True, variant="default")
-                                with Horizontal(id="context_input_row"):
-                                    yield Input(placeholder="Enter context value", id="context_input")
-                                    yield Button("Add", id="context_add_commit", compact=True, variant="success")
-                                    yield Button("Cancel", id="context_add_cancel", compact=True, variant="default")
-                                with Horizontal(id="context_sop_row"):
-                                    yield Select(
-                                        options=[("Select SOP...", _CONTEXT_SELECT_PLACEHOLDER)],
-                                        allow_blank=False,
-                                        id="context_sop_select",
-                                        compact=True,
-                                    )
-                                    yield Button("Add", id="context_sop_commit", compact=True, variant="success")
-                                    yield Button("Cancel", id="context_sop_cancel", compact=True, variant="default")
-                        with TabPane("SOPs", id="tab_sops"):
-                            with Vertical(id="sops_panel"):
-                                yield Static("Available SOPs", id="sops_header")
-                                yield VerticalScroll(id="sop_list")
-                        with TabPane("Artifacts", id="tab_artifacts"):
-                            with Vertical(id="artifacts_panel"):
-                                yield SidebarHeader("Artifacts", id="artifacts_header")
-                                yield SidebarList(id="artifacts_list")
-                                yield SidebarDetail(id="artifacts_detail")
-                        with TabPane("Session", id="tab_session"):
-                            with Vertical(id="session_panel"):
-                                with Horizontal(id="session_view_switch"):
-                                    yield Button(
-                                        "Timeline",
-                                        id="session_view_timeline",
-                                        compact=True,
-                                        variant="primary",
-                                    )
-                                    yield Button("Issues", id="session_view_issues", compact=True, variant="default")
-                                with Vertical(id="session_timeline_view"):
-                                    yield SidebarHeader("Timeline", id="session_timeline_header")
-                                    yield SidebarList(id="session_timeline_list")
-                                    yield SidebarDetail(id="session_timeline_detail")
-                                with Vertical(id="session_issues_view"):
-                                    yield SidebarHeader("Issues", id="session_issues_header")
-                                    yield SidebarList(id="session_issue_list")
-                                    yield SidebarDetail(id="session_issue_detail")
-                        with TabPane("Agent", id="tab_agent"):
-                            with Vertical(id="agent_panel"):
-                                with Horizontal(id="agent_view_switch"):
-                                    yield Button(
-                                        "Profile",
-                                        id="agent_view_profile",
-                                        compact=True,
-                                        variant="primary",
-                                    )
-                                    yield Button(
-                                        "Tools & Safety",
-                                        id="agent_view_tools",
-                                        compact=True,
-                                        variant="default",
-                                    )
-                                    yield Button("Team", id="agent_view_team", compact=True, variant="default")
-                                with Vertical(id="agent_profile_view"):
-                                    yield Static("Effective Session Profile", id="agent_summary_header")
-                                    yield TextArea(
-                                        text="",
-                                        read_only=True,
-                                        show_cursor=False,
-                                        id="agent_summary",
-                                        soft_wrap=True,
-                                    )
-                                    yield Static("Saved Profiles", id="agent_profiles_header")
-                                    yield SidebarList(id="agent_profile_list")
-                                    with Horizontal(id="agent_profile_meta_row"):
-                                        yield Input(
-                                            placeholder="Profile id",
-                                            id="agent_profile_id",
-                                        )
-                                        yield Input(
-                                            placeholder="Profile name",
-                                            id="agent_profile_name",
-                                        )
-                                    yield AgentProfileActions(id="agent_profile_actions")
-                                    yield Static("", id="agent_profile_status")
-                                with Vertical(id="agent_tools_view"):
-                                    yield SidebarHeader("Tools & Safety", id="agent_tools_header")
-                                    yield SidebarList(id="agent_tools_list")
-                                    yield SidebarDetail(id="agent_tools_detail")
-                                    yield Static("Session Overrides", id="agent_tools_overrides_header")
-                                    yield Input(
-                                        placeholder="tool_consent: ask|allow|deny (blank = inherit)",
-                                        id="agent_tools_override_consent",
-                                    )
-                                    yield Input(
-                                        placeholder="tool_allowlist: comma-separated tools (blank = inherit)",
-                                        id="agent_tools_override_allowlist",
-                                    )
-                                    yield Input(
-                                        placeholder="tool_blocklist: comma-separated tools (blank = inherit)",
-                                        id="agent_tools_override_blocklist",
-                                    )
-                                    with Horizontal(id="agent_tools_override_actions"):
-                                        yield Button(
-                                            "Apply",
-                                            id="agent_tools_overrides_apply",
-                                            compact=True,
-                                            variant="success",
-                                        )
-                                        yield Button(
-                                            "Reset",
-                                            id="agent_tools_overrides_reset",
-                                            compact=True,
-                                            variant="default",
-                                        )
-                                    yield Static("", id="agent_tools_override_status")
-                                with Vertical(id="agent_team_view"):
-                                    yield SidebarHeader("Team Presets", id="agent_team_header")
-                                    yield SidebarList(id="agent_team_list")
-                                    yield SidebarDetail(id="agent_team_detail")
-                                    yield Static("Preset Editor", id="agent_team_editor_header")
-                                    with Horizontal(id="agent_team_meta_row"):
-                                        yield Input(
-                                            placeholder="Preset id",
-                                            id="agent_team_preset_id",
-                                        )
-                                        yield Input(
-                                            placeholder="Preset name",
-                                            id="agent_team_preset_name",
-                                        )
-                                    yield Input(
-                                        placeholder="Description (optional)",
-                                        id="agent_team_preset_description",
-                                    )
-                                    yield TextArea(
-                                        text="{}",
-                                        language="json",
-                                        id="agent_team_preset_spec",
-                                        soft_wrap=True,
-                                    )
-                                    with Horizontal(id="agent_team_actions"):
-                                        yield Button("New", id="agent_team_new", compact=True, variant="default")
-                                        yield Button("Save", id="agent_team_save", compact=True, variant="success")
-                                        yield Button("Delete", id="agent_team_delete", compact=True, variant="warning")
-                                        yield Button(
-                                            "Insert Run Prompt",
-                                            id="agent_team_insert_prompt",
-                                            compact=True,
-                                            variant="primary",
-                                        )
-                                        yield Button(
-                                            "Run Now",
-                                            id="agent_team_run_now",
-                                            compact=True,
-                                            variant="default",
-                                        )
-                                    yield Static("", id="agent_team_status")
+                yield from compose_sidebar(context_select_placeholder=_CONTEXT_SELECT_PLACEHOLDER)
             yield CommandPalette(id="command_palette")
             yield ActionSheet(id="action_sheet")
             yield ThinkingBar(id="thinking_bar")
@@ -3059,45 +1455,11 @@ def run_tui() -> int:
             self._sop_list = self.query_one("#sop_list", VerticalScroll)
             self._context_input = self.query_one("#context_input", Input)
             self._context_sop_select = self.query_one("#context_sop_select", Select)
-            self._session_header = self.query_one("#session_issues_header", SidebarHeader)
-            self._session_view_timeline_button = self.query_one("#session_view_timeline", Button)
-            self._session_view_issues_button = self.query_one("#session_view_issues", Button)
-            self._session_timeline_view = self.query_one("#session_timeline_view", Vertical)
-            self._session_issues_view = self.query_one("#session_issues_view", Vertical)
-            self._session_timeline_header = self.query_one("#session_timeline_header", SidebarHeader)
-            self._session_timeline_list = self.query_one("#session_timeline_list", SidebarList)
-            self._session_timeline_detail = self.query_one("#session_timeline_detail", SidebarDetail)
-            self._session_issue_list = self.query_one("#session_issue_list", SidebarList)
-            self._session_issue_detail = self.query_one("#session_issue_detail", SidebarDetail)
+            wire_session_widgets(self)
             self._artifacts_header = self.query_one("#artifacts_header", SidebarHeader)
             self._artifacts_list = self.query_one("#artifacts_list", SidebarList)
             self._artifacts_detail = self.query_one("#artifacts_detail", SidebarDetail)
-            self._agent_view_profile_button = self.query_one("#agent_view_profile", Button)
-            self._agent_view_tools_button = self.query_one("#agent_view_tools", Button)
-            self._agent_view_team_button = self.query_one("#agent_view_team", Button)
-            self._agent_profile_view = self.query_one("#agent_profile_view", Vertical)
-            self._agent_tools_view = self.query_one("#agent_tools_view", Vertical)
-            self._agent_team_view = self.query_one("#agent_team_view", Vertical)
-            self._agent_summary = self.query_one("#agent_summary", TextArea)
-            self._agent_profile_list = self.query_one("#agent_profile_list", SidebarList)
-            self._agent_tools_header = self.query_one("#agent_tools_header", SidebarHeader)
-            self._agent_tools_list = self.query_one("#agent_tools_list", SidebarList)
-            self._agent_tools_detail = self.query_one("#agent_tools_detail", SidebarDetail)
-            self._agent_tools_override_consent_input = self.query_one("#agent_tools_override_consent", Input)
-            self._agent_tools_override_allowlist_input = self.query_one("#agent_tools_override_allowlist", Input)
-            self._agent_tools_override_blocklist_input = self.query_one("#agent_tools_override_blocklist", Input)
-            self._agent_tools_override_status = self.query_one("#agent_tools_override_status", Static)
-            self._agent_team_header = self.query_one("#agent_team_header", SidebarHeader)
-            self._agent_team_list = self.query_one("#agent_team_list", SidebarList)
-            self._agent_team_detail = self.query_one("#agent_team_detail", SidebarDetail)
-            self._agent_team_preset_id_input = self.query_one("#agent_team_preset_id", Input)
-            self._agent_team_preset_name_input = self.query_one("#agent_team_preset_name", Input)
-            self._agent_team_preset_description_input = self.query_one("#agent_team_preset_description", Input)
-            self._agent_team_preset_spec_input = self.query_one("#agent_team_preset_spec", TextArea)
-            self._agent_team_status = self.query_one("#agent_team_status", Static)
-            self._agent_profile_id_input = self.query_one("#agent_profile_id", Input)
-            self._agent_profile_name_input = self.query_one("#agent_profile_name", Input)
-            self._agent_profile_status = self.query_one("#agent_profile_status", Static)
+            wire_agent_studio_widgets(self)
             self._prompt_metrics = self.query_one("#prompt_metrics", ContextBudgetBar)
             self._status_bar.set_model(self._current_model_summary())
             self.query_one("#prompt", PromptTextArea).focus()
@@ -3117,8 +1479,8 @@ def run_tui() -> int:
             self._render_agent_tools_panel()
             self._render_agent_team_panel()
             self._set_agent_studio_view_mode("profile")
-            if self._saved_profiles:
-                self._load_profile_into_draft(self._saved_profiles[0])
+            if self.state.agent_studio.saved_profiles:
+                self._load_profile_into_draft(self.state.agent_studio.saved_profiles[0])
             else:
                 self._new_agent_profile_draft(announce=False)
             self._refresh_agent_summary()
@@ -3129,6 +1491,7 @@ def run_tui() -> int:
             # Show ASCII art banner at the top of the transcript.
             # Write plain lines so selection/export keeps exact banner text.
             from swarmee_river.utils.welcome_utils import SWARMEE_BANNER
+
             for banner_line in SWARMEE_BANNER.strip().splitlines():
                 self._mount_transcript_widget(banner_line, plain_text=banner_line)
             self._write_transcript("Starting Swarmee daemon...")
@@ -3141,7 +1504,7 @@ def run_tui() -> int:
                 transcript.max_lines = self._TRANSCRIPT_MAX_LINES
             self._set_transcript_mode("rich", notify=False)
             self._load_session()
-            if self._daemon_session_id:
+            if self.state.daemon.session_id:
                 self._schedule_session_timeline_refresh(delay=0.1)
             self._refresh_agent_summary()
             self._spawn_daemon()
@@ -3448,8 +1811,8 @@ def run_tui() -> int:
 
         def _write_transcript_line(self, line: str) -> None:
             """Write a plain text line to the transcript (used for TUI-internal messages)."""
-            if self._query_active:
-                self._turn_output_chunks.append(sanitize_output_text(f"[tui] {line}\n"))
+            if self.state.daemon.query_active:
+                self.state.daemon.turn_output_chunks.append(sanitize_output_text(f"[tui] {line}\n"))
             self._write_transcript(line)
 
         def _tool_input_summary(self, tool_name: str, tool_input: Any) -> str:
@@ -3591,15 +1954,15 @@ def run_tui() -> int:
             return True
 
         def _call_from_thread_safe(self, callback: Any, *args: Any, **kwargs: Any) -> None:
-            if self._is_shutting_down:
+            if self.state.daemon.is_shutting_down:
                 return
             with contextlib.suppress(Exception):
                 self.call_from_thread(callback, *args, **kwargs)
 
         def _warn_run_active_tier_change_once(self) -> None:
-            if self._run_active_tier_warning_emitted:
+            if self.state.daemon.run_active_tier_warning_emitted:
                 return
-            self._run_active_tier_warning_emitted = True
+            self.state.daemon.run_active_tier_warning_emitted = True
             self._write_transcript_line(_RUN_ACTIVE_TIER_WARNING)
 
         def _write_user_input(self, text: str) -> None:
@@ -3640,7 +2003,7 @@ def run_tui() -> int:
             self._mount_transcript_widget(text, plain_text=text)
 
         def _set_plan_panel(self, content: str) -> None:
-            self._plan_text = content
+            self.state.plan.text = content
             plan_panel = self.query_one("#plan", TextArea)
             text = content if content.strip() else "(no plan)"
             plan_panel.load_text(text)
@@ -3665,18 +2028,18 @@ def run_tui() -> int:
         def _refresh_plan_status_bar(self) -> None:
             if self._status_bar is None:
                 return
-            if not self._query_active:
+            if not self.state.daemon.query_active:
                 self._status_bar.set_plan_step(current=None, total=None)
                 return
-            total = self._current_plan_steps_total
+            total = self.state.plan.current_steps_total
             if total <= 0:
                 self._status_bar.set_plan_step(current=None, total=None)
                 return
             current: int | None = None
-            if isinstance(self._current_plan_active_step, int) and self._current_plan_active_step >= 0:
-                current = self._current_plan_active_step + 1
+            if isinstance(self.state.plan.current_active_step, int) and self.state.plan.current_active_step >= 0:
+                current = self.state.plan.current_active_step + 1
             else:
-                completed = sum(1 for item in self._current_plan_step_statuses if item == "completed")
+                completed = sum(1 for item in self.state.plan.current_step_statuses if item == "completed")
                 if completed >= total:
                     current = total
                 elif completed > 0:
@@ -3684,16 +2047,16 @@ def run_tui() -> int:
             self._status_bar.set_plan_step(current=current, total=total)
 
         def _render_plan_panel_from_status(self) -> None:
-            if self._current_plan_steps_total <= 0 or not self._current_plan_steps:
+            if self.state.plan.current_steps_total <= 0 or not self.state.plan.current_steps:
                 return
             text_lines: list[str] = []
-            if self._current_plan_summary:
-                text_lines.append(self._current_plan_summary)
+            if self.state.plan.current_summary:
+                text_lines.append(self.state.plan.current_summary)
                 text_lines.append("")
-            for index, desc in enumerate(self._current_plan_steps, start=1):
+            for index, desc in enumerate(self.state.plan.current_steps, start=1):
                 status = (
-                    self._current_plan_step_statuses[index - 1]
-                    if index - 1 < len(self._current_plan_step_statuses)
+                    self.state.plan.current_step_statuses[index - 1]
+                    if index - 1 < len(self.state.plan.current_step_statuses)
                     else "pending"
                 )
                 marker = "☐"
@@ -3723,26 +2086,26 @@ def run_tui() -> int:
             target = str(profile_id or "").strip()
             if not target:
                 return None
-            for profile in self._saved_profiles:
+            for profile in self.state.agent_studio.saved_profiles:
                 if profile.id == target:
                     return profile
             return None
 
         def _set_agent_form_values(self, *, profile_id: str, profile_name: str) -> None:
-            self._agent_form_syncing = True
+            self.state.agent_studio.form_syncing = True
             try:
                 if self._agent_profile_id_input is not None:
                     self._agent_profile_id_input.value = profile_id
                 if self._agent_profile_name_input is not None:
                     self._agent_profile_name_input.value = profile_name
             finally:
-                self._agent_form_syncing = False
+                self.state.agent_studio.form_syncing = False
 
         def _agent_tools_item_by_id(self, item_id: str | None) -> dict[str, Any] | None:
             target = str(item_id or "").strip()
             if not target:
                 return None
-            for item in self._agent_tools_items:
+            for item in self.state.agent_studio.tools_items:
                 if str(item.get("id", "")).strip() == target:
                     return item
             return None
@@ -3759,7 +2122,7 @@ def run_tui() -> int:
             consent = str(normalized.get("tool_consent", "")).strip().lower()
             allow = _normalized_tool_name_list(normalized.get("tool_allowlist"))
             block = _normalized_tool_name_list(normalized.get("tool_blocklist"))
-            self._agent_tools_form_syncing = True
+            self.state.agent_studio.tools_form_syncing = True
             try:
                 if self._agent_tools_override_consent_input is not None:
                     self._agent_tools_override_consent_input.value = consent
@@ -3768,7 +2131,7 @@ def run_tui() -> int:
                 if self._agent_tools_override_blocklist_input is not None:
                     self._agent_tools_override_blocklist_input.value = ", ".join(block)
             finally:
-                self._agent_tools_form_syncing = False
+                self.state.agent_studio.tools_form_syncing = False
 
         def _parse_agent_tools_csv_list(self, value: str) -> list[str]:
             if not value.strip():
@@ -3793,24 +2156,24 @@ def run_tui() -> int:
 
         def _current_agent_policy_tier_name(self) -> str | None:
             return (
-                str(self._daemon_tier or "").strip().lower()
-                or str(self._model_tier_override or "").strip().lower()
+                str(self.state.daemon.tier or "").strip().lower()
+                or str(self.state.daemon.model_tier_override or "").strip().lower()
                 or None
             )
 
         def _refresh_agent_tools_policy_lens(self) -> None:
-            self._agent_tools_policy_lens = build_agent_policy_lens(
+            self.state.agent_studio.tools_policy_lens = build_agent_policy_lens(
                 tier_name=self._current_agent_policy_tier_name(),
-                overrides=self._session_safety_overrides,
+                overrides=self.state.agent_studio.session_safety_overrides,
             )
 
         def _apply_agent_tools_safety_overrides(self, *, reset: bool = False) -> None:
-            proc = self._proc
-            if self._query_active:
+            proc = self.state.daemon.proc
+            if self.state.daemon.query_active:
                 self._set_agent_tools_status("Cannot update overrides while a run is active.")
                 self._notify("Cannot update overrides while a run is active.", severity="warning")
                 return
-            if not self._daemon_ready or proc is None or proc.poll() is not None:
+            if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                 self._set_agent_tools_status("Daemon is not ready.")
                 self._notify("Daemon is not ready.", severity="warning")
                 return
@@ -3837,19 +2200,19 @@ def run_tui() -> int:
             if detail is None:
                 return
             if item is None:
-                self._agent_tools_selected_item_id = None
+                self.state.agent_studio.tools_selected_item_id = None
                 detail.set_preview("(no tools/safety items)")
                 detail.set_actions([])
                 return
-            self._agent_tools_selected_item_id = str(item.get("id", "")).strip() or None
-            detail.set_preview(render_agent_tools_safety_detail_text(item, self._agent_tools_policy_lens))
+            self.state.agent_studio.tools_selected_item_id = str(item.get("id", "")).strip() or None
+            detail.set_preview(render_agent_tools_safety_detail_text(item, self.state.agent_studio.tools_policy_lens))
             detail.set_actions([])
 
         def _agent_team_item_by_id(self, item_id: str | None) -> dict[str, Any] | None:
             target = str(item_id or "").strip()
             if not target:
                 return None
-            for item in self._agent_team_items:
+            for item in self.state.agent_studio.team_items:
                 if str(item.get("id", "")).strip() == target:
                     return item
             return None
@@ -3871,7 +2234,7 @@ def run_tui() -> int:
                 if normalized
                 else "{}"
             )
-            self._agent_team_form_syncing = True
+            self.state.agent_studio.team_form_syncing = True
             try:
                 if self._agent_team_preset_id_input is not None:
                     self._agent_team_preset_id_input.value = preset_id
@@ -3882,7 +2245,7 @@ def run_tui() -> int:
                 if self._agent_team_preset_spec_input is not None:
                     self._agent_team_preset_spec_input.load_text(spec_text)
             finally:
-                self._agent_team_form_syncing = False
+                self.state.agent_studio.team_form_syncing = False
 
         def _agent_team_form_payload(self) -> dict[str, Any] | None:
             raw_name = str(getattr(self._agent_team_preset_name_input, "value", "")).strip()
@@ -3910,7 +2273,7 @@ def run_tui() -> int:
             return normalized
 
         def _selected_team_preset(self) -> dict[str, Any] | None:
-            selected_item = self._agent_team_item_by_id(self._agent_team_selected_item_id)
+            selected_item = self._agent_team_item_by_id(self.state.agent_studio.team_selected_item_id)
             if selected_item is None:
                 return None
             return normalize_team_preset(selected_item.get("preset"))
@@ -3942,7 +2305,7 @@ def run_tui() -> int:
             )
             if seed is None:
                 return
-            self._agent_team_selected_item_id = None
+            self.state.agent_studio.team_selected_item_id = None
             self._set_agent_team_form_values(seed)
             self._set_agent_team_status("New team preset draft.")
             self._set_agent_draft_dirty(True, note="Team preset draft updated.")
@@ -3951,9 +2314,9 @@ def run_tui() -> int:
             payload = self._agent_team_form_payload()
             if payload is None:
                 return
-            selected_id = str(self._agent_team_selected_item_id or "").strip()
+            selected_id = str(self.state.agent_studio.team_selected_item_id or "").strip()
             saved_id = str(payload.get("id", "")).strip()
-            next_presets = [dict(item) for item in normalize_team_presets(self._agent_team_presets)]
+            next_presets = [dict(item) for item in normalize_team_presets(self.state.agent_studio.team_presets)]
             if selected_id and selected_id != saved_id:
                 next_presets = [item for item in next_presets if str(item.get("id", "")).strip() != selected_id]
             replaced = False
@@ -3964,8 +2327,8 @@ def run_tui() -> int:
                     break
             if not replaced:
                 next_presets.append(payload)
-            self._agent_team_presets = normalize_team_presets(next_presets)
-            self._agent_team_selected_item_id = saved_id
+            self.state.agent_studio.team_presets = normalize_team_presets(next_presets)
+            self.state.agent_studio.team_selected_item_id = saved_id
             self._render_agent_team_panel()
             self._set_agent_team_status(f"Saved preset '{payload['name']}' in draft.")
             self._set_agent_draft_dirty(True, note=f"Team preset '{payload['name']}' saved in draft.")
@@ -3977,12 +2340,10 @@ def run_tui() -> int:
                 return
             selected_id = str(selected.get("id", "")).strip()
             next_presets = [
-                item
-                for item in self._agent_team_presets
-                if str(item.get("id", "")).strip() != selected_id
+                item for item in self.state.agent_studio.team_presets if str(item.get("id", "")).strip() != selected_id
             ]
-            self._agent_team_presets = normalize_team_presets(next_presets)
-            self._agent_team_selected_item_id = None
+            self.state.agent_studio.team_presets = normalize_team_presets(next_presets)
+            self.state.agent_studio.team_selected_item_id = None
             self._render_agent_team_panel()
             self._set_agent_team_status(f"Deleted preset '{selected.get('name', selected_id)}' from draft.")
             self._set_agent_draft_dirty(True, note=f"Team preset '{selected_id}' removed from draft.")
@@ -4009,12 +2370,12 @@ def run_tui() -> int:
             if detail is None:
                 return
             if item is None:
-                self._agent_team_selected_item_id = None
+                self.state.agent_studio.team_selected_item_id = None
                 detail.set_preview("(no team items)")
                 detail.set_actions([])
                 self._set_agent_team_form_values(None)
                 return
-            self._agent_team_selected_item_id = str(item.get("id", "")).strip() or None
+            self.state.agent_studio.team_selected_item_id = str(item.get("id", "")).strip() or None
             detail.set_preview(render_agent_team_detail_text(item))
             detail.set_actions([])
             preset = normalize_team_preset(item.get("preset"))
@@ -4025,13 +2386,13 @@ def run_tui() -> int:
             if header is None:
                 return
             effective = (
-                self._agent_tools_policy_lens.get("effective", {})
-                if isinstance(self._agent_tools_policy_lens.get("effective"), dict)
+                self.state.agent_studio.tools_policy_lens.get("effective", {})
+                if isinstance(self.state.agent_studio.tools_policy_lens.get("effective"), dict)
                 else {}
             )
             overrides = (
-                self._agent_tools_policy_lens.get("session_overrides", {})
-                if isinstance(self._agent_tools_policy_lens.get("session_overrides"), dict)
+                self.state.agent_studio.tools_policy_lens.get("session_overrides", {})
+                if isinstance(self.state.agent_studio.tools_policy_lens.get("session_overrides"), dict)
                 else {}
             )
             consent = str(effective.get("tool_consent", "ask")).strip().lower() or "ask"
@@ -4041,54 +2402,60 @@ def run_tui() -> int:
             header = self._agent_team_header
             if header is None:
                 return
-            header.set_badges([f"presets {len(self._agent_team_presets)}"])
+            header.set_badges([f"presets {len(self.state.agent_studio.team_presets)}"])
 
         def _render_agent_tools_panel(self) -> None:
             self._refresh_agent_tools_policy_lens()
-            self._agent_tools_items = [
-                dict(item) for item in build_agent_tools_safety_sidebar_items(self._agent_tools_policy_lens)
+            self.state.agent_studio.tools_items = [
+                dict(item) for item in build_agent_tools_safety_sidebar_items(self.state.agent_studio.tools_policy_lens)
             ]
             list_widget = self._agent_tools_list
             if list_widget is not None:
-                selected_id = self._agent_tools_selected_item_id
-                if not selected_id and self._agent_tools_items:
-                    selected_id = str(self._agent_tools_items[0].get("id", "")).strip()
-                list_widget.set_items(self._agent_tools_items, selected_id=selected_id, emit=False)
+                selected_id = self.state.agent_studio.tools_selected_item_id
+                if not selected_id and self.state.agent_studio.tools_items:
+                    selected_id = str(self.state.agent_studio.tools_items[0].get("id", "")).strip()
+                list_widget.set_items(self.state.agent_studio.tools_items, selected_id=selected_id, emit=False)
                 selected_id = list_widget.selected_id()
                 selected_item = self._agent_tools_item_by_id(selected_id)
-                if selected_item is None and self._agent_tools_items:
-                    selected_item = self._agent_tools_items[0]
+                if selected_item is None and self.state.agent_studio.tools_items:
+                    selected_item = self.state.agent_studio.tools_items[0]
                     with contextlib.suppress(Exception):
                         list_widget.select_by_id(str(selected_item.get("id", "")), emit=False)
                 self._set_agent_tools_selection(selected_item)
             else:
-                self._set_agent_tools_selection(self._agent_tools_items[0] if self._agent_tools_items else None)
+                self._set_agent_tools_selection(
+                    self.state.agent_studio.tools_items[0] if self.state.agent_studio.tools_items else None
+                )
             self._refresh_agent_tools_header()
-            self._set_agent_tools_override_form_values(self._session_safety_overrides)
+            self._set_agent_tools_override_form_values(self.state.agent_studio.session_safety_overrides)
 
         def _render_agent_team_panel(self) -> None:
-            self._agent_team_presets = normalize_team_presets(self._agent_team_presets)
-            self._agent_team_items = [dict(item) for item in build_agent_team_sidebar_items(self._agent_team_presets)]
+            self.state.agent_studio.team_presets = normalize_team_presets(self.state.agent_studio.team_presets)
+            self.state.agent_studio.team_items = [
+                dict(item) for item in build_agent_team_sidebar_items(self.state.agent_studio.team_presets)
+            ]
             list_widget = self._agent_team_list
             if list_widget is not None:
-                selected_id = self._agent_team_selected_item_id
-                if not selected_id and self._agent_team_items:
-                    selected_id = str(self._agent_team_items[0].get("id", "")).strip()
-                list_widget.set_items(self._agent_team_items, selected_id=selected_id, emit=False)
+                selected_id = self.state.agent_studio.team_selected_item_id
+                if not selected_id and self.state.agent_studio.team_items:
+                    selected_id = str(self.state.agent_studio.team_items[0].get("id", "")).strip()
+                list_widget.set_items(self.state.agent_studio.team_items, selected_id=selected_id, emit=False)
                 selected_id = list_widget.selected_id()
                 selected_item = self._agent_team_item_by_id(selected_id)
-                if selected_item is None and self._agent_team_items:
-                    selected_item = self._agent_team_items[0]
+                if selected_item is None and self.state.agent_studio.team_items:
+                    selected_item = self.state.agent_studio.team_items[0]
                     with contextlib.suppress(Exception):
                         list_widget.select_by_id(str(selected_item.get("id", "")), emit=False)
                 self._set_agent_team_selection(selected_item)
             else:
-                self._set_agent_team_selection(self._agent_team_items[0] if self._agent_team_items else None)
+                self._set_agent_team_selection(
+                    self.state.agent_studio.team_items[0] if self.state.agent_studio.team_items else None
+                )
             self._refresh_agent_team_header()
 
         def _set_agent_studio_view_mode(self, mode: str) -> None:
             normalized = normalize_agent_studio_view_mode(mode)
-            self._agent_studio_view_mode = normalized
+            self.state.agent_studio.view_mode = normalized
 
             profile_view = self._agent_profile_view
             tools_view = self._agent_tools_view
@@ -4122,15 +2489,15 @@ def run_tui() -> int:
 
         def _session_effective_profile(self) -> AgentProfile:
             provider_name, tier_name, _model_id = choose_model_summary_parts(
-                daemon_provider=self._daemon_provider,
-                daemon_tier=self._daemon_tier,
-                daemon_model_id=self._daemon_model_id,
-                daemon_tiers=self._daemon_tiers,
-                pending_value=self._pending_model_select_value,
-                override_provider=self._model_provider_override,
-                override_tier=self._model_tier_override,
+                daemon_provider=self.state.daemon.provider,
+                daemon_tier=self.state.daemon.tier,
+                daemon_model_id=self.state.daemon.model_id,
+                daemon_tiers=self.state.daemon.tiers,
+                pending_value=self.state.daemon.pending_model_select_value,
+                override_provider=self.state.daemon.model_provider_override,
+                override_tier=self.state.daemon.model_tier_override,
             )
-            current = self._effective_profile
+            current = self.state.agent_studio.effective_profile
             return AgentProfile(
                 id=(current.id if current is not None else "session-effective"),
                 name=(current.name if current is not None else "Session Effective"),
@@ -4153,8 +2520,8 @@ def run_tui() -> int:
             widget.update(text)
 
         def _set_agent_draft_dirty(self, dirty: bool, *, note: str | None = None) -> None:
-            self._agent_draft_dirty = bool(dirty)
-            if self._agent_draft_dirty:
+            self.state.agent_studio.draft_dirty = bool(dirty)
+            if self.state.agent_studio.draft_dirty:
                 base = "Draft changes pending."
             else:
                 base = "Draft synced."
@@ -4166,7 +2533,7 @@ def run_tui() -> int:
                 self._reload_saved_profiles()
 
         def _reload_saved_profiles(self, *, selected_id: str | None = None) -> None:
-            self._saved_profiles = sorted(
+            self.state.agent_studio.saved_profiles = sorted(
                 list_profiles(),
                 key=lambda item: (item.name.lower(), item.id.lower()),
             )
@@ -4179,10 +2546,10 @@ def run_tui() -> int:
                     "id": _AGENT_PROFILE_SELECT_NONE,
                     "title": "Draft / Session",
                     "subtitle": "Unsaved local draft",
-                    "state": "syncing" if self._agent_draft_dirty else "default",
+                    "state": "syncing" if self.state.agent_studio.draft_dirty else "default",
                 }
             ]
-            for profile in self._saved_profiles:
+            for profile in self.state.agent_studio.saved_profiles:
                 profile_subtitle_parts = [profile.id]
                 model_summary = "/".join(
                     part for part in [str(profile.provider or "").strip(), str(profile.tier or "").strip()] if part
@@ -4196,7 +2563,8 @@ def run_tui() -> int:
                         "subtitle": " | ".join(profile_subtitle_parts),
                         "state": (
                             "active"
-                            if self._effective_profile and self._effective_profile.id == profile.id
+                            if self.state.agent_studio.effective_profile
+                            and self.state.agent_studio.effective_profile.id == profile.id
                             else "default"
                         ),
                     }
@@ -4205,26 +2573,30 @@ def run_tui() -> int:
             getter = getattr(sidebar_list, "selected_id", None)
             current_value = str(getter() or "").strip() if callable(getter) else ""
             candidate = selected_id if selected_id else current_value
-            saved_ids = {profile.id for profile in self._saved_profiles}
+            saved_ids = {profile.id for profile in self.state.agent_studio.saved_profiles}
             if candidate == _AGENT_PROFILE_SELECT_NONE:
                 pass
             elif candidate not in saved_ids:
-                candidate = self._saved_profiles[0].id if self._saved_profiles else _AGENT_PROFILE_SELECT_NONE
+                candidate = (
+                    self.state.agent_studio.saved_profiles[0].id
+                    if self.state.agent_studio.saved_profiles
+                    else _AGENT_PROFILE_SELECT_NONE
+                )
 
-            self._agent_form_syncing = True
+            self.state.agent_studio.form_syncing = True
             try:
                 setter = getattr(sidebar_list, "set_items", None)
                 if callable(setter):
                     setter(items, selected_id=candidate, emit=False)
             finally:
-                self._agent_form_syncing = False
+                self.state.agent_studio.form_syncing = False
 
         def _refresh_agent_summary(self) -> None:
             summary = self._agent_summary
             if summary is None:
                 return
             effective = self._session_effective_profile()
-            self._effective_profile = effective
+            self.state.agent_studio.effective_profile = effective
             summary.load_text(render_agent_profile_summary_text(effective.to_dict()))
             summary.scroll_home(animate=False)
 
@@ -4243,15 +2615,15 @@ def run_tui() -> int:
             )
             sidebar_list = self._agent_profile_list
             if sidebar_list is not None:
-                self._agent_form_syncing = True
+                self.state.agent_studio.form_syncing = True
                 try:
                     select_by_id = getattr(sidebar_list, "select_by_id", None)
                     if callable(select_by_id):
                         select_by_id(_AGENT_PROFILE_SELECT_NONE, emit=False)
                 finally:
-                    self._agent_form_syncing = False
-            self._agent_team_presets = normalize_team_presets(draft.team_presets)
-            self._agent_team_selected_item_id = None
+                    self.state.agent_studio.form_syncing = False
+            self.state.agent_studio.team_presets = normalize_team_presets(draft.team_presets)
+            self.state.agent_studio.team_selected_item_id = None
             self._render_agent_team_panel()
             self._set_agent_form_values(profile_id=draft.id, profile_name=draft.name)
             self._set_agent_draft_dirty(True, note=("New profile draft." if announce else None))
@@ -4259,15 +2631,15 @@ def run_tui() -> int:
         def _load_profile_into_draft(self, profile: AgentProfile) -> None:
             sidebar_list = self._agent_profile_list
             if sidebar_list is not None:
-                self._agent_form_syncing = True
+                self.state.agent_studio.form_syncing = True
                 try:
                     select_by_id = getattr(sidebar_list, "select_by_id", None)
                     if callable(select_by_id):
                         select_by_id(profile.id, emit=False)
                 finally:
-                    self._agent_form_syncing = False
-            self._agent_team_presets = normalize_team_presets(profile.team_presets)
-            self._agent_team_selected_item_id = None
+                    self.state.agent_studio.form_syncing = False
+            self.state.agent_studio.team_presets = normalize_team_presets(profile.team_presets)
+            self.state.agent_studio.team_selected_item_id = None
             self._render_agent_team_panel()
             self._set_agent_form_values(profile_id=profile.id, profile_name=profile.name)
             self._set_agent_draft_dirty(False, note=f"Loaded profile '{profile.name}'.")
@@ -4291,7 +2663,7 @@ def run_tui() -> int:
                     "context_sources": [dict(source) for source in seed.context_sources],
                     "active_sops": list(seed.active_sops),
                     "knowledge_base_id": seed.knowledge_base_id,
-                    "team_presets": normalize_team_presets(self._agent_team_presets),
+                    "team_presets": normalize_team_presets(self.state.agent_studio.team_presets),
                 }
             )
 
@@ -4312,24 +2684,24 @@ def run_tui() -> int:
                 self._notify("Profile not found.", severity="warning")
                 return
             self._reload_saved_profiles()
-            if self._saved_profiles:
-                self._load_profile_into_draft(self._saved_profiles[0])
+            if self.state.agent_studio.saved_profiles:
+                self._load_profile_into_draft(self.state.agent_studio.saved_profiles[0])
                 self._set_agent_draft_dirty(False, note=f"Deleted profile '{selected_id}'.")
             else:
                 self._new_agent_profile_draft(announce=False)
                 self._set_agent_draft_dirty(True, note=f"Deleted profile '{selected_id}'.")
 
         def _apply_agent_profile_draft(self) -> None:
-            if self._query_active:
+            if self.state.daemon.query_active:
                 self._write_transcript_line("[agent] cannot apply profile while a run is active.")
                 return
-            if not self._daemon_ready:
+            if not self.state.daemon.ready:
                 self._write_transcript_line("[agent] daemon is not ready.")
                 return
-            proc = self._proc
+            proc = self.state.daemon.proc
             if proc is None or proc.poll() is not None:
                 self._write_transcript_line("[agent] daemon is not running.")
-                self._daemon_ready = False
+                self.state.daemon.ready = False
                 return
             profile = self._profile_from_draft()
             payload = {"cmd": "set_profile", "profile": profile.to_dict()}
@@ -4340,38 +2712,38 @@ def run_tui() -> int:
 
         def _reset_plan_panel(self) -> None:
             self._set_plan_panel("(no plan)")
-            self._current_plan_steps_total = 0
-            self._current_plan_summary = ""
-            self._current_plan_steps = []
-            self._current_plan_step_statuses = []
-            self._current_plan_active_step = None
-            self._plan_updates_seen = False
-            self._plan_step_counter = 0
-            self._plan_completion_announced = False
+            self.state.plan.current_steps_total = 0
+            self.state.plan.current_summary = ""
+            self.state.plan.current_steps = []
+            self.state.plan.current_step_statuses = []
+            self.state.plan.current_active_step = None
+            self.state.plan.updates_seen = False
+            self.state.plan.step_counter = 0
+            self.state.plan.completion_announced = False
             self._refresh_plan_status_bar()
 
         def _reset_issues_panel(self) -> None:
-            self._issues_lines = []
-            self._session_issues = []
-            self._session_selected_issue_id = None
-            self._issues_repeat_line = None
-            self._issues_repeat_count = 0
-            self._warning_count = 0
-            self._error_count = 0
+            self.state.session.issue_lines = []
+            self.state.session.issues = []
+            self.state.session.selected_issue_id = None
+            self.state.session.issues_repeat_line = None
+            self.state.session.issues_repeat_count = 0
+            self.state.session.warning_count = 0
+            self.state.session.error_count = 0
             self._render_session_panel()
             self._update_header_status()
 
         def _reset_session_timeline_panel(self) -> None:
-            self._session_timeline_index = None
-            self._session_timeline_events = []
-            self._session_timeline_selected_event_id = None
+            self.state.session.timeline_index = None
+            self.state.session.timeline_events = []
+            self.state.session.timeline_selected_event_id = None
             self._render_session_timeline_panel()
 
         def _session_issue_by_id(self, issue_id: str | None) -> dict[str, Any] | None:
             target = str(issue_id or "").strip()
             if not target:
                 return None
-            for issue in self._session_issues:
+            for issue in self.state.session.issues:
                 if str(issue.get("id", "")).strip() == target:
                     return issue
             return None
@@ -4401,16 +2773,16 @@ def run_tui() -> int:
                 "next_tier": (next_tier or "").strip().lower(),
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
-            self._session_issues.append(issue)
-            if len(self._session_issues) > 500:
-                self._session_issues = self._session_issues[-500:]
+            self.state.session.issues.append(issue)
+            if len(self.state.session.issues) > 500:
+                self.state.session.issues = self.state.session.issues[-500:]
             self._render_session_panel()
 
         def _session_timeline_event_by_id(self, event_id: str | None) -> dict[str, Any] | None:
             target = str(event_id or "").strip()
             if not target:
                 return None
-            for event in self._session_timeline_events:
+            for event in self.state.session.timeline_events:
                 if str(event.get("id", "")).strip() == target:
                     return event
             return None
@@ -4451,20 +2823,20 @@ def run_tui() -> int:
             if detail is None:
                 return
             if issue is None:
-                self._session_selected_issue_id = None
+                self.state.session.selected_issue_id = None
                 detail.set_preview("(no issues yet)")
                 detail.set_actions([])
                 return
-            self._session_selected_issue_id = str(issue.get("id", "")).strip() or None
+            self.state.session.selected_issue_id = str(issue.get("id", "")).strip() or None
             detail.set_preview(render_session_issue_detail_text(issue))
             detail.set_actions(session_issue_actions(issue))
 
         def _render_session_panel(self) -> None:
-            issues = list(self._session_issues)
+            issues = list(self.state.session.issues)
             items = build_session_issue_sidebar_items(issues)
             list_widget = self._session_issue_list
             if list_widget is not None:
-                selected_id = self._session_selected_issue_id
+                selected_id = self.state.session.selected_issue_id
                 if not selected_id and issues:
                     selected_id = str(issues[-1].get("id", "")).strip()
                 list_widget.set_items(items, selected_id=selected_id, emit=False)
@@ -4484,20 +2856,20 @@ def run_tui() -> int:
             if detail is None:
                 return
             if event is None:
-                self._session_timeline_selected_event_id = None
+                self.state.session.timeline_selected_event_id = None
                 detail.set_preview("(no timeline events yet)")
                 detail.set_actions([])
                 return
-            self._session_timeline_selected_event_id = str(event.get("id", "")).strip() or None
+            self.state.session.timeline_selected_event_id = str(event.get("id", "")).strip() or None
             detail.set_preview(render_session_timeline_detail_text(event))
             detail.set_actions(session_timeline_actions(event))
 
         def _render_session_timeline_panel(self) -> None:
-            events = [item for item in self._session_timeline_events if isinstance(item, dict)]
+            events = [item for item in self.state.session.timeline_events if isinstance(item, dict)]
             items = build_session_timeline_sidebar_items(events)
             list_widget = self._session_timeline_list
             if list_widget is not None:
-                selected_id = self._session_timeline_selected_event_id
+                selected_id = self.state.session.timeline_selected_event_id
                 if not selected_id and events:
                     selected_id = str(events[-1].get("id", "")).strip()
                 list_widget.set_items(items, selected_id=selected_id, emit=False)
@@ -4517,9 +2889,9 @@ def run_tui() -> int:
             if header is None:
                 return
             badges = [
-                f"warn {self._warning_count}",
-                f"err {self._error_count}",
-                f"issues {len(self._session_issues)}",
+                f"warn {self.state.session.warning_count}",
+                f"err {self.state.session.error_count}",
+                f"issues {len(self.state.session.issues)}",
             ]
             header.set_badges(badges)
             self._refresh_session_timeline_header()
@@ -4528,7 +2900,7 @@ def run_tui() -> int:
             header = self._session_timeline_header
             if header is None:
                 return
-            events = list(self._session_timeline_events)
+            events = list(self.state.session.timeline_events)
             error_count = 0
             for event in events:
                 if classify_session_timeline_event_kind(event) == "error":
@@ -4538,7 +2910,7 @@ def run_tui() -> int:
 
         def _set_session_view_mode(self, mode: str) -> None:
             normalized = normalize_session_view_mode(mode)
-            self._session_view_mode = normalized
+            self.state.session.view_mode = normalized
 
             timeline_view = self._session_timeline_view
             issues_view = self._session_issues_view
@@ -4555,27 +2927,27 @@ def run_tui() -> int:
                 issues_button.variant = "primary" if normalized == "issues" else "default"
 
         def _schedule_session_timeline_refresh(self, *, delay: float = 0.35) -> None:
-            timer = self._session_timeline_refresh_timer
-            self._session_timeline_refresh_timer = None
+            timer = self.state.session.timeline_refresh_timer
+            self.state.session.timeline_refresh_timer = None
             if timer is not None:
                 with contextlib.suppress(Exception):
                     timer.stop()
-            self._session_timeline_refresh_timer = self.set_timer(delay, self._launch_session_timeline_refresh)
+            self.state.session.timeline_refresh_timer = self.set_timer(delay, self._launch_session_timeline_refresh)
 
         def _launch_session_timeline_refresh(self) -> None:
-            self._session_timeline_refresh_timer = None
+            self.state.session.timeline_refresh_timer = None
             with contextlib.suppress(RuntimeError):
                 asyncio.create_task(self._refresh_session_timeline_async())
 
         async def _refresh_session_timeline_async(self) -> None:
-            session_id = str(self._daemon_session_id or "").strip()
+            session_id = str(self.state.daemon.session_id or "").strip()
             if not session_id:
                 self._reset_session_timeline_panel()
                 return
-            if self._session_timeline_refresh_inflight:
-                self._session_timeline_refresh_pending = True
+            if self.state.session.timeline_refresh_inflight:
+                self.state.session.timeline_refresh_pending = True
                 return
-            self._session_timeline_refresh_inflight = True
+            self.state.session.timeline_refresh_inflight = True
             next_pending = False
             try:
                 existing_index: dict[str, Any] | None = None
@@ -4611,28 +2983,31 @@ def run_tui() -> int:
                             event = dict(raw)
                             event.setdefault("id", f"timeline-{offset}")
                             normalized_events.append(event)
-                    self._session_timeline_index = index
-                    self._session_timeline_events = normalized_events
+                    self.state.session.timeline_index = index
+                    self.state.session.timeline_events = normalized_events
                     self._render_session_timeline_panel()
             finally:
-                self._session_timeline_refresh_inflight = False
-                next_pending = self._session_timeline_refresh_pending
-                self._session_timeline_refresh_pending = False
+                self.state.session.timeline_refresh_inflight = False
+                next_pending = self.state.session.timeline_refresh_pending
+                self.state.session.timeline_refresh_pending = False
             if next_pending:
                 self._schedule_session_timeline_refresh(delay=0.1)
 
         def _write_issue(self, line: str) -> None:
-            if self._issues_repeat_line == line:
-                self._issues_repeat_count += 1
+            if self.state.session.issues_repeat_line == line:
+                self.state.session.issues_repeat_count += 1
                 return
-            if self._issues_repeat_line is not None and self._issues_repeat_count > 0:
-                repeated = f"… repeated {self._issues_repeat_count} more time(s): {self._issues_repeat_line}"
-                self._issues_lines.append(repeated)
-            self._issues_repeat_line = line
-            self._issues_repeat_count = 0
-            self._issues_lines.append(line)
-            if len(self._issues_lines) > 2000:
-                self._issues_lines = self._issues_lines[-2000:]
+            if self.state.session.issues_repeat_line is not None and self.state.session.issues_repeat_count > 0:
+                repeated = (
+                    f"… repeated {self.state.session.issues_repeat_count} more time(s): "
+                    f"{self.state.session.issues_repeat_line}"
+                )
+                self.state.session.issue_lines.append(repeated)
+            self.state.session.issues_repeat_line = line
+            self.state.session.issues_repeat_count = 0
+            self.state.session.issue_lines.append(line)
+            if len(self.state.session.issue_lines) > 2000:
+                self.state.session.issue_lines = self.state.session.issue_lines[-2000:]
             issue_meta = self._session_issue_from_line(line)
             self._append_session_issue(
                 severity=str(issue_meta.get("severity", "warning")),
@@ -4645,14 +3020,17 @@ def run_tui() -> int:
             )
 
         def _flush_issue_repeats(self) -> None:
-            if self._issues_repeat_line is None or self._issues_repeat_count <= 0:
-                self._issues_repeat_line = None
-                self._issues_repeat_count = 0
+            if self.state.session.issues_repeat_line is None or self.state.session.issues_repeat_count <= 0:
+                self.state.session.issues_repeat_line = None
+                self.state.session.issues_repeat_count = 0
                 return
-            repeated = f"… repeated {self._issues_repeat_count} more time(s): {self._issues_repeat_line}"
-            self._issues_lines.append(repeated)
-            self._issues_repeat_line = None
-            self._issues_repeat_count = 0
+            repeated = (
+                f"… repeated {self.state.session.issues_repeat_count} more time(s): "
+                f"{self.state.session.issues_repeat_line}"
+            )
+            self.state.session.issue_lines.append(repeated)
+            self.state.session.issues_repeat_line = None
+            self.state.session.issues_repeat_count = 0
             self._append_session_issue(
                 severity="warning",
                 title="Repeated Issue",
@@ -4662,48 +3040,50 @@ def run_tui() -> int:
 
         def _update_header_status(self) -> None:
             counts = []
-            if self._warning_count:
-                counts.append(f"warn={self._warning_count}")
-            if self._error_count:
-                counts.append(f"err={self._error_count}")
+            if self.state.session.warning_count:
+                counts.append(f"warn={self.state.session.warning_count}")
+            if self.state.session.error_count:
+                counts.append(f"err={self.state.session.error_count}")
             suffix = (" | " + " ".join(counts)) if counts else ""
             self.sub_title = f"{self._current_model_summary()}{suffix}"
             if self._status_bar is not None:
-                self._status_bar.set_counts(warnings=self._warning_count, errors=self._error_count)
+                self._status_bar.set_counts(
+                    warnings=self.state.session.warning_count, errors=self.state.session.error_count
+                )
             self._refresh_session_header()
 
         def _current_model_summary(self) -> str:
             provider_name, tier_name, model_id = choose_model_summary_parts(
-                daemon_provider=self._daemon_provider,
-                daemon_tier=self._daemon_tier,
-                daemon_model_id=self._daemon_model_id,
-                daemon_tiers=self._daemon_tiers,
-                pending_value=self._pending_model_select_value,
-                override_provider=self._model_provider_override,
-                override_tier=self._model_tier_override,
+                daemon_provider=self.state.daemon.provider,
+                daemon_tier=self.state.daemon.tier,
+                daemon_model_id=self.state.daemon.model_id,
+                daemon_tiers=self.state.daemon.tiers,
+                pending_value=self.state.daemon.pending_model_select_value,
+                override_provider=self.state.daemon.model_provider_override,
+                override_tier=self.state.daemon.model_tier_override,
             )
             if provider_name and tier_name:
                 suffix = f" ({model_id})" if model_id else ""
                 return f"Model: {provider_name}/{tier_name}{suffix}"
             return resolve_model_config_summary(
-                provider_override=self._model_provider_override,
-                tier_override=self._model_tier_override,
+                provider_override=self.state.daemon.model_provider_override,
+                tier_override=self.state.daemon.model_tier_override,
             )
 
         def _model_env_overrides(self) -> dict[str, str]:
             overrides: dict[str, str] = {}
-            if self._model_provider_override:
-                overrides["SWARMEE_MODEL_PROVIDER"] = self._model_provider_override
-            if self._model_tier_override:
-                overrides["SWARMEE_MODEL_TIER"] = self._model_tier_override
+            if self.state.daemon.model_provider_override:
+                overrides["SWARMEE_MODEL_PROVIDER"] = self.state.daemon.model_provider_override
+            if self.state.daemon.model_tier_override:
+                overrides["SWARMEE_MODEL_TIER"] = self.state.daemon.model_tier_override
             return overrides
 
         def _refresh_model_select(self) -> None:
-            if self._daemon_provider and self._daemon_tier and self._daemon_tiers:
+            if self.state.daemon.provider and self.state.daemon.tier and self.state.daemon.tiers:
                 self._refresh_model_select_from_daemon(
-                    provider=self._daemon_provider,
-                    tier=self._daemon_tier,
-                    tiers=self._daemon_tiers,
+                    provider=self.state.daemon.provider,
+                    tier=self.state.daemon.tier,
+                    tiers=self.state.daemon.tiers,
                 )
                 return
 
@@ -4712,13 +3092,13 @@ def run_tui() -> int:
 
         def _apply_model_select_options(self, options: list[tuple[str, str]], selected_value: str) -> None:
             selector = self.query_one("#model_select", Select)
-            self._model_select_syncing = True
+            self.state.daemon.model_select_syncing = True
             try:
                 selector.set_options(options)
                 with contextlib.suppress(Exception):
                     selector.value = selected_value
             finally:
-                self._model_select_syncing = False
+                self.state.daemon.model_select_syncing = False
 
         def _refresh_model_select_from_daemon(
             self,
@@ -4731,25 +3111,25 @@ def run_tui() -> int:
                 provider=provider,
                 tier=tier,
                 tiers=tiers,
-                pending_value=self._pending_model_select_value,
-                override_provider=self._model_provider_override,
-                override_tier=self._model_tier_override,
+                pending_value=self.state.daemon.pending_model_select_value,
+                override_provider=self.state.daemon.model_provider_override,
+                override_tier=self.state.daemon.model_tier_override,
             )
             self._apply_model_select_options(options, selected_value)
 
         def _model_select_options(self) -> tuple[list[tuple[str, str]], str]:
-            if self._daemon_tiers and self._daemon_provider:
+            if self.state.daemon.tiers and self.state.daemon.provider:
                 return daemon_model_select_options(
-                    provider=self._daemon_provider,
-                    tier=(self._daemon_tier or ""),
-                    tiers=self._daemon_tiers,
-                    pending_value=self._pending_model_select_value,
-                    override_provider=self._model_provider_override,
-                    override_tier=self._model_tier_override,
+                    provider=self.state.daemon.provider,
+                    tier=(self.state.daemon.tier or ""),
+                    tiers=self.state.daemon.tiers,
+                    pending_value=self.state.daemon.pending_model_select_value,
+                    override_provider=self.state.daemon.model_provider_override,
+                    override_tier=self.state.daemon.model_tier_override,
                 )
             return model_select_options(
-                provider_override=self._model_provider_override,
-                tier_override=self._model_tier_override,
+                provider_override=self.state.daemon.model_provider_override,
+                tier_override=self.state.daemon.model_tier_override,
             )
 
         def _handle_model_info(self, event: dict[str, Any]) -> None:
@@ -4758,29 +3138,33 @@ def run_tui() -> int:
             model_id = event.get("model_id")
             tiers = event.get("tiers")
 
-            self._daemon_provider = provider or None
-            self._daemon_tier = tier or None
-            self._daemon_model_id = str(model_id).strip() if model_id is not None and str(model_id).strip() else None
-            self._daemon_tiers = tiers if isinstance(tiers, list) else []
-            self._current_daemon_model = self._daemon_model_id or (
-                f"{self._daemon_provider}/{self._daemon_tier}" if self._daemon_provider and self._daemon_tier else None
+            self.state.daemon.provider = provider or None
+            self.state.daemon.tier = tier or None
+            self.state.daemon.model_id = (
+                str(model_id).strip() if model_id is not None and str(model_id).strip() else None
             )
-            pending_value = (self._pending_model_select_value or "").strip().lower()
+            self.state.daemon.tiers = tiers if isinstance(tiers, list) else []
+            self.state.daemon.current_model = self.state.daemon.model_id or (
+                f"{self.state.daemon.provider}/{self.state.daemon.tier}"
+                if self.state.daemon.provider and self.state.daemon.tier
+                else None
+            )
+            pending_value = (self.state.daemon.pending_model_select_value or "").strip().lower()
             if pending_value and "|" in pending_value:
                 pending_provider, pending_tier = pending_value.split("|", 1)
                 if pending_provider == provider and pending_tier == tier:
-                    self._pending_model_select_value = None
+                    self.state.daemon.pending_model_select_value = None
                     pending_value = ""
 
-            if not pending_value and self._daemon_provider and self._daemon_tier:
-                self._model_provider_override = self._daemon_provider
-                self._model_tier_override = self._daemon_tier
+            if not pending_value and self.state.daemon.provider and self.state.daemon.tier:
+                self.state.daemon.model_provider_override = self.state.daemon.provider
+                self.state.daemon.model_tier_override = self.state.daemon.tier
 
-            if self._daemon_provider and self._daemon_tier:
+            if self.state.daemon.provider and self.state.daemon.tier:
                 self._refresh_model_select_from_daemon(
-                    provider=self._daemon_provider,
-                    tier=self._daemon_tier,
-                    tiers=self._daemon_tiers,
+                    provider=self.state.daemon.provider,
+                    tier=self.state.daemon.tier,
+                    tiers=self.state.daemon.tiers,
                 )
             else:
                 self._refresh_model_select()
@@ -4794,9 +3178,7 @@ def run_tui() -> int:
         def _update_prompt_placeholder(self) -> None:
             input_widget = self.query_one("#prompt", PromptTextArea)
             approval = "on" if self._default_auto_approve else "off"
-            input_widget.placeholder = (
-                f"Auto-approve: {approval}. Enter submits. Shift+Enter/Ctrl+J adds newline."
-            )
+            input_widget.placeholder = f"Auto-approve: {approval}. Enter submits. Shift+Enter/Ctrl+J adds newline."
 
         def _update_command_palette(self, text: str) -> None:
             if self._command_palette is None:
@@ -4834,22 +3216,22 @@ def run_tui() -> int:
             if parsed is None:
                 return
             requested_provider, requested_tier = parsed
-            self._pending_model_select_value = None
-            self._model_provider_override = requested_provider or None
-            self._model_tier_override = requested_tier or None
+            self.state.daemon.pending_model_select_value = None
+            self.state.daemon.model_provider_override = requested_provider or None
+            self.state.daemon.model_tier_override = requested_tier or None
             self._refresh_model_select()
             self._update_header_status()
             self._update_prompt_placeholder()
             if (
-                self._daemon_ready
-                and self._proc is not None
-                and self._proc.poll() is None
-                and not self._query_active
+                self.state.daemon.ready
+                and self.state.daemon.proc is not None
+                and self.state.daemon.proc.poll() is None
+                and not self.state.daemon.query_active
             ):
-                if not send_daemon_command(self._proc, {"cmd": "set_tier", "tier": requested_tier}):
+                if not send_daemon_command(self.state.daemon.proc, {"cmd": "set_tier", "tier": requested_tier}):
                     self._write_transcript_line("[model] failed to send tier change to daemon.")
                 else:
-                    self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
+                    self.state.daemon.pending_model_select_value = f"{requested_provider}|{requested_tier}"
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
 
@@ -4885,7 +3267,7 @@ def run_tui() -> int:
                     ],
                 )
 
-            if self._query_active:
+            if self.state.daemon.query_active:
                 return (
                     "Run Actions",
                     [
@@ -4895,7 +3277,7 @@ def run_tui() -> int:
                     ],
                 )
 
-            if self._pending_plan_prompt:
+            if self.state.plan.pending_prompt:
                 return (
                     "Plan Review",
                     [
@@ -4911,7 +3293,7 @@ def run_tui() -> int:
                 {"id": "idle:plan_mode", "icon": "🧭", "label": "Plan mode", "shortcut": "/plan"},
                 {"id": "idle:run_mode", "icon": "▶", "label": "Run mode", "shortcut": "/run"},
             ]
-            if self._available_restore_session_id:
+            if self.state.daemon.available_restore_session_id:
                 actions.append({"id": "idle:restore", "icon": "↺", "label": "Restore session", "shortcut": "/restore"})
             actions.extend(
                 [
@@ -5081,8 +3463,8 @@ def run_tui() -> int:
                 pass
 
             artifact_path = self._persist_run_transcript(
-                pid=(self._proc.pid if self._proc is not None else None),
-                session_id=self._daemon_session_id,
+                pid=(self.state.daemon.proc.pid if self.state.daemon.proc is not None else None),
+                session_id=self.state.daemon.session_id,
                 prompt=f"(copy) {label}",
                 auto_approve=False,
                 exit_code=0,
@@ -5113,10 +3495,10 @@ def run_tui() -> int:
                 self._get_transcript_text().rstrip(),
                 "",
                 "# Plan",
-                (self._plan_text or "").rstrip() or "(no plan)",
+                (self.state.plan.text or "").rstrip() or "(no plan)",
                 "",
                 "# Session Issues",
-                "\n".join(self._issues_lines).rstrip() or "(no issues)",
+                "\n".join(self.state.session.issue_lines).rstrip() or "(no issues)",
                 "",
                 "# Artifacts",
                 self._get_artifacts_text().rstrip() or "(no artifacts)",
@@ -5154,7 +3536,7 @@ def run_tui() -> int:
 
             # Keep compatibility with legacy in-memory artifact paths that may not
             # have an index record (e.g., session logs).
-            for raw_path in self._artifacts:
+            for raw_path in self.state.artifacts.recent_paths:
                 path = str(raw_path or "").strip()
                 if not path or path in seen_paths:
                     continue
@@ -5178,7 +3560,7 @@ def run_tui() -> int:
             target = str(item_id or "").strip()
             if not target:
                 return None
-            for entry in self._artifact_entries:
+            for entry in self.state.artifacts.entries:
                 if str(entry.get("item_id", "")).strip() == target:
                     return entry
             return None
@@ -5241,11 +3623,11 @@ def run_tui() -> int:
             if detail is None:
                 return
             if entry is None:
-                self._artifact_selected_item_id = None
+                self.state.artifacts.selected_item_id = None
                 detail.set_preview("(no artifacts yet)")
                 detail.set_actions([])
                 return
-            self._artifact_selected_item_id = str(entry.get("item_id", "")).strip() or None
+            self.state.artifacts.selected_item_id = str(entry.get("item_id", "")).strip() or None
             detail.set_preview(self._artifact_preview_text(entry))
             detail.set_actions(
                 [
@@ -5256,27 +3638,27 @@ def run_tui() -> int:
             )
 
         def _render_artifacts_panel(self) -> None:
-            self._artifact_entries = self._load_indexed_artifact_entries(limit=200)
+            self.state.artifacts.entries = self._load_indexed_artifact_entries(limit=200)
             if self._artifacts_header is not None:
-                badge_count = len(self._artifact_entries)
+                badge_count = len(self.state.artifacts.entries)
                 self._artifacts_header.set_badges([f"{badge_count} item{'s' if badge_count != 1 else ''}"])
             list_widget = self._artifacts_list
             if list_widget is None:
                 return
-            items = build_artifact_sidebar_items(self._artifact_entries)
-            selected_id = self._artifact_selected_item_id
-            if not selected_id and self._artifact_entries:
-                selected_id = str(self._artifact_entries[0].get("item_id", "")).strip()
+            items = build_artifact_sidebar_items(self.state.artifacts.entries)
+            selected_id = self.state.artifacts.selected_item_id
+            if not selected_id and self.state.artifacts.entries:
+                selected_id = str(self.state.artifacts.entries[0].get("item_id", "")).strip()
             list_widget.set_items(items, selected_id=selected_id, emit=False)
             selected_item_id = list_widget.selected_id()
             selected_entry = self._artifact_entry_by_item_id(selected_item_id)
-            if selected_entry is None and self._artifact_entries:
-                selected_entry = self._artifact_entries[0]
+            if selected_entry is None and self.state.artifacts.entries:
+                selected_entry = self.state.artifacts.entries[0]
                 list_widget.select_by_id(str(selected_entry.get("item_id", "")), emit=False)
             self._set_artifact_selection(selected_entry)
 
         def _get_artifacts_text(self) -> str:
-            entries = self._artifact_entries or self._load_indexed_artifact_entries(limit=200)
+            entries = self.state.artifacts.entries or self._load_indexed_artifact_entries(limit=200)
             if not entries:
                 return "(no artifacts)\n"
             lines: list[str] = []
@@ -5290,15 +3672,15 @@ def run_tui() -> int:
             return "\n".join(lines).rstrip() + "\n"
 
         def _reset_artifacts_panel(self) -> None:
-            self._artifacts = []
-            self._artifact_entries = []
-            self._artifact_selected_item_id = None
+            self.state.artifacts.recent_paths = []
+            self.state.artifacts.entries = []
+            self.state.artifacts.selected_item_id = None
             self._render_artifacts_panel()
 
         def _add_artifact_paths(self, paths: list[str]) -> None:
-            updated = add_recent_artifacts(self._artifacts, paths, max_items=20)
-            if updated != self._artifacts:
-                self._artifacts = updated
+            updated = add_recent_artifacts(self.state.artifacts.recent_paths, paths, max_items=20)
+            if updated != self.state.artifacts.recent_paths:
+                self.state.artifacts.recent_paths = updated
             self._render_artifacts_panel()
 
         def _context_source_label(self, source: dict[str, str]) -> str:
@@ -5426,8 +3808,8 @@ def run_tui() -> int:
                 row.mount(Static(preview, classes="sop-preview"))
 
         def _sync_active_sops_with_daemon(self, *, notify_on_failure: bool = False) -> bool:
-            proc = self._proc
-            if not self._daemon_ready or proc is None or proc.poll() is not None:
+            proc = self.state.daemon.proc
+            if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                 self._sops_ready_for_sync = bool(self._active_sop_names)
                 return False
             for name in sorted(self._active_sop_names):
@@ -5471,8 +3853,8 @@ def run_tui() -> int:
             self._refresh_agent_summary()
 
             if sync:
-                proc = self._proc
-                if not self._daemon_ready or proc is None or proc.poll() is not None:
+                proc = self.state.daemon.proc
+                if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                     self._sops_ready_for_sync = bool(self._active_sop_names)
                 else:
                     payload = {
@@ -5620,8 +4002,8 @@ def run_tui() -> int:
             return payload
 
         def _sync_context_sources_with_daemon(self, *, notify_on_failure: bool = False) -> bool:
-            proc = self._proc
-            if not self._daemon_ready or proc is None or proc.poll() is not None:
+            proc = self.state.daemon.proc
+            if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                 self._context_ready_for_sync = True
                 return False
             payload = {"cmd": "set_context_sources", "sources": self._context_sources_payload()}
@@ -5788,7 +4170,7 @@ def run_tui() -> int:
 
             total_chars = len(text)
             if total_chars > _THINKING_EXPORT_MAX_CHARS:
-                shown = text[-_THINKING_EXPORT_MAX_CHARS :]
+                shown = text[-_THINKING_EXPORT_MAX_CHARS:]
                 self._write_transcript_line(
                     f"[thinking] showing last {_THINKING_EXPORT_MAX_CHARS:,} of {total_chars:,} chars."
                 )
@@ -5858,10 +4240,10 @@ def run_tui() -> int:
                     widget.hide_prompt()
 
         def _next_available_tier_name(self) -> str | None:
-            current_tier = (self._daemon_tier or "").strip().lower()
+            current_tier = (self.state.daemon.tier or "").strip().lower()
             available = [
                 str(item.get("name", "")).strip().lower()
-                for item in self._daemon_tiers
+                for item in self.state.daemon.tiers
                 if isinstance(item, dict) and bool(item.get("available"))
             ]
             if not available:
@@ -5901,7 +4283,7 @@ def run_tui() -> int:
                 widget.show_escalation(next_tier=resolved_next or None)
 
         def _resume_after_error(self, *, escalate: bool) -> None:
-            if self._query_active:
+            if self.state.daemon.query_active:
                 self._write_transcript_line("[run] already running; use /stop.")
                 return
             prompt = (self._last_prompt or "").strip()
@@ -5909,8 +4291,8 @@ def run_tui() -> int:
                 self._write_transcript_line("[run] no previous prompt to continue.")
                 self._reset_error_action_prompt()
                 return
-            proc = self._proc
-            if proc is None or proc.poll() is not None or not self._daemon_ready:
+            proc = self.state.daemon.proc
+            if proc is None or proc.poll() is not None or not self.state.daemon.ready:
                 self._write_transcript_line("[run] daemon is not ready. Use /daemon restart.")
                 self._reset_error_action_prompt()
                 return
@@ -5934,8 +4316,8 @@ def run_tui() -> int:
                 self._write_transcript_line("[recovery] no failed tool selected.")
                 self._reset_error_action_prompt()
                 return
-            proc = self._proc
-            if proc is None or proc.poll() is not None or not self._daemon_ready:
+            proc = self.state.daemon.proc
+            if proc is None or proc.poll() is not None or not self.state.daemon.ready:
                 self._write_transcript_line("[recovery] daemon is not ready.")
                 self._reset_error_action_prompt()
                 return
@@ -5952,8 +4334,8 @@ def run_tui() -> int:
                 self._write_transcript_line("[recovery] no failed tool selected.")
                 self._reset_error_action_prompt()
                 return
-            proc = self._proc
-            if proc is None or proc.poll() is not None or not self._daemon_ready:
+            proc = self.state.daemon.proc
+            if proc is None or proc.poll() is not None or not self.state.daemon.ready:
                 self._write_transcript_line("[recovery] daemon is not ready.")
                 self._reset_error_action_prompt()
                 return
@@ -6002,7 +4384,7 @@ def run_tui() -> int:
             if not self._consent_active:
                 self._write_transcript_line("[consent] no active prompt.")
                 return
-            if self._proc is None or self._proc.poll() is not None:
+            if self.state.daemon.proc is None or self.state.daemon.proc.poll() is not None:
                 self._write_transcript_line("[consent] daemon is not running.")
                 self._reset_consent_panel()
                 return
@@ -6017,7 +4399,9 @@ def run_tui() -> int:
                 with contextlib.suppress(Exception):
                     widget.show_confirmation(decision_line, approved=approved)
             self._schedule_consent_prompt_hide(delay=1.0)
-            if not send_daemon_command(self._proc, {"cmd": "consent_response", "choice": normalized_choice}):
+            if not send_daemon_command(
+                self.state.daemon.proc, {"cmd": "consent_response", "choice": normalized_choice}
+            ):
                 self._write_transcript_line("[consent] failed to send response (stdin unavailable).")
                 return
 
@@ -6050,14 +4434,14 @@ def run_tui() -> int:
             self._assistant_placeholder_written = False
 
         def _handle_output_line(self, line: str, raw_line: str | None = None) -> None:
-            if self._query_active:
+            if self.state.daemon.query_active:
                 chunk = raw_line if raw_line is not None else (line + "\n")
-                self._turn_output_chunks.append(sanitize_output_text(chunk))
+                self.state.daemon.turn_output_chunks.append(sanitize_output_text(chunk))
             sanitized = sanitize_output_text(line)
             # Try structured JSONL first (emitted by TuiCallbackHandler).
             tui_event = parse_tui_event(sanitized)
             if tui_event is not None:
-                self._handle_tui_event(tui_event)
+                _handle_daemon_event_router(self, tui_event)
                 return
 
             # Legacy fallback for non-JSON lines (stderr leakage, library warnings, etc.).
@@ -6076,14 +4460,14 @@ def run_tui() -> int:
                 text = event.text
                 if not text.startswith("ERROR:"):
                     text = f"ERROR: {text}"
-                self._error_count += 1
+                self.state.session.error_count += 1
                 self._write_issue(text)
                 self._update_header_status()
             elif event.kind == "warning":
                 text = event.text
                 if not text.startswith("WARN:"):
                     text = f"WARN: {text}"
-                self._warning_count += 1
+                self.state.session.warning_count += 1
                 self._write_issue(text)
                 self._update_header_status()
             else:
@@ -6097,432 +4481,36 @@ def run_tui() -> int:
 
         def _handle_tui_event(self, event: dict[str, Any]) -> None:
             """Process a structured JSONL event from the subprocess."""
-            etype = str(event.get("event", "")).strip().lower()
+            _handle_daemon_event_router(self, event)
 
-            if etype in {"ready", "attached"}:
-                self._daemon_ready = True
-                session_id = str(event.get("session_id", "")).strip()
-                if session_id:
-                    self._daemon_session_id = session_id
-                    self._save_session()
-                if etype == "attached":
-                    clients_raw = event.get("clients")
-                    clients = int(clients_raw) if isinstance(clients_raw, int) else None
-                    if clients is not None and clients > 1:
-                        self._write_transcript_line(
-                            f"[daemon] attached to shared runtime session ({clients} clients connected)."
-                        )
-                    else:
-                        self._write_transcript_line("[daemon] attached to shared runtime session.")
-                else:
-                    self._write_transcript("Swarmee daemon ready. Enter a prompt to run Swarmee.")
-                if self._context_sources or self._context_ready_for_sync:
-                    self._sync_context_sources_with_daemon(notify_on_failure=True)
-                if self._active_sop_names or self._sops_ready_for_sync:
-                    self._sync_active_sops_with_daemon(notify_on_failure=True)
-                self._refresh_agent_summary()
-                self._schedule_session_timeline_refresh()
+        def _classify_tui_error_event(self, event: dict[str, Any]) -> dict[str, Any]:
+            return classify_tui_error_event(event)
 
-            elif etype == "session_available":
-                session_id = str(event.get("session_id", "")).strip()
-                turn_count_raw = event.get("turn_count", 0)
-                try:
-                    turn_count = int(turn_count_raw or 0)
-                except (TypeError, ValueError):
-                    turn_count = 0
-                self._available_restore_session_id = session_id or None
-                self._available_restore_turn_count = max(0, turn_count)
-                if session_id:
-                    self._write_transcript_line(
-                        f"Previous session found ({self._available_restore_turn_count} turns). "
-                        "Type /restore to resume or /new to start fresh."
-                    )
+        def _summarize_error_for_toast(self, error_info: dict[str, Any]) -> tuple[str, str, float | None]:
+            return summarize_error_for_toast(error_info)
 
-            elif etype == "session_restored":
-                session_id = str(event.get("session_id", "")).strip()
-                if session_id:
-                    self._daemon_session_id = session_id
-                turn_count_raw = event.get("turn_count", 0)
-                try:
-                    self._last_restored_turn_count = max(0, int(turn_count_raw or 0))
-                except (TypeError, ValueError):
-                    self._last_restored_turn_count = 0
-                self._available_restore_session_id = None
-                self._available_restore_turn_count = 0
-                self._save_session()
-                self._schedule_session_timeline_refresh()
+        def render_plan_panel(self, plan_json: dict[str, Any]) -> Any:
+            return render_plan_panel(plan_json)
 
-            elif etype == "replay_turn":
-                role = str(event.get("role", "")).strip().lower()
-                text = sanitize_output_text(str(event.get("text", "")))
-                if not text.strip():
-                    return
-                timestamp = str(event.get("timestamp", "")).strip() or None
-                if role == "user":
-                    self._write_user_message(text, timestamp=timestamp)
-                elif role == "assistant":
-                    model = str(event.get("model", "")).strip() or None
-                    self._write_assistant_message(text, model=model, timestamp=timestamp)
+        def render_system_message(self, text: str) -> Any:
+            return render_system_message(text)
 
-            elif etype == "replay_complete":
-                turn_count_raw = event.get("turn_count", self._last_restored_turn_count)
-                try:
-                    turns = max(0, int(turn_count_raw or 0))
-                except (TypeError, ValueError):
-                    turns = max(0, self._last_restored_turn_count)
-                self._write_transcript_line(f"Session restored ({turns} turns).")
-
-            elif etype == "turn_complete":
-                exit_status = str(event.get("exit_status", "ok"))
-                self._finalize_turn(exit_status=exit_status)
-                if exit_status in {"ok", "interrupted"}:
-                    self._reset_error_action_prompt()
-                self._schedule_session_timeline_refresh()
-
-            elif etype == "model_info":
-                self._handle_model_info(event)
-
-            elif etype == "profile_applied":
-                raw_profile = event.get("profile")
-                try:
-                    applied_profile = AgentProfile.from_dict(raw_profile)
-                except Exception:
-                    self._write_transcript_line("[agent] received invalid profile_applied payload.")
-                    return
-                self._effective_profile = applied_profile
-                self._refresh_agent_summary()
-                self._reload_saved_profiles(selected_id=applied_profile.id)
-                self._agent_team_presets = normalize_team_presets(applied_profile.team_presets)
-                self._agent_team_selected_item_id = None
-                self._render_agent_team_panel()
-                self._set_agent_form_values(profile_id=applied_profile.id, profile_name=applied_profile.name)
-                self._set_agent_draft_dirty(False, note=f"Applied profile '{applied_profile.name}'.")
-
-            elif etype == "safety_overrides":
-                self._session_safety_overrides = normalize_session_safety_overrides(event.get("overrides"))
-                self._render_agent_tools_panel()
-                if self._session_safety_overrides:
-                    self._set_agent_tools_status("Session overrides active.")
-                else:
-                    self._set_agent_tools_status("Session overrides cleared.")
-
-            elif etype == "context":
-                prompt_tokens_est = event.get("prompt_tokens_est")
-                budget_tokens = event.get("budget_tokens")
-                self._last_prompt_tokens_est = int(prompt_tokens_est) if isinstance(prompt_tokens_est, int) else None
-                self._last_budget_tokens = int(budget_tokens) if isinstance(budget_tokens, int) else None
-                if self._status_bar is not None:
-                    self._status_bar.set_context(
-                        prompt_tokens_est=self._last_prompt_tokens_est,
-                        budget_tokens=self._last_budget_tokens,
-                    )
-                self._refresh_prompt_metrics()
-
-            elif etype == "usage":
-                usage = event.get("usage")
-                self._last_usage = usage if isinstance(usage, dict) else None
-                cost = event.get("cost_usd")
-                self._last_cost_usd = float(cost) if isinstance(cost, (int, float)) else None
-                if self._status_bar is not None:
-                    self._status_bar.set_usage(self._last_usage, cost_usd=self._last_cost_usd)
-                self._refresh_prompt_metrics()
-
-            elif etype == "compact_complete":
-                compacted = bool(event.get("compacted", False))
-                warning_text = str(event.get("warning", "")).strip()
-                before_tokens = event.get("before_tokens_est")
-                after_tokens = event.get("after_tokens_est")
-                if isinstance(before_tokens, int) and isinstance(after_tokens, int):
-                    self._last_prompt_tokens_est = after_tokens
-                    if self._status_bar is not None:
-                        self._status_bar.set_context(
-                            prompt_tokens_est=self._last_prompt_tokens_est,
-                            budget_tokens=self._last_budget_tokens,
-                        )
-                    self._refresh_prompt_metrics()
-                if compacted:
-                    self._notify("Context compacted.", severity="information", timeout=4.0)
-                elif warning_text:
-                    self._notify(warning_text, severity="warning", timeout=6.0)
-                else:
-                    self._notify("Context compaction made no changes.", severity="information", timeout=4.0)
-
-            elif etype in {"text_delta", "message_delta", "output_text_delta", "delta"}:
-                chunk = sanitize_output_text(extract_tui_text_chunk(event))
-                if not chunk:
-                    return
-                self._dismiss_thinking(emit_summary=True)
-                if not self._current_assistant_chunks and not self._streaming_buffer:
-                    self._current_assistant_model = self._current_daemon_model
-                    self._current_assistant_timestamp = self._turn_timestamp()
-                self._streaming_buffer.append(chunk)
-                self._schedule_streaming_flush()
-
-            elif etype in {"text_complete", "message_complete", "output_text_complete", "complete"}:
-                self._cancel_streaming_flush_timer()
-                self._flush_streaming_buffer()
-                self._finalize_assistant_message()
-
-            elif etype == "thinking":
-                self._record_thinking_event(str(event.get("text", "")))
-
-            elif etype == "tool_start":
-                self._dismiss_thinking(emit_summary=True)
-                tid = str(event.get("tool_use_id", "")).strip() or f"tool-{self._run_tool_count + 1}"
-                tool_name = str(event.get("tool", "unknown"))
-                self._tool_blocks[tid] = {
-                    "tool_use_id": tid,
-                    "tool": tool_name,
-                    "status": "running",
-                    "duration_s": 0.0,
-                    "input": None,
-                    "output": "",
-                    "pending_output": "",
-                    "pending_stream": "stdout",
-                    "elapsed_s": 0.0,
-                    "last_progress_render_mono": 0.0,
-                    "last_heartbeat_rendered_s": 0.0,
-                    "start_rendered": False,
-                }
-                self._schedule_tool_start_line(tid)
-                self._run_tool_count += 1
-                if self._status_bar is not None:
-                    self._status_bar.set_tool_count(self._run_tool_count)
-
-            elif etype == "tool_progress":
-                tid = str(event.get("tool_use_id", "")).strip()
-                record = self._tool_blocks.get(tid)
-                if record is None and tid:
-                    fallback_tool_name = str(event.get("tool", "unknown"))
-                    record = {
-                        "tool_use_id": tid,
-                        "tool": fallback_tool_name,
-                        "status": "running",
-                        "duration_s": 0.0,
-                        "input": None,
-                        "output": "",
-                        "pending_output": "",
-                        "pending_stream": "stdout",
-                        "elapsed_s": 0.0,
-                        "last_progress_render_mono": 0.0,
-                        "last_heartbeat_rendered_s": 0.0,
-                        "start_rendered": False,
-                    }
-                    self._tool_blocks[tid] = record
-                    self._schedule_tool_start_line(tid)
-                if record is not None:
-                    chars = event.get("chars")
-                    if isinstance(chars, int):
-                        record["chars"] = chars
-                    elapsed_raw = event.get("elapsed_s")
-                    if isinstance(elapsed_raw, (int, float)):
-                        record["elapsed_s"] = float(elapsed_raw)
-                    content = event.get("content")
-                    if isinstance(content, str) and content:
-                        stream = str(event.get("stream", "stdout")).strip().lower() or "stdout"
-                        self._queue_tool_progress_content(record, content=content, stream=stream)
-                    self._schedule_tool_progress_flush(tid)
-
-            elif etype == "tool_input":
-                tid = str(event.get("tool_use_id", "")).strip()
-                record = self._tool_blocks.get(tid)
-                if record is not None:
-                    record["input"] = event.get("input", {})
-                    if tid in self._tool_pending_start:
-                        self._emit_tool_start_line(tid)
-
-            elif etype == "tool_result":
-                tid = str(event.get("tool_use_id", "")).strip()
-                status = str(event.get("status", "unknown"))
-                duration_raw = event.get("duration_s", 0.0)
-                try:
-                    duration_s = float(duration_raw or 0.0)
-                except (TypeError, ValueError):
-                    duration_s = 0.0
-                record = self._tool_blocks.get(tid)
-                tool_name = str(event.get("tool", "unknown"))
-                if record is not None:
-                    record["status"] = status
-                    record["duration_s"] = duration_s
-                    record["elapsed_s"] = duration_s
-                    tool_name = str(record.get("tool", tool_name))
-                    pending_since = self._tool_pending_start.get(tid)
-                    if pending_since is not None:
-                        self._tool_pending_start.pop(tid, None)
-                        self._cancel_tool_start_timer(tid)
-                        if duration_s >= _TOOL_FAST_COMPLETE_SUPPRESS_START_S:
-                            self._emit_tool_start_line(tid)
-                    self._tool_progress_pending_ids.discard(tid)
-                    self._flush_tool_progress_render(tid, force=True)
-                tool_input = record.get("input") if isinstance(record, dict) else None
-                plain = self._tool_result_plain_text(tool_name, status, duration_s, tool_input)
-                self._mount_transcript_widget(
-                    render_tool_result_line(
-                        tool_name,
-                        status=status,
-                        duration_s=duration_s,
-                        tool_input=tool_input if isinstance(tool_input, dict) else None,
-                        tool_use_id=tid,
-                    ),
-                    plain_text=plain,
-                )
-                if status != "success":
-                    self._error_count += 1
-                    self._write_issue(f"ERROR: tool {tool_name} failed ({status}) [{tid}]")
-                    self._update_header_status()
-                    self._notify(f"{tool_name} tool failed", severity="error", timeout=6.0)
-                    if tid:
-                        self._mount_transcript_widget(
-                            render_system_message("Tool failed. Retry or skip using buttons above the prompt."),
-                            plain_text="Tool failed. Retry or skip using buttons above the prompt.",
-                        )
-                        self._show_tool_error_actions(tool_use_id=tid, tool_name=tool_name)
-
-            elif etype == "consent_prompt":
-                context = str(event.get("context", ""))
-                raw_options = event.get("options", ["y", "n", "a", "v"])
-                options = (
-                    [str(item).strip() for item in raw_options if str(item).strip()]
-                    if isinstance(raw_options, (list, tuple))
-                    else ["y", "n", "a", "v"]
-                )
-                if not options:
-                    options = ["y", "n", "a", "v"]
-                self._consent_buffer = [context]
-                self._show_consent_prompt(context=context, options=options, alert=True)
-
-            elif etype == "plan":
-                rendered = event.get("rendered", "")
-                plan_json = event.get("plan_json")
-                if plan_json and not rendered:
-                    rendered = _json.dumps(plan_json, indent=2)
-                self._set_plan_panel(rendered)
-                self._received_structured_plan = True
-                self._plan_completion_announced = False
-                self._plan_step_counter = 0
-                self._current_plan_steps_total = 0
-                self._current_plan_summary = ""
-                self._current_plan_steps = []
-                self._current_plan_step_statuses = []
-                self._current_plan_active_step = None
-                self._plan_updates_seen = False
-                if not self._last_run_auto_approve and self._last_prompt:
-                    self._pending_plan_prompt = self._last_prompt
-                if plan_json and isinstance(plan_json, dict):
-                    self._current_plan_summary = str(plan_json.get("summary", plan_json.get("title", ""))).strip()
-                    self._current_plan_steps = self._extract_plan_step_descriptions(plan_json)
-                    self._current_plan_steps_total = len(self._current_plan_steps)
-                    self._current_plan_step_statuses = ["pending"] * self._current_plan_steps_total
-                    self._render_plan_panel_from_status()
-                    self._mount_transcript_widget(
-                        render_plan_panel(plan_json),
-                        plain_text=rendered if isinstance(rendered, str) else _json.dumps(plan_json, indent=2),
-                    )
-                else:
-                    self._refresh_plan_status_bar()
-
-            elif etype == "plan_step_update":
-                step_index_raw = event.get("step_index")
-                status = str(event.get("status", "")).strip().lower()
-                if not isinstance(step_index_raw, int):
-                    with contextlib.suppress(Exception):
-                        step_index_raw = int(step_index_raw)
-                if not isinstance(step_index_raw, int):
-                    return
-                step_index = step_index_raw
-                if step_index < 0:
-                    return
-                if not self._current_plan_step_statuses:
-                    return
-                if step_index >= len(self._current_plan_step_statuses):
-                    self._write_transcript_line(f"[plan] ignoring out-of-range step index: {step_index + 1}")
-                    return
-                if status not in {"in_progress", "completed"}:
-                    return
-                self._plan_updates_seen = True
-                if status == "in_progress":
-                    self._current_plan_active_step = step_index
-                    if self._current_plan_step_statuses[step_index] != "completed":
-                        self._current_plan_step_statuses[step_index] = "in_progress"
-                elif status == "completed":
-                    self._current_plan_step_statuses[step_index] = "completed"
-                    if self._current_plan_active_step == step_index:
-                        self._current_plan_active_step = None
-                self._plan_step_counter = sum(1 for item in self._current_plan_step_statuses if item == "completed")
-                self._render_plan_panel_from_status()
-                if (
-                    self._current_plan_steps_total > 0
-                    and self._plan_step_counter >= self._current_plan_steps_total
-                    and not self._plan_completion_announced
-                ):
-                    self._plan_completion_announced = True
-                    self._write_transcript_line("Plan complete. Clear?")
-
-            elif etype == "plan_complete":
-                self._plan_step_counter = self._current_plan_steps_total
-                if self._current_plan_step_statuses:
-                    self._current_plan_step_statuses = ["completed"] * len(self._current_plan_step_statuses)
-                self._current_plan_active_step = None
-                self._render_plan_panel_from_status()
-                if not self._plan_completion_announced:
-                    self._plan_completion_announced = True
-                    self._write_transcript_line("Plan complete. Clear?")
-
-            elif etype == "artifact":
-                paths = event.get("paths", [])
-                if paths:
-                    self._add_artifact_paths(paths)
-
-            elif etype == "error":
-                error_info = classify_tui_error_event(event)
-                error_message = str(error_info.get("message", "")).strip()
-                error_text = error_message
-                if not error_text.startswith("ERROR:"):
-                    error_text = f"ERROR: {error_text}"
-                normalized_error = error_text.lower()
-                if self._pending_model_select_value and (
-                    "set_tier" in normalized_error
-                    or "cannot set tier" in normalized_error
-                    or "tier" in normalized_error
-                ):
-                    self._pending_model_select_value = None
-                    self._refresh_model_select()
-                self._error_count += 1
-                self._write_issue(error_text)
-                self._update_header_status()
-                toast_message, severity, timeout = summarize_error_for_toast(error_info)
-                self._notify(toast_message, severity=severity, timeout=timeout)
-
-                category = str(error_info.get("category", ERROR_CATEGORY_FATAL))
-                if category == ERROR_CATEGORY_TRANSIENT:
-                    self._reset_error_action_prompt()
-                elif category == ERROR_CATEGORY_TOOL_ERROR:
-                    tool_use_id = str(error_info.get("tool_use_id", "")).strip()
-                    if tool_use_id:
-                        tool_record = self._tool_blocks.get(tool_use_id)
-                        tool_name = str(tool_record.get("tool", "tool")) if isinstance(tool_record, dict) else "tool"
-                        self._show_tool_error_actions(tool_use_id=tool_use_id, tool_name=tool_name)
-                elif category == ERROR_CATEGORY_ESCALATABLE:
-                    next_tier = str(error_info.get("next_tier", "")).strip() or self._next_available_tier_name()
-                    self._show_escalation_actions(next_tier=next_tier or None)
-                elif category == ERROR_CATEGORY_AUTH_ERROR:
-                    self._mount_transcript_widget(
-                        render_system_message(
-                            "Authentication failed. Verify credentials/permissions for the active provider."
-                        ),
-                        plain_text="Authentication failed. Verify credentials/permissions for the active provider.",
-                    )
-                    self._reset_error_action_prompt()
-                elif category == ERROR_CATEGORY_FATAL:
-                    self._reset_error_action_prompt()
-
-            elif etype == "warning":
-                warn_text = event.get("text", "")
-                if not warn_text.startswith("WARN:"):
-                    warn_text = f"WARN: {warn_text}"
-                self._warning_count += 1
-                self._write_issue(warn_text)
-                self._update_header_status()
+        def render_tool_result_line(
+            self,
+            tool_name: str,
+            *,
+            status: str,
+            duration_s: float,
+            tool_input: dict | None = None,
+            tool_use_id: str | None = None,
+        ) -> Any:
+            return render_tool_result_line(
+                tool_name,
+                status=status,
+                duration_s=duration_s,
+                tool_input=tool_input,
+                tool_use_id=tool_use_id,
+            )
 
         def _discover_session_log_path(self, session_id: str | None) -> str | None:
             if not session_id:
@@ -6566,35 +4554,40 @@ def run_tui() -> int:
                 return None
 
         def _finalize_turn(self, *, exit_status: str) -> None:
-            self._run_active_tier_warning_emitted = False
-            if self._status_timer is not None:
-                self._status_timer.stop()
-                self._status_timer = None
-            elapsed = time.time() - self._run_start_time if self._run_start_time is not None else 0.0
+            self.state.daemon.run_active_tier_warning_emitted = False
+            if self.state.daemon.status_timer is not None:
+                self.state.daemon.status_timer.stop()
+                self.state.daemon.status_timer = None
+            elapsed = (
+                time.time() - self.state.daemon.run_start_time if self.state.daemon.run_start_time is not None else 0.0
+            )
             if self._status_bar is not None:
                 self._status_bar.set_state("idle")
                 self._status_bar.set_elapsed(elapsed)
                 self._status_bar.set_plan_step(current=None, total=None)
-            self._run_start_time = None
-            self._query_active = False
+            self.state.daemon.run_start_time = None
+            self.state.daemon.query_active = False
             self._clear_pending_tool_starts()
             self._cancel_tool_progress_flush_timer()
             self._tool_progress_pending_ids = set()
             for tool_use_id in list(self._tool_blocks.keys()):
                 self._flush_tool_progress_render(tool_use_id, force=True)
 
-            self._write_transcript(
-                f"[run] completed in {elapsed:.1f}s ({self._run_tool_count} tool calls, status={exit_status})"
+            run_tool_count = self.state.daemon.run_tool_count
+            completion_line = (
+                f"[run] completed in {elapsed:.1f}s "
+                f"({run_tool_count} tool calls, status={exit_status})"
             )
+            self._write_transcript(completion_line)
 
             self._finalize_assistant_message()
             self._dismiss_thinking(emit_summary=True)
 
-            output_text = "".join(self._turn_output_chunks)
-            self._turn_output_chunks = []
+            output_text = "".join(self.state.daemon.turn_output_chunks)
+            self.state.daemon.turn_output_chunks = []
             transcript_path = self._persist_run_transcript(
-                pid=(self._proc.pid if self._proc is not None else None),
-                session_id=self._daemon_session_id,
+                pid=(self.state.daemon.proc.pid if self.state.daemon.proc is not None else None),
+                session_id=self.state.daemon.session_id,
                 prompt=self._last_prompt or "",
                 auto_approve=self._last_run_auto_approve,
                 exit_code=0 if exit_status == "ok" else 1,
@@ -6603,39 +4596,39 @@ def run_tui() -> int:
             if transcript_path:
                 self._add_artifact_paths([transcript_path])
 
-            log_path = self._discover_session_log_path(self._daemon_session_id)
+            log_path = self._discover_session_log_path(self.state.daemon.session_id)
             if log_path:
                 self._add_artifact_paths([log_path])
 
-            if not self._received_structured_plan:
+            if not self.state.plan.received_structured_plan:
                 extracted_plan = extract_plan_section_from_output(sanitize_output_text(output_text))
                 if extracted_plan:
-                    self._pending_plan_prompt = self._last_prompt
+                    self.state.plan.pending_prompt = self._last_prompt
                     self._set_plan_panel(extracted_plan)
                     self._write_transcript_line(render_tui_hint_after_plan())
 
             self._reset_consent_panel()
-            self._received_structured_plan = False
+            self.state.plan.received_structured_plan = False
             self._save_session()
 
         def _handle_daemon_exit(self, proc: _DaemonTransport, *, return_code: int) -> None:
-            if self._proc is not proc:
+            if self.state.daemon.proc is not proc:
                 return
-            was_query_active = self._query_active
-            self._daemon_ready = False
-            self._pending_model_select_value = None
-            self._query_active = False
+            was_query_active = self.state.daemon.query_active
+            self.state.daemon.ready = False
+            self.state.daemon.pending_model_select_value = None
+            self.state.daemon.query_active = False
             self._context_ready_for_sync = bool(self._context_sources)
             self._sops_ready_for_sync = bool(self._active_sop_names)
             self._reset_consent_panel()
             self._reset_error_action_prompt()
             self._clear_pending_tool_starts()
-            self._proc = None
-            self._runner_thread = None
+            self.state.daemon.proc = None
+            self.state.daemon.runner_thread = None
 
-            if self._status_timer is not None:
-                self._status_timer.stop()
-                self._status_timer = None
+            if self.state.daemon.status_timer is not None:
+                self.state.daemon.status_timer.stop()
+                self.state.daemon.status_timer = None
             if self._status_bar is not None:
                 self._status_bar.set_state("idle")
 
@@ -6643,7 +4636,7 @@ def run_tui() -> int:
                 self._finalize_turn(exit_status="error")
             else:
                 self._reset_thinking_state()
-            if self._is_shutting_down:
+            if self.state.daemon.is_shutting_down:
                 return
             self._write_transcript_line(f"[daemon] exited unexpectedly (code {return_code}).")
             self._write_transcript_line("[daemon] run /daemon restart to restart the background agent.")
@@ -6672,17 +4665,17 @@ def run_tui() -> int:
                     proc.close()
 
         def _spawn_daemon(self, *, restart: bool = False) -> None:
-            proc = self._proc
+            proc = self.state.daemon.proc
             if proc is not None and proc.poll() is None:
                 if restart:
-                    self._pending_model_select_value = None
+                    self.state.daemon.pending_model_select_value = None
                     self._shutdown_transport(proc)
-                    self._proc = None
+                    self.state.daemon.proc = None
                 else:
                     return
 
-            requested_session_id = (self._daemon_session_id or "").strip() or uuid.uuid4().hex
-            self._daemon_session_id = requested_session_id
+            requested_session_id = (self.state.daemon.session_id or "").strip() or uuid.uuid4().hex
+            self.state.daemon.session_id = requested_session_id
             daemon: _DaemonTransport | None = None
             broker_error: Exception | None = None
 
@@ -6704,21 +4697,21 @@ def run_tui() -> int:
                     )
                     daemon = _SubprocessTransport(daemon_proc)
                 except Exception as exc:
-                    self._daemon_ready = False
+                    self.state.daemon.ready = False
                     self._write_transcript_line(f"[daemon] failed to start: {exc}")
                     return
 
-            self._proc = daemon
-            self._daemon_ready = False
+            self.state.daemon.proc = daemon
+            self.state.daemon.ready = False
             self._context_ready_for_sync = bool(self._context_sources)
             self._sops_ready_for_sync = bool(self._active_sop_names)
-            self._runner_thread = threading.Thread(
+            self.state.daemon.runner_thread = threading.Thread(
                 target=self._stream_daemon_output,
                 args=(daemon,),
                 daemon=True,
                 name="swarmee-tui-daemon-stream",
             )
-            self._runner_thread.start()
+            self.state.daemon.runner_thread.start()
             if isinstance(daemon, _SocketTransport):
                 self._write_transcript_line("[daemon] connected to runtime broker, waiting for ready event.")
             else:
@@ -6730,25 +4723,25 @@ def run_tui() -> int:
             self._save_session()
 
         def _tick_status(self) -> None:
-            if self._run_start_time is not None and self._status_bar is not None:
-                self._status_bar.set_elapsed(time.time() - self._run_start_time)
+            if self.state.daemon.run_start_time is not None and self._status_bar is not None:
+                self._status_bar.set_elapsed(time.time() - self.state.daemon.run_start_time)
 
         def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
-            if not self._daemon_ready:
+            if not self.state.daemon.ready:
                 self._write_transcript_line("[run] daemon is not ready. Use /daemon restart.")
                 return
-            proc = self._proc
+            proc = self.state.daemon.proc
             if proc is None or proc.poll() is not None:
                 self._write_transcript_line("[run] daemon is not running. Use /daemon restart.")
-                self._daemon_ready = False
+                self.state.daemon.ready = False
                 return
-            if self._query_active:
+            if self.state.daemon.query_active:
                 self._write_transcript_line("[run] already running; use /stop.")
                 return
             self._dismiss_action_sheet(restore_focus=False)
             self._sync_selected_model_before_run()
 
-            self._pending_plan_prompt = None
+            self.state.plan.pending_prompt = None
             self._reset_artifacts_panel()
             self._reset_consent_panel()
             self._reset_error_action_prompt()
@@ -6765,28 +4758,28 @@ def run_tui() -> int:
             self._clear_pending_tool_starts()
             self._tool_progress_pending_ids = set()
             self._cancel_tool_progress_flush_timer()
-            self._run_tool_count = 0
-            self._run_start_time = time.time()
-            self._run_active_tier_warning_emitted = False
-            self._plan_step_counter = 0
-            self._plan_completion_announced = False
+            self.state.daemon.run_tool_count = 0
+            self.state.daemon.run_start_time = time.time()
+            self.state.daemon.run_active_tier_warning_emitted = False
+            self.state.plan.step_counter = 0
+            self.state.plan.completion_announced = False
             mode_normalized = (mode or "").strip().lower()
-            if mode_normalized == "execute" and self._current_plan_steps_total > 0:
-                self._current_plan_step_statuses = ["pending"] * self._current_plan_steps_total
-                self._current_plan_active_step = None
-                self._plan_updates_seen = False
+            if mode_normalized == "execute" and self.state.plan.current_steps_total > 0:
+                self.state.plan.current_step_statuses = ["pending"] * self.state.plan.current_steps_total
+                self.state.plan.current_active_step = None
+                self.state.plan.updates_seen = False
                 self._render_plan_panel_from_status()
             else:
-                self._current_plan_steps_total = 0
-                self._current_plan_summary = ""
-                self._current_plan_steps = []
-                self._current_plan_step_statuses = []
-                self._current_plan_active_step = None
-                self._plan_updates_seen = False
-            self._received_structured_plan = False
-            self._turn_output_chunks = []
-            self._last_usage = None
-            self._last_cost_usd = None
+                self.state.plan.current_steps_total = 0
+                self.state.plan.current_summary = ""
+                self.state.plan.current_steps = []
+                self.state.plan.current_step_statuses = []
+                self.state.plan.current_active_step = None
+                self.state.plan.updates_seen = False
+            self.state.plan.received_structured_plan = False
+            self.state.daemon.turn_output_chunks = []
+            self.state.daemon.last_usage = None
+            self.state.daemon.last_cost_usd = None
             if self._status_bar is not None:
                 self._status_bar.set_state("running")
                 self._status_bar.set_tool_count(0)
@@ -6794,27 +4787,27 @@ def run_tui() -> int:
                 self._status_bar.set_model(self._current_model_summary())
                 self._status_bar.set_usage(None, cost_usd=None)
                 self._status_bar.set_context(
-                    prompt_tokens_est=self._last_prompt_tokens_est,
-                    budget_tokens=self._last_budget_tokens,
+                    prompt_tokens_est=self.state.daemon.last_prompt_tokens_est,
+                    budget_tokens=self.state.daemon.last_budget_tokens,
                 )
-                if mode_normalized == "execute" and self._current_plan_steps_total > 0:
+                if mode_normalized == "execute" and self.state.plan.current_steps_total > 0:
                     self._refresh_plan_status_bar()
                 else:
                     self._status_bar.set_plan_step(current=None, total=None)
             self._refresh_prompt_metrics()
-            if self._status_timer is not None:
-                self._status_timer.stop()
-            self._status_timer = self.set_interval(1.0, self._tick_status)
+            if self.state.daemon.status_timer is not None:
+                self.state.daemon.status_timer.stop()
+            self.state.daemon.status_timer = self.set_interval(1.0, self._tick_status)
             self._last_prompt = prompt
             self._last_run_auto_approve = auto_approve
-            self._query_active = True
+            self.state.daemon.query_active = True
             desired_tier = ""
-            pending_value = (self._pending_model_select_value or "").strip().lower()
+            pending_value = (self.state.daemon.pending_model_select_value or "").strip().lower()
             if "|" in pending_value:
                 _pending_provider, pending_tier = pending_value.split("|", 1)
                 desired_tier = pending_tier.strip().lower()
             if not desired_tier:
-                desired_tier = (self._model_tier_override or "").strip().lower()
+                desired_tier = (self.state.daemon.model_tier_override or "").strip().lower()
             if not desired_tier:
                 with contextlib.suppress(Exception):
                     selector = self.query_one("#model_select", Select)
@@ -6833,23 +4826,23 @@ def run_tui() -> int:
             if mode:
                 command["mode"] = mode
             if not send_daemon_command(proc, command):
-                self._query_active = False
-                if self._status_timer is not None:
-                    self._status_timer.stop()
-                    self._status_timer = None
+                self.state.daemon.query_active = False
+                if self.state.daemon.status_timer is not None:
+                    self.state.daemon.status_timer.stop()
+                    self.state.daemon.status_timer = None
                 if self._status_bar is not None:
                     self._status_bar.set_state("idle")
                 self._write_transcript_line("[run] failed to send query to daemon.")
 
         def _stop_run(self) -> None:
-            proc = self._proc
+            proc = self.state.daemon.proc
             if proc is None or proc.poll() is not None:
                 self._write_transcript_line("[run] no active run.")
-                self._daemon_ready = False
+                self.state.daemon.ready = False
                 self._reset_consent_panel()
                 self._reset_error_action_prompt()
                 return
-            if not self._query_active:
+            if not self.state.daemon.query_active:
                 self._write_transcript_line("[run] no active run.")
                 self._reset_consent_panel()
                 self._reset_error_action_prompt()
@@ -6870,8 +4863,8 @@ def run_tui() -> int:
             set_context = getattr(self._prompt_metrics, "set_context", None)
             if callable(set_context):
                 set_context(
-                    prompt_tokens_est=self._last_prompt_tokens_est,
-                    budget_tokens=self._last_budget_tokens,
+                    prompt_tokens_est=self.state.daemon.last_prompt_tokens_est,
+                    budget_tokens=self.state.daemon.last_budget_tokens,
                     animate=True,
                 )
             set_prompt_estimate = getattr(self._prompt_metrics, "set_prompt_input_estimate", None)
@@ -6879,14 +4872,14 @@ def run_tui() -> int:
                 set_prompt_estimate(self._prompt_input_tokens_est)
 
         def action_quit(self) -> None:
-            self._is_shutting_down = True
+            self.state.daemon.is_shutting_down = True
             timer = self._prompt_estimate_timer
             self._prompt_estimate_timer = None
             if timer is not None:
                 with contextlib.suppress(Exception):
                     timer.stop()
-            timeline_timer = self._session_timeline_refresh_timer
-            self._session_timeline_refresh_timer = None
+            timeline_timer = self.state.session.timeline_refresh_timer
+            self.state.session.timeline_refresh_timer = None
             if timeline_timer is not None:
                 with contextlib.suppress(Exception):
                     timeline_timer.stop()
@@ -6894,11 +4887,11 @@ def run_tui() -> int:
             self._cancel_tool_progress_flush_timer()
             self._clear_pending_tool_starts()
             self._reset_thinking_state()
-            if self._proc is not None and self._proc.poll() is None:
-                self._shutdown_transport(self._proc)
-            if self._runner_thread is not None and self._runner_thread.is_alive():
+            if self.state.daemon.proc is not None and self.state.daemon.proc.poll() is None:
+                self._shutdown_transport(self.state.daemon.proc)
+            if self.state.daemon.runner_thread is not None and self.state.daemon.runner_thread.is_alive():
                 with contextlib.suppress(Exception):
-                    self._runner_thread.join(timeout=1.0)
+                    self.state.daemon.runner_thread.join(timeout=1.0)
             self._save_session()
             self.exit(return_code=0)
 
@@ -6906,11 +4899,13 @@ def run_tui() -> int:
             self._copy_text(self._get_transcript_text(), label="transcript")
 
         def action_copy_plan(self) -> None:
-            self._copy_text((self._plan_text or "").rstrip() + "\n", label="plan")
+            self._copy_text((self.state.plan.text or "").rstrip() + "\n", label="plan")
 
         def action_copy_issues(self) -> None:
             self._flush_issue_repeats()
-            payload = ("\n".join(self._issues_lines).rstrip() + "\n") if self._issues_lines else ""
+            payload = (
+                ("\n".join(self.state.session.issue_lines).rstrip() + "\n") if self.state.session.issue_lines else ""
+            )
             self._copy_text(payload, label="issues")
 
         def action_copy_artifacts(self) -> None:
@@ -6926,13 +4921,13 @@ def run_tui() -> int:
             if text:
                 self._prompt_history.append(text)
                 if len(self._prompt_history) > self._MAX_PROMPT_HISTORY:
-                    self._prompt_history = self._prompt_history[-self._MAX_PROMPT_HISTORY:]
+                    self._prompt_history = self._prompt_history[-self._MAX_PROMPT_HISTORY :]
                 self._history_index = -1
                 self._handle_user_input(text)
 
         def action_interrupt_run(self) -> None:
-            proc = self._proc
-            if proc is None or proc.poll() is not None or not self._query_active:
+            proc = self.state.daemon.proc
+            if proc is None or proc.poll() is not None or not self.state.daemon.query_active:
                 self._reset_consent_panel()
                 self._reset_error_action_prompt()
                 return
@@ -7045,15 +5040,15 @@ def run_tui() -> int:
             self._write_transcript_line(f"[search] no match for '{term}'.")
 
         def _request_context_compact(self) -> None:
-            if self._query_active:
+            if self.state.daemon.query_active:
                 self._write_transcript_line("[compact] unavailable while a run is active.")
                 return
-            if not self._daemon_ready:
+            if not self.state.daemon.ready:
                 self._write_transcript_line("[compact] daemon is not ready. Use /daemon restart.")
                 return
-            proc = self._proc
+            proc = self.state.daemon.proc
             if proc is None or proc.poll() is not None:
-                self._daemon_ready = False
+                self.state.daemon.ready = False
                 self._write_transcript_line("[compact] daemon is not running. Use /daemon restart.")
                 return
             self._notify("Compacting context...", severity="information", timeout=5.0)
@@ -7103,7 +5098,7 @@ def run_tui() -> int:
                 self._write_transcript_line("Usage: /open <number>")
                 return
             self._render_artifacts_panel()
-            entries = self._artifact_entries
+            entries = self.state.artifacts.entries
             if index < 0 or index >= len(entries):
                 self._write_transcript_line(f"[open] invalid index. {len(entries)} artifacts available.")
                 return
@@ -7111,7 +5106,7 @@ def run_tui() -> int:
             self._open_artifact_path(path)
 
         def _copy_selected_artifact_path(self) -> None:
-            selected = self._artifact_entry_by_item_id(self._artifact_selected_item_id)
+            selected = self._artifact_entry_by_item_id(self.state.artifacts.selected_item_id)
             if selected is None:
                 self._notify("Select an artifact first.", severity="warning")
                 return
@@ -7122,7 +5117,7 @@ def run_tui() -> int:
             self._copy_text(path, label="artifact path")
 
         def _add_selected_artifact_as_context(self) -> None:
-            selected = self._artifact_entry_by_item_id(self._artifact_selected_item_id)
+            selected = self._artifact_entry_by_item_id(self.state.artifacts.selected_item_id)
             if selected is None:
                 self._notify("Select an artifact first.", severity="warning")
                 return
@@ -7139,8 +5134,8 @@ def run_tui() -> int:
             if not tool_id:
                 self._notify("Issue has no tool_use_id.", severity="warning")
                 return
-            proc = self._proc
-            if not self._daemon_ready or proc is None or proc.poll() is not None:
+            proc = self.state.daemon.proc
+            if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                 self._write_transcript_line("[session] daemon is not ready.")
                 return
             if send_daemon_command(proc, {"cmd": "retry_tool", "tool_use_id": tool_id}):
@@ -7153,8 +5148,8 @@ def run_tui() -> int:
             if not tool_id:
                 self._notify("Issue has no tool_use_id.", severity="warning")
                 return
-            proc = self._proc
-            if not self._daemon_ready or proc is None or proc.poll() is not None:
+            proc = self.state.daemon.proc
+            if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                 self._write_transcript_line("[session] daemon is not ready.")
                 return
             if send_daemon_command(proc, {"cmd": "skip_tool", "tool_use_id": tool_id}):
@@ -7167,8 +5162,8 @@ def run_tui() -> int:
             if not next_tier:
                 self._write_transcript_line("[session] no higher tier available.")
                 return
-            proc = self._proc
-            if not self._daemon_ready or proc is None or proc.poll() is not None:
+            proc = self.state.daemon.proc
+            if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                 self._write_transcript_line("[session] daemon is not ready.")
                 return
             if send_daemon_command(proc, {"cmd": "set_tier", "tier": next_tier}):
@@ -7177,8 +5172,8 @@ def run_tui() -> int:
                 self._write_transcript_line("[session] failed to send tier change request.")
 
         def _session_interrupt(self) -> None:
-            proc = self._proc
-            if not self._daemon_ready or proc is None or proc.poll() is not None:
+            proc = self.state.daemon.proc
+            if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                 self._write_transcript_line("[session] daemon is not ready.")
                 return
             if send_daemon_command(proc, {"cmd": "interrupt"}):
@@ -7191,21 +5186,21 @@ def run_tui() -> int:
                 session_path = sessions_dir() / "tui_session.json"
                 session_path.parent.mkdir(parents=True, exist_ok=True)
                 data = {
-                    "prompt_history": self._prompt_history[-self._MAX_PROMPT_HISTORY:],
+                    "prompt_history": self._prompt_history[-self._MAX_PROMPT_HISTORY :],
                     "last_prompt": self._last_prompt,
-                    "plan_text": self._plan_text,
-                    "artifacts": self._artifacts,
+                    "plan_text": self.state.plan.text,
+                    "artifacts": self.state.artifacts.recent_paths,
                     "context_sources": self._context_sources,
                     "active_sop_names": sorted(self._active_sop_names),
-                    "daemon_session_id": self._daemon_session_id,
-                    "available_restore_session_id": self._available_restore_session_id,
-                    "available_restore_turn_count": self._available_restore_turn_count,
-                    "model_provider_override": self._model_provider_override,
-                    "model_tier_override": self._model_tier_override,
+                    "daemon_session_id": self.state.daemon.session_id,
+                    "available_restore_session_id": self.state.daemon.available_restore_session_id,
+                    "available_restore_turn_count": self.state.daemon.available_restore_turn_count,
+                    "model_provider_override": self.state.daemon.model_provider_override,
+                    "model_tier_override": self.state.daemon.model_tier_override,
                     "default_auto_approve": self._default_auto_approve,
                     "split_ratio": self._split_ratio,
-                    "session_view_mode": self._session_view_mode,
-                    "agent_studio_view_mode": self._agent_studio_view_mode,
+                    "session_view_mode": self.state.session.view_mode,
+                    "agent_studio_view_mode": self.state.agent_studio.view_mode,
                 }
                 session_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
             except Exception:
@@ -7217,14 +5212,14 @@ def run_tui() -> int:
                 if not session_path.exists():
                     return
                 data = _json.loads(session_path.read_text(encoding="utf-8", errors="replace"))
-                self._prompt_history = data.get("prompt_history", [])[-self._MAX_PROMPT_HISTORY:]
+                self._prompt_history = data.get("prompt_history", [])[-self._MAX_PROMPT_HISTORY :]
                 self._last_prompt = data.get("last_prompt")
                 plan_text = data.get("plan_text", "")
                 if plan_text and plan_text != "(no plan)":
                     self._set_plan_panel(plan_text)
                 artifacts = data.get("artifacts", [])
                 if artifacts:
-                    self._artifacts = artifacts
+                    self.state.artifacts.recent_paths = artifacts
                     self._render_artifacts_panel()
                 self._context_sources = _normalize_context_sources(data.get("context_sources", []))
                 self._render_context_sources_panel()
@@ -7235,24 +5230,26 @@ def run_tui() -> int:
                 self._refresh_sop_catalog()
                 self._render_sop_panel()
                 self._sops_ready_for_sync = bool(self._active_sop_names)
-                self._daemon_session_id = str(data.get("daemon_session_id", "")).strip() or None
-                self._available_restore_session_id = str(data.get("available_restore_session_id", "")).strip() or None
+                self.state.daemon.session_id = str(data.get("daemon_session_id", "")).strip() or None
+                self.state.daemon.available_restore_session_id = (
+                    str(data.get("available_restore_session_id", "")).strip() or None
+                )
                 restore_turn_count_raw = data.get("available_restore_turn_count", 0)
                 try:
-                    self._available_restore_turn_count = max(0, int(restore_turn_count_raw or 0))
+                    self.state.daemon.available_restore_turn_count = max(0, int(restore_turn_count_raw or 0))
                 except (TypeError, ValueError):
-                    self._available_restore_turn_count = 0
+                    self.state.daemon.available_restore_turn_count = 0
                 # Do not restore model overrides from prior sessions.
                 # The daemon-reported model_info is the source of truth for startup model state.
-                self._model_provider_override = None
-                self._model_tier_override = None
+                self.state.daemon.model_provider_override = None
+                self.state.daemon.model_tier_override = None
                 self._default_auto_approve = data.get("default_auto_approve", False)
                 self._split_ratio = data.get("split_ratio", 2)
-                self._session_view_mode = normalize_session_view_mode(data.get("session_view_mode"))
-                self._agent_studio_view_mode = normalize_agent_studio_view_mode(data.get("agent_studio_view_mode"))
+                self.state.session.view_mode = normalize_session_view_mode(data.get("session_view_mode"))
+                self.state.agent_studio.view_mode = normalize_agent_studio_view_mode(data.get("agent_studio_view_mode"))
                 self._apply_split_ratio()
-                self._set_session_view_mode(self._session_view_mode)
-                self._set_agent_studio_view_mode(self._agent_studio_view_mode)
+                self._set_session_view_mode(self.state.session.view_mode)
+                self._set_agent_studio_view_mode(self.state.agent_studio.view_mode)
                 self._refresh_model_select()
                 self._update_header_status()
                 self._update_prompt_placeholder()
@@ -7300,16 +5297,16 @@ def run_tui() -> int:
             select_id = str(getattr(select_widget, "id", "")).strip().lower()
             if select_id != "model_select":
                 return
-            if self._model_select_syncing:
+            if self.state.daemon.model_select_syncing:
                 return
 
             value = str(getattr(event, "value", "")).strip()
             if not value:
                 return
             if value == _MODEL_AUTO_VALUE:
-                self._pending_model_select_value = None
-                self._model_provider_override = None
-                self._model_tier_override = None
+                self.state.daemon.pending_model_select_value = None
+                self.state.daemon.model_provider_override = None
+                self.state.daemon.model_tier_override = None
             elif value == _MODEL_LOADING_VALUE:
                 return
             elif "|" in value:
@@ -7318,34 +5315,38 @@ def run_tui() -> int:
                 requested_tier = tier.strip().lower()
                 if not requested_provider or not requested_tier:
                     return
-                if self._daemon_ready and self._proc is not None and self._proc.poll() is None:
-                    current_tier = (self._daemon_tier or "").strip().lower()
-                    current_provider = (self._daemon_provider or "").strip().lower()
+                if (
+                    self.state.daemon.ready
+                    and self.state.daemon.proc is not None
+                    and self.state.daemon.proc.poll() is None
+                ):
+                    current_tier = (self.state.daemon.tier or "").strip().lower()
+                    current_provider = (self.state.daemon.provider or "").strip().lower()
                     if requested_provider == current_provider and requested_tier == current_tier:
-                        self._pending_model_select_value = None
-                        self._model_provider_override = requested_provider or None
-                        self._model_tier_override = requested_tier or None
+                        self.state.daemon.pending_model_select_value = None
+                        self.state.daemon.model_provider_override = requested_provider or None
+                        self.state.daemon.model_tier_override = requested_tier or None
                         self._update_header_status()
                         self._update_prompt_placeholder()
                         if self._status_bar is not None:
                             self._status_bar.set_model(self._current_model_summary())
                         return
-                    if self._query_active:
+                    if self.state.daemon.query_active:
                         if should_skip_active_run_tier_warning(
                             requested_provider=requested_provider,
                             requested_tier=requested_tier,
-                            pending_value=self._pending_model_select_value,
+                            pending_value=self.state.daemon.pending_model_select_value,
                         ):
-                            self._model_provider_override = requested_provider or None
-                            self._model_tier_override = requested_tier or None
+                            self.state.daemon.model_provider_override = requested_provider or None
+                            self.state.daemon.model_tier_override = requested_tier or None
                             self._update_header_status()
                             self._update_prompt_placeholder()
                             if self._status_bar is not None:
                                 self._status_bar.set_model(self._current_model_summary())
                             return
-                        self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
-                        self._model_provider_override = requested_provider or None
-                        self._model_tier_override = requested_tier or None
+                        self.state.daemon.pending_model_select_value = f"{requested_provider}|{requested_tier}"
+                        self.state.daemon.model_provider_override = requested_provider or None
+                        self.state.daemon.model_tier_override = requested_tier or None
                         self._update_header_status()
                         self._update_prompt_placeholder()
                         if self._status_bar is not None:
@@ -7354,11 +5355,11 @@ def run_tui() -> int:
                     else:
                         # Persist desired selection locally; the next query command carries `tier` and applies
                         # atomically in daemon before invocation.
-                        self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
+                        self.state.daemon.pending_model_select_value = f"{requested_provider}|{requested_tier}"
                 else:
-                    self._pending_model_select_value = None
-                self._model_provider_override = requested_provider or None
-                self._model_tier_override = requested_tier or None
+                    self.state.daemon.pending_model_select_value = None
+                self.state.daemon.model_provider_override = requested_provider or None
+                self.state.daemon.model_tier_override = requested_tier or None
             self._update_header_status()
             self._update_prompt_placeholder()
             if self._status_bar is not None:
@@ -7390,7 +5391,7 @@ def run_tui() -> int:
                 return
 
             if sidebar_list is self._agent_profile_list:
-                if self._agent_form_syncing:
+                if self.state.agent_studio.form_syncing:
                     return
                 selected_id = str(getattr(event, "item_id", "")).strip()
                 if not selected_id or selected_id == _AGENT_PROFILE_SELECT_NONE:
@@ -7420,7 +5421,7 @@ def run_tui() -> int:
                 return
 
             if detail is self._session_issue_detail:
-                issue = self._session_issue_by_id(self._session_selected_issue_id)
+                issue = self._session_issue_by_id(self.state.session.selected_issue_id)
                 if issue is None:
                     self._notify("Select an issue first.", severity="warning")
                     return
@@ -7439,7 +5440,7 @@ def run_tui() -> int:
                     return
 
             if detail is self._session_timeline_detail:
-                selected_event = self._session_timeline_event_by_id(self._session_timeline_selected_event_id)
+                selected_event = self._session_timeline_event_by_id(self.state.session.timeline_selected_event_id)
                 if selected_event is None:
                     self._notify("Select a timeline event first.", severity="warning")
                     return
@@ -7453,7 +5454,7 @@ def run_tui() -> int:
                     return
 
             if detail is self._artifacts_detail:
-                selected = self._artifact_entry_by_item_id(self._artifact_selected_item_id)
+                selected = self._artifact_entry_by_item_id(self.state.artifacts.selected_item_id)
                 if selected is None:
                     self._notify("Select an artifact first.", severity="warning")
                     return
@@ -7472,7 +5473,7 @@ def run_tui() -> int:
             input_widget = getattr(event, "input", None)
             input_id = str(getattr(input_widget, "id", "")).strip().lower()
             if input_id in {"agent_profile_id", "agent_profile_name"}:
-                if self._agent_form_syncing:
+                if self.state.agent_studio.form_syncing:
                     return
                 self._set_agent_draft_dirty(True)
                 return
@@ -7481,12 +5482,12 @@ def run_tui() -> int:
                 "agent_tools_override_allowlist",
                 "agent_tools_override_blocklist",
             }:
-                if self._agent_tools_form_syncing:
+                if self.state.agent_studio.tools_form_syncing:
                     return
                 self._set_agent_tools_status("Override draft changes pending.")
                 return
             if input_id in {"agent_team_preset_id", "agent_team_preset_name", "agent_team_preset_description"}:
-                if self._agent_team_form_syncing:
+                if self.state.agent_studio.team_form_syncing:
                     return
                 self._set_agent_team_status("Team preset draft changes pending.")
                 self._set_agent_draft_dirty(True)
@@ -7497,7 +5498,7 @@ def run_tui() -> int:
             text_area_id = str(getattr(text_area, "id", "")).strip().lower()
             if text_area_id != "agent_team_preset_spec":
                 return
-            if self._agent_team_form_syncing:
+            if self.state.agent_studio.team_form_syncing:
                 return
             self._set_agent_team_status("Team preset draft changes pending.")
             self._set_agent_draft_dirty(True)
@@ -7512,28 +5513,28 @@ def run_tui() -> int:
                 return
 
             requested_provider, requested_tier = parsed
-            self._model_provider_override = requested_provider or None
-            self._model_tier_override = requested_tier or None
+            self.state.daemon.model_provider_override = requested_provider or None
+            self.state.daemon.model_tier_override = requested_tier or None
 
-            current_provider = (self._daemon_provider or "").strip().lower()
-            current_tier = (self._daemon_tier or "").strip().lower()
+            current_provider = (self.state.daemon.provider or "").strip().lower()
+            current_tier = (self.state.daemon.tier or "").strip().lower()
             if (
                 current_provider
                 and current_tier
                 and requested_provider == current_provider
                 and requested_tier == current_tier
             ):
-                self._pending_model_select_value = None
+                self.state.daemon.pending_model_select_value = None
                 return
-            self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
+            self.state.daemon.pending_model_select_value = f"{requested_provider}|{requested_tier}"
 
         def _dispatch_plan_action(self, action: str) -> None:
             normalized = action.strip().lower()
             if normalized == "approve":
-                if not self._pending_plan_prompt:
+                if not self.state.plan.pending_prompt:
                     self._write_transcript_line("[run] no pending plan.")
                     return
-                self._start_run(self._pending_plan_prompt, auto_approve=True, mode="execute")
+                self._start_run(self.state.plan.pending_prompt, auto_approve=True, mode="execute")
                 return
             if normalized == "replan":
                 if not self._last_prompt:
@@ -7542,21 +5543,21 @@ def run_tui() -> int:
                 self._start_run(self._last_prompt, auto_approve=False, mode="plan")
                 return
             if normalized == "clearplan":
-                self._pending_plan_prompt = None
+                self.state.plan.pending_prompt = None
                 self._reset_plan_panel()
                 self._write_transcript_line("[run] plan cleared.")
                 return
 
         def _restore_available_session(self) -> None:
-            if self._query_active:
+            if self.state.daemon.query_active:
                 self._write_transcript_line("[restore] cannot restore while a run is active.")
                 return
-            session_id = (self._available_restore_session_id or "").strip()
+            session_id = (self.state.daemon.available_restore_session_id or "").strip()
             if not session_id:
                 self._write_transcript_line("[restore] no previous session available.")
                 return
-            proc = self._proc
-            if not self._daemon_ready or proc is None or proc.poll() is not None:
+            proc = self.state.daemon.proc
+            if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                 self._write_transcript_line("[restore] daemon is not ready.")
                 return
             if send_daemon_command(proc, {"cmd": "restore_session", "session_id": session_id}):
@@ -7565,9 +5566,9 @@ def run_tui() -> int:
                 self._write_transcript_line("[restore] failed to send restore command.")
 
         def _start_fresh_session(self) -> None:
-            self._available_restore_session_id = None
-            self._available_restore_turn_count = 0
-            self._last_restored_turn_count = 0
+            self.state.daemon.available_restore_session_id = None
+            self.state.daemon.available_restore_turn_count = 0
+            self.state.daemon.last_restored_turn_count = 0
             self._write_transcript_line("[session] starting fresh.")
             self._save_session()
 
@@ -7621,9 +5622,9 @@ def run_tui() -> int:
                 return True
 
             if action == "reset":
-                self._pending_model_select_value = None
-                self._model_provider_override = None
-                self._model_tier_override = None
+                self.state.daemon.pending_model_select_value = None
+                self.state.daemon.model_provider_override = None
+                self.state.daemon.model_tier_override = None
                 self._refresh_model_select()
                 self._update_header_status()
                 self._write_transcript_line(f"[model] reset. {self._current_model_summary()}")
@@ -7634,12 +5635,12 @@ def run_tui() -> int:
                 if not provider:
                     self._write_transcript_line("Usage: /model provider <name>")
                     return True
-                self._pending_model_select_value = None
-                self._model_provider_override = provider
+                self.state.daemon.pending_model_select_value = None
+                self.state.daemon.model_provider_override = provider
                 self._refresh_model_select()
                 self._update_header_status()
                 self._write_transcript_line(f"[model] provider set to {provider}.")
-                if self._daemon_ready:
+                if self.state.daemon.ready:
                     self._write_transcript_line("[model] restart daemon to apply provider changes.")
                 self._write_transcript_line(self._current_model_summary())
                 return True
@@ -7649,27 +5650,34 @@ def run_tui() -> int:
                 if not tier:
                     self._write_transcript_line("Usage: /model tier <name>")
                     return True
-                if self._daemon_ready and self._proc is not None and self._proc.poll() is None and self._query_active:
+                if (
+                    self.state.daemon.ready
+                    and self.state.daemon.proc is not None
+                    and self.state.daemon.proc.poll() is None
+                    and self.state.daemon.query_active
+                ):
                     self._warn_run_active_tier_change_once()
                     return True
-                self._pending_model_select_value = None
-                self._model_tier_override = tier
+                self.state.daemon.pending_model_select_value = None
+                self.state.daemon.model_tier_override = tier
                 self._refresh_model_select()
                 self._update_header_status()
                 self._write_transcript_line(f"[model] tier set to {tier}.")
                 if (
-                    self._daemon_ready
-                    and self._proc is not None
-                    and self._proc.poll() is None
-                    and not self._query_active
+                    self.state.daemon.ready
+                    and self.state.daemon.proc is not None
+                    and self.state.daemon.proc.poll() is None
+                    and not self.state.daemon.query_active
                 ):
-                    requested_provider = (self._model_provider_override or self._daemon_provider or "").strip().lower()
+                    requested_provider = (
+                        (self.state.daemon.model_provider_override or self.state.daemon.provider or "").strip().lower()
+                    )
                     requested_tier = tier.strip().lower()
-                    if not send_daemon_command(self._proc, {"cmd": "set_tier", "tier": tier}):
-                        self._pending_model_select_value = None
+                    if not send_daemon_command(self.state.daemon.proc, {"cmd": "set_tier", "tier": tier}):
+                        self.state.daemon.pending_model_select_value = None
                         self._write_transcript_line("[model] failed to send tier change to daemon.")
                     elif requested_provider and requested_tier:
-                        self._pending_model_select_value = f"{requested_provider}|{requested_tier}"
+                        self.state.daemon.pending_model_select_value = f"{requested_provider}|{requested_tier}"
                 self._write_transcript_line(self._current_model_summary())
                 return True
 
@@ -7750,11 +5758,11 @@ def run_tui() -> int:
                 return True
             if action == "connect":
                 provider = (argument or "").strip() or "github_copilot"
-                proc = self._proc
-                if not self._daemon_ready or proc is None or proc.poll() is not None:
+                proc = self.state.daemon.proc
+                if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                     self._write_transcript_line("[connect] daemon is not ready.")
                     return True
-                if self._query_active:
+                if self.state.daemon.query_active:
                     self._write_transcript_line("[connect] cannot connect while a run is active.")
                     return True
                 self._write_transcript_line(f"[connect] starting provider auth for {provider}...")
@@ -7770,11 +5778,11 @@ def run_tui() -> int:
             if action == "auth":
                 raw = (argument or "").strip()
                 normalized = raw.lower()
-                proc = self._proc
-                if not self._daemon_ready or proc is None or proc.poll() is not None:
+                proc = self.state.daemon.proc
+                if not self.state.daemon.ready or proc is None or proc.poll() is not None:
                     self._write_transcript_line("[auth] daemon is not ready.")
                     return True
-                if self._query_active:
+                if self.state.daemon.query_active:
                     self._write_transcript_line("[auth] cannot run while a run is active.")
                     return True
                 if not raw:
@@ -7979,7 +5987,7 @@ def run_tui() -> int:
             if self._handle_pre_run_command(text):
                 return
 
-            if self._query_active:
+            if self.state.daemon.query_active:
                 self._write_transcript_line("[run] already running; use /stop.")
                 return
 

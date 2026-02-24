@@ -505,8 +505,6 @@ class TuiCallbackHandler:
             "name": tool_name or "unknown",
             "start_time": time.time(),
             "input_size": initial_size,
-            "pending_progress": "",
-            "pending_stream": "stdout",
             "last_progress_emit_mono": -_TUI_TOOL_PROGRESS_EMIT_INTERVAL_S,
             "last_heartbeat_emit_mono": self._now_mono(),
             "output_preview": "",
@@ -529,64 +527,47 @@ class TuiCallbackHandler:
         if not text:
             return
         normalized_stream = stream if stream in {"stdout", "stderr", "mixed"} else "stdout"
-        info = self._ensure_tool_history(tool_use_id, emit_start=False)
+        emit_start = tool_use_id not in self.tool_histories
+        info = self._ensure_tool_history(tool_use_id, emit_start=emit_start)
 
         preview = str(info.get("output_preview", "")) + text
         if len(preview) > _TUI_TOOL_OUTPUT_MAX_CHARS:
             preview = preview[-_TUI_TOOL_OUTPUT_MAX_CHARS:]
         info["output_preview"] = preview
 
-        pending = str(info.get("pending_progress", ""))
-        pending_stream = str(info.get("pending_stream", "stdout") or "stdout")
-        chunk = text
-        if pending:
-            if pending_stream != normalized_stream:
-                pending_stream = "mixed"
-                chunk = f"[{normalized_stream}] {text}"
-        else:
-            pending_stream = normalized_stream
-        pending += chunk
-        if len(pending) > _TUI_TOOL_OUTPUT_MAX_CHARS:
-            pending = pending[-_TUI_TOOL_OUTPUT_MAX_CHARS:]
-        info["pending_progress"] = pending
-        info["pending_stream"] = pending_stream
-        self._emit_tool_progress_if_due(tool_use_id)
+        elapsed = max(0.0, time.time() - float(info.get("start_time", time.time())))
+        self._emit(
+            {
+                "event": "tool_progress",
+                "tool_use_id": tool_use_id,
+                "content": text,
+                "stream": normalized_stream,
+                "elapsed_s": round(elapsed, 2),
+            }
+        )
+        now = self._now_mono()
+        info["last_progress_emit_mono"] = now
+        info["last_heartbeat_emit_mono"] = now
 
-    def _emit_tool_progress_if_due(self, tool_use_id: str, *, force: bool = False, heartbeat_only: bool = False) -> bool:
+    def _emit_tool_progress_if_due(
+        self,
+        tool_use_id: str,
+        *,
+        force: bool = False,
+        heartbeat_only: bool = False,
+    ) -> bool:
         info = self.tool_histories.get(tool_use_id)
         if info is None:
             return False
-        now = self._now_mono()
-        last_emit = float(info.get("last_progress_emit_mono", 0.0))
-        elapsed = max(0.0, time.time() - float(info.get("start_time", time.time())))
-        pending = str(info.get("pending_progress", ""))
-
-        if pending and not heartbeat_only:
-            if force or (now - last_emit) >= _TUI_TOOL_PROGRESS_EMIT_INTERVAL_S:
-                stream = str(info.get("pending_stream", "stdout") or "stdout")
-                self._emit(
-                    {
-                        "event": "tool_progress",
-                        "tool_use_id": tool_use_id,
-                        "content": pending,
-                        "stream": stream,
-                        "elapsed_s": round(elapsed, 2),
-                    }
-                )
-                info["pending_progress"] = ""
-                info["pending_stream"] = "stdout"
-                info["last_progress_emit_mono"] = now
-                info["last_heartbeat_emit_mono"] = now
-                return True
-            return False
+        del heartbeat_only
 
         last_heartbeat = float(info.get("last_heartbeat_emit_mono", 0.0))
         if force:
             return False
+        now = self._now_mono()
         if (now - last_heartbeat) < _TUI_TOOL_HEARTBEAT_INTERVAL_S:
             return False
-        if (now - last_emit) < _TUI_TOOL_PROGRESS_EMIT_INTERVAL_S:
-            return False
+        elapsed = max(0.0, time.time() - float(info.get("start_time", time.time())))
 
         self._emit(
             {
@@ -600,7 +581,7 @@ class TuiCallbackHandler:
         return True
 
     def _flush_tool_progress(self, tool_use_id: str) -> None:
-        self._emit_tool_progress_if_due(tool_use_id, force=True)
+        del tool_use_id
 
     def _emit_tool_heartbeats(self) -> None:
         for tool_use_id in list(self.tool_histories.keys()):
@@ -646,6 +627,11 @@ class TuiCallbackHandler:
             or extra_event_fields.get("tool_id")
             or default_tool_id
         )
+        for key in ("tool_progress", "tool_output", "on_tool_progress"):
+            raw_payload = extra_event_fields.get(key)
+            if isinstance(raw_payload, dict):
+                _from_payload(raw_payload, default_tool_id=tool_use_id or default_tool_id)
+
         if tool_use_id:
             stdout = extra_event_fields.get("tool_stdout")
             stderr = extra_event_fields.get("tool_stderr")
@@ -661,18 +647,47 @@ class TuiCallbackHandler:
                 value = str(extra_event_fields.get("stderr"))
                 if value:
                     chunks.append((tool_use_id, "stderr", value))
-
-            raw_progress = extra_event_fields.get("tool_progress")
-            if isinstance(raw_progress, dict):
-                _from_payload(raw_progress, default_tool_id=tool_use_id)
             raw_output = extra_event_fields.get("tool_output")
-            if isinstance(raw_output, dict):
-                _from_payload(raw_output, default_tool_id=tool_use_id)
-            elif isinstance(raw_output, str) and raw_output:
+            if isinstance(raw_output, str) and raw_output:
                 stream_name = str(extra_event_fields.get("stream", "stdout")).strip().lower() or "stdout"
                 chunks.append((tool_use_id, stream_name, raw_output))
 
         return chunks
+
+    def _extract_tool_start_from_extra_fields(self, extra_fields: dict[str, Any]) -> tuple[str, str | None, Any] | None:
+        for key in ("tool_start", "on_tool_start"):
+            payload = extra_fields.get(key)
+            if not isinstance(payload, dict):
+                continue
+            tool_use_id = self._resolve_tool_use_id(
+                payload.get("toolUseId") or payload.get("tool_use_id") or payload.get("id")
+            )
+            if not tool_use_id:
+                continue
+            tool_name_raw = payload.get("tool") or payload.get("tool_name") or payload.get("name")
+            tool_name = str(tool_name_raw) if tool_name_raw is not None else None
+            return tool_use_id, tool_name, payload.get("input")
+        return None
+
+    def _extract_tool_result_from_extra_fields(
+        self, extra_fields: dict[str, Any]
+    ) -> tuple[str, str, str | None] | None:
+        for key in ("tool_end", "on_tool_end", "tool_result"):
+            payload = extra_fields.get(key)
+            if not isinstance(payload, dict):
+                continue
+            tool_use_id = self._resolve_tool_use_id(
+                payload.get("toolUseId") or payload.get("tool_use_id") or payload.get("id")
+            )
+            if not tool_use_id:
+                continue
+            status_value = payload.get("status") or payload.get("tool_status") or payload.get("result")
+            if status_value is None:
+                continue
+            tool_name_raw = payload.get("tool") or payload.get("tool_name") or payload.get("name")
+            tool_name = str(tool_name_raw) if tool_name_raw is not None else None
+            return tool_use_id, str(status_value), tool_name
+        return None
 
     def _emit_tool_result(self, tool_use_id: str, status: str, *, tool_name: str | None = None) -> None:
         if tool_use_id in self._emitted_tool_results:
@@ -783,7 +798,18 @@ class TuiCallbackHandler:
         return None
 
     def _extract_text_from_extra_fields(self, extra_fields: dict[str, Any]) -> str | None:
-        for key in ("data", "text", "delta", "content_delta", "text_delta", "output_text", "outputText"):
+        for key in (
+            "data",
+            "text",
+            "delta",
+            "content_delta",
+            "text_delta",
+            "output_text",
+            "outputText",
+            "token",
+            "new_token",
+            "llm_token",
+        ):
             value = extra_fields.get(key)
             if isinstance(value, str) and value:
                 return value
@@ -882,12 +908,28 @@ class TuiCallbackHandler:
                             info["last_progress_emit_mono"] = now
                 self._emit_plan_progress_from_tool(tool_name=tool_name, tool_input=tool_input)
 
+        extra_tool_start = self._extract_tool_start_from_extra_fields(extra_event_fields)
+        if extra_tool_start is not None:
+            tool_use_id, tool_name, tool_input = extra_tool_start
+            self._ensure_tool_history(
+                tool_use_id,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                emit_start=(tool_use_id not in self.tool_histories),
+            )
+            self._emit_plan_progress_from_tool(tool_name=tool_name, tool_input=tool_input)
+
         for tool_use_id, stream, content in self._extract_tool_progress_chunks(
             current_tool_use=current_tool_use,
             result=result,
             extra_event_fields=extra_event_fields,
         ):
             self._append_tool_progress(tool_use_id, content, stream=stream)
+
+        extra_tool_result = self._extract_tool_result_from_extra_fields(extra_event_fields)
+        if extra_tool_result is not None:
+            tool_use_id, status, tool_name = extra_tool_result
+            self._emit_tool_result(tool_use_id, status, tool_name=tool_name)
 
         if isinstance(message, dict):
             if message.get("role") == "assistant":
@@ -915,7 +957,11 @@ class TuiCallbackHandler:
                             status = tool_result.get("status", "unknown")
                             if isinstance(tid, str):
                                 tool_label = tool_result.get("name")
-                                self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
+                                self._emit_tool_result(
+                                    tid,
+                                    str(status),
+                                    tool_name=str(tool_label) if tool_label else None,
+                                )
 
         if event_loop_throttled_delay:
             self._emit({
