@@ -17,6 +17,37 @@ import pytest
 from swarmee_river import swarmee
 
 
+def test_build_resolved_invocation_state_includes_session_safety_overrides() -> None:
+    from swarmee_river.settings import default_settings_template
+
+    class _Tier:
+        def __init__(self) -> None:
+            self.name = "balanced"
+            self.model_id = "mock-model"
+
+    class _ModelManager:
+        current_tier = "balanced"
+
+        @staticmethod
+        def list_tiers():
+            return [_Tier()]
+
+    resolved = swarmee._build_resolved_invocation_state(
+        invocation_state={"swarmee": {"mode": "execute"}},
+        runtime_environment={"os": "darwin"},
+        model_manager=_ModelManager(),
+        selected_provider="bedrock",
+        settings=default_settings_template(),
+        structured_output_model=None,
+        session_safety_overrides={"tool_consent": "deny", "tool_allowlist": ["file_read"]},
+    )
+    sw_state = resolved["swarmee"]
+    assert sw_state["session_safety_overrides"] == {
+        "tool_consent": "deny",
+        "tool_allowlist": ["file_read"],
+    }
+
+
 class TestInteractiveMode:
     """Test cases for interactive mode functionality"""
 
@@ -581,6 +612,65 @@ class TestTuiDaemonMode:
         applied_events = [event for event in events if event.get("event") == "profile_applied"]
         assert applied_events
         assert applied_events[-1]["profile"]["active_sops"] == ["review"]
+
+    def test_tui_daemon_set_safety_overrides_emits_safety_overrides_event(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                '{"cmd":"set_safety_overrides","tool_consent":"deny","tool_allowlist":["file_read"],'
+                '"tool_blocklist":["shell"]}\n{"cmd":"shutdown"}\n'
+            ),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        safety_events = [event for event in events if event.get("event") == "safety_overrides"]
+        assert safety_events
+        latest = safety_events[-1]
+        assert latest["overrides"] == {
+            "tool_consent": "deny",
+            "tool_allowlist": ["file_read"],
+            "tool_blocklist": ["shell"],
+        }
+
+    def test_tui_daemon_set_safety_overrides_invalid_payload_emits_error(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO('{"cmd":"set_safety_overrides","tool_consent":"sometimes"}\n{"cmd":"shutdown"}\n'),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        error_events = [event for event in events if event.get("event") == "error"]
+        assert error_events
+        assert any(
+            "set_safety_overrides.tool_consent must be ask|allow|deny" in str(event.get("message", ""))
+            for event in error_events
+        )
 
     def test_tui_daemon_compact_emits_completion_event(
         self,

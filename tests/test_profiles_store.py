@@ -20,6 +20,17 @@ def test_profiles_store_roundtrip(tmp_path: Path) -> None:
             "context_sources": [{"type": "file", "path": "notes/today.md", "id": "notes-today-md"}],
             "active_sops": ["investigation"],
             "knowledge_base_id": "KB-001",
+            "team_presets": [
+                {
+                    "id": "triage-team",
+                    "name": "Triage Team",
+                    "description": "Default incident triage lineup",
+                    "spec": {
+                        "mode": "swarm",
+                        "agents": [{"id": "lead"}, {"id": "reviewer"}],
+                    },
+                }
+            ],
         },
         root_dir=root_dir,
     )
@@ -27,6 +38,7 @@ def test_profiles_store_roundtrip(tmp_path: Path) -> None:
     assert saved.id == "researcher"
     assert saved.provider == "openai"
     assert saved.tier == "deep"
+    assert saved.team_presets[0]["id"] == "triage-team"
 
     listed = list_profiles(root_dir=root_dir)
     assert [item.id for item in listed] == ["researcher"]
@@ -102,6 +114,25 @@ def test_profile_schema_normalizes_context_sources_and_lists() -> None:
     assert profile.context_sources[3]["type"] == "url"
     assert profile.context_sources[3]["url"] == "https://example.com/brief"
 
+
+def test_profile_schema_normalizes_team_presets() -> None:
+    profile = AgentProfile.from_dict(
+        {
+            "id": "ops",
+            "name": "Ops",
+            "team_presets": [
+                {"id": "  alpha  ", "name": "Alpha", "description": "  Primary ", "spec": {"graph": {"id": "a"}}},
+                {"name": "Bravo Team", "spec": {"swarm": {"workers": 2}}},
+                {"id": "alpha", "name": "Duplicate", "spec": {"ignored": True}},
+                {"id": "bad-spec", "name": "Bad", "spec": ["not", "object"]},
+            ],
+        }
+    )
+
+    assert [item["id"] for item in profile.team_presets] == ["alpha", "Bravo-Team"]
+    assert profile.team_presets[0]["description"] == "Primary"
+    assert profile.team_presets[1]["name"] == "Bravo Team"
+    assert profile.team_presets[1]["spec"] == {"swarm": {"workers": 2}}
 
 def test_default_state_dir_profiles_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     state_root = tmp_path / "state-root"

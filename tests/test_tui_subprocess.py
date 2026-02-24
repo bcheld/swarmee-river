@@ -832,6 +832,176 @@ def test_session_issue_actions_for_tool_failure_include_recovery_buttons():
     ]
 
 
+def test_build_session_timeline_sidebar_items_populates_from_index_events():
+    index = {
+        "events": [
+            {
+                "id": "timeline-1",
+                "event": "after_tool_call",
+                "tool": "shell",
+                "duration_s": 2.3,
+                "success": False,
+                "error": "exit 1",
+                "ts": "2026-02-23T12:00:00",
+            },
+            {
+                "id": "timeline-2",
+                "event": "after_model_call",
+                "duration_s": 0.9,
+                "ts": "2026-02-23T12:00:01",
+            },
+        ]
+    }
+
+    items = tui_app.build_session_timeline_sidebar_items(index["events"])
+
+    assert len(items) == 2
+    assert items[0]["id"] == "timeline-1"
+    assert "tool: shell (2.3s) error" in items[0]["title"]
+    assert items[0]["state"] == "error"
+    assert "2026-02-23T12:00:00" in items[0]["subtitle"]
+    assert "model call (0.9s)" in items[1]["title"]
+
+
+def test_session_timeline_detail_and_actions_render_without_crashing():
+    event = {
+        "id": "timeline-1",
+        "event": "after_invocation",
+        "duration_s": 4.2,
+        "ts": "2026-02-23T12:03:00",
+    }
+    detail = tui_app.render_session_timeline_detail_text(event)
+    actions = tui_app.session_timeline_actions(event)
+
+    assert "Summary: invocation (4.2s)" in detail
+    assert "Payload:" in detail
+    assert [item["id"] for item in actions] == [
+        "session_timeline_copy_json",
+        "session_timeline_copy_summary",
+    ]
+
+
+def test_normalize_session_view_mode_switches_between_issues_and_timeline():
+    assert tui_app.normalize_session_view_mode("timeline") == "timeline"
+    assert tui_app.normalize_session_view_mode("issues") == "issues"
+    # Invalid/blank modes should safely default to timeline.
+    assert tui_app.normalize_session_view_mode("unknown") == "timeline"
+    assert tui_app.normalize_session_view_mode("") == "timeline"
+
+
+def test_normalize_agent_studio_view_mode_handles_known_and_unknown_values():
+    assert tui_app.normalize_agent_studio_view_mode("profile") == "profile"
+    assert tui_app.normalize_agent_studio_view_mode("tools") == "tools"
+    assert tui_app.normalize_agent_studio_view_mode("team") == "team"
+    assert tui_app.normalize_agent_studio_view_mode("TOOLS") == "tools"
+    assert tui_app.normalize_agent_studio_view_mode("unknown") == "profile"
+
+
+def test_agent_tools_safety_policy_lens_helpers_render_effective_state():
+    lens = tui_app.build_agent_policy_lens(
+        tier_name="fast",
+        overrides={
+            "tool_consent": "deny",
+            "tool_allowlist": ["shell", "shell", " file_read "],
+            "tool_blocklist": ["editor"],
+        },
+    )
+    tools_items = tui_app.build_agent_tools_safety_sidebar_items(lens)
+    team_items = tui_app.build_agent_team_sidebar_items(
+        [
+            {
+                "id": "triage-team",
+                "name": "Triage Team",
+                "description": "Incident response composition",
+                "spec": {"swarm": {"agents": [{"id": "lead"}]}},
+            }
+        ]
+    )
+
+    assert [item["id"] for item in tools_items] == ["policy_lens", "session_overrides"]
+    assert [item["id"] for item in team_items] == ["triage-team"]
+    assert lens["effective"]["tool_consent"] == "deny"
+    assert lens["effective"]["tool_allowlist"] == ["shell", "file_read"]
+    assert "Policy Lens" in tui_app.render_agent_tools_safety_detail_text(tools_items[0], lens)
+    assert "Triage Team" in tui_app.render_agent_team_detail_text(team_items[0])
+
+
+def test_normalize_session_safety_overrides_discards_invalid_and_dedupes():
+    normalized = tui_app.normalize_session_safety_overrides(
+        {
+            "tool_consent": "ALLOW",
+            "tool_allowlist": ["shell", "shell", "bash", ""],
+            "tool_blocklist": ["editor", " editor "],
+            "extra": "ignored",
+        }
+    )
+    assert normalized == {
+        "tool_consent": "allow",
+        "tool_allowlist": ["shell", "bash"],
+        "tool_blocklist": ["editor"],
+    }
+
+
+def test_normalize_team_presets_dedupes_and_discards_invalid():
+    normalized = tui_app.normalize_team_presets(
+        [
+            {"id": "alpha", "name": "Alpha", "description": "  Core ", "spec": {"swarm": {"workers": 2}}},
+            {"name": "Bravo Team", "spec": {"agent_graph": {"nodes": 3}}},
+            {"id": "alpha", "name": "Duplicate", "spec": {"ignored": True}},
+            {"id": "bad", "name": "Bad", "spec": ["not", "dict"]},
+        ]
+    )
+    assert [item["id"] for item in normalized] == ["alpha", "Bravo-Team"]
+    assert normalized[0]["description"] == "Core"
+    assert normalized[1]["spec"] == {"agent_graph": {"nodes": 3}}
+
+
+def test_build_team_preset_run_prompt_is_deterministic():
+    prompt = tui_app.build_team_preset_run_prompt(
+        {
+            "id": "triage-team",
+            "name": "Triage Team",
+            "description": "Incident response",
+            "spec": {"swarm": {"agents": [{"id": "lead"}], "max_steps": 3}},
+        }
+    )
+
+    assert "Run team preset 'Triage Team' (id: triage-team)." in prompt
+    assert "Call the `swarm` tool exactly once" in prompt
+    assert '"max_steps": 3' in prompt
+
+
+def test_run_tui_compose_and_agent_studio_switch_smoke(monkeypatch):
+    import textual.app as textual_app
+    from textual.message_pump import active_app
+
+    captured = {"composed": False, "switched": False}
+
+    def _fake_run(self, *args, **kwargs):
+        token = active_app.set(self)
+        self._compose_stacks.append([])
+        self._composed.append([])
+        try:
+            list(self.compose())
+        finally:
+            self._compose_stacks.pop()
+            self._composed.pop()
+            active_app.reset(token)
+        captured["composed"] = True
+        self._set_agent_studio_view_mode("profile")
+        self._set_agent_studio_view_mode("tools")
+        self._set_agent_studio_view_mode("team")
+        self._set_agent_studio_view_mode("invalid")
+        captured["switched"] = True
+
+    monkeypatch.setattr(textual_app.App, "run", _fake_run)
+    result = tui_app.run_tui()
+
+    assert result == 0
+    assert captured["composed"] is True
+    assert captured["switched"] is True
+
+
 # ---------------------------------------------------------------------------
 # parse_tui_event tests
 # ---------------------------------------------------------------------------

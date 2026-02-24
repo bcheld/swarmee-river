@@ -238,20 +238,41 @@ class ToolPolicyHooks(HookProvider):
         if mode == "execute":
             profile = sw.get("tool_profile")
             tier = sw.get("tier")
+            allow_set: set[str] = set()
+            block_set: set[str] = set()
+            allow_source = "tier"
+            block_source = "tier"
             if isinstance(profile, dict):
                 allow = profile.get("tool_allowlist")
                 block = profile.get("tool_blocklist")
                 allow_set = {str(x).strip() for x in allow if str(x).strip()} if isinstance(allow, list) else set()
                 block_set = {str(x).strip() for x in block if str(x).strip()} if isinstance(block, list) else set()
 
-                if allow_set and not _matches_tool_set(name, allow_set):
+            overrides = sw.get("session_safety_overrides", {}) if isinstance(sw, dict) else {}
+            if isinstance(overrides, dict):
+                override_allow = overrides.get("tool_allowlist")
+                override_block = overrides.get("tool_blocklist")
+                if isinstance(override_allow, list):
+                    allow_set = {str(x).strip() for x in override_allow if str(x).strip()}
+                    allow_source = "session"
+                if isinstance(override_block, list):
+                    block_set = {str(x).strip() for x in override_block if str(x).strip()}
+                    block_source = "session"
+
+            if allow_set and not _matches_tool_set(name, allow_set):
+                if allow_source == "session":
+                    event.cancel_tool = f"Tool '{name}' blocked by session tool_allowlist override."
+                else:
                     suffix = f" (tier={tier})" if tier else ""
                     event.cancel_tool = f"Tool '{name}' blocked by tier tool_allowlist{suffix}."
-                    return
-                if _matches_tool_set(name, block_set):
+                return
+            if _matches_tool_set(name, block_set):
+                if block_source == "session":
+                    event.cancel_tool = f"Tool '{name}' blocked by session tool_blocklist override."
+                else:
                     suffix = f" (tier={tier})" if tier else ""
                     event.cancel_tool = f"Tool '{name}' blocked by tier tool_blocklist{suffix}."
-                    return
+                return
 
         if self.enabled_tools and not _matches_tool_set(name, self.enabled_tools):
             event.cancel_tool = f"Tool '{name}' blocked by SWARMEE_ENABLE_TOOLS policy."

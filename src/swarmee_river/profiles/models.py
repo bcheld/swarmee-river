@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -107,6 +108,59 @@ def normalize_context_sources(raw_sources: Any) -> list[dict[str, str]]:
     return normalized
 
 
+def _normalize_team_preset_spec(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        encoded = json.dumps(raw, ensure_ascii=False, sort_keys=True)
+        decoded = json.loads(encoded)
+    except Exception:
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def normalize_team_preset(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    name = _normalize_text(raw.get("name"))
+    if name is None:
+        return None
+
+    preset_id = _normalize_text(raw.get("id"))
+    if preset_id is None:
+        preset_id = _sanitize_context_source_token(name)
+
+    spec = _normalize_team_preset_spec(raw.get("spec"))
+    if spec is None:
+        return None
+
+    return {
+        "id": preset_id,
+        "name": name,
+        "description": str(raw.get("description", "")).strip(),
+        "spec": spec,
+    }
+
+
+def normalize_team_presets(raw_presets: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_presets, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in raw_presets:
+        preset = normalize_team_preset(item)
+        if preset is None:
+            continue
+        preset_id = str(preset.get("id", "")).strip()
+        if not preset_id or preset_id in seen_ids:
+            continue
+        seen_ids.add(preset_id)
+        normalized.append(preset)
+    return normalized
+
+
 @dataclass
 class AgentProfile:
     id: str
@@ -117,6 +171,7 @@ class AgentProfile:
     context_sources: list[dict[str, str]] = field(default_factory=list)
     active_sops: list[str] = field(default_factory=list)
     knowledge_base_id: str | None = None
+    team_presets: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: Any) -> AgentProfile:
@@ -140,6 +195,7 @@ class AgentProfile:
             context_sources=normalize_context_sources(raw.get("context_sources")),
             active_sops=_normalize_text_list(raw.get("active_sops")),
             knowledge_base_id=_normalize_text(raw.get("knowledge_base_id")),
+            team_presets=normalize_team_presets(raw.get("team_presets")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -152,4 +208,5 @@ class AgentProfile:
             "context_sources": [dict(source) for source in self.context_sources],
             "active_sops": list(self.active_sops),
             "knowledge_base_id": self.knowledge_base_id,
+            "team_presets": normalize_team_presets(self.team_presets),
         }

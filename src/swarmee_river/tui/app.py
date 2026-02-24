@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib
 import inspect
@@ -32,6 +33,12 @@ from swarmee_river.error_classification import (
 )
 from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, save_profile
 from swarmee_river.runtime_service.client import RuntimeServiceClient, runtime_discovery_path
+from swarmee_river.session.graph_index import (
+    build_session_graph_index,
+    load_session_graph_index,
+    write_session_graph_index,
+)
+from swarmee_river.settings import load_settings
 from swarmee_river.state_paths import logs_dir, sessions_dir
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
@@ -60,6 +67,7 @@ _CONTEXT_USAGE_TEXT = (
 _SOP_USAGE_TEXT = "Usage: /sop list | /sop activate <name> | /sop deactivate <name> | /sop preview <name>"
 _RUN_ACTIVE_TIER_WARNING = "[model] cannot change tier while a run is active."
 _AGENT_PROFILE_SELECT_NONE = "__agent_profile_none__"
+_AGENT_TOOL_CONSENT_VALUES = {"ask", "allow", "deny"}
 _CONTEXT_SOURCE_ICONS: dict[str, str] = {
     "file": "📄",
     "url": "🌐",
@@ -120,6 +128,87 @@ def _default_profile_id(now: datetime | None = None) -> str:
 def _default_profile_name(now: datetime | None = None) -> str:
     ts = now or datetime.now()
     return f"Profile {ts.strftime('%Y-%m-%d %H:%M')}"
+
+
+def _default_team_preset_id(now: datetime | None = None) -> str:
+    ts = now or datetime.now()
+    return f"team-{ts.strftime('%Y%m%d-%H%M%S')}"
+
+
+def _default_team_preset_name(now: datetime | None = None) -> str:
+    ts = now or datetime.now()
+    return f"Team Preset {ts.strftime('%Y-%m-%d %H:%M')}"
+
+
+def _normalize_team_preset_spec(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        encoded = _json.dumps(raw, ensure_ascii=False, sort_keys=True)
+        decoded = _json.loads(encoded)
+    except Exception:
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def normalize_team_preset(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    raw_name = str(raw.get("name", "")).strip()
+    if not raw_name:
+        return None
+
+    raw_id = str(raw.get("id", "")).strip()
+    preset_id = _sanitize_profile_token(raw_id or raw_name)
+    if not preset_id:
+        return None
+
+    spec = _normalize_team_preset_spec(raw.get("spec"))
+    if spec is None:
+        return None
+
+    return {
+        "id": preset_id,
+        "name": raw_name,
+        "description": str(raw.get("description", "")).strip(),
+        "spec": spec,
+    }
+
+
+def normalize_team_presets(raw_presets: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_presets, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw_preset in raw_presets:
+        preset = normalize_team_preset(raw_preset)
+        if preset is None:
+            continue
+        preset_id = str(preset.get("id", "")).strip()
+        if not preset_id or preset_id in seen_ids:
+            continue
+        seen_ids.add(preset_id)
+        normalized.append(preset)
+    return normalized
+
+
+def build_team_preset_run_prompt(preset: dict[str, Any]) -> str:
+    normalized = normalize_team_preset(preset)
+    if normalized is None:
+        return ""
+
+    spec_json = _json.dumps(normalized["spec"], ensure_ascii=False, indent=2, sort_keys=True)
+    return (
+        f"Run team preset '{normalized['name']}' (id: {normalized['id']}).\n"
+        "Call the `swarm` tool exactly once with the JSON `spec` object below.\n"
+        "After the tool returns, summarize results and next actions.\n\n"
+        "spec:\n"
+        "```json\n"
+        f"{spec_json}\n"
+        "```"
+    )
 
 
 @dataclass(frozen=True)
@@ -1336,6 +1425,329 @@ def session_issue_actions(issue: dict[str, Any] | None) -> list[dict[str, str]]:
     return actions
 
 
+def normalize_session_view_mode(mode: str | None) -> str:
+    """Normalize session panel mode for Timeline/Issues toggle."""
+    normalized = str(mode or "").strip().lower()
+    if normalized == "issues":
+        return "issues"
+    return "timeline"
+
+
+def classify_session_timeline_event_kind(event: dict[str, Any] | None) -> str:
+    """Classify timeline event kind used for badges/icons."""
+    if not isinstance(event, dict):
+        return "event"
+    name = str(event.get("event", "")).strip().lower()
+    has_error = bool(str(event.get("error", "")).strip())
+    if name == "after_tool_call":
+        if has_error or event.get("success") is False:
+            return "error"
+        return "tool"
+    if name == "after_model_call":
+        return "model"
+    if name == "after_invocation":
+        return "invocation"
+    if has_error:
+        return "error"
+    return "event"
+
+
+def summarize_session_timeline_event(event: dict[str, Any] | None) -> str:
+    """Render compact one-line timeline summary."""
+    if not isinstance(event, dict):
+        return "event"
+    kind = classify_session_timeline_event_kind(event)
+    duration = event.get("duration_s")
+    duration_text = ""
+    if isinstance(duration, (int, float)):
+        duration_text = f" ({float(duration):.1f}s)"
+    if kind in {"tool", "error"}:
+        tool = str(event.get("tool", "")).strip() or "unknown"
+        label = f"tool: {tool}{duration_text}"
+        if kind == "error":
+            return f"{label} error"
+        return label
+    if kind == "model":
+        return f"model call{duration_text}"
+    if kind == "invocation":
+        return f"invocation{duration_text}"
+    return (str(event.get("event", "")).strip() or "event") + duration_text
+
+
+def build_session_timeline_sidebar_items(events: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Build SidebarList payload for session timeline events."""
+    icon_map = {
+        "tool": "⚙",
+        "model": "◉",
+        "invocation": "▶",
+        "error": "✖",
+        "event": "•",
+    }
+    state_map = {
+        "tool": "default",
+        "model": "default",
+        "invocation": "active",
+        "error": "error",
+        "event": "default",
+    }
+    items: list[dict[str, str]] = []
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            continue
+        event_id = str(event.get("id", "")).strip() or f"timeline-{index + 1}"
+        kind = classify_session_timeline_event_kind(event)
+        summary = summarize_session_timeline_event(event)
+        ts = str(event.get("ts", "")).strip()
+        label = str(event.get("event", "")).strip().lower()
+        subtitle = ts if ts else label
+        if ts and label:
+            subtitle = f"{ts} | {label}"
+        items.append(
+            {
+                "id": event_id,
+                "title": f"{icon_map.get(kind, '•')} {summary}",
+                "subtitle": subtitle,
+                "state": state_map.get(kind, "default"),
+            }
+        )
+    return items
+
+
+def render_session_timeline_detail_text(event: dict[str, Any] | None) -> str:
+    """Render detail body for selected timeline event."""
+    if not isinstance(event, dict):
+        return "(no timeline event selected)"
+    payload = dict(event)
+    payload.pop("id", None)
+    summary = summarize_session_timeline_event(event)
+    try:
+        rendered = _json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        rendered = str(payload)
+    return f"Summary: {summary}\n\nPayload:\n{rendered}"
+
+
+def session_timeline_actions(event: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Actions available for selected timeline event."""
+    if not isinstance(event, dict):
+        return []
+    return [
+        {"id": "session_timeline_copy_json", "label": "Copy JSON", "variant": "default"},
+        {"id": "session_timeline_copy_summary", "label": "Copy summary", "variant": "default"},
+    ]
+
+
+def normalize_agent_studio_view_mode(mode: str | None) -> str:
+    """Normalize Agent Studio sub-view mode."""
+    normalized = str(mode or "").strip().lower()
+    if normalized in {"profile", "tools", "team"}:
+        return normalized
+    return "profile"
+
+
+def _normalized_tool_name_list(raw_values: Any) -> list[str]:
+    values = raw_values if isinstance(raw_values, list) else []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        token = str(item).strip()
+        if not token:
+            continue
+        lowered = token.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(token)
+    return normalized
+
+
+def normalize_session_safety_overrides(raw_overrides: Any) -> dict[str, Any]:
+    if not isinstance(raw_overrides, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    consent = str(raw_overrides.get("tool_consent", "")).strip().lower()
+    if consent in _AGENT_TOOL_CONSENT_VALUES:
+        normalized["tool_consent"] = consent
+    allow = _normalized_tool_name_list(raw_overrides.get("tool_allowlist"))
+    if allow:
+        normalized["tool_allowlist"] = allow
+    block = _normalized_tool_name_list(raw_overrides.get("tool_blocklist"))
+    if block:
+        normalized["tool_blocklist"] = block
+    return normalized
+
+
+def _env_tool_list(var_name: str) -> list[str]:
+    raw = os.getenv(var_name, "")
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    return _normalized_tool_name_list([token for token in raw.split(",")])
+
+
+def _policy_tier_profile(tier_name: str | None) -> tuple[list[str], list[str], str]:
+    tier = str(tier_name or "").strip().lower()
+    try:
+        settings = load_settings()
+    except Exception:
+        return [], [], "ask"
+    profile = settings.harness.tier_profiles.get(tier)
+    allow = list(profile.tool_allowlist) if profile is not None else []
+    block = list(profile.tool_blocklist) if profile is not None else []
+    default_consent = str(settings.safety.tool_consent or "ask").strip().lower()
+    if default_consent not in _AGENT_TOOL_CONSENT_VALUES:
+        default_consent = "ask"
+    return _normalized_tool_name_list(allow), _normalized_tool_name_list(block), default_consent
+
+
+def build_agent_policy_lens(*, tier_name: str | None, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    tier_allow, tier_block, default_consent = _policy_tier_profile(tier_name)
+    normalized_overrides = normalize_session_safety_overrides(overrides)
+
+    effective_allow = (
+        _normalized_tool_name_list(normalized_overrides.get("tool_allowlist"))
+        if "tool_allowlist" in normalized_overrides
+        else list(tier_allow)
+    )
+    effective_block = (
+        _normalized_tool_name_list(normalized_overrides.get("tool_blocklist"))
+        if "tool_blocklist" in normalized_overrides
+        else list(tier_block)
+    )
+    effective_consent = str(normalized_overrides.get("tool_consent", default_consent)).strip().lower()
+    if effective_consent not in _AGENT_TOOL_CONSENT_VALUES:
+        effective_consent = default_consent
+
+    return {
+        "tier": str(tier_name or "").strip().lower() or None,
+        "default": {
+            "tool_consent": default_consent,
+            "tool_allowlist": list(tier_allow),
+            "tool_blocklist": list(tier_block),
+        },
+        "session_overrides": dict(normalized_overrides),
+        "effective": {
+            "tool_consent": effective_consent,
+            "tool_allowlist": list(effective_allow),
+            "tool_blocklist": list(effective_block),
+        },
+        "env": {
+            "enable_tools": _env_tool_list("SWARMEE_ENABLE_TOOLS"),
+            "disable_tools": _env_tool_list("SWARMEE_DISABLE_TOOLS"),
+        },
+    }
+
+
+def build_agent_tools_safety_sidebar_items(policy_lens: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    """Return sidebar items for Tools & Safety Agent Studio view."""
+    lens = policy_lens if isinstance(policy_lens, dict) else {}
+    effective = lens.get("effective", {}) if isinstance(lens.get("effective"), dict) else {}
+    overrides = lens.get("session_overrides", {}) if isinstance(lens.get("session_overrides"), dict) else {}
+    consent = str(effective.get("tool_consent", "ask")).strip().lower() or "ask"
+    effective_allow = _normalized_tool_name_list(effective.get("tool_allowlist"))
+    effective_block = _normalized_tool_name_list(effective.get("tool_blocklist"))
+    override_count = len(overrides)
+    return [
+        {
+            "id": "policy_lens",
+            "title": "Policy Lens",
+            "subtitle": f"consent={consent} | allow={len(effective_allow)} | block={len(effective_block)}",
+            "state": "active",
+        },
+        {
+            "id": "session_overrides",
+            "title": "Session Overrides",
+            "subtitle": f"active fields={override_count}",
+            "state": "warning" if override_count else "default",
+        },
+    ]
+
+
+def render_agent_tools_safety_detail_text(
+    item: dict[str, Any] | None,
+    policy_lens: dict[str, Any] | None = None,
+) -> str:
+    """Render detail text for Tools & Safety records."""
+    if not isinstance(item, dict):
+        return "(no tools/safety item selected)"
+    lens = policy_lens if isinstance(policy_lens, dict) else {}
+    item_id = str(item.get("id", "")).strip()
+    if item_id == "policy_lens":
+        rendered = _json.dumps(lens, ensure_ascii=False, indent=2, sort_keys=True) if lens else "{}"
+        return (
+            "Tools & Safety: Policy Lens\n\n"
+            "Effective tool/safety posture across tier defaults, session overrides, and env controls.\n\n"
+            f"{rendered}"
+        )
+    if item_id == "session_overrides":
+        overrides = lens.get("session_overrides", {}) if isinstance(lens.get("session_overrides"), dict) else {}
+        rendered = _json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True)
+        return (
+            "Tools & Safety: Session Overrides\n\n"
+            "Session-only overrides are layered above tier defaults.\n"
+            "Use the form below to apply or reset tool_consent/tool_allowlist/tool_blocklist.\n\n"
+            f"{rendered}"
+        )
+    return str(item.get("title", "Tools & Safety")).strip() or "(no details)"
+
+
+def build_agent_team_sidebar_items(team_presets: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Return Team Agent Studio sidebar items from profile team presets."""
+    normalized = normalize_team_presets(team_presets or [])
+    if not normalized:
+        return [
+            {
+                "id": "team_preset_none",
+                "title": "No Team Presets",
+                "subtitle": "Create a preset to compose a multi-agent run.",
+                "state": "default",
+            }
+        ]
+
+    items: list[dict[str, Any]] = []
+    for preset in normalized:
+        description = str(preset.get("description", "")).strip()
+        spec = preset.get("spec", {})
+        key_count = len(spec) if isinstance(spec, dict) else 0
+        subtitle = description or f"spec keys: {key_count}"
+        items.append(
+            {
+                "id": str(preset.get("id", "")).strip(),
+                "title": str(preset.get("name", "")).strip() or "Unnamed Team Preset",
+                "subtitle": subtitle,
+                "state": "active" if key_count else "default",
+                "preset": dict(preset),
+            }
+        )
+    return items
+
+
+def render_agent_team_detail_text(item: dict[str, Any] | None) -> str:
+    """Render detail text for Team preset records."""
+    if not isinstance(item, dict):
+        return "(no team item selected)"
+    item_id = str(item.get("id", "")).strip()
+    if item_id == "team_preset_none":
+        return (
+            "Team Presets\n\n"
+            "Create and save a preset to compose multi-agent execution via `swarm`.\n"
+            "Use Save Profile after editing to persist the preset catalog."
+        )
+
+    preset = normalize_team_preset(item.get("preset"))
+    if preset is None:
+        return str(item.get("title", "Team")).strip() or "(no details)"
+    spec_json = _json.dumps(preset.get("spec", {}), ensure_ascii=False, indent=2, sort_keys=True)
+    description = str(preset.get("description", "")).strip() or "(none)"
+    return (
+        "Team Preset\n\n"
+        f"ID: {preset['id']}\n"
+        f"Name: {preset['name']}\n"
+        f"Description: {description}\n\n"
+        "Spec:\n"
+        f"{spec_json}"
+    )
+
+
 def detect_consent_prompt(line: str) -> str | None:
     """Detect consent-related subprocess output lines."""
     normalized = line.strip().lower()
@@ -1883,6 +2295,32 @@ def run_tui() -> int:
             layout: vertical;
         }
 
+        #session_view_switch {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #session_view_switch Button {
+            width: 1fr;
+            min-width: 12;
+            margin: 0 1 0 0;
+        }
+
+        #session_timeline_view, #session_issues_view {
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #session_timeline_list, #session_issue_list {
+            margin: 0 0 1 0;
+            min-height: 10;
+        }
+
+        #session_timeline_detail, #session_issue_detail {
+            height: 1fr;
+        }
+
         #session_issue_list {
             margin: 0 0 1 0;
             min-height: 10;
@@ -1896,6 +2334,23 @@ def run_tui() -> int:
             height: 1fr;
             border: round $accent;
             padding: 0 1;
+            layout: vertical;
+        }
+
+        #agent_view_switch {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #agent_view_switch Button {
+            width: 1fr;
+            min-width: 12;
+            margin: 0 1 0 0;
+        }
+
+        #agent_profile_view, #agent_tools_view, #agent_team_view {
+            height: 1fr;
             layout: vertical;
         }
 
@@ -1932,6 +2387,91 @@ def run_tui() -> int:
         }
 
         #agent_profile_status {
+            height: auto;
+            color: $text-muted;
+        }
+
+        #agent_tools_list, #agent_team_list {
+            width: 1fr;
+            margin: 0 0 1 0;
+            min-height: 8;
+        }
+
+        #agent_tools_detail, #agent_team_detail {
+            height: 1fr;
+        }
+
+        #agent_tools_overrides_header {
+            height: auto;
+            color: $text-muted;
+            padding: 1 0 0 0;
+        }
+
+        #agent_tools_override_consent, #agent_tools_override_allowlist, #agent_tools_override_blocklist {
+            width: 1fr;
+            margin: 0 0 1 0;
+        }
+
+        #agent_tools_override_actions {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #agent_tools_override_actions Button {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #agent_tools_override_status {
+            height: auto;
+            color: $text-muted;
+        }
+
+        #agent_team_editor_header {
+            height: auto;
+            color: $text-muted;
+            padding: 1 0 0 0;
+        }
+
+        #agent_team_meta_row {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #agent_team_preset_id, #agent_team_preset_name {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #agent_team_preset_name {
+            margin: 0;
+        }
+
+        #agent_team_preset_description {
+            width: 1fr;
+            margin: 0 0 1 0;
+        }
+
+        #agent_team_preset_spec {
+            width: 1fr;
+            height: 8;
+            margin: 0 0 1 0;
+        }
+
+        #agent_team_actions {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #agent_team_actions Button {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #agent_team_status {
             height: auto;
             color: $text-muted;
         }
@@ -2158,6 +2698,13 @@ def run_tui() -> int:
         _issues_lines: list[str] = []
         _session_issues: list[dict[str, Any]] = []
         _session_selected_issue_id: str | None = None
+        _session_view_mode: str = "timeline"
+        _session_timeline_index: dict[str, Any] | None = None
+        _session_timeline_events: list[dict[str, Any]] = []
+        _session_timeline_selected_event_id: str | None = None
+        _session_timeline_refresh_timer: Any = None
+        _session_timeline_refresh_inflight: bool = False
+        _session_timeline_refresh_pending: bool = False
         _issues_repeat_line: str | None = None
         _issues_repeat_count: int = 0
         _warning_count: int = 0
@@ -2202,6 +2749,13 @@ def run_tui() -> int:
         _context_input: Any = None  # Input | None
         _context_sop_select: Any = None  # Select | None
         _session_header: Any = None  # SidebarHeader | None
+        _session_view_timeline_button: Any = None  # Button | None
+        _session_view_issues_button: Any = None  # Button | None
+        _session_timeline_view: Any = None  # Vertical | None
+        _session_issues_view: Any = None  # Vertical | None
+        _session_timeline_header: Any = None  # SidebarHeader | None
+        _session_timeline_list: Any = None  # SidebarList | None
+        _session_timeline_detail: Any = None  # SidebarDetail | None
         _session_issue_list: Any = None  # SidebarList | None
         _session_issue_detail: Any = None  # SidebarDetail | None
         _artifacts_header: Any = None  # SidebarHeader | None
@@ -2251,8 +2805,39 @@ def run_tui() -> int:
         _effective_profile: AgentProfile | None = None
         _agent_draft_dirty: bool = False
         _agent_form_syncing: bool = False
+        _agent_studio_view_mode: str = "profile"
+        _agent_tools_items: list[dict[str, Any]] = []
+        _agent_team_presets: list[dict[str, Any]] = []
+        _agent_team_items: list[dict[str, Any]] = []
+        _agent_tools_selected_item_id: str | None = None
+        _agent_team_selected_item_id: str | None = None
+        _session_safety_overrides: dict[str, Any] = {}
+        _agent_tools_policy_lens: dict[str, Any] = {}
+        _agent_tools_form_syncing: bool = False
+        _agent_team_form_syncing: bool = False
+        _agent_view_profile_button: Any = None  # Button | None
+        _agent_view_tools_button: Any = None  # Button | None
+        _agent_view_team_button: Any = None  # Button | None
+        _agent_profile_view: Any = None  # Vertical | None
+        _agent_tools_view: Any = None  # Vertical | None
+        _agent_team_view: Any = None  # Vertical | None
         _agent_summary: Any = None  # TextArea | None
         _agent_profile_list: Any = None  # SidebarList | None
+        _agent_tools_header: Any = None  # SidebarHeader | None
+        _agent_tools_list: Any = None  # SidebarList | None
+        _agent_tools_detail: Any = None  # SidebarDetail | None
+        _agent_tools_override_consent_input: Any = None  # Input | None
+        _agent_tools_override_allowlist_input: Any = None  # Input | None
+        _agent_tools_override_blocklist_input: Any = None  # Input | None
+        _agent_tools_override_status: Any = None  # Static | None
+        _agent_team_header: Any = None  # SidebarHeader | None
+        _agent_team_list: Any = None  # SidebarList | None
+        _agent_team_detail: Any = None  # SidebarDetail | None
+        _agent_team_preset_id_input: Any = None  # Input | None
+        _agent_team_preset_name_input: Any = None  # Input | None
+        _agent_team_preset_description_input: Any = None  # Input | None
+        _agent_team_preset_spec_input: Any = None  # TextArea | None
+        _agent_team_status: Any = None  # Static | None
         _agent_profile_id_input: Any = None  # Input | None
         _agent_profile_name_input: Any = None  # Input | None
         _agent_profile_status: Any = None  # Static | None
@@ -2314,32 +2899,132 @@ def run_tui() -> int:
                                 yield SidebarDetail(id="artifacts_detail")
                         with TabPane("Session", id="tab_session"):
                             with Vertical(id="session_panel"):
-                                yield SidebarHeader("Session", id="session_header")
-                                yield SidebarList(id="session_issue_list")
-                                yield SidebarDetail(id="session_issue_detail")
+                                with Horizontal(id="session_view_switch"):
+                                    yield Button(
+                                        "Timeline",
+                                        id="session_view_timeline",
+                                        compact=True,
+                                        variant="primary",
+                                    )
+                                    yield Button("Issues", id="session_view_issues", compact=True, variant="default")
+                                with Vertical(id="session_timeline_view"):
+                                    yield SidebarHeader("Timeline", id="session_timeline_header")
+                                    yield SidebarList(id="session_timeline_list")
+                                    yield SidebarDetail(id="session_timeline_detail")
+                                with Vertical(id="session_issues_view"):
+                                    yield SidebarHeader("Issues", id="session_issues_header")
+                                    yield SidebarList(id="session_issue_list")
+                                    yield SidebarDetail(id="session_issue_detail")
                         with TabPane("Agent", id="tab_agent"):
                             with Vertical(id="agent_panel"):
-                                yield Static("Effective Session Profile", id="agent_summary_header")
-                                yield TextArea(
-                                    text="",
-                                    read_only=True,
-                                    show_cursor=False,
-                                    id="agent_summary",
-                                    soft_wrap=True,
-                                )
-                                yield Static("Saved Profiles", id="agent_profiles_header")
-                                yield SidebarList(id="agent_profile_list")
-                                with Horizontal(id="agent_profile_meta_row"):
+                                with Horizontal(id="agent_view_switch"):
+                                    yield Button(
+                                        "Profile",
+                                        id="agent_view_profile",
+                                        compact=True,
+                                        variant="primary",
+                                    )
+                                    yield Button(
+                                        "Tools & Safety",
+                                        id="agent_view_tools",
+                                        compact=True,
+                                        variant="default",
+                                    )
+                                    yield Button("Team", id="agent_view_team", compact=True, variant="default")
+                                with Vertical(id="agent_profile_view"):
+                                    yield Static("Effective Session Profile", id="agent_summary_header")
+                                    yield TextArea(
+                                        text="",
+                                        read_only=True,
+                                        show_cursor=False,
+                                        id="agent_summary",
+                                        soft_wrap=True,
+                                    )
+                                    yield Static("Saved Profiles", id="agent_profiles_header")
+                                    yield SidebarList(id="agent_profile_list")
+                                    with Horizontal(id="agent_profile_meta_row"):
+                                        yield Input(
+                                            placeholder="Profile id",
+                                            id="agent_profile_id",
+                                        )
+                                        yield Input(
+                                            placeholder="Profile name",
+                                            id="agent_profile_name",
+                                        )
+                                    yield AgentProfileActions(id="agent_profile_actions")
+                                    yield Static("", id="agent_profile_status")
+                                with Vertical(id="agent_tools_view"):
+                                    yield SidebarHeader("Tools & Safety", id="agent_tools_header")
+                                    yield SidebarList(id="agent_tools_list")
+                                    yield SidebarDetail(id="agent_tools_detail")
+                                    yield Static("Session Overrides", id="agent_tools_overrides_header")
                                     yield Input(
-                                        placeholder="Profile id",
-                                        id="agent_profile_id",
+                                        placeholder="tool_consent: ask|allow|deny (blank = inherit)",
+                                        id="agent_tools_override_consent",
                                     )
                                     yield Input(
-                                        placeholder="Profile name",
-                                        id="agent_profile_name",
+                                        placeholder="tool_allowlist: comma-separated tools (blank = inherit)",
+                                        id="agent_tools_override_allowlist",
                                     )
-                                yield AgentProfileActions(id="agent_profile_actions")
-                                yield Static("", id="agent_profile_status")
+                                    yield Input(
+                                        placeholder="tool_blocklist: comma-separated tools (blank = inherit)",
+                                        id="agent_tools_override_blocklist",
+                                    )
+                                    with Horizontal(id="agent_tools_override_actions"):
+                                        yield Button(
+                                            "Apply",
+                                            id="agent_tools_overrides_apply",
+                                            compact=True,
+                                            variant="success",
+                                        )
+                                        yield Button(
+                                            "Reset",
+                                            id="agent_tools_overrides_reset",
+                                            compact=True,
+                                            variant="default",
+                                        )
+                                    yield Static("", id="agent_tools_override_status")
+                                with Vertical(id="agent_team_view"):
+                                    yield SidebarHeader("Team Presets", id="agent_team_header")
+                                    yield SidebarList(id="agent_team_list")
+                                    yield SidebarDetail(id="agent_team_detail")
+                                    yield Static("Preset Editor", id="agent_team_editor_header")
+                                    with Horizontal(id="agent_team_meta_row"):
+                                        yield Input(
+                                            placeholder="Preset id",
+                                            id="agent_team_preset_id",
+                                        )
+                                        yield Input(
+                                            placeholder="Preset name",
+                                            id="agent_team_preset_name",
+                                        )
+                                    yield Input(
+                                        placeholder="Description (optional)",
+                                        id="agent_team_preset_description",
+                                    )
+                                    yield TextArea(
+                                        text="{}",
+                                        language="json",
+                                        id="agent_team_preset_spec",
+                                        soft_wrap=True,
+                                    )
+                                    with Horizontal(id="agent_team_actions"):
+                                        yield Button("New", id="agent_team_new", compact=True, variant="default")
+                                        yield Button("Save", id="agent_team_save", compact=True, variant="success")
+                                        yield Button("Delete", id="agent_team_delete", compact=True, variant="warning")
+                                        yield Button(
+                                            "Insert Run Prompt",
+                                            id="agent_team_insert_prompt",
+                                            compact=True,
+                                            variant="primary",
+                                        )
+                                        yield Button(
+                                            "Run Now",
+                                            id="agent_team_run_now",
+                                            compact=True,
+                                            variant="default",
+                                        )
+                                    yield Static("", id="agent_team_status")
             yield CommandPalette(id="command_palette")
             yield ActionSheet(id="action_sheet")
             yield ThinkingBar(id="thinking_bar")
@@ -2374,14 +3059,42 @@ def run_tui() -> int:
             self._sop_list = self.query_one("#sop_list", VerticalScroll)
             self._context_input = self.query_one("#context_input", Input)
             self._context_sop_select = self.query_one("#context_sop_select", Select)
-            self._session_header = self.query_one("#session_header", SidebarHeader)
+            self._session_header = self.query_one("#session_issues_header", SidebarHeader)
+            self._session_view_timeline_button = self.query_one("#session_view_timeline", Button)
+            self._session_view_issues_button = self.query_one("#session_view_issues", Button)
+            self._session_timeline_view = self.query_one("#session_timeline_view", Vertical)
+            self._session_issues_view = self.query_one("#session_issues_view", Vertical)
+            self._session_timeline_header = self.query_one("#session_timeline_header", SidebarHeader)
+            self._session_timeline_list = self.query_one("#session_timeline_list", SidebarList)
+            self._session_timeline_detail = self.query_one("#session_timeline_detail", SidebarDetail)
             self._session_issue_list = self.query_one("#session_issue_list", SidebarList)
             self._session_issue_detail = self.query_one("#session_issue_detail", SidebarDetail)
             self._artifacts_header = self.query_one("#artifacts_header", SidebarHeader)
             self._artifacts_list = self.query_one("#artifacts_list", SidebarList)
             self._artifacts_detail = self.query_one("#artifacts_detail", SidebarDetail)
+            self._agent_view_profile_button = self.query_one("#agent_view_profile", Button)
+            self._agent_view_tools_button = self.query_one("#agent_view_tools", Button)
+            self._agent_view_team_button = self.query_one("#agent_view_team", Button)
+            self._agent_profile_view = self.query_one("#agent_profile_view", Vertical)
+            self._agent_tools_view = self.query_one("#agent_tools_view", Vertical)
+            self._agent_team_view = self.query_one("#agent_team_view", Vertical)
             self._agent_summary = self.query_one("#agent_summary", TextArea)
             self._agent_profile_list = self.query_one("#agent_profile_list", SidebarList)
+            self._agent_tools_header = self.query_one("#agent_tools_header", SidebarHeader)
+            self._agent_tools_list = self.query_one("#agent_tools_list", SidebarList)
+            self._agent_tools_detail = self.query_one("#agent_tools_detail", SidebarDetail)
+            self._agent_tools_override_consent_input = self.query_one("#agent_tools_override_consent", Input)
+            self._agent_tools_override_allowlist_input = self.query_one("#agent_tools_override_allowlist", Input)
+            self._agent_tools_override_blocklist_input = self.query_one("#agent_tools_override_blocklist", Input)
+            self._agent_tools_override_status = self.query_one("#agent_tools_override_status", Static)
+            self._agent_team_header = self.query_one("#agent_team_header", SidebarHeader)
+            self._agent_team_list = self.query_one("#agent_team_list", SidebarList)
+            self._agent_team_detail = self.query_one("#agent_team_detail", SidebarDetail)
+            self._agent_team_preset_id_input = self.query_one("#agent_team_preset_id", Input)
+            self._agent_team_preset_name_input = self.query_one("#agent_team_preset_name", Input)
+            self._agent_team_preset_description_input = self.query_one("#agent_team_preset_description", Input)
+            self._agent_team_preset_spec_input = self.query_one("#agent_team_preset_spec", TextArea)
+            self._agent_team_status = self.query_one("#agent_team_status", Static)
             self._agent_profile_id_input = self.query_one("#agent_profile_id", Input)
             self._agent_profile_name_input = self.query_one("#agent_profile_name", Input)
             self._agent_profile_status = self.query_one("#agent_profile_status", Static)
@@ -2390,15 +3103,20 @@ def run_tui() -> int:
             self.query_one("#prompt", PromptTextArea).focus()
             self._reset_plan_panel()
             self._reset_issues_panel()
+            self._reset_session_timeline_panel()
             self._reset_artifacts_panel()
             self._reset_consent_panel()
             self._reset_error_action_prompt()
+            self._set_session_view_mode("timeline")
             self._set_context_add_mode(None)
             self._refresh_context_sop_options()
             self._render_context_sources_panel()
             self._refresh_sop_catalog()
             self._render_sop_panel()
             self._reload_saved_profiles()
+            self._render_agent_tools_panel()
+            self._render_agent_team_panel()
+            self._set_agent_studio_view_mode("profile")
             if self._saved_profiles:
                 self._load_profile_into_draft(self._saved_profiles[0])
             else:
@@ -2423,6 +3141,8 @@ def run_tui() -> int:
                 transcript.max_lines = self._TRANSCRIPT_MAX_LINES
             self._set_transcript_mode("rich", notify=False)
             self._load_session()
+            if self._daemon_session_id:
+                self._schedule_session_timeline_refresh(delay=0.1)
             self._refresh_agent_summary()
             self._spawn_daemon()
 
@@ -3018,6 +3738,378 @@ def run_tui() -> int:
             finally:
                 self._agent_form_syncing = False
 
+        def _agent_tools_item_by_id(self, item_id: str | None) -> dict[str, Any] | None:
+            target = str(item_id or "").strip()
+            if not target:
+                return None
+            for item in self._agent_tools_items:
+                if str(item.get("id", "")).strip() == target:
+                    return item
+            return None
+
+        def _set_agent_tools_status(self, message: str) -> None:
+            widget = self._agent_tools_override_status
+            if widget is None:
+                return
+            text = message.strip() if isinstance(message, str) else ""
+            widget.update(text)
+
+        def _set_agent_tools_override_form_values(self, overrides: dict[str, Any] | None) -> None:
+            normalized = normalize_session_safety_overrides(overrides)
+            consent = str(normalized.get("tool_consent", "")).strip().lower()
+            allow = _normalized_tool_name_list(normalized.get("tool_allowlist"))
+            block = _normalized_tool_name_list(normalized.get("tool_blocklist"))
+            self._agent_tools_form_syncing = True
+            try:
+                if self._agent_tools_override_consent_input is not None:
+                    self._agent_tools_override_consent_input.value = consent
+                if self._agent_tools_override_allowlist_input is not None:
+                    self._agent_tools_override_allowlist_input.value = ", ".join(allow)
+                if self._agent_tools_override_blocklist_input is not None:
+                    self._agent_tools_override_blocklist_input.value = ", ".join(block)
+            finally:
+                self._agent_tools_form_syncing = False
+
+        def _parse_agent_tools_csv_list(self, value: str) -> list[str]:
+            if not value.strip():
+                return []
+            tokens = [token.strip() for token in value.split(",")]
+            return _normalized_tool_name_list(tokens)
+
+        def _agent_tools_form_update_payload(self) -> dict[str, Any] | None:
+            raw_consent = str(getattr(self._agent_tools_override_consent_input, "value", "")).strip().lower()
+            if raw_consent and raw_consent not in _AGENT_TOOL_CONSENT_VALUES:
+                self._notify("tool_consent must be ask|allow|deny.", severity="warning")
+                return None
+            allow_csv = str(getattr(self._agent_tools_override_allowlist_input, "value", ""))
+            block_csv = str(getattr(self._agent_tools_override_blocklist_input, "value", ""))
+            allow_list = self._parse_agent_tools_csv_list(allow_csv)
+            block_list = self._parse_agent_tools_csv_list(block_csv)
+            return {
+                "tool_consent": raw_consent or None,
+                "tool_allowlist": allow_list or None,
+                "tool_blocklist": block_list or None,
+            }
+
+        def _current_agent_policy_tier_name(self) -> str | None:
+            return (
+                str(self._daemon_tier or "").strip().lower()
+                or str(self._model_tier_override or "").strip().lower()
+                or None
+            )
+
+        def _refresh_agent_tools_policy_lens(self) -> None:
+            self._agent_tools_policy_lens = build_agent_policy_lens(
+                tier_name=self._current_agent_policy_tier_name(),
+                overrides=self._session_safety_overrides,
+            )
+
+        def _apply_agent_tools_safety_overrides(self, *, reset: bool = False) -> None:
+            proc = self._proc
+            if self._query_active:
+                self._set_agent_tools_status("Cannot update overrides while a run is active.")
+                self._notify("Cannot update overrides while a run is active.", severity="warning")
+                return
+            if not self._daemon_ready or proc is None or proc.poll() is not None:
+                self._set_agent_tools_status("Daemon is not ready.")
+                self._notify("Daemon is not ready.", severity="warning")
+                return
+            payload = (
+                {"tool_consent": None, "tool_allowlist": None, "tool_blocklist": None}
+                if reset
+                else self._agent_tools_form_update_payload()
+            )
+            if payload is None:
+                return
+            command: dict[str, Any] = {"cmd": "set_safety_overrides"}
+            command.update(payload)
+            if not send_daemon_command(proc, command):
+                self._set_agent_tools_status("Failed to send override update.")
+                self._notify("Failed to send safety override update.", severity="warning")
+                return
+            if reset:
+                self._set_agent_tools_status("Resetting overrides...")
+            else:
+                self._set_agent_tools_status("Applying overrides...")
+
+        def _set_agent_tools_selection(self, item: dict[str, Any] | None) -> None:
+            detail = self._agent_tools_detail
+            if detail is None:
+                return
+            if item is None:
+                self._agent_tools_selected_item_id = None
+                detail.set_preview("(no tools/safety items)")
+                detail.set_actions([])
+                return
+            self._agent_tools_selected_item_id = str(item.get("id", "")).strip() or None
+            detail.set_preview(render_agent_tools_safety_detail_text(item, self._agent_tools_policy_lens))
+            detail.set_actions([])
+
+        def _agent_team_item_by_id(self, item_id: str | None) -> dict[str, Any] | None:
+            target = str(item_id or "").strip()
+            if not target:
+                return None
+            for item in self._agent_team_items:
+                if str(item.get("id", "")).strip() == target:
+                    return item
+            return None
+
+        def _set_agent_team_status(self, message: str) -> None:
+            widget = self._agent_team_status
+            if widget is None:
+                return
+            text = message.strip() if isinstance(message, str) else ""
+            widget.update(text)
+
+        def _set_agent_team_form_values(self, preset: dict[str, Any] | None) -> None:
+            normalized = normalize_team_preset(preset) if isinstance(preset, dict) else None
+            preset_id = str(normalized.get("id", "")).strip() if normalized else ""
+            name = str(normalized.get("name", "")).strip() if normalized else ""
+            description = str(normalized.get("description", "")).strip() if normalized else ""
+            spec_text = (
+                _json.dumps(normalized.get("spec", {}), ensure_ascii=False, indent=2, sort_keys=True)
+                if normalized
+                else "{}"
+            )
+            self._agent_team_form_syncing = True
+            try:
+                if self._agent_team_preset_id_input is not None:
+                    self._agent_team_preset_id_input.value = preset_id
+                if self._agent_team_preset_name_input is not None:
+                    self._agent_team_preset_name_input.value = name
+                if self._agent_team_preset_description_input is not None:
+                    self._agent_team_preset_description_input.value = description
+                if self._agent_team_preset_spec_input is not None:
+                    self._agent_team_preset_spec_input.load_text(spec_text)
+            finally:
+                self._agent_team_form_syncing = False
+
+        def _agent_team_form_payload(self) -> dict[str, Any] | None:
+            raw_name = str(getattr(self._agent_team_preset_name_input, "value", "")).strip()
+            if not raw_name:
+                self._notify("Preset name is required.", severity="warning")
+                return None
+            raw_id = str(getattr(self._agent_team_preset_id_input, "value", "")).strip()
+            preset_id = _sanitize_profile_token(raw_id or raw_name)
+            description = str(getattr(self._agent_team_preset_description_input, "value", "")).strip()
+            spec_text = str(getattr(self._agent_team_preset_spec_input, "text", "")).strip() or "{}"
+            try:
+                spec = _json.loads(spec_text)
+            except Exception:
+                self._notify("Preset spec must be valid JSON.", severity="warning")
+                return None
+            if not isinstance(spec, dict):
+                self._notify("Preset spec must be a JSON object.", severity="warning")
+                return None
+            normalized = normalize_team_preset(
+                {"id": preset_id, "name": raw_name, "description": description, "spec": spec}
+            )
+            if normalized is None:
+                self._notify("Preset is invalid.", severity="warning")
+                return None
+            return normalized
+
+        def _selected_team_preset(self) -> dict[str, Any] | None:
+            selected_item = self._agent_team_item_by_id(self._agent_team_selected_item_id)
+            if selected_item is None:
+                return None
+            return normalize_team_preset(selected_item.get("preset"))
+
+        def _set_prompt_editor_text(self, text: str) -> bool:
+            content = str(text or "")
+            if not content.strip():
+                return False
+            with contextlib.suppress(Exception):
+                prompt_widget = self.query_one("#prompt", PromptTextArea)
+                prompt_widget.clear()
+                loader = getattr(prompt_widget, "load_text", None)
+                if callable(loader):
+                    loader(content)
+                else:
+                    prompt_widget.insert(content)
+                prompt_widget.focus()
+                return True
+            return False
+
+        def _new_agent_team_preset_draft(self) -> None:
+            seed = normalize_team_preset(
+                {
+                    "id": _default_team_preset_id(),
+                    "name": _default_team_preset_name(),
+                    "description": "",
+                    "spec": {},
+                }
+            )
+            if seed is None:
+                return
+            self._agent_team_selected_item_id = None
+            self._set_agent_team_form_values(seed)
+            self._set_agent_team_status("New team preset draft.")
+            self._set_agent_draft_dirty(True, note="Team preset draft updated.")
+
+        def _save_agent_team_preset_draft(self) -> None:
+            payload = self._agent_team_form_payload()
+            if payload is None:
+                return
+            selected_id = str(self._agent_team_selected_item_id or "").strip()
+            saved_id = str(payload.get("id", "")).strip()
+            next_presets = [dict(item) for item in normalize_team_presets(self._agent_team_presets)]
+            if selected_id and selected_id != saved_id:
+                next_presets = [item for item in next_presets if str(item.get("id", "")).strip() != selected_id]
+            replaced = False
+            for idx, existing in enumerate(next_presets):
+                if str(existing.get("id", "")).strip() == saved_id:
+                    next_presets[idx] = payload
+                    replaced = True
+                    break
+            if not replaced:
+                next_presets.append(payload)
+            self._agent_team_presets = normalize_team_presets(next_presets)
+            self._agent_team_selected_item_id = saved_id
+            self._render_agent_team_panel()
+            self._set_agent_team_status(f"Saved preset '{payload['name']}' in draft.")
+            self._set_agent_draft_dirty(True, note=f"Team preset '{payload['name']}' saved in draft.")
+
+        def _delete_selected_agent_team_preset(self) -> None:
+            selected = self._selected_team_preset()
+            if selected is None:
+                self._notify("Select a team preset first.", severity="warning")
+                return
+            selected_id = str(selected.get("id", "")).strip()
+            next_presets = [
+                item
+                for item in self._agent_team_presets
+                if str(item.get("id", "")).strip() != selected_id
+            ]
+            self._agent_team_presets = normalize_team_presets(next_presets)
+            self._agent_team_selected_item_id = None
+            self._render_agent_team_panel()
+            self._set_agent_team_status(f"Deleted preset '{selected.get('name', selected_id)}' from draft.")
+            self._set_agent_draft_dirty(True, note=f"Team preset '{selected_id}' removed from draft.")
+
+        def _insert_agent_team_preset_run_prompt(self, *, run_now: bool = False) -> None:
+            preset = self._selected_team_preset()
+            if preset is None:
+                preset = self._agent_team_form_payload()
+            if preset is None:
+                return
+            prompt = build_team_preset_run_prompt(preset)
+            if not prompt:
+                self._notify("Failed to build team preset prompt.", severity="warning")
+                return
+            if not self._set_prompt_editor_text(prompt):
+                self._notify("Prompt editor is unavailable.", severity="warning")
+                return
+            self._set_agent_team_status(f"Inserted run prompt for '{preset['name']}'.")
+            if run_now:
+                self.action_submit_prompt()
+
+        def _set_agent_team_selection(self, item: dict[str, Any] | None) -> None:
+            detail = self._agent_team_detail
+            if detail is None:
+                return
+            if item is None:
+                self._agent_team_selected_item_id = None
+                detail.set_preview("(no team items)")
+                detail.set_actions([])
+                self._set_agent_team_form_values(None)
+                return
+            self._agent_team_selected_item_id = str(item.get("id", "")).strip() or None
+            detail.set_preview(render_agent_team_detail_text(item))
+            detail.set_actions([])
+            preset = normalize_team_preset(item.get("preset"))
+            self._set_agent_team_form_values(preset)
+
+        def _refresh_agent_tools_header(self) -> None:
+            header = self._agent_tools_header
+            if header is None:
+                return
+            effective = (
+                self._agent_tools_policy_lens.get("effective", {})
+                if isinstance(self._agent_tools_policy_lens.get("effective"), dict)
+                else {}
+            )
+            overrides = (
+                self._agent_tools_policy_lens.get("session_overrides", {})
+                if isinstance(self._agent_tools_policy_lens.get("session_overrides"), dict)
+                else {}
+            )
+            consent = str(effective.get("tool_consent", "ask")).strip().lower() or "ask"
+            header.set_badges([f"consent {consent}", f"overrides {len(overrides)}"])
+
+        def _refresh_agent_team_header(self) -> None:
+            header = self._agent_team_header
+            if header is None:
+                return
+            header.set_badges([f"presets {len(self._agent_team_presets)}"])
+
+        def _render_agent_tools_panel(self) -> None:
+            self._refresh_agent_tools_policy_lens()
+            self._agent_tools_items = [
+                dict(item) for item in build_agent_tools_safety_sidebar_items(self._agent_tools_policy_lens)
+            ]
+            list_widget = self._agent_tools_list
+            if list_widget is not None:
+                selected_id = self._agent_tools_selected_item_id
+                if not selected_id and self._agent_tools_items:
+                    selected_id = str(self._agent_tools_items[0].get("id", "")).strip()
+                list_widget.set_items(self._agent_tools_items, selected_id=selected_id, emit=False)
+                selected_id = list_widget.selected_id()
+                selected_item = self._agent_tools_item_by_id(selected_id)
+                if selected_item is None and self._agent_tools_items:
+                    selected_item = self._agent_tools_items[0]
+                    with contextlib.suppress(Exception):
+                        list_widget.select_by_id(str(selected_item.get("id", "")), emit=False)
+                self._set_agent_tools_selection(selected_item)
+            else:
+                self._set_agent_tools_selection(self._agent_tools_items[0] if self._agent_tools_items else None)
+            self._refresh_agent_tools_header()
+            self._set_agent_tools_override_form_values(self._session_safety_overrides)
+
+        def _render_agent_team_panel(self) -> None:
+            self._agent_team_presets = normalize_team_presets(self._agent_team_presets)
+            self._agent_team_items = [dict(item) for item in build_agent_team_sidebar_items(self._agent_team_presets)]
+            list_widget = self._agent_team_list
+            if list_widget is not None:
+                selected_id = self._agent_team_selected_item_id
+                if not selected_id and self._agent_team_items:
+                    selected_id = str(self._agent_team_items[0].get("id", "")).strip()
+                list_widget.set_items(self._agent_team_items, selected_id=selected_id, emit=False)
+                selected_id = list_widget.selected_id()
+                selected_item = self._agent_team_item_by_id(selected_id)
+                if selected_item is None and self._agent_team_items:
+                    selected_item = self._agent_team_items[0]
+                    with contextlib.suppress(Exception):
+                        list_widget.select_by_id(str(selected_item.get("id", "")), emit=False)
+                self._set_agent_team_selection(selected_item)
+            else:
+                self._set_agent_team_selection(self._agent_team_items[0] if self._agent_team_items else None)
+            self._refresh_agent_team_header()
+
+        def _set_agent_studio_view_mode(self, mode: str) -> None:
+            normalized = normalize_agent_studio_view_mode(mode)
+            self._agent_studio_view_mode = normalized
+
+            profile_view = self._agent_profile_view
+            tools_view = self._agent_tools_view
+            team_view = self._agent_team_view
+            if profile_view is not None:
+                profile_view.styles.display = "block" if normalized == "profile" else "none"
+            if tools_view is not None:
+                tools_view.styles.display = "block" if normalized == "tools" else "none"
+            if team_view is not None:
+                team_view.styles.display = "block" if normalized == "team" else "none"
+
+            profile_button = self._agent_view_profile_button
+            tools_button = self._agent_view_tools_button
+            team_button = self._agent_view_team_button
+            if profile_button is not None:
+                profile_button.variant = "primary" if normalized == "profile" else "default"
+            if tools_button is not None:
+                tools_button.variant = "primary" if normalized == "tools" else "default"
+            if team_button is not None:
+                team_button.variant = "primary" if normalized == "team" else "default"
+
         def _kb_id_from_context_sources(self) -> str | None:
             for source in self._context_sources:
                 source_type = str(source.get("type", "")).strip().lower()
@@ -3050,6 +4142,7 @@ def run_tui() -> int:
                 knowledge_base_id=(
                     self._kb_id_from_context_sources() or (current.knowledge_base_id if current else None)
                 ),
+                team_presets=(normalize_team_presets(current.team_presets) if current is not None else []),
             )
 
         def _set_agent_status(self, message: str) -> None:
@@ -3146,6 +4239,7 @@ def run_tui() -> int:
                 context_sources=[dict(source) for source in snapshot.context_sources],
                 active_sops=list(snapshot.active_sops),
                 knowledge_base_id=snapshot.knowledge_base_id,
+                team_presets=normalize_team_presets(snapshot.team_presets),
             )
             sidebar_list = self._agent_profile_list
             if sidebar_list is not None:
@@ -3156,6 +4250,9 @@ def run_tui() -> int:
                         select_by_id(_AGENT_PROFILE_SELECT_NONE, emit=False)
                 finally:
                     self._agent_form_syncing = False
+            self._agent_team_presets = normalize_team_presets(draft.team_presets)
+            self._agent_team_selected_item_id = None
+            self._render_agent_team_panel()
             self._set_agent_form_values(profile_id=draft.id, profile_name=draft.name)
             self._set_agent_draft_dirty(True, note=("New profile draft." if announce else None))
 
@@ -3169,6 +4266,9 @@ def run_tui() -> int:
                         select_by_id(profile.id, emit=False)
                 finally:
                     self._agent_form_syncing = False
+            self._agent_team_presets = normalize_team_presets(profile.team_presets)
+            self._agent_team_selected_item_id = None
+            self._render_agent_team_panel()
             self._set_agent_form_values(profile_id=profile.id, profile_name=profile.name)
             self._set_agent_draft_dirty(False, note=f"Loaded profile '{profile.name}'.")
 
@@ -3191,6 +4291,7 @@ def run_tui() -> int:
                     "context_sources": [dict(source) for source in seed.context_sources],
                     "active_sops": list(seed.active_sops),
                     "knowledge_base_id": seed.knowledge_base_id,
+                    "team_presets": normalize_team_presets(self._agent_team_presets),
                 }
             )
 
@@ -3260,6 +4361,12 @@ def run_tui() -> int:
             self._render_session_panel()
             self._update_header_status()
 
+        def _reset_session_timeline_panel(self) -> None:
+            self._session_timeline_index = None
+            self._session_timeline_events = []
+            self._session_timeline_selected_event_id = None
+            self._render_session_timeline_panel()
+
         def _session_issue_by_id(self, issue_id: str | None) -> dict[str, Any] | None:
             target = str(issue_id or "").strip()
             if not target:
@@ -3298,6 +4405,15 @@ def run_tui() -> int:
             if len(self._session_issues) > 500:
                 self._session_issues = self._session_issues[-500:]
             self._render_session_panel()
+
+        def _session_timeline_event_by_id(self, event_id: str | None) -> dict[str, Any] | None:
+            target = str(event_id or "").strip()
+            if not target:
+                return None
+            for event in self._session_timeline_events:
+                if str(event.get("id", "")).strip() == target:
+                    return event
+            return None
 
         def _session_issue_from_line(self, line: str) -> dict[str, Any]:
             text = line.strip()
@@ -3363,6 +4479,39 @@ def run_tui() -> int:
                 self._set_session_issue_selection(issues[-1] if issues else None)
             self._refresh_session_header()
 
+        def _set_session_timeline_selection(self, event: dict[str, Any] | None) -> None:
+            detail = self._session_timeline_detail
+            if detail is None:
+                return
+            if event is None:
+                self._session_timeline_selected_event_id = None
+                detail.set_preview("(no timeline events yet)")
+                detail.set_actions([])
+                return
+            self._session_timeline_selected_event_id = str(event.get("id", "")).strip() or None
+            detail.set_preview(render_session_timeline_detail_text(event))
+            detail.set_actions(session_timeline_actions(event))
+
+        def _render_session_timeline_panel(self) -> None:
+            events = [item for item in self._session_timeline_events if isinstance(item, dict)]
+            items = build_session_timeline_sidebar_items(events)
+            list_widget = self._session_timeline_list
+            if list_widget is not None:
+                selected_id = self._session_timeline_selected_event_id
+                if not selected_id and events:
+                    selected_id = str(events[-1].get("id", "")).strip()
+                list_widget.set_items(items, selected_id=selected_id, emit=False)
+                selected_id = list_widget.selected_id()
+                selected_event = self._session_timeline_event_by_id(selected_id)
+                if selected_event is None and events:
+                    selected_event = events[-1]
+                    with contextlib.suppress(Exception):
+                        list_widget.select_by_id(str(selected_event.get("id", "")), emit=False)
+                self._set_session_timeline_selection(selected_event)
+            else:
+                self._set_session_timeline_selection(events[-1] if events else None)
+            self._refresh_session_timeline_header()
+
         def _refresh_session_header(self) -> None:
             header = self._session_header
             if header is None:
@@ -3373,6 +4522,104 @@ def run_tui() -> int:
                 f"issues {len(self._session_issues)}",
             ]
             header.set_badges(badges)
+            self._refresh_session_timeline_header()
+
+        def _refresh_session_timeline_header(self) -> None:
+            header = self._session_timeline_header
+            if header is None:
+                return
+            events = list(self._session_timeline_events)
+            error_count = 0
+            for event in events:
+                if classify_session_timeline_event_kind(event) == "error":
+                    error_count += 1
+            badges = [f"events {len(events)}", f"errors {error_count}"]
+            header.set_badges(badges)
+
+        def _set_session_view_mode(self, mode: str) -> None:
+            normalized = normalize_session_view_mode(mode)
+            self._session_view_mode = normalized
+
+            timeline_view = self._session_timeline_view
+            issues_view = self._session_issues_view
+            if timeline_view is not None:
+                timeline_view.styles.display = "block" if normalized == "timeline" else "none"
+            if issues_view is not None:
+                issues_view.styles.display = "block" if normalized == "issues" else "none"
+
+            timeline_button = self._session_view_timeline_button
+            issues_button = self._session_view_issues_button
+            if timeline_button is not None:
+                timeline_button.variant = "primary" if normalized == "timeline" else "default"
+            if issues_button is not None:
+                issues_button.variant = "primary" if normalized == "issues" else "default"
+
+        def _schedule_session_timeline_refresh(self, *, delay: float = 0.35) -> None:
+            timer = self._session_timeline_refresh_timer
+            self._session_timeline_refresh_timer = None
+            if timer is not None:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+            self._session_timeline_refresh_timer = self.set_timer(delay, self._launch_session_timeline_refresh)
+
+        def _launch_session_timeline_refresh(self) -> None:
+            self._session_timeline_refresh_timer = None
+            with contextlib.suppress(RuntimeError):
+                asyncio.create_task(self._refresh_session_timeline_async())
+
+        async def _refresh_session_timeline_async(self) -> None:
+            session_id = str(self._daemon_session_id or "").strip()
+            if not session_id:
+                self._reset_session_timeline_panel()
+                return
+            if self._session_timeline_refresh_inflight:
+                self._session_timeline_refresh_pending = True
+                return
+            self._session_timeline_refresh_inflight = True
+            next_pending = False
+            try:
+                existing_index: dict[str, Any] | None = None
+                try:
+                    loaded = await asyncio.to_thread(load_session_graph_index, session_id)
+                    existing_index = loaded if isinstance(loaded, dict) else None
+                except Exception:
+                    existing_index = None
+                try:
+                    built_index = await asyncio.to_thread(build_session_graph_index, session_id, cwd=Path.cwd())
+                    await asyncio.to_thread(write_session_graph_index, session_id, built_index)
+                except Exception:
+                    built_index = None
+                index = built_index
+                if isinstance(index, dict):
+                    built_events = index.get("events")
+                    existing_events = existing_index.get("events") if isinstance(existing_index, dict) else None
+                    if (
+                        isinstance(existing_events, list)
+                        and existing_events
+                        and (not isinstance(built_events, list) or not built_events)
+                    ):
+                        index = existing_index
+                elif isinstance(existing_index, dict):
+                    index = existing_index
+                if isinstance(index, dict):
+                    events_raw = index.get("events")
+                    normalized_events: list[dict[str, Any]] = []
+                    if isinstance(events_raw, list):
+                        for offset, raw in enumerate(events_raw, start=1):
+                            if not isinstance(raw, dict):
+                                continue
+                            event = dict(raw)
+                            event.setdefault("id", f"timeline-{offset}")
+                            normalized_events.append(event)
+                    self._session_timeline_index = index
+                    self._session_timeline_events = normalized_events
+                    self._render_session_timeline_panel()
+            finally:
+                self._session_timeline_refresh_inflight = False
+                next_pending = self._session_timeline_refresh_pending
+                self._session_timeline_refresh_pending = False
+            if next_pending:
+                self._schedule_session_timeline_refresh(delay=0.1)
 
         def _write_issue(self, line: str) -> None:
             if self._issues_repeat_line == line:
@@ -3542,6 +4789,7 @@ def run_tui() -> int:
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
             self._refresh_agent_summary()
+            self._render_agent_tools_panel()
 
         def _update_prompt_placeholder(self) -> None:
             input_widget = self.query_one("#prompt", PromptTextArea)
@@ -4873,6 +6121,7 @@ def run_tui() -> int:
                 if self._active_sop_names or self._sops_ready_for_sync:
                     self._sync_active_sops_with_daemon(notify_on_failure=True)
                 self._refresh_agent_summary()
+                self._schedule_session_timeline_refresh()
 
             elif etype == "session_available":
                 session_id = str(event.get("session_id", "")).strip()
@@ -4901,6 +6150,7 @@ def run_tui() -> int:
                 self._available_restore_session_id = None
                 self._available_restore_turn_count = 0
                 self._save_session()
+                self._schedule_session_timeline_refresh()
 
             elif etype == "replay_turn":
                 role = str(event.get("role", "")).strip().lower()
@@ -4927,6 +6177,7 @@ def run_tui() -> int:
                 self._finalize_turn(exit_status=exit_status)
                 if exit_status in {"ok", "interrupted"}:
                     self._reset_error_action_prompt()
+                self._schedule_session_timeline_refresh()
 
             elif etype == "model_info":
                 self._handle_model_info(event)
@@ -4941,8 +6192,19 @@ def run_tui() -> int:
                 self._effective_profile = applied_profile
                 self._refresh_agent_summary()
                 self._reload_saved_profiles(selected_id=applied_profile.id)
+                self._agent_team_presets = normalize_team_presets(applied_profile.team_presets)
+                self._agent_team_selected_item_id = None
+                self._render_agent_team_panel()
                 self._set_agent_form_values(profile_id=applied_profile.id, profile_name=applied_profile.name)
                 self._set_agent_draft_dirty(False, note=f"Applied profile '{applied_profile.name}'.")
+
+            elif etype == "safety_overrides":
+                self._session_safety_overrides = normalize_session_safety_overrides(event.get("overrides"))
+                self._render_agent_tools_panel()
+                if self._session_safety_overrides:
+                    self._set_agent_tools_status("Session overrides active.")
+                else:
+                    self._set_agent_tools_status("Session overrides cleared.")
 
             elif etype == "context":
                 prompt_tokens_est = event.get("prompt_tokens_est")
@@ -5623,6 +6885,11 @@ def run_tui() -> int:
             if timer is not None:
                 with contextlib.suppress(Exception):
                     timer.stop()
+            timeline_timer = self._session_timeline_refresh_timer
+            self._session_timeline_refresh_timer = None
+            if timeline_timer is not None:
+                with contextlib.suppress(Exception):
+                    timeline_timer.stop()
             self._cancel_streaming_flush_timer()
             self._cancel_tool_progress_flush_timer()
             self._clear_pending_tool_starts()
@@ -5937,6 +7204,8 @@ def run_tui() -> int:
                     "model_tier_override": self._model_tier_override,
                     "default_auto_approve": self._default_auto_approve,
                     "split_ratio": self._split_ratio,
+                    "session_view_mode": self._session_view_mode,
+                    "agent_studio_view_mode": self._agent_studio_view_mode,
                 }
                 session_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
             except Exception:
@@ -5979,7 +7248,11 @@ def run_tui() -> int:
                 self._model_tier_override = None
                 self._default_auto_approve = data.get("default_auto_approve", False)
                 self._split_ratio = data.get("split_ratio", 2)
+                self._session_view_mode = normalize_session_view_mode(data.get("session_view_mode"))
+                self._agent_studio_view_mode = normalize_agent_studio_view_mode(data.get("agent_studio_view_mode"))
                 self._apply_split_ratio()
+                self._set_session_view_mode(self._session_view_mode)
+                self._set_agent_studio_view_mode(self._agent_studio_view_mode)
                 self._refresh_model_select()
                 self._update_header_status()
                 self._update_prompt_placeholder()
@@ -6104,6 +7377,12 @@ def run_tui() -> int:
                 self._set_session_issue_selection(selected_issue)
                 return
 
+            if sidebar_list is self._session_timeline_list:
+                selected_id = str(getattr(event, "item_id", "")).strip()
+                selected_event = self._session_timeline_event_by_id(selected_id)
+                self._set_session_timeline_selection(selected_event)
+                return
+
             if sidebar_list is self._artifacts_list:
                 selected_id = str(getattr(event, "item_id", "")).strip()
                 selected_entry = self._artifact_entry_by_item_id(selected_id)
@@ -6120,6 +7399,19 @@ def run_tui() -> int:
                 if profile is None:
                     return
                 self._load_profile_into_draft(profile)
+                return
+
+            if sidebar_list is self._agent_tools_list:
+                selected_id = str(getattr(event, "item_id", "")).strip()
+                selected_item = self._agent_tools_item_by_id(selected_id)
+                self._set_agent_tools_selection(selected_item)
+                return
+
+            if sidebar_list is self._agent_team_list:
+                selected_id = str(getattr(event, "item_id", "")).strip()
+                selected_item = self._agent_team_item_by_id(selected_id)
+                self._set_agent_team_selection(selected_item)
+                return
 
         def on_sidebar_detail_action_selected(self, event: Any) -> None:
             detail = getattr(event, "detail", None)
@@ -6146,6 +7438,20 @@ def run_tui() -> int:
                     self._session_interrupt()
                     return
 
+            if detail is self._session_timeline_detail:
+                selected_event = self._session_timeline_event_by_id(self._session_timeline_selected_event_id)
+                if selected_event is None:
+                    self._notify("Select a timeline event first.", severity="warning")
+                    return
+                if action_id == "session_timeline_copy_json":
+                    payload = _json.dumps(selected_event, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+                    self._copy_text(payload, label="timeline event json")
+                    return
+                if action_id == "session_timeline_copy_summary":
+                    summary = summarize_session_timeline_event(selected_event).rstrip() + "\n"
+                    self._copy_text(summary, label="timeline event summary")
+                    return
+
             if detail is self._artifacts_detail:
                 selected = self._artifact_entry_by_item_id(self._artifact_selected_item_id)
                 if selected is None:
@@ -6165,10 +7471,35 @@ def run_tui() -> int:
         def on_input_changed(self, event: Any) -> None:
             input_widget = getattr(event, "input", None)
             input_id = str(getattr(input_widget, "id", "")).strip().lower()
-            if input_id not in {"agent_profile_id", "agent_profile_name"}:
+            if input_id in {"agent_profile_id", "agent_profile_name"}:
+                if self._agent_form_syncing:
+                    return
+                self._set_agent_draft_dirty(True)
                 return
-            if self._agent_form_syncing:
+            if input_id in {
+                "agent_tools_override_consent",
+                "agent_tools_override_allowlist",
+                "agent_tools_override_blocklist",
+            }:
+                if self._agent_tools_form_syncing:
+                    return
+                self._set_agent_tools_status("Override draft changes pending.")
                 return
+            if input_id in {"agent_team_preset_id", "agent_team_preset_name", "agent_team_preset_description"}:
+                if self._agent_team_form_syncing:
+                    return
+                self._set_agent_team_status("Team preset draft changes pending.")
+                self._set_agent_draft_dirty(True)
+                return
+
+        def on_text_area_changed(self, event: Any) -> None:
+            text_area = getattr(event, "text_area", None)
+            text_area_id = str(getattr(text_area, "id", "")).strip().lower()
+            if text_area_id != "agent_team_preset_spec":
+                return
+            if self._agent_team_form_syncing:
+                return
+            self._set_agent_team_status("Team preset draft changes pending.")
             self._set_agent_draft_dirty(True)
 
         def _sync_selected_model_before_run(self) -> None:
@@ -6532,6 +7863,42 @@ def run_tui() -> int:
 
         def on_button_pressed(self, event: Any) -> None:
             button_id = str(getattr(getattr(event, "button", None), "id", "")).strip().lower()
+            if button_id == "agent_view_profile":
+                self._set_agent_studio_view_mode("profile")
+                return
+            if button_id == "agent_view_tools":
+                self._set_agent_studio_view_mode("tools")
+                return
+            if button_id == "agent_view_team":
+                self._set_agent_studio_view_mode("team")
+                return
+            if button_id == "agent_team_new":
+                self._new_agent_team_preset_draft()
+                return
+            if button_id == "agent_team_save":
+                self._save_agent_team_preset_draft()
+                return
+            if button_id == "agent_team_delete":
+                self._delete_selected_agent_team_preset()
+                return
+            if button_id == "agent_team_insert_prompt":
+                self._insert_agent_team_preset_run_prompt(run_now=False)
+                return
+            if button_id == "agent_team_run_now":
+                self._insert_agent_team_preset_run_prompt(run_now=True)
+                return
+            if button_id == "agent_tools_overrides_apply":
+                self._apply_agent_tools_safety_overrides(reset=False)
+                return
+            if button_id == "agent_tools_overrides_reset":
+                self._apply_agent_tools_safety_overrides(reset=True)
+                return
+            if button_id == "session_view_timeline":
+                self._set_session_view_mode("timeline")
+                return
+            if button_id == "session_view_issues":
+                self._set_session_view_mode("issues")
+                return
             if button_id.startswith("context_remove_"):
                 suffix = button_id.removeprefix("context_remove_")
                 with contextlib.suppress(ValueError):

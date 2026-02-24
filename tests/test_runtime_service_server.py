@@ -445,6 +445,31 @@ def test_runtime_service_set_profile_requires_idle_query_and_proxies(monkeypatch
                 "profile": {"id": "qa", "name": "QA", "tier": "deep", "active_sops": ["review"]},
             }
 
+            writes_before = len(proc.stdin.writes)
+            writer2.write(
+                json.dumps(
+                    {
+                        "cmd": "set_safety_overrides",
+                        "tool_consent": "deny",
+                        "tool_allowlist": ["file_read"],
+                        "tool_blocklist": ["shell"],
+                    }
+                ).encode("utf-8")
+                + b"\n"
+            )
+            await writer2.drain()
+            await asyncio.sleep(0.05)
+            assert len(proc.stdin.writes) == writes_before + 1
+            forwarded_safety = json.loads(proc.stdin.writes[-1].strip())
+            assert forwarded_safety == {
+                "cmd": "set_safety_overrides",
+                "overrides": {
+                    "tool_consent": "deny",
+                    "tool_allowlist": ["file_read"],
+                    "tool_blocklist": ["shell"],
+                },
+            }
+
             writer1.close()
             await writer1.wait_closed()
             writer2.close()

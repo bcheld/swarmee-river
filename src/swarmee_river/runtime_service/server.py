@@ -572,6 +572,25 @@ class RuntimeServiceServer:
                 await self._send_error(client, "invalid_profile", "set_profile.profile must be an object")
                 return
             forwarded = {"cmd": "set_profile", "profile": profile}
+        elif cmd == "set_safety_overrides":
+            if session.query_active:
+                await self._send_error(client, "query_active", "Cannot set safety overrides while a query is running")
+                return
+            overrides_payload: dict[str, Any] = {}
+            raw_nested = payload.get("overrides")
+            if isinstance(raw_nested, dict):
+                overrides_payload.update(raw_nested)
+            for key in ("tool_consent", "tool_allowlist", "tool_blocklist"):
+                if key in payload:
+                    overrides_payload[key] = payload.get(key)
+            if not overrides_payload:
+                await self._send_error(
+                    client,
+                    "invalid_safety_overrides",
+                    "set_safety_overrides requires tool_consent/tool_allowlist/tool_blocklist payload",
+                )
+                return
+            forwarded = {"cmd": "set_safety_overrides", "overrides": overrides_payload}
         elif cmd == "interrupt":
             forwarded = {"cmd": "interrupt"}
         elif cmd == "restore_session":
@@ -628,6 +647,7 @@ class RuntimeServiceServer:
             "set_sop",
             "set_tier",
             "set_profile",
+            "set_safety_overrides",
             "interrupt",
             "restore_session",
         }:

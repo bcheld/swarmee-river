@@ -94,7 +94,7 @@ from swarmee_river.auth.github_copilot import login_device_flow, save_api_key
 from swarmee_river.auth.store import delete_provider_record, list_auth_records, normalize_provider_name
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.cli.builtin_commands import register_builtin_commands
-from swarmee_river.cli.commands import CLIContext, CommandRegistry, handle_common_session_command, handle_pack_command
+from swarmee_river.cli.commands import CLIContext, CommandRegistry, handle_pack_command
 from swarmee_river.cli.diagnostics import (
     render_config_command_for_surface,
     render_diagnostic_command_for_surface,
@@ -126,6 +126,10 @@ from swarmee_river.runtime_service.client import (
 from swarmee_river.runtime_service.server import RuntimeServiceServer
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
 from swarmee_river.session.models import SessionModelManager
+from swarmee_river.session.graph_index import (
+    build_session_graph_index,
+    write_session_graph_index,
+)
 from swarmee_river.session.store import SessionStore
 from swarmee_river.settings import SwarmeeSettings, load_settings
 from swarmee_river.tools import get_tools
@@ -247,6 +251,75 @@ def _normalize_daemon_context_sources(raw_sources: Any) -> list[dict[str, str]]:
         seen.add(dedupe_key)
         normalized.append(source)
     return normalized
+
+
+_SAFETY_OVERRIDE_CONSENT_VALUES = {"ask", "allow", "deny"}
+
+
+def _normalize_safety_override_tool_list(raw_value: Any) -> list[str] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, list):
+        raise ValueError("must be a list of strings or null")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_value:
+        token = str(item).strip()
+        if not token:
+            continue
+        lowered = token.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(token)
+    return normalized
+
+
+def _normalize_session_safety_overrides_update(raw_update: Any) -> dict[str, Any]:
+    if not isinstance(raw_update, dict):
+        raise ValueError("set_safety_overrides payload must be an object")
+
+    normalized: dict[str, Any] = {}
+    if "tool_consent" in raw_update:
+        raw_consent = raw_update.get("tool_consent")
+        if raw_consent is None:
+            normalized["tool_consent"] = None
+        else:
+            consent = str(raw_consent).strip().lower()
+            if consent not in _SAFETY_OVERRIDE_CONSENT_VALUES:
+                raise ValueError("set_safety_overrides.tool_consent must be ask|allow|deny")
+            normalized["tool_consent"] = consent
+
+    if "tool_allowlist" in raw_update:
+        try:
+            normalized["tool_allowlist"] = _normalize_safety_override_tool_list(raw_update.get("tool_allowlist"))
+        except ValueError as exc:
+            raise ValueError(f"set_safety_overrides.tool_allowlist {exc}") from exc
+
+    if "tool_blocklist" in raw_update:
+        try:
+            normalized["tool_blocklist"] = _normalize_safety_override_tool_list(raw_update.get("tool_blocklist"))
+        except ValueError as exc:
+            raise ValueError(f"set_safety_overrides.tool_blocklist {exc}") from exc
+
+    return normalized
+
+
+def _normalized_session_safety_overrides_payload(raw_state: Any) -> dict[str, Any]:
+    if not isinstance(raw_state, dict):
+        return {}
+    payload: dict[str, Any] = {}
+    consent = str(raw_state.get("tool_consent", "")).strip().lower()
+    if consent in _SAFETY_OVERRIDE_CONSENT_VALUES:
+        payload["tool_consent"] = consent
+    for key in ("tool_allowlist", "tool_blocklist"):
+        raw_list = raw_state.get(key)
+        if not isinstance(raw_list, list):
+            continue
+        normalized = [str(item).strip() for item in raw_list if str(item).strip()]
+        if normalized:
+            payload[key] = normalized
+    return payload
 
 
 def _write_stdout_jsonl(event: dict[str, Any]) -> None:
@@ -494,6 +567,7 @@ def _build_resolved_invocation_state(
     selected_provider: str,
     settings: SwarmeeSettings,
     structured_output_model: type[Any] | None,
+    session_safety_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     resolved_state: dict[str, Any] = dict(invocation_state) if isinstance(invocation_state, dict) else {}
     sw_state = resolved_state.setdefault("swarmee", {})
@@ -516,6 +590,7 @@ def _build_resolved_invocation_state(
         current = next((item for item in tiers if item.name == model_manager.current_tier), None)
         if current is not None:
             sw_state["model_id"] = current.model_id
+        sw_state["session_safety_overrides"] = _normalized_session_safety_overrides_payload(session_safety_overrides)
     return resolved_state
 
 
@@ -876,6 +951,7 @@ def _build_agent_runtime(
     active_sop_overrides: dict[str, str] = {}
     active_sop_lock = threading.Lock()
     daemon_managed_sops = False
+    session_safety_overrides: dict[str, Any] = {}
 
     def _context_source_key(source: dict[str, str]) -> str:
         source_type = source.get("type", "").strip().lower()
@@ -1168,6 +1244,27 @@ def _build_agent_runtime(
     def current_knowledge_base_id() -> str | None:
         return active_knowledge_base_id
 
+    def apply_session_safety_overrides(raw_update: Any) -> dict[str, Any]:
+        nonlocal session_safety_overrides
+        normalized_update = _normalize_session_safety_overrides_update(raw_update)
+        next_overrides = dict(_normalized_session_safety_overrides_payload(session_safety_overrides))
+        for key in ("tool_consent", "tool_allowlist", "tool_blocklist"):
+            if key not in normalized_update:
+                continue
+            value = normalized_update.get(key)
+            if value is None:
+                next_overrides.pop(key, None)
+                continue
+            if key in {"tool_allowlist", "tool_blocklist"} and isinstance(value, list) and not value:
+                next_overrides.pop(key, None)
+                continue
+            next_overrides[key] = value
+        session_safety_overrides = _normalized_session_safety_overrides_payload(next_overrides)
+        return dict(session_safety_overrides)
+
+    def current_session_safety_overrides() -> dict[str, Any]:
+        return dict(_normalized_session_safety_overrides_payload(session_safety_overrides))
+
     def compact_context() -> dict[str, Any]:
         manager = conversation_manager
         before_tokens: int | None = None
@@ -1294,6 +1391,7 @@ def _build_agent_runtime(
             selected_provider=selected_provider,
             settings=settings,
             structured_output_model=structured_output_model,
+            session_safety_overrides=session_safety_overrides,
         )
 
         interrupt_event.clear()
@@ -1600,6 +1698,7 @@ def _build_agent_runtime(
             "context_sources": [dict(item) for item in applied_sources],
             "active_sops": _list_active_sop_names(),
             "knowledge_base_id": current_kb or None,
+            "team_presets": [dict(item) for item in normalized.team_presets],
         }
 
     return {
@@ -1622,6 +1721,8 @@ def _build_agent_runtime(
         "current_knowledge_base_id": current_knowledge_base_id,
         "compact_context": compact_context,
         "apply_profile": apply_profile,
+        "apply_session_safety_overrides": apply_session_safety_overrides,
+        "current_session_safety_overrides": current_session_safety_overrides,
     }
 
 
@@ -1909,6 +2010,286 @@ def _run_attach_command(raw_args: list[str]) -> int:
             reader_thread.join(timeout=1.0)
 
 
+def _build_session_command_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="swarmee session", description="Session graph and branching commands.")
+    sub = parser.add_subparsers(dest="session_cmd")
+
+    list_parser = sub.add_parser("list", help="List recent sessions.")
+    list_parser.add_argument("--limit", type=int, default=20, help="Max sessions to print.")
+
+    index_parser = sub.add_parser("index", help="Build and persist session graph index.")
+    index_parser.add_argument("--session", type=str, default=None, help="Session ID (defaults to SWARMEE_SESSION_ID).")
+
+    export_parser = sub.add_parser("export", help="Export session graph data.")
+    export_parser.add_argument("--session", type=str, default=None, help="Session ID (defaults to SWARMEE_SESSION_ID).")
+    export_parser.add_argument(
+        "--format",
+        choices=["md", "json"],
+        default="md",
+        help="Export format.",
+    )
+    export_parser.add_argument("--out", type=str, default=None, help="Output path. Defaults to stdout.")
+
+    branch_parser = sub.add_parser("branch", help="Create a branched session from a turn.")
+    branch_parser.add_argument("--from-session", required=True, help="Source session ID.")
+    branch_parser.add_argument("--turn", required=True, type=int, help="1-based user turn index.")
+    branch_parser.add_argument("--new-session", default=None, help="Optional target session ID.")
+    return parser
+
+
+def _resolve_session_id(raw_session_id: str | None) -> str | None:
+    session_id = (raw_session_id or os.getenv("SWARMEE_SESSION_ID") or "").strip()
+    return session_id or None
+
+
+def _render_session_list(entries: list[dict[str, Any]]) -> str:
+    if not entries:
+        return "No sessions found."
+    lines = ["session_id\tupdated_at\tturn_count\tcwd"]
+    for entry in entries:
+        session_id = str(entry.get("id", "")).strip()
+        updated_at = str(entry.get("updated_at") or entry.get("created_at") or "").strip()
+        turn_count = entry.get("turn_count")
+        turn_text = str(turn_count) if isinstance(turn_count, int) else ""
+        cwd = str(entry.get("cwd", "")).strip()
+        lines.append(f"{session_id}\t{updated_at}\t{turn_text}\t{cwd}")
+    return "\n".join(lines)
+
+
+def _summarize_plan(value: Any) -> str | None:
+    if isinstance(value, dict):
+        summary = str(value.get("summary", "")).strip()
+        if summary:
+            return summary
+        steps = value.get("steps")
+        if isinstance(steps, list) and steps:
+            first = steps[0]
+            if isinstance(first, dict):
+                desc = str(first.get("description", "")).strip()
+                if desc:
+                    return desc
+        return None
+    if isinstance(value, str):
+        summary = value.strip()
+        return summary or None
+    return None
+
+
+def _render_session_export_markdown(
+    *,
+    session_id: str,
+    index: dict[str, Any],
+    last_plan_summary: str | None,
+) -> str:
+    stats = index.get("stats") if isinstance(index.get("stats"), dict) else {}
+    tools = index.get("tools") if isinstance(index.get("tools"), dict) else {}
+    tool_counts = tools.get("counts") if isinstance(tools.get("counts"), dict) else {}
+    turns = index.get("turns") if isinstance(index.get("turns"), list) else []
+    events = index.get("events") if isinstance(index.get("events"), list) else []
+
+    lines: list[str] = [
+        "# Session Export",
+        "",
+        f"- Session ID: `{session_id}`",
+        f"- Generated: {str(index.get('generated_at', '')).strip() or '(unknown)'}",
+        f"- Turns: {int(stats.get('turns', 0)) if isinstance(stats.get('turns'), int) else 0}",
+        f"- Tool calls: {int(stats.get('tools', 0)) if isinstance(stats.get('tools'), int) else 0}",
+        f"- Errors: {int(stats.get('errors', 0)) if isinstance(stats.get('errors'), int) else 0}",
+        "",
+        "## Tool Summary",
+    ]
+
+    if isinstance(tool_counts, dict) and tool_counts:
+        for tool_name in sorted(tool_counts):
+            count = tool_counts.get(tool_name)
+            lines.append(f"- `{tool_name}`: {count}")
+    else:
+        lines.append("(no tool calls)")
+
+    lines.append("")
+    lines.append("## Errors")
+    error_events: list[str] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        error = event.get("error")
+        if isinstance(error, str) and error.strip():
+            tool_name = str(event.get("tool", "")).strip()
+            ts = str(event.get("ts", "")).strip()
+            prefix = f"{ts} " if ts else ""
+            if tool_name:
+                error_events.append(f"- {prefix}`{tool_name}`: {error.strip()}")
+            else:
+                error_events.append(f"- {prefix}{error.strip()}")
+        elif event.get("event") == "after_tool_call" and event.get("success") is False:
+            tool_name = str(event.get("tool", "")).strip() or "unknown_tool"
+            ts = str(event.get("ts", "")).strip()
+            prefix = f"{ts} " if ts else ""
+            error_events.append(f"- {prefix}`{tool_name}`: tool call failed")
+    if error_events:
+        lines.extend(error_events)
+    else:
+        lines.append("(no errors)")
+
+    lines.append("")
+    lines.append("## Last Plan")
+    lines.append(last_plan_summary if isinstance(last_plan_summary, str) and last_plan_summary.strip() else "(none)")
+    lines.append("")
+    lines.append("## Turns")
+
+    turn_rows = [item for item in turns if isinstance(item, dict)]
+    if not turn_rows:
+        lines.append("(no turns)")
+    else:
+        for turn in turn_rows:
+            turn_id = turn.get("turn_id")
+            user_text = str(turn.get("user_text", "")).strip()
+            assistant_text = str(turn.get("assistant_text", "")).strip()
+            lines.extend(
+                [
+                    f"### Turn {turn_id}",
+                    "",
+                    "User:",
+                    user_text or "(empty)",
+                    "",
+                    "Assistant:",
+                    assistant_text or "(empty)",
+                    "",
+                ]
+            )
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _is_counted_user_turn_message(message: Any) -> bool:
+    if not isinstance(message, dict):
+        return False
+    role = str(message.get("role", "")).strip().lower()
+    if role != "user":
+        return False
+    return bool(_extract_text_from_message_for_replay(message).strip())
+
+
+def _slice_messages_through_turn(messages: list[Any], turn_number: int) -> tuple[list[Any], int]:
+    if turn_number <= 0:
+        raise ValueError("--turn must be >= 1")
+    total_turns = 0
+    next_turn_start: int | None = None
+    for idx, message in enumerate(messages):
+        if not _is_counted_user_turn_message(message):
+            continue
+        total_turns += 1
+        if total_turns == turn_number + 1:
+            next_turn_start = idx
+            break
+    if total_turns < turn_number:
+        raise ValueError(f"Requested turn {turn_number} but session has only {total_turns} turns")
+    end_idx = next_turn_start if next_turn_start is not None else len(messages)
+    return list(messages[:end_idx]), total_turns
+
+
+def _run_session_command(raw_args: list[str]) -> int:
+    parser = _build_session_command_parser()
+    args = parser.parse_args(raw_args or ["list"])
+    command = str(args.session_cmd or "list").strip().lower()
+
+    store = SessionStore()
+    try:
+        if command == "list":
+            limit = max(1, int(args.limit))
+            print(_render_session_list(store.list(limit=limit)))
+            return 0
+
+        if command == "index":
+            session_id = _resolve_session_id(args.session)
+            if not session_id:
+                print("Error: --session is required (or set SWARMEE_SESSION_ID)")
+                return 1
+            index = build_session_graph_index(session_id, cwd=Path.cwd())
+            path = write_session_graph_index(session_id, index)
+            stats = index.get("stats") if isinstance(index.get("stats"), dict) else {}
+            turns = int(stats.get("turns", 0)) if isinstance(stats.get("turns"), int) else 0
+            tools = int(stats.get("tools", 0)) if isinstance(stats.get("tools"), int) else 0
+            errors = int(stats.get("errors", 0)) if isinstance(stats.get("errors"), int) else 0
+            print(f"Indexed session: {session_id}")
+            print(f"Path: {path}")
+            print(f"Turns: {turns}")
+            print(f"Tool calls: {tools}")
+            print(f"Errors: {errors}")
+            return 0
+
+        if command == "export":
+            session_id = _resolve_session_id(args.session)
+            if not session_id:
+                print("Error: --session is required (or set SWARMEE_SESSION_ID)")
+                return 1
+            index = build_session_graph_index(session_id, cwd=Path.cwd())
+            _, _, _, last_plan = store.load(session_id)
+            last_plan_summary = _summarize_plan(last_plan)
+
+            output_format = str(args.format).strip().lower()
+            if output_format == "json":
+                text = json.dumps(index, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            else:
+                text = _render_session_export_markdown(
+                    session_id=session_id,
+                    index=index,
+                    last_plan_summary=last_plan_summary,
+                )
+
+            if isinstance(args.out, str) and args.out.strip():
+                out_path = Path(args.out).expanduser()
+                if not out_path.is_absolute():
+                    out_path = (Path.cwd() / out_path).resolve()
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(text, encoding="utf-8")
+                print(f"Wrote export: {out_path}")
+                return 0
+
+            print(text, end="")
+            return 0
+
+        if command == "branch":
+            from_session_id = str(args.from_session).strip()
+            turn_number = int(args.turn)
+            requested_new_session = str(args.new_session).strip() if isinstance(args.new_session, str) else ""
+
+            source_meta = store.read_meta(from_session_id)
+            source_messages = store.load_messages(from_session_id, max_messages=1000000)
+            truncated_messages, total_turns = _slice_messages_through_turn(source_messages, turn_number)
+
+            copied_meta = dict(source_meta)
+            copied_meta.pop("id", None)
+            now = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+            copied_meta["created_at"] = now
+            copied_meta["updated_at"] = now
+            copied_meta["branched_from_session_id"] = from_session_id
+            copied_meta["branched_from_turn"] = turn_number
+            copied_meta["turn_count"] = turn_number
+            copied_meta["message_count"] = len(truncated_messages)
+
+            new_session_id = store.create(
+                meta=copied_meta,
+                session_id=requested_new_session if requested_new_session else None,
+            )
+            store.save_messages(
+                new_session_id,
+                truncated_messages,
+                max_messages=max(1, len(truncated_messages)),
+            )
+            print(f"Branched session: {new_session_id}")
+            print(f"From: {from_session_id}")
+            print(f"Turn: {turn_number}/{total_turns}")
+            print(f"Messages: {len(truncated_messages)}")
+            return 0
+
+        print("Error: unknown session command")
+        return 1
+    except Exception as exc:
+        print(f"Error: {exc}")
+        return 1
+
+
 def main() -> None:
     # Parse CLI arguments
     parser = argparse.ArgumentParser(description="Swarmee - An enterprise analytics + coding assistant")
@@ -2001,6 +2382,8 @@ def main() -> None:
         raise SystemExit(_run_serve_command([*sub, *extra_args]))
     if command == "attach":
         raise SystemExit(_run_attach_command([*sub, *extra_args]))
+    if command == "session":
+        raise SystemExit(_run_session_command([*sub, *extra_args]))
     if extra_args:
         parser.error(f"unrecognized arguments: {' '.join(extra_args)}")
 
@@ -2046,43 +2429,6 @@ def main() -> None:
     if handled_auth:
         if auth_text:
             print(auth_text)
-        return
-
-    # Session management is project-local under `.swarmee/sessions`.
-    if command == "session":
-        store = SessionStore()
-
-        def _build_cli_session_meta() -> dict[str, Any]:
-            try:
-                pm = build_project_map()
-                git_root = pm.get("git_root")
-            except Exception:
-                git_root = None
-            return {
-                "cwd": str(Path.cwd()),
-                "git_root": git_root,
-                "provider": (os.getenv("SWARMEE_MODEL_PROVIDER") or settings.models.provider),
-                "tier": os.getenv("SWARMEE_MODEL_TIER") or settings.models.default_tier,
-            }
-
-        subcmd = (sub[0].lower() if sub else "list").strip()
-        usage_text = (
-            "Usage: swarmee session list | swarmee session new | "
-            "swarmee session info <id> | swarmee session rm <id>"
-        )
-        output_text, _created_session_id, _deleted_session_id = handle_common_session_command(
-            store=store,
-            subcmd=subcmd,
-            args=sub,
-            create_meta=_build_cli_session_meta,
-            usage_text=usage_text,
-            quote_ids=False,
-            new_output_mode="id_only",
-            require_info_arg=True,
-            current_session_id=None,
-        )
-        if output_text:
-            print(output_text)
         return
 
     # Lightweight diagnostics commands that do not invoke the model.
@@ -2175,6 +2521,8 @@ def main() -> None:
     _current_knowledge_base_id = runtime["current_knowledge_base_id"]
     _compact_context = runtime["compact_context"]
     _apply_profile = runtime["apply_profile"]
+    _apply_session_safety_overrides = runtime["apply_session_safety_overrides"]
+    _current_session_safety_overrides = runtime["current_session_safety_overrides"]
 
     def _best_effort_retrieve(query_text: str, *, warn_on_error: bool) -> None:
         kb_for_turn = _current_knowledge_base_id()
@@ -2310,6 +2658,7 @@ def main() -> None:
 
         _write_stdout_jsonl({"event": "ready", "session_id": resolved_session_id})
         _write_stdout_jsonl(_current_model_info_event())
+        _write_stdout_jsonl({"event": "safety_overrides", "overrides": _current_session_safety_overrides()})
 
         available = _find_available_session_for_cwd()
         if available is not None:
@@ -2622,6 +2971,38 @@ def main() -> None:
                 ):
                     _write_stdout_jsonl(after_model_info)
                 _write_stdout_jsonl({"event": "profile_applied", "profile": applied_profile})
+                continue
+
+            if cmd == "set_safety_overrides":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot set safety overrides while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                payload_update: dict[str, Any] = {}
+                raw_nested = payload.get("overrides")
+                if isinstance(raw_nested, dict):
+                    payload_update.update(raw_nested)
+                for key in ("tool_consent", "tool_allowlist", "tool_blocklist"):
+                    if key in payload:
+                        payload_update[key] = payload.get(key)
+                if not payload_update:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "set_safety_overrides requires tool_consent/tool_allowlist/tool_blocklist payload",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    applied = _apply_session_safety_overrides(payload_update)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+                _write_stdout_jsonl({"event": "safety_overrides", "overrides": applied})
                 continue
 
             if cmd == "connect":
