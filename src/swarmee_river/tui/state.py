@@ -102,6 +102,9 @@ class AppState:
     artifacts: ArtifactsState = field(default_factory=ArtifactsState)
     session: SessionState = field(default_factory=SessionState)
     agent_studio: AgentStudioState = field(default_factory=AgentStudioState)
+    engage_view_mode: str = "execution"
+    scaffold_view_mode: str = "context"
+    settings_view_mode: str = "env"
 
 
 __all__ = [

@@ -603,8 +603,10 @@ def run_tui() -> int:
     TabbedContent = textual_widgets.TabbedContent
     TextArea = textual_widgets.TextArea
 
-    from swarmee_river.tui.views.agent_studio import wire_agent_studio_widgets
-    from swarmee_river.tui.views.session import wire_session_widgets
+    from swarmee_river.tui.views.engage import wire_engage_widgets
+    from swarmee_river.tui.views.agents import wire_agents_widgets
+    from swarmee_river.tui.views.scaffold import wire_scaffold_widgets
+    from swarmee_river.tui.views.settings import wire_settings_widgets
     from swarmee_river.tui.views.sidebar import compose_sidebar
     from swarmee_river.tui.widgets import (
         ActionSheet,
@@ -875,6 +877,183 @@ def run_tui() -> int:
 
         #side_tabs {
             height: 1fr;
+        }
+
+        /* ── Engage tab ── */
+        #engage_panel {
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #engage_view_switch {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #engage_view_switch Button {
+            width: 1fr;
+            min-width: 12;
+            margin: 0 1 0 0;
+        }
+
+        #engage_execution_view {
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #engage_planning_view {
+            display: none;
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #engage_planning_header {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
+        #engage_execution_header {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
+        #engage_plan_items {
+            height: 1fr;
+            border: round #3b3b3b;
+            padding: 0 1;
+            margin: 0 0 1 0;
+        }
+
+        #engage_session_view {
+            display: none;
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #engage_orchestrator_status {
+            height: auto;
+            color: $accent;
+            padding: 0 0 1 0;
+        }
+
+        /* ── Help text (muted hints below headers) ── */
+        #agent_overview_help, #agent_tools_help, #agent_team_help,
+        #kbs_empty_state {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
+        /* ── Session panel scrollbars ── */
+        #session_panel {
+            scrollbar-background: #2f2f2f;
+            scrollbar-color: #7f7f7f;
+        }
+
+        /* ── Scaffold tab ── */
+        #scaffold_panel {
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #scaffold_view_switch {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #scaffold_view_switch Button {
+            width: 1fr;
+            min-width: 10;
+            margin: 0 1 0 0;
+        }
+
+        #scaffold_context_view {
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #scaffold_sops_view {
+            display: none;
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #scaffold_kbs_view {
+            display: none;
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #scaffold_artifacts_view {
+            display: none;
+            height: 1fr;
+            layout: vertical;
+        }
+
+        /* ── Settings tab ── */
+        #settings_panel {
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #settings_view_switch {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #settings_view_switch Button {
+            width: 1fr;
+            min-width: 12;
+            margin: 0 1 0 0;
+        }
+
+        #settings_env_view {
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #settings_env_header, #settings_scoping_header {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
+        #settings_scope_current {
+            height: auto;
+            color: $accent;
+            padding: 0 0 1 0;
+        }
+
+        #settings_scope_path_input {
+            margin: 0 0 1 0;
+        }
+
+        #settings_env_add_row {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #settings_env_add_row Input {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #settings_scoping_view {
+            display: none;
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #settings_directory_tree {
+            height: 1fr;
+            border: round #3b3b3b;
+            margin: 0 0 1 0;
         }
 
         #plan, #agent_summary {
@@ -1216,6 +1395,7 @@ def run_tui() -> int:
         }
 
         #plan_actions {
+            display: none;
             height: auto;
         }
 
@@ -1405,6 +1585,30 @@ def run_tui() -> int:
         _agent_profile_id_input: Any = None  # Input | None
         _agent_profile_name_input: Any = None  # Input | None
         _agent_profile_status: Any = None  # Static | None
+        # Engage tab
+        _engage_view_execution_button: Any = None
+        _engage_view_planning_button: Any = None
+        _engage_view_session_button: Any = None
+        _engage_execution_view: Any = None
+        _engage_planning_view: Any = None
+        _engage_session_view: Any = None
+        _engage_orchestrator_status: Any = None  # Static | None
+        # Scaffold tab
+        _scaffold_view_context_button: Any = None
+        _scaffold_view_sops_button: Any = None
+        _scaffold_view_kbs_button: Any = None
+        _scaffold_view_artifacts_button: Any = None
+        _scaffold_context_view: Any = None
+        _scaffold_sops_view: Any = None
+        _scaffold_kbs_view: Any = None
+        _scaffold_artifacts_view: Any = None
+        # Settings tab
+        _settings_view_env_button: Any = None
+        _settings_view_scoping_button: Any = None
+        _settings_env_view: Any = None
+        _settings_scoping_view: Any = None
+        _settings_env_list: Any = None  # SidebarList | None
+        _settings_scope_current: Any = None  # Static | None
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
@@ -1452,15 +1656,10 @@ def run_tui() -> int:
             self._status_bar = self.query_one("#status_bar", StatusBar)
             self._consent_prompt_widget = self.query_one("#consent_prompt", ConsentPrompt)
             self._error_action_prompt_widget = self.query_one("#error_action_prompt", ErrorActionPrompt)
-            self._context_sources_list = self.query_one("#context_sources_list", VerticalScroll)
-            self._sop_list = self.query_one("#sop_list", VerticalScroll)
-            self._context_input = self.query_one("#context_input", Input)
-            self._context_sop_select = self.query_one("#context_sop_select", Select)
-            wire_session_widgets(self)
-            self._artifacts_header = self.query_one("#artifacts_header", SidebarHeader)
-            self._artifacts_list = self.query_one("#artifacts_list", SidebarList)
-            self._artifacts_detail = self.query_one("#artifacts_detail", SidebarDetail)
-            wire_agent_studio_widgets(self)
+            wire_engage_widgets(self)
+            wire_agents_widgets(self)
+            wire_scaffold_widgets(self)
+            wire_settings_widgets(self)
             self._prompt_metrics = self.query_one("#prompt_metrics", ContextBudgetBar)
             self._status_bar.set_model(self._current_model_summary())
             self.query_one("#prompt", PromptTextArea).focus()
@@ -1470,6 +1669,9 @@ def run_tui() -> int:
             self._reset_artifacts_panel()
             self._reset_consent_panel()
             self._reset_error_action_prompt()
+            self._set_engage_view_mode("execution")
+            self._set_scaffold_view_mode("context")
+            self._set_settings_view_mode("env")
             self._set_session_view_mode("timeline")
             self._set_context_add_mode(None)
             self._refresh_context_sop_options()
@@ -1486,6 +1688,10 @@ def run_tui() -> int:
                 self._new_agent_profile_draft(announce=False)
             self._refresh_agent_summary()
             self._refresh_model_select()
+            self._refresh_orchestrator_status()
+            self._refresh_plan_actions_visibility()
+            self._refresh_settings_env_list()
+            self._refresh_settings_scope_display()
             self.title = "Swarmee"
             self.sub_title = self._current_model_summary()
             self._update_prompt_placeholder()
@@ -2715,7 +2921,10 @@ def run_tui() -> int:
             self._set_agent_status(f"Applying profile '{profile.name}'...")
 
         def _reset_plan_panel(self) -> None:
-            self._set_plan_panel("(no plan)")
+            self._set_plan_panel(
+                "No active plan. Enter a prompt to get started,\n"
+                "or switch to Planning to develop a plan interactively."
+            )
             self.state.plan.current_steps_total = 0
             self.state.plan.current_summary = ""
             self.state.plan.current_steps = []
@@ -2725,6 +2934,7 @@ def run_tui() -> int:
             self.state.plan.step_counter = 0
             self.state.plan.completion_announced = False
             self._refresh_plan_status_bar()
+            self._refresh_plan_actions_visibility()
 
         def _reset_issues_panel(self) -> None:
             self.state.session.issue_lines = []
@@ -2912,6 +3122,91 @@ def run_tui() -> int:
             badges = [f"events {len(events)}", f"errors {error_count}"]
             header.set_badges(badges)
 
+        def _set_engage_view_mode(self, mode: str) -> None:
+            self.state.engage_view_mode = mode
+            if self._engage_execution_view:
+                self._engage_execution_view.styles.display = "block" if mode == "execution" else "none"
+            if self._engage_planning_view:
+                self._engage_planning_view.styles.display = "block" if mode == "planning" else "none"
+            if self._engage_session_view:
+                self._engage_session_view.styles.display = "block" if mode == "session" else "none"
+            if self._engage_view_execution_button:
+                self._engage_view_execution_button.variant = "primary" if mode == "execution" else "default"
+            if self._engage_view_planning_button:
+                self._engage_view_planning_button.variant = "primary" if mode == "planning" else "default"
+            if self._engage_view_session_button:
+                self._engage_view_session_button.variant = "primary" if mode == "session" else "default"
+
+        # _set_agents_view_mode removed — Agents tab uses _set_agent_studio_view_mode
+
+        def _set_scaffold_view_mode(self, mode: str) -> None:
+            self.state.scaffold_view_mode = mode
+            if self._scaffold_context_view:
+                self._scaffold_context_view.styles.display = "block" if mode == "context" else "none"
+            if self._scaffold_sops_view:
+                self._scaffold_sops_view.styles.display = "block" if mode == "sops" else "none"
+            if self._scaffold_kbs_view:
+                self._scaffold_kbs_view.styles.display = "block" if mode == "kbs" else "none"
+            if self._scaffold_artifacts_view:
+                self._scaffold_artifacts_view.styles.display = "block" if mode == "artifacts" else "none"
+            if self._scaffold_view_context_button:
+                self._scaffold_view_context_button.variant = "primary" if mode == "context" else "default"
+            if self._scaffold_view_sops_button:
+                self._scaffold_view_sops_button.variant = "primary" if mode == "sops" else "default"
+            if self._scaffold_view_kbs_button:
+                self._scaffold_view_kbs_button.variant = "primary" if mode == "kbs" else "default"
+            if self._scaffold_view_artifacts_button:
+                self._scaffold_view_artifacts_button.variant = "primary" if mode == "artifacts" else "default"
+
+        def _set_settings_view_mode(self, mode: str) -> None:
+            self.state.settings_view_mode = mode
+            if self._settings_env_view:
+                self._settings_env_view.styles.display = "block" if mode == "env" else "none"
+            if self._settings_scoping_view:
+                self._settings_scoping_view.styles.display = "block" if mode == "scoping" else "none"
+            if self._settings_view_env_button:
+                self._settings_view_env_button.variant = "primary" if mode == "env" else "default"
+            if self._settings_view_scoping_button:
+                self._settings_view_scoping_button.variant = "primary" if mode == "scoping" else "default"
+
+        def _refresh_orchestrator_status(self) -> None:
+            """Update the orchestrator status line in the Engage tab."""
+            widget = self._engage_orchestrator_status
+            if widget is None:
+                return
+            summary = self._current_model_summary()
+            widget.update(f"Orchestrator: {summary}" if summary else "Orchestrator")
+
+        def _refresh_plan_actions_visibility(self) -> None:
+            """Show plan action buttons only when a plan is pending approval."""
+            import contextlib as _ctx
+            with _ctx.suppress(Exception):
+                pa = self.query_one("#plan_actions")
+                if self.state.plan.pending_prompt:
+                    pa.styles.display = "block"
+                else:
+                    pa.styles.display = "none"
+
+        def _refresh_settings_env_list(self) -> None:
+            """Populate the Settings env list with current environment variables."""
+            from swarmee_river.tui.views.settings import build_env_sidebar_items
+            widget = self._settings_env_list
+            if widget is None:
+                return
+            items = build_env_sidebar_items()
+            widget.set_items(items)
+
+        def _refresh_settings_scope_display(self) -> None:
+            """Update the current scope path display in Settings."""
+            from swarmee_river.state_paths import state_dir
+            widget = self._settings_scope_current
+            if widget is None:
+                return
+            import contextlib as _ctx
+            with _ctx.suppress(Exception):
+                path = state_dir()
+                widget.update(f"Current scope: {path}")
+
         def _set_session_view_mode(self, mode: str) -> None:
             normalized = normalize_session_view_mode(mode)
             self.state.session.view_mode = normalized
@@ -3089,10 +3384,12 @@ def run_tui() -> int:
                     tier=self.state.daemon.tier,
                     tiers=self.state.daemon.tiers,
                 )
+                self._refresh_orchestrator_status()
                 return
 
             options, selected_value = self._model_select_options()
             self._apply_model_select_options(options, selected_value)
+            self._refresh_orchestrator_status()
 
         def _apply_model_select_options(self, options: list[tuple[str, str]], selected_value: str) -> None:
             selector = self.query_one("#model_select", Select)
@@ -3376,10 +3673,13 @@ def run_tui() -> int:
                 self._stop_run()
                 return
             if action == "view:plan":
-                self._switch_side_tab("tab_plan")
+                self._switch_side_tab("tab_engage")
+                self._set_engage_view_mode("execution")
                 return
             if action == "view:issues":
-                self._switch_side_tab("tab_session")
+                self._switch_side_tab("tab_engage")
+                self._set_engage_view_mode("session")
+                self._set_session_view_mode("issues")
                 return
 
             if action.startswith("consent:"):
@@ -4613,6 +4913,7 @@ def run_tui() -> int:
                 if extracted_plan:
                     self.state.plan.pending_prompt = self._last_prompt
                     self._set_plan_panel(extracted_plan)
+                    self._refresh_plan_actions_visibility()
                     self._write_transcript_line(render_tui_hint_after_plan())
 
             self._reset_consent_panel()
@@ -4772,6 +5073,7 @@ def run_tui() -> int:
             self._sync_selected_model_before_run()
 
             self.state.plan.pending_prompt = None
+            self._refresh_plan_actions_visibility()
             self._reset_artifacts_panel()
             self._reset_consent_panel()
             self._reset_error_action_prompt()
@@ -5904,6 +6206,71 @@ def run_tui() -> int:
 
         def on_button_pressed(self, event: Any) -> None:
             button_id = str(getattr(getattr(event, "button", None), "id", "")).strip().lower()
+            if button_id == "engage_view_execution":
+                self._set_engage_view_mode("execution")
+                return
+            if button_id == "engage_view_planning":
+                self._set_engage_view_mode("planning")
+                return
+            if button_id == "engage_view_session":
+                self._set_engage_view_mode("session")
+                return
+            if button_id == "engage_start_plan":
+                if self._split_ratio > 1:
+                    self.action_widen_side()
+                self._set_engage_view_mode("planning")
+                self._seed_prompt_with_command("/plan ")
+                return
+            if button_id == "engage_continue_plan":
+                while self._split_ratio < 2:
+                    self.action_widen_transcript()
+                self._set_engage_view_mode("execution")
+                return
+            if button_id == "scaffold_view_context":
+                self._set_scaffold_view_mode("context")
+                return
+            if button_id == "scaffold_view_sops":
+                self._set_scaffold_view_mode("sops")
+                return
+            if button_id == "scaffold_view_kbs":
+                self._set_scaffold_view_mode("kbs")
+                return
+            if button_id == "scaffold_view_artifacts":
+                self._set_scaffold_view_mode("artifacts")
+                return
+            if button_id == "settings_view_env":
+                self._set_settings_view_mode("env")
+                return
+            if button_id == "settings_view_scoping":
+                self._set_settings_view_mode("scoping")
+                return
+            if button_id == "settings_env_add":
+                import contextlib as _ctx
+                with _ctx.suppress(Exception):
+                    key_input = self.query_one("#settings_env_key", Input)
+                    val_input = self.query_one("#settings_env_value", Input)
+                    key = key_input.value.strip()
+                    val = val_input.value.strip()
+                    if key:
+                        os.environ[key] = val
+                        key_input.value = ""
+                        val_input.value = ""
+                        self._refresh_settings_env_list()
+                        self._write_transcript_line(f"[settings] Set {key}")
+                return
+            if button_id == "settings_set_scope":
+                import contextlib as _ctx
+                with _ctx.suppress(Exception):
+                    path_input = self.query_one("#settings_scope_path_input", Input)
+                    path_val = path_input.value.strip()
+                    if path_val:
+                        target = Path(path_val).expanduser().resolve()
+                        swarmee_dir = target / ".swarmee"
+                        swarmee_dir.mkdir(parents=True, exist_ok=True)
+                        os.environ["SWARMEE_STATE_DIR"] = str(swarmee_dir)
+                        self._refresh_settings_scope_display()
+                        self._write_transcript_line(f"[settings] Scope set to {swarmee_dir}")
+                return
             if button_id == "agent_view_profile":
                 self._set_agent_studio_view_mode("profile")
                 return

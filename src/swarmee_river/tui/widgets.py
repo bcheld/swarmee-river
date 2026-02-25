@@ -979,13 +979,22 @@ class SidebarList(Vertical):
 
 
 class SidebarDetail(Vertical):
-    """Reusable detail panel with preview text and optional action buttons."""
+    """Reusable detail panel with scrollable preview text and action buttons."""
 
     DEFAULT_CSS = """
     SidebarDetail {
         border: round #3b3b3b;
         padding: 0 1;
-        height: auto;
+        height: 1fr;
+    }
+    SidebarDetail .sidebar-detail-scroll {
+        height: 1fr;
+        scrollbar-background: #2f2f2f;
+        scrollbar-background-hover: #3a3a3a;
+        scrollbar-background-active: #454545;
+        scrollbar-color: #7f7f7f;
+        scrollbar-color-hover: #999999;
+        scrollbar-color-active: #b3b3b3;
     }
     SidebarDetail .sidebar-detail-preview {
         height: auto;
@@ -1023,7 +1032,8 @@ class SidebarDetail(Vertical):
 
     def compose(self):  # type: ignore[override]
         text = self._preview if self._preview else "(no selection)"
-        yield Static(text, classes="sidebar-detail-preview")
+        with VerticalScroll(classes="sidebar-detail-scroll"):
+            yield Static(text, classes="sidebar-detail-preview")
         with Horizontal(classes="sidebar-detail-actions"):
             self._action_button_ids = {}
             for index, action in enumerate(self._actions):

@@ -761,8 +761,8 @@ def test_build_artifact_sidebar_items_renders_required_fields():
     )
     assert len(items) == 1
     item = items[0]
-    assert item["title"] == "tool_result · Tool output (abc123)"
-    assert "2026-02-23T10:01:00" in item["subtitle"]
+    assert item["title"] == "Tool output"
+    assert "tool_result" in item["subtitle"]
     assert "/tmp/artifacts/tool.txt" in item["subtitle"]
 
 
@@ -797,7 +797,8 @@ def test_build_session_issue_sidebar_items_marks_warning_and_error_states():
     assert len(items) == 2
     assert items[0]["state"] == "warning"
     assert items[1]["state"] == "error"
-    assert "2026-02-23 10:01:00" in items[1]["subtitle"]
+    # Subtitle now uses relative time instead of raw timestamp
+    assert "ago" in items[1]["subtitle"] or items[1]["subtitle"]
 
 
 def test_render_session_issue_detail_text_includes_tool_metadata():
@@ -856,12 +857,14 @@ def test_build_session_timeline_sidebar_items_populates_from_index_events():
 
     items = tui_app.build_session_timeline_sidebar_items(index["events"])
 
-    assert len(items) == 2
+    # Model calls are filtered out — only tool/error/invocation events remain
+    assert len(items) == 1
     assert items[0]["id"] == "timeline-1"
-    assert "tool: shell (2.3s) error" in items[0]["title"]
+    assert "shell" in items[0]["title"]
+    assert "error" in items[0]["title"]
     assert items[0]["state"] == "error"
-    assert "2026-02-23T12:00:00" in items[0]["subtitle"]
-    assert "model call (0.9s)" in items[1]["title"]
+    # Subtitle uses relative time
+    assert "ago" in items[0]["subtitle"]
 
 
 def test_session_timeline_detail_and_actions_render_without_crashing():

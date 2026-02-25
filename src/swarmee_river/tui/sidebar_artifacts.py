@@ -71,14 +71,13 @@ def build_artifact_sidebar_items(entries: list[dict[str, Any]]) -> list[dict[str
         kind = str(normalized.get("kind", "unknown")).strip() or "unknown"
         artifact_id = str(normalized.get("id", "")).strip() or "(no-id)"
         name = str(normalized.get("name", normalized.get("id", ""))).strip() or "(unnamed)"
-        label = f"{name} ({artifact_id})" if name != artifact_id else artifact_id
-        created_at = str(normalized.get("created_at", "")).strip() or "unknown time"
+        created_at = str(normalized.get("created_at", "")).strip() or ""
         path = str(normalized.get("path", "")).strip()
         items.append(
             {
                 "id": str(normalized.get("item_id", path)).strip() or path,
-                "title": f"{kind} · {label}",
-                "subtitle": f"{created_at} · {path}",
+                "title": name,
+                "subtitle": f"{kind} · {path}" if path else kind,
                 "state": "default",
             }
         )

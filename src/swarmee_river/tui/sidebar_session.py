@@ -3,7 +3,31 @@
 from __future__ import annotations
 
 import json as _json
+import time as _time
+from datetime import datetime, timezone
 from typing import Any
+
+
+def _relative_time(ts_str: str) -> str:
+    """Convert an ISO timestamp string to a relative time like '2s ago'."""
+    if not ts_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = _time.time() - dt.timestamp()
+        if delta < 0:
+            return "just now"
+        if delta < 60:
+            return f"{int(delta)}s ago"
+        if delta < 3600:
+            return f"{int(delta / 60)}m ago"
+        if delta < 86400:
+            return f"{int(delta / 3600)}h ago"
+        return f"{int(delta / 86400)}d ago"
+    except Exception:
+        return ts_str
 
 
 def build_session_issue_sidebar_items(issues: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -28,7 +52,7 @@ def build_session_issue_sidebar_items(issues: list[dict[str, Any]]) -> list[dict
         text = str(issue.get("text", "")).strip()
         subtitle_parts = []
         if created_at:
-            subtitle_parts.append(created_at)
+            subtitle_parts.append(_relative_time(created_at))
         if text:
             subtitle_parts.append(_truncate_text(text, max_chars=88))
         subtitle = " | ".join(subtitle_parts)
@@ -50,7 +74,7 @@ def render_session_issue_detail_text(issue: dict[str, Any] | None) -> str:
     lines = [
         f"Severity: {str(issue.get('severity', 'warning')).strip() or 'warning'}",
         f"Title: {str(issue.get('title', 'Issue')).strip() or 'Issue'}",
-        f"When: {str(issue.get('created_at', '')).strip() or '(unknown)'}",
+        f"When: {_relative_time(str(issue.get('created_at', '')))}",
         "",
         str(issue.get("text", "")).strip() or "(no details)",
     ]
@@ -120,29 +144,23 @@ def summarize_session_timeline_event(event: dict[str, Any] | None) -> str:
         duration_text = f" ({float(duration):.1f}s)"
     if kind in {"tool", "error"}:
         tool = str(event.get("tool", "")).strip() or "unknown"
-        label = f"tool: {tool}{duration_text}"
+        label = f"{tool}{duration_text}"
         if kind == "error":
-            return f"{label} error"
+            return f"{label} (error)"
         return label
-    if kind == "model":
-        return f"model call{duration_text}"
     if kind == "invocation":
         return f"invocation{duration_text}"
     return (str(event.get("event", "")).strip() or "event") + duration_text
 
 
 def build_session_timeline_sidebar_items(events: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Build SidebarList payload for session timeline events."""
-    icon_map = {
-        "tool": "⚙",
-        "model": "◉",
-        "invocation": "▶",
-        "error": "✖",
-        "event": "•",
-    }
+    """Build SidebarList payload for session timeline events.
+
+    Filters out model calls to reduce noise — users care about
+    tool executions, errors, and invocations, not internal LLM calls.
+    """
     state_map = {
         "tool": "default",
-        "model": "default",
         "invocation": "active",
         "error": "error",
         "event": "default",
@@ -151,18 +169,18 @@ def build_session_timeline_sidebar_items(events: list[dict[str, Any]]) -> list[d
     for index, event in enumerate(events):
         if not isinstance(event, dict):
             continue
-        event_id = str(event.get("id", "")).strip() or f"timeline-{index + 1}"
         kind = classify_session_timeline_event_kind(event)
+        # Skip model calls — they add noise without user-facing value.
+        if kind == "model":
+            continue
+        event_id = str(event.get("id", "")).strip() or f"timeline-{index + 1}"
         summary = summarize_session_timeline_event(event)
         ts = str(event.get("ts", "")).strip()
-        label = str(event.get("event", "")).strip().lower()
-        subtitle = ts if ts else label
-        if ts and label:
-            subtitle = f"{ts} | {label}"
+        subtitle = _relative_time(ts) if ts else ""
         items.append(
             {
                 "id": event_id,
-                "title": f"{icon_map.get(kind, '•')} {summary}",
+                "title": summary,
                 "subtitle": subtitle,
                 "state": state_map.get(kind, "default"),
             }
