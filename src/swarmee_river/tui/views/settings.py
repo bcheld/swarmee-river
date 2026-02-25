@@ -8,10 +8,50 @@ import os
 from pathlib import Path
 from typing import Any, Iterator
 
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input, Select, Static, TabPane
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import Button, DirectoryTree, Input, Select, Static, TabPane
 
 from swarmee_river.tui.widgets import SidebarList
+
+
+class SettingsDirectoryTree(DirectoryTree):
+    """DirectoryTree variant that avoids async watch warnings before mount."""
+
+    _pending_initial_reload: bool = False
+
+    def watch_path(self) -> None:  # type: ignore[override]
+        # `DirectoryTree.watch_path` is async in Textual. During plain compose-time
+        # test construction it may be invoked without an event loop and emit an
+        # un-awaited coroutine warning. Defer until mount instead.
+        if not self.is_mounted:
+            self._pending_initial_reload = True
+            return
+        self._pending_initial_reload = False
+        self.run_worker(
+            self._reload_for_path_change(),
+            group="settings-directory-tree-watch-path",
+            exclusive=True,
+        )
+
+    def on_mount(self) -> None:
+        if self._pending_initial_reload or not self.root.children:
+            self._pending_initial_reload = False
+            self.run_worker(
+                self._reload_for_path_change(),
+                group="settings-directory-tree-watch-path",
+                exclusive=True,
+            )
+
+    async def _reload_for_path_change(self) -> None:
+        has_cursor = self.cursor_node is not None
+        root_data = self.root.data
+        root_data_type = type(root_data) if root_data is not None else None
+        next_data = root_data_type(self.PATH(self.path)) if root_data_type is not None else None
+        self.reset_node(self.root, str(self.path), next_data)
+        await self.reload()
+        if has_cursor:
+            self.cursor_line = 0
+        self.scroll_to(0, 0, animate=False)
 
 
 @dataclass(frozen=True)
@@ -206,14 +246,70 @@ def compose_settings_tab() -> Iterator[Any]:
             with Horizontal(id="settings_view_switch"):
                 yield Button("General", id="settings_view_general", compact=True, variant="primary")
                 yield Button("Models", id="settings_view_models", compact=True, variant="default")
-                yield Button("Environment", id="settings_view_env", compact=True, variant="default")
-                yield Button("Scoping", id="settings_view_scoping", compact=True, variant="default")
+                yield Button("Advanced", id="settings_view_advanced", compact=True, variant="default")
 
             # -- General sub-view --------------------------------------------
-            with Vertical(id="settings_general_view"):
+            with VerticalScroll(id="settings_general_view"):
                 yield Static("General Configuration", id="settings_general_header")
                 yield Static("", id="settings_general_summary")
-                yield Button("Auto-Approve: On", id="settings_toggle_auto_approve", compact=True, variant="warning")
+
+                yield Static("Runtime", classes="settings-section-label")
+                with Horizontal(id="settings_general_runtime_row"):
+                    yield Button("Auto-Approve: Off", id="settings_toggle_auto_approve", compact=True, variant="default")
+                    yield Button("Bypass Consent: Off", id="settings_toggle_bypass_consent", compact=True, variant="default")
+                    yield Button("ESC Interrupt: On", id="settings_toggle_esc_interrupt", compact=True, variant="default")
+
+                yield Static("Context", classes="settings-section-label")
+                with Horizontal(id="settings_general_context_row"):
+                    yield Select(
+                        options=[
+                            ("Context: summarize", "summarize"),
+                            ("Context: sliding", "sliding"),
+                            ("Context: none", "none"),
+                        ],
+                        allow_blank=False,
+                        id="settings_general_context_manager",
+                        compact=True,
+                    )
+                    yield Select(
+                        options=[
+                            ("Preflight: enabled", "enabled"),
+                            ("Preflight: disabled", "disabled"),
+                        ],
+                        allow_blank=False,
+                        id="settings_general_preflight",
+                        compact=True,
+                    )
+                    yield Select(
+                        options=[
+                            ("Level: summary", "summary"),
+                            ("Level: summary+tree", "summary+tree"),
+                            ("Level: summary+files", "summary+files"),
+                        ],
+                        allow_blank=False,
+                        id="settings_general_preflight_level",
+                        compact=True,
+                    )
+
+                yield Static("Features", classes="settings-section-label")
+                with Horizontal(id="settings_general_features_row"):
+                    yield Button("Swarm: On", id="settings_toggle_swarm", compact=True, variant="default")
+                    yield Button("Log Events: Off", id="settings_toggle_log_events", compact=True, variant="default")
+                    yield Button("Project Map: On", id="settings_toggle_project_map", compact=True, variant="default")
+
+                yield Static("Guardrails", classes="settings-section-label")
+                with Horizontal(id="settings_general_guardrails_row"):
+                    yield Button("Limit Results: On", id="settings_toggle_limit_tool_results", compact=True, variant="default")
+                    yield Button("Truncate: On", id="settings_toggle_truncate_results", compact=True, variant="default")
+                    yield Button("Redact Logs: On", id="settings_toggle_log_redact", compact=True, variant="default")
+                    yield Button("Freeze Tools: Off", id="settings_toggle_freeze_tools", compact=True, variant="default")
+
+                yield Static("Workspace", classes="settings-section-label")
+                yield Static("", id="settings_scope_current")
+                with Horizontal(id="settings_scope_row"):
+                    yield Input(placeholder="Enter path or browse below", id="settings_scope_path_input")
+                    yield Button("Set Scope", id="settings_set_scope", compact=True, variant="primary")
+                yield SettingsDirectoryTree(str(Path.home()), id="settings_directory_tree")
 
             # -- Models sub-view ---------------------------------------------
             with Vertical(id="settings_models_view"):
@@ -289,9 +385,9 @@ def compose_settings_tab() -> Iterator[Any]:
                     yield Button("Save Model", id="settings_models_save", compact=True, variant="success")
                     yield Button("Delete", id="settings_models_delete", compact=True, variant="error")
 
-            # -- Environment sub-view ----------------------------------------
-            with Vertical(id="settings_env_view"):
-                yield Static("Environment Catalog (from env.example)", id="settings_env_header")
+            # -- Advanced sub-view (all env vars by category) ----------------
+            with Vertical(id="settings_advanced_view"):
+                yield Static("Advanced Configuration", id="settings_env_header")
                 yield Select(options=env_category_options(), allow_blank=False, id="settings_env_category")
                 yield SidebarList(id="settings_env_list")
                 yield Static("", id="settings_env_detail")
@@ -308,25 +404,15 @@ def compose_settings_tab() -> Iterator[Any]:
                     yield Button("Use Default", id="settings_env_default", compact=True, variant="default")
                     yield Button("Unset", id="settings_env_unset", compact=True, variant="warning")
 
-            # -- Scoping sub-view --------------------------------------------
-            with Vertical(id="settings_scoping_view"):
-                yield Static("Session Directory Scoping", id="settings_scoping_header")
-                yield Static("", id="settings_scope_current")
-                yield Input(placeholder="Enter path or browse below", id="settings_scope_path_input")
-                yield Static(f"Home: {Path.home()}", id="settings_directory_tree")
-                yield Button("Set Scope", id="settings_set_scope", variant="primary")
-
 
 def wire_settings_widgets(app: Any) -> None:
     """Bind Settings tab widgets onto app fields used by event handlers."""
     app._settings_view_general_button = app.query_one("#settings_view_general", Button)
     app._settings_view_models_button = app.query_one("#settings_view_models", Button)
-    app._settings_view_env_button = app.query_one("#settings_view_env", Button)
-    app._settings_view_scoping_button = app.query_one("#settings_view_scoping", Button)
-    app._settings_general_view = app.query_one("#settings_general_view", Vertical)
+    app._settings_view_advanced_button = app.query_one("#settings_view_advanced", Button)
+    app._settings_general_view = app.query_one("#settings_general_view", VerticalScroll)
     app._settings_models_view = app.query_one("#settings_models_view", Vertical)
-    app._settings_env_view = app.query_one("#settings_env_view", Vertical)
-    app._settings_scoping_view = app.query_one("#settings_scoping_view", Vertical)
+    app._settings_advanced_view = app.query_one("#settings_advanced_view", Vertical)
     app._settings_general_summary = app.query_one("#settings_general_summary", Static)
     app._settings_models_summary = app.query_one("#settings_models_summary", Static)
     app._settings_models_list = app.query_one("#settings_models_list", SidebarList)
@@ -338,8 +424,21 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_env_value_select = app.query_one("#settings_env_value_select", Select)
     app._settings_env_value_input = app.query_one("#settings_env_value_input", Input)
     app._settings_toggle_auto_approve_button = app.query_one("#settings_toggle_auto_approve", Button)
+    app._settings_toggle_bypass_consent_button = app.query_one("#settings_toggle_bypass_consent", Button)
+    app._settings_toggle_esc_interrupt_button = app.query_one("#settings_toggle_esc_interrupt", Button)
+    app._settings_general_context_manager_select = app.query_one("#settings_general_context_manager", Select)
+    app._settings_general_preflight_select = app.query_one("#settings_general_preflight", Select)
+    app._settings_general_preflight_level_select = app.query_one("#settings_general_preflight_level", Select)
+    app._settings_toggle_swarm_button = app.query_one("#settings_toggle_swarm", Button)
+    app._settings_toggle_log_events_button = app.query_one("#settings_toggle_log_events", Button)
+    app._settings_toggle_project_map_button = app.query_one("#settings_toggle_project_map", Button)
+    app._settings_toggle_limit_tool_results_button = app.query_one("#settings_toggle_limit_tool_results", Button)
+    app._settings_toggle_truncate_results_button = app.query_one("#settings_toggle_truncate_results", Button)
+    app._settings_toggle_log_redact_button = app.query_one("#settings_toggle_log_redact", Button)
+    app._settings_toggle_freeze_tools_button = app.query_one("#settings_toggle_freeze_tools", Button)
     app._settings_env_list = app.query_one("#settings_env_list", SidebarList)
     app._settings_scope_current = app.query_one("#settings_scope_current", Static)
+    app._settings_directory_tree = app.query_one("#settings_directory_tree", SettingsDirectoryTree)
 
 
 __all__ = [

@@ -392,6 +392,53 @@ def is_multiline_newline_key(event: Any) -> bool:
     return False
 
 
+def _event_key_variants(event: Any) -> set[str]:
+    """Collect normalized key spellings from key/name/aliases."""
+    values: set[str] = set()
+    raw_values = [getattr(event, "key", ""), getattr(event, "name", "")]
+    raw_values.extend(getattr(event, "aliases", []) or [])
+    for raw in raw_values:
+        token = str(raw or "").strip().lower()
+        if not token:
+            continue
+        values.add(token)
+        values.add(token.replace("left_arrow", "left").replace("right_arrow", "right"))
+        values.add(token.replace("-", "+"))
+        values.add(token.replace("-", "+").replace("left_arrow", "left").replace("right_arrow", "right"))
+    return values
+
+
+_WIDEN_SIDE_KEYS = {
+    "f6",
+    "ctrl+left",
+    "ctrl+shift+left",
+    "ctrl+[",
+    "ctrl+left_square_bracket",
+    "ctrl+left_bracket",
+    "alt+left",
+    "ctrl+h",
+}
+
+_WIDEN_TRANSCRIPT_KEYS = {
+    "f7",
+    "ctrl+right",
+    "ctrl+shift+right",
+    "ctrl+]",
+    "ctrl+right_square_bracket",
+    "ctrl+right_bracket",
+    "alt+right",
+    "ctrl+l",
+}
+
+
+def is_widen_side_key(event: Any) -> bool:
+    return bool(_event_key_variants(event) & _WIDEN_SIDE_KEYS)
+
+
+def is_widen_transcript_key(event: Any) -> bool:
+    return bool(_event_key_variants(event) & _WIDEN_TRANSCRIPT_KEYS)
+
+
 def should_skip_active_run_tier_warning(
     *,
     requested_provider: str,
@@ -723,6 +770,19 @@ def run_tui() -> int:
                 app.action_toggle_transcript_mode()
                 return
 
+            # ── Sidebar resize shortcuts should win over TextArea cursor-nav ──
+            if app is not None:
+                if is_widen_side_key(event) and hasattr(app, "action_widen_side"):
+                    event.stop()
+                    event.prevent_default()
+                    app.action_widen_side()
+                    return
+                if is_widen_transcript_key(event) and hasattr(app, "action_widen_transcript"):
+                    event.stop()
+                    event.prevent_default()
+                    app.action_widen_transcript()
+                    return
+
             # ── Arrow keys: prompt history (when palette hidden) ──
             if key == "up" and app is not None and hasattr(app, "_prompt_history"):
                 history = app._prompt_history
@@ -886,9 +946,30 @@ def run_tui() -> int:
             height: 1fr;
         }
 
+        #side_tabs > Tabs {
+            height: 3;
+            margin: 0 0 1 0;
+            padding: 0;
+            background: #1e241b;
+            border: round #3b4a35;
+        }
+
+        #side_tabs > Tabs Tab {
+            text-style: bold;
+            color: #b8b8b8;
+            padding: 0 2;
+        }
+
+        #side_tabs > Tabs Tab.-active {
+            color: #f3f3f3;
+            background: #2f3d29;
+        }
+
         /* ── Engage tab ── */
         #engage_panel {
             height: 1fr;
+            border: round $accent;
+            padding: 0 1;
             layout: vertical;
         }
 
@@ -963,6 +1044,8 @@ def run_tui() -> int:
         /* ── Scaffold tab ── */
         #scaffold_panel {
             height: 1fr;
+            border: round $accent;
+            padding: 0 1;
             layout: vertical;
         }
 
@@ -1004,6 +1087,8 @@ def run_tui() -> int:
         /* ── Settings tab ── */
         #settings_panel {
             height: 1fr;
+            border: round $accent;
+            padding: 0 1;
             layout: vertical;
         }
 
@@ -1019,22 +1104,25 @@ def run_tui() -> int:
             margin: 0 1 0 0;
         }
 
-        #settings_general_view, #settings_models_view {
+        #settings_general_view {
             height: 1fr;
-            layout: vertical;
+            scrollbar-background: #2f2f2f;
+            scrollbar-color: #7f7f7f;
         }
 
         #settings_models_view {
             display: none;
+            height: 1fr;
+            layout: vertical;
         }
 
-        #settings_env_view {
+        #settings_advanced_view {
             display: none;
             height: 1fr;
             layout: vertical;
         }
 
-        #settings_general_header, #settings_models_header, #settings_env_header, #settings_scoping_header {
+        #settings_general_header, #settings_models_header, #settings_env_header {
             height: auto;
             color: $text-muted;
             padding: 0 0 1 0;
@@ -1103,19 +1191,46 @@ def run_tui() -> int:
             margin: 0 1 0 0;
         }
 
-        #settings_toggle_auto_approve {
-            width: auto;
+        .settings-section-label {
+            height: auto;
+            color: $text-muted;
+            text-style: bold;
+            padding: 0 0 0 0;
+            margin: 0 0 0 0;
+        }
+
+        #settings_general_runtime_row,
+        #settings_general_context_row,
+        #settings_general_features_row,
+        #settings_general_guardrails_row,
+        #settings_scope_row {
+            height: auto;
+            layout: horizontal;
             margin: 0 0 1 0;
+        }
+
+        #settings_general_runtime_row Button,
+        #settings_general_features_row Button,
+        #settings_general_guardrails_row Button {
+            width: 1fr;
+            min-width: 10;
+            margin: 0 1 0 0;
+        }
+
+        #settings_general_context_row Select {
+            width: 1fr;
+            margin: 0 1 0 0;
         }
 
         #settings_scope_current {
             height: auto;
             color: $accent;
-            padding: 0 0 1 0;
+            padding: 0 0 0 0;
         }
 
-        #settings_scope_path_input {
-            margin: 0 0 1 0;
+        #settings_scope_row Input {
+            width: 1fr;
+            margin: 0 1 0 0;
         }
 
         #settings_env_edit_row, #settings_env_actions {
@@ -1126,17 +1241,18 @@ def run_tui() -> int:
 
         #settings_env_edit_row Select, #settings_env_edit_row Input {
             width: 1fr;
+            margin: 0 0 0 0;
+        }
+
+        #settings_env_actions Button {
+            width: 1fr;
+            min-width: 8;
             margin: 0 1 0 0;
         }
 
-        #settings_scoping_view {
-            display: none;
-            height: 1fr;
-            layout: vertical;
-        }
-
         #settings_directory_tree {
-            height: 1fr;
+            height: auto;
+            max-height: 16;
             border: round #3b3b3b;
             margin: 0 0 1 0;
         }
@@ -1548,11 +1664,11 @@ def run_tui() -> int:
         }
         """
         BINDINGS = [
-            ("f5", "submit_prompt", "Send prompt"),
+            Binding("f5", "submit_prompt", "Send prompt", show=False),
             ("escape", "interrupt_run", "Interrupt run"),
             ("ctrl+t", "toggle_transcript_mode", "Toggle transcript mode"),
-            Binding("ctrl+k", "open_action_sheet", "Actions", priority=True),
-            Binding("ctrl+space", "open_action_sheet", "Actions", priority=True),
+            Binding("ctrl+k", "open_action_sheet", "Actions", priority=True, show=False),
+            Binding("ctrl+space", "open_action_sheet", "Actions", priority=True, show=False),
             ("ctrl+c", "copy_selection", "Copy selection"),
             ("meta+c", "copy_selection", "Copy selection"),
             ("super+c", "copy_selection", "Copy selection"),
@@ -1562,6 +1678,10 @@ def run_tui() -> int:
             Binding("ctrl+right", "widen_transcript", "Widen transcript", priority=True),
             Binding("ctrl+shift+left", "widen_side", "Widen side", priority=True),
             Binding("ctrl+shift+right", "widen_transcript", "Widen transcript", priority=True),
+            Binding("alt+left", "widen_side", "Widen side", priority=True, show=False),
+            Binding("alt+right", "widen_transcript", "Widen transcript", priority=True, show=False),
+            Binding("ctrl+h", "widen_side", "Widen side", priority=True, show=False),
+            Binding("ctrl+l", "widen_transcript", "Widen transcript", priority=True, show=False),
             ("f6", "widen_side", "Widen side"),
             ("f7", "widen_transcript", "Widen transcript"),
             ("ctrl+f", "search_transcript", "Search"),
@@ -1692,12 +1812,10 @@ def run_tui() -> int:
         # Settings tab
         _settings_view_general_button: Any = None
         _settings_view_models_button: Any = None
-        _settings_view_env_button: Any = None
-        _settings_view_scoping_button: Any = None
+        _settings_view_advanced_button: Any = None
         _settings_general_view: Any = None
         _settings_models_view: Any = None
-        _settings_env_view: Any = None
-        _settings_scoping_view: Any = None
+        _settings_advanced_view: Any = None
         _settings_general_summary: Any = None  # Static | None
         _settings_models_summary: Any = None  # Static | None
         _settings_models_list: Any = None  # SidebarList | None
@@ -1709,10 +1827,24 @@ def run_tui() -> int:
         _settings_env_value_select: Any = None  # Select | None
         _settings_env_value_input: Any = None  # Input | None
         _settings_toggle_auto_approve_button: Any = None  # Button | None
+        _settings_toggle_bypass_consent_button: Any = None  # Button | None
+        _settings_toggle_esc_interrupt_button: Any = None  # Button | None
+        _settings_general_context_manager_select: Any = None  # Select | None
+        _settings_general_preflight_select: Any = None  # Select | None
+        _settings_general_preflight_level_select: Any = None  # Select | None
+        _settings_toggle_swarm_button: Any = None  # Button | None
+        _settings_toggle_log_events_button: Any = None  # Button | None
+        _settings_toggle_project_map_button: Any = None  # Button | None
+        _settings_toggle_limit_tool_results_button: Any = None  # Button | None
+        _settings_toggle_truncate_results_button: Any = None  # Button | None
+        _settings_toggle_log_redact_button: Any = None  # Button | None
+        _settings_toggle_freeze_tools_button: Any = None  # Button | None
         _settings_env_list: Any = None  # SidebarList | None
         _settings_scope_current: Any = None  # Static | None
+        _settings_directory_tree: Any = None  # DirectoryTree | None
         _settings_env_selected_key: str | None = None
         _settings_models_selected_id: str | None = None
+        _pre_settings_split_ratio: int | None = None
         _pending_connect_payload: dict[str, Any] | None = None
         _pending_connect_retry_payload: dict[str, Any] | None = None
         _runtime_proxy_recovery_attempted: set[str] = set()
@@ -1805,9 +1937,6 @@ def run_tui() -> int:
             self._refresh_plan_actions_visibility()
             self._refresh_settings_general()
             self._refresh_settings_models()
-            self._refresh_settings_env_list()
-            self._refresh_settings_env_detail(self._settings_env_selected_key)
-            self._refresh_settings_scope_display()
             self.title = "Swarmee"
             self.sub_title = self._current_model_summary()
             self._update_prompt_placeholder()
@@ -3314,30 +3443,26 @@ def run_tui() -> int:
 
         def _set_settings_view_mode(self, mode: str) -> None:
             normalized = mode.strip().lower()
-            if normalized not in {"general", "models", "env", "scoping"}:
+            if normalized not in {"general", "models", "advanced"}:
                 normalized = "general"
             self.state.settings_view_mode = normalized
             if self._settings_general_view:
                 self._settings_general_view.styles.display = "block" if normalized == "general" else "none"
             if self._settings_models_view:
                 self._settings_models_view.styles.display = "block" if normalized == "models" else "none"
-            if self._settings_env_view:
-                self._settings_env_view.styles.display = "block" if normalized == "env" else "none"
-            if self._settings_scoping_view:
-                self._settings_scoping_view.styles.display = "block" if normalized == "scoping" else "none"
+            if self._settings_advanced_view:
+                self._settings_advanced_view.styles.display = "block" if normalized == "advanced" else "none"
             if self._settings_view_general_button:
                 self._settings_view_general_button.variant = "primary" if normalized == "general" else "default"
             if self._settings_view_models_button:
                 self._settings_view_models_button.variant = "primary" if normalized == "models" else "default"
-            if self._settings_view_env_button:
-                self._settings_view_env_button.variant = "primary" if normalized == "env" else "default"
-            if self._settings_view_scoping_button:
-                self._settings_view_scoping_button.variant = "primary" if normalized == "scoping" else "default"
+            if self._settings_view_advanced_button:
+                self._settings_view_advanced_button.variant = "primary" if normalized == "advanced" else "default"
             if normalized == "general":
                 self._refresh_settings_general()
             if normalized == "models":
                 self._refresh_settings_models()
-            if normalized == "env":
+            if normalized == "advanced":
                 self._refresh_settings_env_list()
                 self._refresh_settings_env_detail(self._settings_env_selected_key)
 
@@ -3399,20 +3524,26 @@ def run_tui() -> int:
 
         def _set_settings_env_value_controls(self, *, key: str, current_value: str, default_value: str) -> None:
             spec = env_spec_by_key(key)
+            has_choices = spec is not None and bool(spec.choices)
             select_widget = self._settings_env_value_select
             input_widget = self._settings_env_value_input
+            # Show only the relevant control: select for constrained, input for free-form
             if select_widget is not None:
                 options: list[tuple[str, str]] = [("Select constrained value...", "__none__")]
-                if spec is not None and spec.choices:
+                if has_choices:
                     options.extend((choice, choice) for choice in spec.choices)
                 with contextlib.suppress(Exception):
                     select_widget.set_options(options)
                     selected_value = current_value or (default_value if default_value and default_value != "(unset)" else "")
                     select_widget.value = selected_value if selected_value in {value for _label, value in options} else "__none__"
+                with contextlib.suppress(Exception):
+                    select_widget.styles.display = "block" if has_choices else "none"
             if input_widget is not None:
                 candidate = current_value or (default_value if default_value != "(unset)" else "")
                 with contextlib.suppress(Exception):
                     input_widget.value = candidate
+                with contextlib.suppress(Exception):
+                    input_widget.styles.display = "none" if has_choices else "block"
 
         def _refresh_settings_env_detail(self, selected_key: str | None) -> None:
             detail_widget = self._settings_env_detail
@@ -3440,15 +3571,16 @@ def run_tui() -> int:
 
             current_display = _mask(current) if current else "(unset)"
             default_display = _mask(spec.default) if spec.default else "(unset)"
-            choices_text = ", ".join(spec.choices) if spec.choices else "free-form value"
-            detail_text = (
-                f"{spec.key}\n"
-                f"Category: {spec.category}\n"
-                f"Current: {current_display}\n"
-                f"Default: {default_display}\n"
-                f"Allowed values: {choices_text}\n"
-                f"{spec.description}"
-            )
+            choices_text = ", ".join(spec.choices) if spec.choices else "free-form"
+            lines = [
+                spec.key,
+                f"  Current:  {current_display}",
+                f"  Default:  {default_display}",
+            ]
+            if spec.choices:
+                lines.append(f"  Allowed:  {choices_text}")
+            lines.append(f"  {spec.description}")
+            detail_text = "\n".join(lines)
             with contextlib.suppress(Exception):
                 detail_widget.update(detail_text)
             self._set_settings_env_value_controls(key=spec.key, current_value=current, default_value=spec.default)
@@ -3798,11 +3930,114 @@ def run_tui() -> int:
                     with contextlib.suppress(Exception):
                         aws_input.value = current_profile
 
+            # -- Auto-Approve toggle --
             toggle = self._settings_toggle_auto_approve_button
             if toggle is not None:
                 enabled = bool(self._default_auto_approve)
                 toggle.label = f"Auto-Approve: {'On' if enabled else 'Off'}"
                 toggle.variant = "warning" if enabled else "default"
+
+            # -- Bypass Consent toggle --
+            btn = self._settings_toggle_bypass_consent_button
+            if btn is not None:
+                val = (os.environ.get("BYPASS_TOOL_CONSENT") or "").strip().lower()
+                on = val in {"true", "1", "yes", "on"}
+                btn.label = f"Bypass Consent: {'On' if on else 'Off'}"
+                btn.variant = "warning" if on else "default"
+
+            # -- ESC Interrupt toggle --
+            btn = self._settings_toggle_esc_interrupt_button
+            if btn is not None:
+                val = (os.environ.get("SWARMEE_ESC_INTERRUPT") or "enabled").strip().lower()
+                on = val != "disabled"
+                btn.label = f"ESC Interrupt: {'On' if on else 'Off'}"
+                btn.variant = "success" if on else "default"
+
+            # -- Context Manager select --
+            sel = self._settings_general_context_manager_select
+            if sel is not None:
+                val = (os.environ.get("SWARMEE_CONTEXT_MANAGER") or "summarize").strip().lower()
+                if val not in {"summarize", "sliding", "none"}:
+                    val = "summarize"
+                with contextlib.suppress(Exception):
+                    sel.value = val
+
+            # -- Preflight select --
+            sel = self._settings_general_preflight_select
+            if sel is not None:
+                val = (os.environ.get("SWARMEE_PREFLIGHT") or "enabled").strip().lower()
+                if val not in {"enabled", "disabled"}:
+                    val = "enabled"
+                with contextlib.suppress(Exception):
+                    sel.value = val
+
+            # -- Swarm toggle --
+            btn = self._settings_toggle_swarm_button
+            if btn is not None:
+                val = (os.environ.get("SWARMEE_SWARM_ENABLED") or "true").strip().lower()
+                on = val not in {"false", "0", "no", "off", "disabled"}
+                btn.label = f"Swarm: {'On' if on else 'Off'}"
+                btn.variant = "success" if on else "default"
+
+            # -- Log Events toggle --
+            btn = self._settings_toggle_log_events_button
+            if btn is not None:
+                val = (os.environ.get("SWARMEE_LOG_EVENTS") or "").strip().lower()
+                on = val in {"true", "1", "yes", "on"}
+                btn.label = f"Log Events: {'On' if on else 'Off'}"
+                btn.variant = "success" if on else "default"
+
+            # -- Project Map toggle --
+            btn = self._settings_toggle_project_map_button
+            if btn is not None:
+                val = (os.environ.get("SWARMEE_PROJECT_MAP") or "enabled").strip().lower()
+                on = val != "disabled"
+                btn.label = f"Project Map: {'On' if on else 'Off'}"
+                btn.variant = "success" if on else "default"
+
+            # -- Preflight Level select --
+            sel = self._settings_general_preflight_level_select
+            if sel is not None:
+                val = (os.environ.get("SWARMEE_PREFLIGHT_LEVEL") or "summary").strip().lower()
+                if val not in {"summary", "summary+tree", "summary+files"}:
+                    val = "summary"
+                with contextlib.suppress(Exception):
+                    sel.value = val
+
+            # -- Limit Tool Results toggle --
+            btn = self._settings_toggle_limit_tool_results_button
+            if btn is not None:
+                val = (os.environ.get("SWARMEE_LIMIT_TOOL_RESULTS") or "true").strip().lower()
+                on = val not in {"false", "0", "no", "off"}
+                btn.label = f"Limit Results: {'On' if on else 'Off'}"
+                btn.variant = "success" if on else "default"
+
+            # -- Truncate Results toggle --
+            btn = self._settings_toggle_truncate_results_button
+            if btn is not None:
+                val = (os.environ.get("SWARMEE_TRUNCATE_RESULTS") or "true").strip().lower()
+                on = val not in {"false", "0", "no", "off"}
+                btn.label = f"Truncate: {'On' if on else 'Off'}"
+                btn.variant = "success" if on else "default"
+
+            # -- Log Redact toggle --
+            btn = self._settings_toggle_log_redact_button
+            if btn is not None:
+                val = (os.environ.get("SWARMEE_LOG_REDACT") or "true").strip().lower()
+                on = val not in {"false", "0", "no", "off"}
+                btn.label = f"Redact Logs: {'On' if on else 'Off'}"
+                btn.variant = "success" if on else "default"
+
+            # -- Freeze Tools toggle --
+            btn = self._settings_toggle_freeze_tools_button
+            if btn is not None:
+                val = (os.environ.get("SWARMEE_FREEZE_TOOLS") or "").strip().lower()
+                on = val in {"true", "1", "yes", "on"}
+                btn.label = f"Freeze Tools: {'On' if on else 'Off'}"
+                btn.variant = "warning" if on else "default"
+
+            # -- Workspace scope display --
+            self._refresh_settings_scope_display()
 
         def _refresh_settings_scope_display(self) -> None:
             """Update the current scope path display in Settings."""
@@ -4104,6 +4339,28 @@ def run_tui() -> int:
             with contextlib.suppress(Exception):
                 tabs = self.query_one("#side_tabs", TabbedContent)
                 tabs.active = tab_id
+            self._sync_settings_sidebar_autosize(tab_id)
+
+        def _sync_settings_sidebar_autosize(self, pane_id: str | None) -> None:
+            """Auto-expand sidebar in Settings and restore prior ratio when leaving."""
+            current_pane_id = str(pane_id or "").strip()
+            if not current_pane_id:
+                with contextlib.suppress(Exception):
+                    tabs = self.query_one("#side_tabs", TabbedContent)
+                    current_pane_id = str(getattr(tabs, "active", "")).strip()
+            is_settings = current_pane_id == "tab_settings"
+            if is_settings:
+                if self._pre_settings_split_ratio is None:
+                    self._pre_settings_split_ratio = self._split_ratio
+                if self._split_ratio > 1:
+                    self._split_ratio = 1
+                    self._apply_split_ratio()
+                return
+            if self._pre_settings_split_ratio is not None:
+                restored_ratio = max(1, min(4, int(self._pre_settings_split_ratio)))
+                self._split_ratio = restored_ratio
+                self._pre_settings_split_ratio = None
+                self._apply_split_ratio()
 
         def _seed_prompt_with_command(self, command: str) -> None:
             prompt_widget = self.query_one("#prompt", PromptTextArea)
@@ -6262,6 +6519,18 @@ def run_tui() -> int:
                 self.action_copy_selection()
                 return
 
+            if is_widen_side_key(event):
+                event.stop()
+                event.prevent_default()
+                self.action_widen_side()
+                return
+
+            if is_widen_transcript_key(event):
+                event.stop()
+                event.prevent_default()
+                self.action_widen_transcript()
+                return
+
         def on_checkbox_changed(self, event: Any) -> None:
             checkbox = getattr(event, "checkbox", None)
             checkbox_id = str(getattr(checkbox, "id", "")).strip()
@@ -6279,6 +6548,24 @@ def run_tui() -> int:
             if select_id == "settings_env_category":
                 self._refresh_settings_env_list()
                 self._refresh_settings_env_detail(self._settings_env_selected_key)
+                return
+            if select_id == "settings_general_context_manager":
+                value = str(getattr(event, "value", "")).strip()
+                if value in {"summarize", "sliding", "none"}:
+                    self._persist_project_setting_env_override("SWARMEE_CONTEXT_MANAGER", value)
+                    self._write_transcript_line(f"[settings] context manager set to {value}.")
+                return
+            if select_id == "settings_general_preflight":
+                value = str(getattr(event, "value", "")).strip()
+                if value in {"enabled", "disabled"}:
+                    self._persist_project_setting_env_override("SWARMEE_PREFLIGHT", value)
+                    self._write_transcript_line(f"[settings] preflight {value}.")
+                return
+            if select_id == "settings_general_preflight_level":
+                value = str(getattr(event, "value", "")).strip()
+                if value in {"summary", "summary+tree", "summary+files"}:
+                    self._persist_project_setting_env_override("SWARMEE_PREFLIGHT_LEVEL", value)
+                    self._write_transcript_line(f"[settings] preflight level set to {value}.")
                 return
             if select_id in {"settings_models_provider_select", "settings_models_default_tier_select"}:
                 if self.state.daemon.model_select_syncing:
@@ -6361,6 +6648,22 @@ def run_tui() -> int:
                 self._status_bar.set_model(self._current_model_summary())
             self._refresh_agent_summary()
             # The model selector is always visible; avoid transient notifications.
+
+        def on_tabbed_content_tab_activated(self, event: Any) -> None:
+            """Auto-expand sidebar when Settings tab is active, restore on leave."""
+            tab = getattr(event, "tab", None)
+            pane = getattr(event, "pane", None)
+            pane_id = str(getattr(pane, "id", "") or getattr(tab, "id", "")).strip()
+            self._sync_settings_sidebar_autosize(pane_id)
+
+        def on_directory_tree_directory_selected(self, event: Any) -> None:
+            """Populate scope path input when a directory is selected in the tree."""
+            path = getattr(event, "path", None)
+            if path is None:
+                return
+            with contextlib.suppress(Exception):
+                scope_input = self.query_one("#settings_scope_path_input", Input)
+                scope_input.value = str(path)
 
         def on_sidebar_list_selection_changed(self, event: Any) -> None:
             sidebar_list = getattr(event, "sidebar_list", None)
@@ -6996,17 +7299,14 @@ def run_tui() -> int:
             if button_id == "scaffold_view_artifacts":
                 self._set_scaffold_view_mode("artifacts")
                 return
-            if button_id == "settings_view_env":
-                self._set_settings_view_mode("env")
-                return
             if button_id == "settings_view_general":
                 self._set_settings_view_mode("general")
                 return
             if button_id == "settings_view_models":
                 self._set_settings_view_mode("models")
                 return
-            if button_id == "settings_view_scoping":
-                self._set_settings_view_mode("scoping")
+            if button_id == "settings_view_advanced":
+                self._set_settings_view_mode("advanced")
                 return
             if button_id == "settings_toggle_auto_approve":
                 self._default_auto_approve = not self._default_auto_approve
@@ -7018,6 +7318,69 @@ def run_tui() -> int:
                 self._refresh_settings_general()
                 state_label = "enabled" if self._default_auto_approve else "disabled"
                 self._write_transcript_line(f"[settings] auto-approve {state_label}.")
+                return
+            if button_id == "settings_toggle_bypass_consent":
+                cur = (os.environ.get("BYPASS_TOOL_CONSENT") or "").strip().lower()
+                new_val = "false" if cur in {"true", "1", "yes", "on"} else "true"
+                self._persist_project_setting_env_override("BYPASS_TOOL_CONSENT", new_val)
+                self._refresh_settings_general()
+                self._write_transcript_line(f"[settings] bypass consent {new_val}.")
+                return
+            if button_id == "settings_toggle_esc_interrupt":
+                cur = (os.environ.get("SWARMEE_ESC_INTERRUPT") or "enabled").strip().lower()
+                new_val = "disabled" if cur != "disabled" else "enabled"
+                self._persist_project_setting_env_override("SWARMEE_ESC_INTERRUPT", new_val)
+                self._refresh_settings_general()
+                self._write_transcript_line(f"[settings] ESC interrupt {new_val}.")
+                return
+            if button_id == "settings_toggle_swarm":
+                cur = (os.environ.get("SWARMEE_SWARM_ENABLED") or "true").strip().lower()
+                new_val = "false" if cur not in {"false", "0", "no", "off", "disabled"} else "true"
+                self._persist_project_setting_env_override("SWARMEE_SWARM_ENABLED", new_val)
+                self._refresh_settings_general()
+                self._write_transcript_line(f"[settings] swarm {'enabled' if new_val == 'true' else 'disabled'}.")
+                return
+            if button_id == "settings_toggle_log_events":
+                cur = (os.environ.get("SWARMEE_LOG_EVENTS") or "").strip().lower()
+                new_val = "false" if cur in {"true", "1", "yes", "on"} else "true"
+                self._persist_project_setting_env_override("SWARMEE_LOG_EVENTS", new_val)
+                self._refresh_settings_general()
+                self._write_transcript_line(f"[settings] log events {new_val}.")
+                return
+            if button_id == "settings_toggle_project_map":
+                cur = (os.environ.get("SWARMEE_PROJECT_MAP") or "enabled").strip().lower()
+                new_val = "disabled" if cur != "disabled" else "enabled"
+                self._persist_project_setting_env_override("SWARMEE_PROJECT_MAP", new_val)
+                self._refresh_settings_general()
+                self._write_transcript_line(f"[settings] project map {new_val}.")
+                return
+            if button_id == "settings_toggle_limit_tool_results":
+                cur = (os.environ.get("SWARMEE_LIMIT_TOOL_RESULTS") or "true").strip().lower()
+                new_val = "false" if cur not in {"false", "0", "no", "off"} else "true"
+                self._persist_project_setting_env_override("SWARMEE_LIMIT_TOOL_RESULTS", new_val)
+                self._refresh_settings_general()
+                self._write_transcript_line(f"[settings] limit tool results {new_val}.")
+                return
+            if button_id == "settings_toggle_truncate_results":
+                cur = (os.environ.get("SWARMEE_TRUNCATE_RESULTS") or "true").strip().lower()
+                new_val = "false" if cur not in {"false", "0", "no", "off"} else "true"
+                self._persist_project_setting_env_override("SWARMEE_TRUNCATE_RESULTS", new_val)
+                self._refresh_settings_general()
+                self._write_transcript_line(f"[settings] truncate results {new_val}.")
+                return
+            if button_id == "settings_toggle_log_redact":
+                cur = (os.environ.get("SWARMEE_LOG_REDACT") or "true").strip().lower()
+                new_val = "false" if cur not in {"false", "0", "no", "off"} else "true"
+                self._persist_project_setting_env_override("SWARMEE_LOG_REDACT", new_val)
+                self._refresh_settings_general()
+                self._write_transcript_line(f"[settings] log redact {new_val}.")
+                return
+            if button_id == "settings_toggle_freeze_tools":
+                cur = (os.environ.get("SWARMEE_FREEZE_TOOLS") or "").strip().lower()
+                new_val = "false" if cur in {"true", "1", "yes", "on"} else "true"
+                self._persist_project_setting_env_override("SWARMEE_FREEZE_TOOLS", new_val)
+                self._refresh_settings_general()
+                self._write_transcript_line(f"[settings] freeze tools {new_val}.")
                 return
             if button_id == "settings_aws_profile_apply":
                 self._apply_settings_aws_profile(self._settings_aws_profile_value(), announce=True)

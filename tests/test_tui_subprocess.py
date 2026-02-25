@@ -423,6 +423,29 @@ def test_is_multiline_newline_key_detects_shift_enter_alias():
     assert tui_app.is_multiline_newline_key(_Event()) is True
 
 
+def test_resize_key_helpers_match_arrow_and_fallback_variants():
+    class _Event:
+        def __init__(self, key: str, aliases: list[str] | None = None, name: str = "") -> None:
+            self.key = key
+            self.aliases = aliases or []
+            self.name = name
+
+    assert tui_app.is_widen_side_key(_Event("ctrl+left")) is True
+    assert tui_app.is_widen_side_key(_Event("left", aliases=["ctrl+left"])) is True
+    assert tui_app.is_widen_side_key(_Event("alt+left")) is True
+    assert tui_app.is_widen_side_key(_Event("ctrl+h")) is True
+    assert tui_app.is_widen_side_key(_Event("f6")) is True
+
+    assert tui_app.is_widen_transcript_key(_Event("ctrl+right")) is True
+    assert tui_app.is_widen_transcript_key(_Event("right", aliases=["ctrl+right"])) is True
+    assert tui_app.is_widen_transcript_key(_Event("alt+right")) is True
+    assert tui_app.is_widen_transcript_key(_Event("ctrl+l")) is True
+    assert tui_app.is_widen_transcript_key(_Event("f7")) is True
+
+    assert tui_app.is_widen_side_key(_Event("enter")) is False
+    assert tui_app.is_widen_transcript_key(_Event("enter")) is False
+
+
 def test_spawn_swarmee_configures_subprocess_run_mode(monkeypatch):
     captured: dict[str, object] = {}
     fake_proc = object()
