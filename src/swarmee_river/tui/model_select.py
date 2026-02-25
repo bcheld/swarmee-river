@@ -212,6 +212,36 @@ def daemon_model_select_options(
         value = f"{item_provider}|{item_tier}"
         options.append((f"{item_provider}/{item_tier}{suffix}", value))
 
+    available_values = {value for _label, value in options}
+
+    # Keep the selected tier stable while daemon confirmation catches up:
+    # if a pending/override value is for this provider but not yet in the
+    # daemon's available list, add an ephemeral option so the dropdown does
+    # not bounce back to the previous tier.
+    pending = (pending_value or "").strip().lower()
+    if pending and "|" in pending and pending not in available_values:
+        pending_provider, pending_tier = pending.split("|", 1)
+        pending_provider = pending_provider.strip().lower()
+        pending_tier = pending_tier.strip().lower()
+        if pending_provider == provider_name and pending_tier:
+            options.insert(0, (f"{pending_provider}/{pending_tier} (pending)", pending))
+            available_values.add(pending)
+
+    override_provider_name = (override_provider or "").strip().lower()
+    override_tier_name = (override_tier or "").strip().lower()
+    override_value = (
+        f"{override_provider_name}|{override_tier_name}"
+        if override_provider_name and override_tier_name
+        else ""
+    )
+    if (
+        override_value
+        and override_value not in available_values
+        and override_provider_name == provider_name
+    ):
+        options.insert(0, (f"{override_provider_name}/{override_tier_name} (selected)", override_value))
+        available_values.add(override_value)
+
     if not options:
         return [("No available tiers", _MODEL_LOADING_VALUE)], _MODEL_LOADING_VALUE
 

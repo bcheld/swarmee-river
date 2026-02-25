@@ -278,6 +278,37 @@ def test_choose_daemon_model_select_value_falls_back_to_first_option():
     assert selected == "openai|fast"
 
 
+def test_daemon_model_select_options_injects_pending_when_missing_from_available():
+    options, selected = tui_app.daemon_model_select_options(
+        provider="openai",
+        tier="balanced",
+        tiers=[
+            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5-mini"},
+        ],
+        pending_value="openai|deep",
+    )
+    values = [value for _label, value in options]
+    assert "openai|deep" in values
+    assert selected == "openai|deep"
+    assert options[0][0].endswith("(pending)")
+
+
+def test_daemon_model_select_options_injects_override_when_missing_from_available():
+    options, selected = tui_app.daemon_model_select_options(
+        provider="openai",
+        tier="balanced",
+        tiers=[
+            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5-mini"},
+        ],
+        override_provider="openai",
+        override_tier="deep",
+    )
+    values = [value for _label, value in options]
+    assert "openai|deep" in values
+    assert selected == "openai|deep"
+    assert options[0][0].endswith("(selected)")
+
+
 def test_choose_model_summary_parts_prefers_pending_until_confirmed():
     provider, tier, model_id = tui_app.choose_model_summary_parts(
         daemon_provider="openai",
@@ -444,6 +475,148 @@ def test_resize_key_helpers_match_arrow_and_fallback_variants():
 
     assert tui_app.is_widen_side_key(_Event("enter")) is False
     assert tui_app.is_widen_transcript_key(_Event("enter")) is False
+
+
+def test_should_ignore_programmatic_model_select_change_matches_marker():
+    assert (
+        tui_app.should_ignore_programmatic_model_select_change(
+            value="openai|fast",
+            programmatic_value="openai|fast",
+        )
+        is True
+    )
+    assert (
+        tui_app.should_ignore_programmatic_model_select_change(
+            value="OPENAI|FAST",
+            programmatic_value="openai|fast",
+        )
+        is True
+    )
+    assert (
+        tui_app.should_ignore_programmatic_model_select_change(
+            value="openai|deep",
+            programmatic_value="openai|fast",
+        )
+        is False
+    )
+    assert (
+        tui_app.should_ignore_programmatic_model_select_change(
+            value="openai|fast",
+            programmatic_value=None,
+        )
+        is False
+    )
+
+
+def test_should_process_model_select_change_requires_focus_and_not_syncing():
+    assert (
+        tui_app.should_process_model_select_change(
+            value="openai|fast",
+            model_select_syncing=False,
+            has_focus=True,
+            programmatic_value=None,
+        )
+        is True
+    )
+    assert (
+        tui_app.should_process_model_select_change(
+            value="openai|fast",
+            model_select_syncing=True,
+            has_focus=True,
+            programmatic_value=None,
+        )
+        is False
+    )
+    assert (
+        tui_app.should_process_model_select_change(
+            value="openai|fast",
+            model_select_syncing=False,
+            has_focus=False,
+            programmatic_value=None,
+        )
+        is False
+    )
+    assert (
+        tui_app.should_process_model_select_change(
+            value="openai|fast",
+            model_select_syncing=False,
+            has_focus=True,
+            programmatic_value="openai|fast",
+        )
+        is False
+    )
+
+
+def test_should_ignore_stale_model_info_update_only_within_target_window():
+    assert (
+        tui_app.should_ignore_stale_model_info_update(
+            incoming_value="openai|balanced",
+            target_value="openai|deep",
+            target_until_mono=12.0,
+            now_mono=10.0,
+        )
+        is True
+    )
+    assert (
+        tui_app.should_ignore_stale_model_info_update(
+            incoming_value="openai|deep",
+            target_value="openai|deep",
+            target_until_mono=12.0,
+            now_mono=10.0,
+        )
+        is False
+    )
+    assert (
+        tui_app.should_ignore_stale_model_info_update(
+            incoming_value="openai|balanced",
+            target_value="openai|deep",
+            target_until_mono=9.0,
+            now_mono=10.0,
+        )
+        is False
+    )
+    assert (
+        tui_app.should_ignore_stale_model_info_update(
+            incoming_value="",
+            target_value="openai|deep",
+            target_until_mono=12.0,
+            now_mono=10.0,
+        )
+        is False
+    )
+
+
+def test_should_ignore_model_select_reversion_during_target_window():
+    assert (
+        tui_app.should_ignore_model_select_reversion_during_target(
+            requested_value="openai|balanced",
+            current_value="openai|balanced",
+            target_value="openai|deep",
+            target_until_mono=12.0,
+            now_mono=10.0,
+        )
+        is True
+    )
+    assert (
+        tui_app.should_ignore_model_select_reversion_during_target(
+            requested_value="openai|deep",
+            current_value="openai|balanced",
+            target_value="openai|deep",
+            target_until_mono=12.0,
+            now_mono=10.0,
+        )
+        is False
+    )
+    assert (
+        tui_app.should_ignore_model_select_reversion_during_target(
+            requested_value="openai|balanced",
+            current_value="openai|balanced",
+            target_value="openai|deep",
+            target_until_mono=9.0,
+            now_mono=10.0,
+        )
+        is False
+    )
 
 
 def test_spawn_swarmee_configures_subprocess_run_mode(monkeypatch):

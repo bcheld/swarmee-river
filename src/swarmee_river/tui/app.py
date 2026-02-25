@@ -439,6 +439,74 @@ def is_widen_transcript_key(event: Any) -> bool:
     return bool(_event_key_variants(event) & _WIDEN_TRANSCRIPT_KEYS)
 
 
+def should_ignore_programmatic_model_select_change(
+    *,
+    value: str,
+    programmatic_value: str | None,
+) -> bool:
+    normalized_value = str(value or "").strip().lower()
+    marker = str(programmatic_value or "").strip().lower()
+    return bool(normalized_value and marker and normalized_value == marker)
+
+
+def should_process_model_select_change(
+    *,
+    value: str,
+    model_select_syncing: bool,
+    has_focus: bool,
+    programmatic_value: str | None,
+) -> bool:
+    normalized_value = str(value or "").strip()
+    if not normalized_value:
+        return False
+    if model_select_syncing:
+        return False
+    if should_ignore_programmatic_model_select_change(
+        value=normalized_value,
+        programmatic_value=programmatic_value,
+    ):
+        return False
+    if not has_focus:
+        return False
+    return True
+
+
+def should_ignore_stale_model_info_update(
+    *,
+    incoming_value: str | None,
+    target_value: str | None,
+    target_until_mono: float | None,
+    now_mono: float,
+) -> bool:
+    incoming = str(incoming_value or "").strip().lower()
+    target = str(target_value or "").strip().lower()
+    if not incoming or not target:
+        return False
+    if incoming == target:
+        return False
+    if target_until_mono is None:
+        return False
+    return now_mono < float(target_until_mono)
+
+
+def should_ignore_model_select_reversion_during_target(
+    *,
+    requested_value: str | None,
+    current_value: str | None,
+    target_value: str | None,
+    target_until_mono: float | None,
+    now_mono: float,
+) -> bool:
+    requested = str(requested_value or "").strip().lower()
+    current = str(current_value or "").strip().lower()
+    target = str(target_value or "").strip().lower()
+    if not requested or not current or not target:
+        return False
+    if target_until_mono is None or now_mono >= float(target_until_mono):
+        return False
+    return requested == current and requested != target
+
+
 def should_skip_active_run_tier_warning(
     *,
     requested_provider: str,
@@ -1845,6 +1913,9 @@ def run_tui() -> int:
         _settings_env_selected_key: str | None = None
         _settings_models_selected_id: str | None = None
         _pre_settings_split_ratio: int | None = None
+        _model_select_programmatic_value: str | None = None
+        _model_select_target_value: str | None = None
+        _model_select_target_until_mono: float | None = None
         _pending_connect_payload: dict[str, Any] | None = None
         _pending_connect_retry_payload: dict[str, Any] | None = None
         _runtime_proxy_recovery_attempted: set[str] = set()
@@ -4193,6 +4264,7 @@ def run_tui() -> int:
                     warnings=self.state.session.warning_count, errors=self.state.session.error_count
                 )
             self._refresh_session_header()
+            self._refresh_orchestrator_status()
 
         def _current_model_summary(self) -> str:
             provider_name, tier_name, model_id = choose_model_summary_parts(
@@ -4238,13 +4310,20 @@ def run_tui() -> int:
 
         def _apply_model_select_options(self, options: list[tuple[str, str]], selected_value: str) -> None:
             self.state.daemon.model_select_syncing = True
+            self._model_select_programmatic_value = str(selected_value or "").strip().lower() or None
             try:
                 with contextlib.suppress(Exception):
                     selector = self.query_one("#model_select", Select)
                     selector.set_options(options)
                     selector.value = selected_value
             finally:
-                self.state.daemon.model_select_syncing = False
+                with contextlib.suppress(Exception):
+                    self.call_after_refresh(self._release_model_select_syncing)
+                if self.state.daemon.model_select_syncing:
+                    self._release_model_select_syncing()
+
+        def _release_model_select_syncing(self) -> None:
+            self.state.daemon.model_select_syncing = False
 
         def _refresh_model_select_from_daemon(
             self,
@@ -4262,6 +4341,16 @@ def run_tui() -> int:
                 override_tier=self.state.daemon.model_tier_override,
             )
             self._apply_model_select_options(options, selected_value)
+
+        def _pin_model_select_target(self, provider: str, tier: str, *, seconds: float = 2.5) -> None:
+            provider_name = str(provider or "").strip().lower()
+            tier_name = str(tier or "").strip().lower()
+            if not provider_name or not tier_name:
+                self._model_select_target_value = None
+                self._model_select_target_until_mono = None
+                return
+            self._model_select_target_value = f"{provider_name}|{tier_name}"
+            self._model_select_target_until_mono = time.monotonic() + max(0.1, float(seconds))
 
         def _model_select_options(self) -> tuple[list[tuple[str, str]], str]:
             if self.state.daemon.tiers and self.state.daemon.provider:
@@ -4281,6 +4370,21 @@ def run_tui() -> int:
         def _handle_model_info(self, event: dict[str, Any]) -> None:
             provider = str(event.get("provider", "")).strip().lower()
             tier = str(event.get("tier", "")).strip().lower()
+            incoming_value = f"{provider}|{tier}" if provider and tier else ""
+            now_mono = time.monotonic()
+            if self._model_select_target_until_mono is not None and now_mono >= self._model_select_target_until_mono:
+                self._model_select_target_value = None
+                self._model_select_target_until_mono = None
+            if should_ignore_stale_model_info_update(
+                incoming_value=incoming_value,
+                target_value=self._model_select_target_value,
+                target_until_mono=self._model_select_target_until_mono,
+                now_mono=now_mono,
+            ):
+                return
+            if self._model_select_target_value and incoming_value == self._model_select_target_value:
+                self._model_select_target_value = None
+                self._model_select_target_until_mono = None
             model_id = event.get("model_id")
             tiers = event.get("tiers")
 
@@ -6578,12 +6682,23 @@ def run_tui() -> int:
                 return
             if select_id not in {"model_select"}:
                 return
-            if self.state.daemon.model_select_syncing:
-                return
 
             value = str(getattr(event, "value", "")).strip()
-            if not value:
+            has_focus = bool(getattr(select_widget, "has_focus", False))
+            if not should_process_model_select_change(
+                value=value,
+                model_select_syncing=bool(self.state.daemon.model_select_syncing),
+                has_focus=has_focus,
+                programmatic_value=self._model_select_programmatic_value,
+            ):
+                if should_ignore_programmatic_model_select_change(
+                    value=value,
+                    programmatic_value=self._model_select_programmatic_value,
+                ):
+                    self._model_select_programmatic_value = None
                 return
+            if self._model_select_programmatic_value is not None:
+                self._model_select_programmatic_value = None
             if value == _MODEL_AUTO_VALUE:
                 self.state.daemon.pending_model_select_value = None
                 self.state.daemon.model_provider_override = None
@@ -6596,6 +6711,18 @@ def run_tui() -> int:
                 requested_tier = tier.strip().lower()
                 if not requested_provider or not requested_tier:
                     return
+                if should_ignore_model_select_reversion_during_target(
+                    requested_value=f"{requested_provider}|{requested_tier}",
+                    current_value=(
+                        f"{str(self.state.daemon.provider or '').strip().lower()}|"
+                        f"{str(self.state.daemon.tier or '').strip().lower()}"
+                    ),
+                    target_value=self._model_select_target_value,
+                    target_until_mono=self._model_select_target_until_mono,
+                    now_mono=time.monotonic(),
+                ):
+                    return
+                self._pin_model_select_target(requested_provider, requested_tier)
                 if (
                     self.state.daemon.ready
                     and self.state.daemon.proc is not None
@@ -6643,7 +6770,6 @@ def run_tui() -> int:
                 self.state.daemon.model_tier_override = requested_tier or None
             self._update_header_status()
             self._update_prompt_placeholder()
-            self._refresh_model_select()
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
             self._refresh_agent_summary()
