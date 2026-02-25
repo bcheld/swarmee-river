@@ -20,6 +20,21 @@ def test_profiles_store_roundtrip(tmp_path: Path) -> None:
             "context_sources": [{"type": "file", "path": "notes/today.md", "id": "notes-today-md"}],
             "active_sops": ["investigation"],
             "knowledge_base_id": "KB-001",
+            "agents": [
+                {
+                    "id": "triage-research",
+                    "name": "Triage Research",
+                    "summary": "Investigates incoming issues",
+                    "prompt": "You triage and categorize incidents.",
+                    "provider": "OpenAI",
+                    "tier": "Balanced",
+                    "tool_names": ["file_read", "shell", "shell"],
+                    "sop_names": ["incident-triage"],
+                    "knowledge_base_id": "kb-123",
+                    "activated": True,
+                }
+            ],
+            "auto_delegate_assistive": True,
             "team_presets": [
                 {
                     "id": "triage-team",
@@ -38,6 +53,21 @@ def test_profiles_store_roundtrip(tmp_path: Path) -> None:
     assert saved.id == "researcher"
     assert saved.provider == "openai"
     assert saved.tier == "deep"
+    assert saved.agents == [
+        {
+            "id": "triage-research",
+            "name": "Triage Research",
+            "summary": "Investigates incoming issues",
+            "prompt": "You triage and categorize incidents.",
+            "provider": "openai",
+            "tier": "balanced",
+            "tool_names": ["file_read", "shell"],
+            "sop_names": ["incident-triage"],
+            "knowledge_base_id": "kb-123",
+            "activated": True,
+        }
+    ]
+    assert saved.auto_delegate_assistive is True
     assert saved.team_presets[0]["id"] == "triage-team"
 
     listed = list_profiles(root_dir=root_dir)
@@ -133,6 +163,61 @@ def test_profile_schema_normalizes_team_presets() -> None:
     assert profile.team_presets[0]["description"] == "Primary"
     assert profile.team_presets[1]["name"] == "Bravo Team"
     assert profile.team_presets[1]["spec"] == {"swarm": {"workers": 2}}
+
+
+def test_profile_schema_normalizes_agents_and_auto_delegate_assistive() -> None:
+    profile = AgentProfile.from_dict(
+        {
+            "id": "ops",
+            "name": "Ops",
+            "auto_delegate_assistive": "false",
+            "agents": [
+                {
+                    "id": "  triage-research  ",
+                    "name": "Triage Research",
+                    "summary": "  Investigates incoming issues  ",
+                    "prompt": "  You triage and categorize incidents.  ",
+                    "provider": "OpenAI",
+                    "tier": "Balanced",
+                    "tool_names": ["file_read", "shell", "SHELL", ""],
+                    "sop_names": ["incident-triage", "incident-triage"],
+                    "knowledge_base_id": "  kb-123  ",
+                    "activated": "yes",
+                },
+                {"id": "triage-research", "name": "Duplicate", "activated": True},
+                {"id": "missing-name", "prompt": "ignored"},
+                {"name": "No Spec Fields"},
+            ],
+        }
+    )
+
+    assert profile.auto_delegate_assistive is False
+    assert profile.agents == [
+        {
+            "id": "triage-research",
+            "name": "Triage Research",
+                "summary": "Investigates incoming issues",
+                "prompt": "You triage and categorize incidents.",
+                "provider": "openai",
+                "tier": "balanced",
+                "tool_names": ["file_read", "shell", "SHELL"],
+                "sop_names": ["incident-triage"],
+                "knowledge_base_id": "kb-123",
+                "activated": True,
+            },
+        {
+            "id": "No-Spec-Fields",
+            "name": "No Spec Fields",
+            "summary": "",
+            "prompt": "",
+            "provider": None,
+            "tier": None,
+            "tool_names": [],
+            "sop_names": [],
+            "knowledge_base_id": None,
+            "activated": False,
+        },
+    ]
 
 def test_default_state_dir_profiles_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     state_root = tmp_path / "state-root"

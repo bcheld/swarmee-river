@@ -127,6 +127,10 @@ def _handle_agent_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         app.state.agent_studio.effective_profile = applied_profile
         app._refresh_agent_summary()
         app._reload_saved_profiles(selected_id=applied_profile.id)
+        app.state.agent_studio.agents = [dict(item) for item in applied_profile.agents]
+        app.state.agent_studio.auto_delegate_assistive = bool(applied_profile.auto_delegate_assistive)
+        app._render_agent_builder_panel()
+        app._render_agent_overview_panel()
         app.state.agent_studio.team_presets = normalize_team_presets(applied_profile.team_presets)
         app.state.agent_studio.team_selected_item_id = None
         app._render_agent_team_panel()
@@ -136,7 +140,7 @@ def _handle_agent_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
 
     if etype == "safety_overrides":
         app.state.agent_studio.session_safety_overrides = normalize_session_safety_overrides(event.get("overrides"))
-        app._render_agent_tools_panel()
+        app._set_agent_tools_override_form_values(app.state.agent_studio.session_safety_overrides)
         if app.state.agent_studio.session_safety_overrides:
             app._set_agent_tools_status("Session overrides active.")
         else:

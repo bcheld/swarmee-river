@@ -1093,11 +1093,85 @@ def test_normalize_session_view_mode_switches_between_issues_and_timeline():
 
 
 def test_normalize_agent_studio_view_mode_handles_known_and_unknown_values():
-    assert tui_app.normalize_agent_studio_view_mode("profile") == "profile"
-    assert tui_app.normalize_agent_studio_view_mode("tools") == "tools"
-    assert tui_app.normalize_agent_studio_view_mode("team") == "team"
-    assert tui_app.normalize_agent_studio_view_mode("TOOLS") == "tools"
-    assert tui_app.normalize_agent_studio_view_mode("unknown") == "profile"
+    assert tui_app.normalize_agent_studio_view_mode("overview") == "overview"
+    assert tui_app.normalize_agent_studio_view_mode("builder") == "builder"
+    assert tui_app.normalize_agent_studio_view_mode("BUILDER") == "builder"
+    assert tui_app.normalize_agent_studio_view_mode("unknown") == "overview"
+
+
+def test_activated_agent_helpers_filter_render_and_default():
+    items = tui_app.build_activated_agent_sidebar_items(
+        [
+            {
+                "id": "triage-research",
+                "name": "Triage Research",
+                "summary": "Investigates incoming issues",
+                "prompt": "You triage incidents.",
+                "provider": "openai",
+                "tier": "balanced",
+                "tool_names": ["file_read", "shell", "shell"],
+                "sop_names": ["incident-triage"],
+                "knowledge_base_id": "kb-123",
+                "activated": True,
+            },
+            {
+                "id": "draft-agent",
+                "name": "Draft Agent",
+                "activated": False,
+            },
+        ]
+    )
+    assert [item["id"] for item in items] == ["triage-research"]
+    assert items[0]["state"] == "active"
+    assert "Investigates incoming issues" in items[0]["subtitle"]
+
+    detail = tui_app.render_activated_agent_detail_text(items[0])
+    assert "Activated Agent" in detail
+    assert "ID: triage-research" in detail
+    assert "Tools: file_read, shell" in detail
+    assert "SOPs: incident-triage" in detail
+
+    empty_items = tui_app.build_activated_agent_sidebar_items([])
+    assert [item["id"] for item in empty_items] == ["activated_agents_none"]
+    assert "No agents are currently activated" in tui_app.render_activated_agent_detail_text(empty_items[0])
+
+
+def test_build_swarm_agent_specs_and_run_prompt_from_activated_agents():
+    from swarmee_river.tui.agent_studio import build_swarm_agent_specs
+
+    agents = [
+        {
+            "id": "triage-research",
+            "name": "Triage Research",
+            "prompt": "You triage incidents.",
+            "provider": "openai",
+            "tier": "balanced",
+            "tool_names": ["file_read", "shell"],
+            "activated": True,
+        },
+        {
+            "id": "inactive",
+            "name": "Inactive Agent",
+            "prompt": "ignored",
+            "activated": False,
+        },
+    ]
+    specs = build_swarm_agent_specs(agents)
+    assert specs == [
+        {
+            "name": "Triage Research",
+            "system_prompt": "You triage incidents.",
+            "tools": ["file_read", "shell"],
+            "model_provider": "openai",
+            "model_settings": {"tier": "balanced"},
+        }
+    ]
+
+    prompt = tui_app.build_activated_agents_run_prompt(agents, task="Handle this incident.")
+    assert "Run activated agents with a single `swarm` tool call." in prompt
+    assert "task: Handle this incident." in prompt
+    assert '"name": "Triage Research"' in prompt
+    assert tui_app.build_activated_agents_run_prompt([], task="ignored") == ""
 
 
 def test_agent_tools_safety_policy_lens_helpers_render_effective_state():
@@ -1191,9 +1265,8 @@ def test_run_tui_compose_and_agent_studio_switch_smoke(monkeypatch):
             self._composed.pop()
             active_app.reset(token)
         captured["composed"] = True
-        self._set_agent_studio_view_mode("profile")
-        self._set_agent_studio_view_mode("tools")
-        self._set_agent_studio_view_mode("team")
+        self._set_agent_studio_view_mode("overview")
+        self._set_agent_studio_view_mode("builder")
         self._set_agent_studio_view_mode("invalid")
         captured["switched"] = True
 

@@ -8,6 +8,8 @@ import re
 import uuid
 from typing import Any
 
+from swarmee_river.profiles.models import normalize_agent_definition as normalize_profile_agent_definition
+from swarmee_river.profiles.models import normalize_agent_definitions as normalize_profile_agent_definitions
 from swarmee_river.settings import load_settings
 
 _AGENT_TOOL_CONSENT_VALUES = {"ask", "allow", "deny"}
@@ -92,9 +94,138 @@ def build_team_preset_run_prompt(preset: dict[str, Any]) -> str:
 def normalize_agent_studio_view_mode(mode: str | None) -> str:
     """Normalize Agent Studio sub-view mode."""
     normalized = str(mode or "").strip().lower()
-    if normalized in {"profile", "tools", "team"}:
+    if normalized in {"overview", "builder"}:
         return normalized
-    return "profile"
+    return "overview"
+
+
+def normalize_agent_definition(raw: Any) -> dict[str, Any] | None:
+    return normalize_profile_agent_definition(raw)
+
+
+def normalize_agent_definitions(raw_agents: Any) -> list[dict[str, Any]]:
+    return normalize_profile_agent_definitions(raw_agents)
+
+
+def build_activated_agent_sidebar_items(
+    agents: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    normalized = normalize_agent_definitions(agents or [])
+    activated = [agent for agent in normalized if bool(agent.get("activated"))]
+    if not activated:
+        return [
+            {
+                "id": "activated_agents_none",
+                "title": "No Activated Agents",
+                "subtitle": "Use Builder to activate agents for this session.",
+                "state": "default",
+            }
+        ]
+
+    items: list[dict[str, Any]] = []
+    for item in activated:
+        provider = str(item.get("provider", "")).strip()
+        tier = str(item.get("tier", "")).strip()
+        model_label = "/".join(token for token in (provider, tier) if token) or "(inherit session model)"
+        summary = str(item.get("summary", "")).strip()
+        subtitle = summary or model_label
+        if summary and model_label:
+            subtitle = f"{summary} | {model_label}"
+        items.append(
+            {
+                "id": str(item.get("id", "")).strip(),
+                "title": str(item.get("name", "")).strip() or "Unnamed Agent",
+                "subtitle": subtitle,
+                "state": "active",
+                "agent": dict(item),
+            }
+        )
+    return items
+
+
+def render_activated_agent_detail_text(item: dict[str, Any] | None) -> str:
+    if not isinstance(item, dict):
+        return "(no activated agent selected)"
+
+    item_id = str(item.get("id", "")).strip()
+    if item_id == "activated_agents_none":
+        return (
+            "Activated Agents\n\n"
+            "No agents are currently activated for delegation.\n"
+            "Open Builder and enable `Activated` on at least one agent."
+        )
+
+    agent = normalize_agent_definition(item.get("agent"))
+    if agent is None:
+        return "(invalid agent record)"
+
+    provider = str(agent.get("provider", "")).strip()
+    tier = str(agent.get("tier", "")).strip()
+    model_label = "/".join(token for token in (provider, tier) if token) or "(inherit)"
+    tools = _normalized_tool_name_list(agent.get("tool_names"))
+    sops = _normalized_tool_name_list(agent.get("sop_names"))
+    kb_id = str(agent.get("knowledge_base_id", "")).strip() or "(none)"
+    summary = str(agent.get("summary", "")).strip() or "(none)"
+    prompt = str(agent.get("prompt", "")).strip() or "(none)"
+    return (
+        "Activated Agent\n\n"
+        f"ID: {agent['id']}\n"
+        f"Name: {agent['name']}\n"
+        f"Summary: {summary}\n"
+        f"Model: {model_label}\n"
+        f"KB: {kb_id}\n"
+        f"Tools: {', '.join(tools) if tools else '(inherit/default)'}\n"
+        f"SOPs: {', '.join(sops) if sops else '(none)'}\n\n"
+        "Prompt:\n"
+        f"{prompt}"
+    )
+
+
+def build_swarm_agent_specs(
+    agents: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    normalized = normalize_agent_definitions(agents or [])
+    specs: list[dict[str, Any]] = []
+    for agent in normalized:
+        if not bool(agent.get("activated")):
+            continue
+        prompt = str(agent.get("prompt", "")).strip()
+        spec: dict[str, Any] = {
+            "name": str(agent.get("name", "")).strip() or str(agent.get("id", "")).strip() or "agent",
+            "system_prompt": prompt or "You are a helpful specialist agent.",
+        }
+        tool_names = _normalized_tool_name_list(agent.get("tool_names"))
+        if tool_names:
+            spec["tools"] = tool_names
+        provider = str(agent.get("provider", "")).strip().lower()
+        tier = str(agent.get("tier", "")).strip().lower()
+        if provider:
+            spec["model_provider"] = provider
+        if tier:
+            spec["model_settings"] = {"tier": tier}
+        specs.append(spec)
+    return specs
+
+
+def build_activated_agents_run_prompt(
+    agents: list[dict[str, Any]] | None = None,
+    *,
+    task: str | None = None,
+) -> str:
+    specs = build_swarm_agent_specs(agents)
+    if not specs:
+        return ""
+    spec_json = _json.dumps(specs, ensure_ascii=False, indent=2, sort_keys=True)
+    task_text = str(task or "Execute the current user task collaboratively.").strip()
+    return (
+        "Run activated agents with a single `swarm` tool call.\n"
+        "Use the `agents` array below exactly as provided.\n\n"
+        f"task: {task_text}\n\n"
+        "agents:\n"
+        "```json\n"
+        f"{spec_json}\n"
+        "```"
+    )
 
 
 def _normalized_tool_name_list(raw_values: Any) -> list[str]:
@@ -303,14 +434,20 @@ def render_agent_team_detail_text(item: dict[str, Any] | None) -> str:
 __all__ = [
     "_normalized_tool_name_list",
     "_policy_tier_profile",
+    "build_activated_agent_sidebar_items",
+    "build_activated_agents_run_prompt",
     "build_agent_policy_lens",
     "build_agent_team_sidebar_items",
     "build_agent_tools_safety_sidebar_items",
+    "build_swarm_agent_specs",
     "build_team_preset_run_prompt",
+    "normalize_agent_definition",
+    "normalize_agent_definitions",
     "normalize_agent_studio_view_mode",
     "normalize_session_safety_overrides",
     "normalize_team_preset",
     "normalize_team_presets",
+    "render_activated_agent_detail_text",
     "render_agent_team_detail_text",
     "render_agent_tools_safety_detail_text",
 ]

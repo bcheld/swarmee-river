@@ -475,7 +475,27 @@ def test_runtime_service_set_profile_requires_idle_query_and_proxies(monkeypatch
                 json.dumps(
                     {
                         "cmd": "set_profile",
-                        "profile": {"id": "qa", "name": "QA", "tier": "deep", "active_sops": ["review"]},
+                        "profile": {
+                            "id": "qa",
+                            "name": "QA",
+                            "tier": "deep",
+                            "active_sops": ["review"],
+                            "auto_delegate_assistive": True,
+                            "agents": [
+                                {
+                                    "id": "triage-research",
+                                    "name": "Triage Research",
+                                    "summary": "Investigates incoming issues",
+                                    "prompt": "You triage incidents.",
+                                    "provider": "openai",
+                                    "tier": "balanced",
+                                    "tool_names": ["file_read", "shell"],
+                                    "sop_names": ["incident-triage"],
+                                    "knowledge_base_id": "kb-123",
+                                    "activated": True,
+                                }
+                            ],
+                        },
                     }
                 ).encode("utf-8")
                 + b"\n"
@@ -486,7 +506,27 @@ def test_runtime_service_set_profile_requires_idle_query_and_proxies(monkeypatch
             forwarded_profile = json.loads(proc.stdin.writes[-1].strip())
             assert forwarded_profile == {
                 "cmd": "set_profile",
-                "profile": {"id": "qa", "name": "QA", "tier": "deep", "active_sops": ["review"]},
+                "profile": {
+                    "id": "qa",
+                    "name": "QA",
+                    "tier": "deep",
+                    "active_sops": ["review"],
+                    "auto_delegate_assistive": True,
+                    "agents": [
+                        {
+                            "id": "triage-research",
+                            "name": "Triage Research",
+                            "summary": "Investigates incoming issues",
+                            "prompt": "You triage incidents.",
+                            "provider": "openai",
+                            "tier": "balanced",
+                            "tool_names": ["file_read", "shell"],
+                            "sop_names": ["incident-triage"],
+                            "knowledge_base_id": "kb-123",
+                            "activated": True,
+                        }
+                    ],
+                },
             }
 
             writes_before = len(proc.stdin.writes)

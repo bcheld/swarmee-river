@@ -280,12 +280,24 @@ def render_agent_profile_summary_text(profile: dict[str, Any] | None) -> str:
     active_sops = [str(item).strip() for item in sops_raw] if isinstance(sops_raw, list) else []
     active_sops = [item for item in active_sops if item]
     kb_id = str(profile.get("knowledge_base_id", "")).strip() or "(none)"
+    agents_raw = profile.get("agents")
+    agents = agents_raw if isinstance(agents_raw, list) else []
+    activated_agents = [
+        item
+        for item in agents
+        if isinstance(item, dict)
+        and bool(item.get("activated"))
+        and str(item.get("name", "")).strip()
+    ]
+    auto_delegate = bool(profile.get("auto_delegate_assistive", True))
 
     lines = [
         f"Name: {name}",
         f"ID: {profile_id}",
         f"Model: {provider}/{tier}",
         f"KB: {kb_id}",
+        f"Assistive delegation: {'on' if auto_delegate else 'off'}",
+        f"Activated agents: {len(activated_agents)}",
         "",
         f"System snippets ({len(snippets)}):",
     ]
@@ -315,6 +327,18 @@ def render_agent_profile_summary_text(profile: dict[str, Any] | None) -> str:
             lines.append(f"- {source_type}: {_truncate_single_line(label, max_len=88)}")
         if len(context_sources) > 5:
             lines.append(f"- ... +{len(context_sources) - 5} more")
+    else:
+        lines.append("- (none)")
+
+    lines.append("")
+    lines.append(f"Activated agent roster ({len(activated_agents)}):")
+    if activated_agents:
+        for agent in activated_agents[:5]:
+            name = str(agent.get("name", "")).strip() or str(agent.get("id", "")).strip() or "agent"
+            summary = _truncate_single_line(str(agent.get("summary", "")).strip() or "(no summary)", max_len=72)
+            lines.append(f"- {name}: {summary}")
+        if len(activated_agents) > 5:
+            lines.append(f"- ... +{len(activated_agents) - 5} more")
     else:
         lines.append("- (none)")
 

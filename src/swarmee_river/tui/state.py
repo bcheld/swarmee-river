@@ -79,11 +79,21 @@ class SessionState:
 
 @dataclass
 class AgentStudioState:
-    view_mode: str = "profile"
+    view_mode: str = "overview"
     saved_profiles: list[Any] = field(default_factory=list)
     effective_profile: Any = None
     draft_dirty: bool = False
     form_syncing: bool = False
+    profile_select_syncing: bool = False
+    selected_profile_id: str | None = None
+    agents: list[dict[str, Any]] = field(default_factory=list)
+    activated_items: list[dict[str, Any]] = field(default_factory=list)
+    activated_selected_item_id: str | None = None
+    builder_items: list[dict[str, Any]] = field(default_factory=list)
+    builder_selected_item_id: str | None = None
+    builder_form_syncing: bool = False
+    auto_delegate_assistive: bool = True
+    tool_catalog: list[str] = field(default_factory=list)
     tools_items: list[dict[str, Any]] = field(default_factory=list)
     team_presets: list[dict[str, Any]] = field(default_factory=list)
     team_items: list[dict[str, Any]] = field(default_factory=list)

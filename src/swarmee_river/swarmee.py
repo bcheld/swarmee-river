@@ -664,14 +664,21 @@ def _build_session_meta_payload(
     }
 
 
-def _build_model_info_event_payload(*, model_manager: SessionModelManager, selected_provider: str) -> dict[str, Any]:
+def _build_model_info_event_payload(
+    *,
+    model_manager: SessionModelManager,
+    selected_provider: str,
+    tool_names: list[str] | None = None,
+) -> dict[str, Any]:
     tiers = model_manager.list_tiers()
     current = next((item for item in tiers if item.name == model_manager.current_tier), None)
+    normalized_tool_names = sorted({str(name).strip() for name in (tool_names or []) if str(name).strip()})
     return {
         "event": "model_info",
         "provider": current.provider if current is not None else selected_provider,
         "tier": model_manager.current_tier,
         "model_id": current.model_id if current is not None else None,
+        "tool_names": normalized_tool_names,
         "tiers": [
             {
                 "name": item.name,
@@ -1041,6 +1048,8 @@ def _build_agent_runtime(
     active_knowledge_base_id: str | None = knowledge_base_id
     user_context_sources: list[dict[str, str]] = []
     active_profile_system_prompt_snippets: list[str] = []
+    active_profile_agents: list[dict[str, Any]] = []
+    auto_delegate_assistive = True
     user_context_active_reminder_keys: set[str] = set()
     user_context_file_cache: dict[str, dict[str, Any]] = {}
     user_context_sop_cache: dict[str, dict[str, Any]] = {}
@@ -1420,6 +1429,7 @@ def _build_agent_runtime(
         }
 
     def refresh_system_prompt(welcome_text_local: str) -> None:
+        nonlocal auto_delegate_assistive
         prompt_cache.queue_if_changed("project_map", project_map_prompt_section)
         prompt_cache.queue_if_changed("preflight", preflight_prompt_section)
         prompt_cache.queue_if_changed("active_plan", active_plan_prompt_section)
@@ -1469,6 +1479,40 @@ def _build_agent_runtime(
             prompt_cache.queue_if_changed("active_sop", "\n\n".join(active_sop_sections))
         else:
             prompt_cache.queue_if_changed("active_sop", "")
+
+        if auto_delegate_assistive:
+            activated_agents = [
+                item for item in active_profile_agents if isinstance(item, dict) and bool(item.get("activated"))
+            ]
+            guidance_lines: list[str] = []
+            for idx, agent_def in enumerate(activated_agents, start=1):
+                name = str(agent_def.get("name", "")).strip() or f"agent_{idx}"
+                summary = str(agent_def.get("summary", "")).strip()
+                prompt = str(agent_def.get("prompt", "")).strip()
+                tools = [str(tool).strip() for tool in agent_def.get("tool_names", []) if str(tool).strip()]
+                line = f"{idx}. {name}"
+                if summary:
+                    line += f" - {summary}"
+                if tools:
+                    line += f" [tools: {', '.join(tools)}]"
+                if prompt:
+                    line += f"\n   Instructions: {prompt[:220]}"
+                guidance_lines.append(line)
+            if guidance_lines:
+                prompt_cache.queue_if_changed(
+                    "assistive_delegation",
+                    (
+                        "Assistive Delegation Roster:\n"
+                        "When a task matches one of these roles, prefer delegating via a single `swarm` call.\n"
+                        "If delegation does not fit, continue normally.\n\n"
+                        + "\n".join(guidance_lines)
+                    ),
+                )
+            else:
+                prompt_cache.queue_if_changed("assistive_delegation", "")
+        else:
+            prompt_cache.queue_if_changed("assistive_delegation", "")
+
         warning_text = _queue_user_context_reminders()
         if warning_text:
             _emit_tui_event({"event": "warning", "text": warning_text})
@@ -1735,10 +1779,14 @@ def _build_agent_runtime(
         ctx.refresh_system_prompt()
 
     def _current_model_info_event() -> dict[str, Any]:
-        return _build_model_info_event_payload(model_manager=model_manager, selected_provider=selected_provider)
+        return _build_model_info_event_payload(
+            model_manager=model_manager,
+            selected_provider=selected_provider,
+            tool_names=sorted(tools_dict.keys()),
+        )
 
     def apply_profile(raw_profile: Any) -> dict[str, Any]:
-        nonlocal active_profile_system_prompt_snippets
+        nonlocal active_profile_system_prompt_snippets, active_profile_agents, auto_delegate_assistive
 
         normalized = AgentProfile.from_dict(raw_profile)
         requested_tier = (normalized.tier or "").strip().lower()
@@ -1780,6 +1828,8 @@ def _build_agent_runtime(
             _refresh_query_context(interactive=True)
 
         active_profile_system_prompt_snippets = list(normalized.system_prompt_snippets)
+        active_profile_agents = [dict(item) for item in normalized.agents]
+        auto_delegate_assistive = bool(normalized.auto_delegate_assistive)
         applied_sources = set_user_context_sources(normalized_sources)
         _replace_daemon_sop_overrides(resolved_sops)
         ctx.refresh_system_prompt()
@@ -1796,6 +1846,8 @@ def _build_agent_runtime(
             "context_sources": [dict(item) for item in applied_sources],
             "active_sops": _list_active_sop_names(),
             "knowledge_base_id": current_kb or None,
+            "agents": [dict(item) for item in active_profile_agents],
+            "auto_delegate_assistive": auto_delegate_assistive,
             "team_presets": [dict(item) for item in normalized.team_presets],
         }
 

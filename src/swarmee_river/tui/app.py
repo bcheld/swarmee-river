@@ -31,6 +31,7 @@ from swarmee_river.error_classification import (
     normalize_error_category,
 )
 from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, save_profile
+from swarmee_river.profiles.models import normalize_agent_definitions
 from swarmee_river.runtime_service.client import ensure_runtime_broker
 from swarmee_river.session.graph_index import (
     build_session_graph_index,
@@ -41,17 +42,22 @@ from swarmee_river.state_paths import logs_dir, sessions_dir
 from swarmee_river.tui.agent_studio import (
     _normalized_tool_name_list,
     _policy_tier_profile,
+    build_activated_agent_sidebar_items,
+    build_activated_agents_run_prompt,
     build_agent_policy_lens,
     build_agent_team_sidebar_items,
     build_agent_tools_safety_sidebar_items,
     build_team_preset_run_prompt,
+    normalize_agent_definition,
     normalize_agent_studio_view_mode,
     normalize_session_safety_overrides,
     normalize_team_preset,
     normalize_team_presets,
+    render_activated_agent_detail_text,
     render_agent_team_detail_text,
     render_agent_tools_safety_detail_text,
 )
+from swarmee_river.tools import get_tools
 from swarmee_river.tui.commands import (
     _AUTH_USAGE_TEXT,
     _COMPACT_USAGE_TEXT,
@@ -1428,129 +1434,109 @@ def run_tui() -> int:
             margin: 0 1 0 0;
         }
 
-        #agent_profile_view, #agent_tools_view, #agent_team_view {
+        #agent_overview_view, #agent_builder_view {
             height: 1fr;
             layout: vertical;
         }
 
-        #agent_summary_header, #agent_profiles_header {
+        #agent_summary_header, #agent_builder_profile_header, #agent_builder_agents_header {
             height: auto;
             color: $text-muted;
             padding: 0 0 1 0;
         }
 
-        #agent_profile_list {
+        #agent_overview_list, #agent_builder_agent_list {
             width: 1fr;
             margin: 0 0 1 0;
             min-height: 8;
         }
 
-        #agent_profile_meta_row {
-            height: auto;
-            layout: horizontal;
-            margin: 0 0 1 0;
-        }
-
-        #agent_profile_id, #agent_profile_name {
-            width: 1fr;
-            margin: 0 1 0 0;
-        }
-
-        #agent_profile_name {
-            margin: 0;
-        }
-
-        #agent_profile_actions {
-            height: auto;
-            margin: 0 0 1 0;
-        }
-
-        #agent_profile_status {
-            height: auto;
-            color: $text-muted;
-        }
-
-        #agent_tools_list, #agent_team_list {
-            width: 1fr;
-            margin: 0 0 1 0;
-            min-height: 8;
-        }
-
-        #agent_tools_detail, #agent_team_detail {
+        #agent_overview_detail, #agent_builder_agent_detail {
             height: 1fr;
         }
 
-        #agent_tools_overrides_header {
-            height: auto;
-            color: $text-muted;
-            padding: 1 0 0 0;
-        }
-
-        #agent_tools_override_consent, #agent_tools_override_allowlist, #agent_tools_override_blocklist {
-            width: 1fr;
-            margin: 0 0 1 0;
-        }
-
-        #agent_tools_override_actions {
+        #agent_builder_profile_row, #agent_profile_meta_row, #agent_builder_agent_meta_row, #agent_builder_model_row,
+        #agent_builder_agent_actions, #agent_profile_actions {
             height: auto;
             layout: horizontal;
             margin: 0 0 1 0;
         }
 
-        #agent_tools_override_actions Button {
+        #agent_builder_profile_row Select, #agent_builder_profile_row Button {
             width: 1fr;
             margin: 0 1 0 0;
         }
 
-        #agent_tools_override_status {
-            height: auto;
-            color: $text-muted;
-        }
-
-        #agent_team_editor_header {
-            height: auto;
-            color: $text-muted;
-            padding: 1 0 0 0;
-        }
-
-        #agent_team_meta_row {
-            height: auto;
-            layout: horizontal;
-            margin: 0 0 1 0;
-        }
-
-        #agent_team_preset_id, #agent_team_preset_name {
+        #agent_profile_id, #agent_profile_name, #agent_builder_agent_id, #agent_builder_agent_name {
             width: 1fr;
             margin: 0 1 0 0;
         }
 
-        #agent_team_preset_name {
+        #agent_profile_name, #agent_builder_agent_name {
             margin: 0;
         }
 
-        #agent_team_preset_description {
-            width: 1fr;
-            margin: 0 0 1 0;
-        }
-
-        #agent_team_preset_spec {
-            width: 1fr;
+        #agent_builder_agent_prompt {
             height: 8;
             margin: 0 0 1 0;
         }
 
-        #agent_team_actions {
+        #agent_builder_agent_summary,
+        #agent_builder_agent_tools,
+        #agent_builder_agent_sops,
+        #agent_builder_agent_kb {
+            margin: 0 0 1 0;
+        }
+
+        #agent_builder_model_row Select {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #agent_builder_model_row Select:last-child {
+            margin: 0;
+        }
+
+        #agent_profile_actions Button, #agent_builder_agent_actions Button {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #agent_profile_actions Button:last-child, #agent_builder_agent_actions Button:last-child {
+            margin: 0;
+        }
+
+        #agent_profile_status, #agent_overview_status, #agent_builder_status {
+            height: auto;
+            color: $text-muted;
+        }
+
+        #agent_builder_auto_delegate, #agent_builder_agent_activated {
+            margin: 0 0 1 0;
+        }
+
+        #settings_safety_header {
+            height: auto;
+            color: $text-muted;
+            padding: 1 0 0 0;
+        }
+
+        #settings_safety_tool_consent, #settings_safety_tool_allowlist, #settings_safety_tool_blocklist {
+            margin: 0 0 1 0;
+        }
+
+        #settings_safety_actions {
             height: auto;
             layout: horizontal;
             margin: 0 0 1 0;
         }
 
-        #agent_team_actions Button {
+        #settings_safety_actions Button {
             width: 1fr;
             margin: 0 1 0 0;
         }
 
-        #agent_team_status {
+        #settings_safety_status {
             height: auto;
             color: $text-muted;
         }
@@ -1834,9 +1820,32 @@ def run_tui() -> int:
         _TRANSCRIPT_MAX_LINES: int = 5000
         _split_ratio: int = 2
         _search_active: bool = False
-        _agent_view_profile_button: Any = None  # Button | None
+        _agent_view_profile_button: Any = None  # Button | None (legacy alias to overview)
         _agent_view_tools_button: Any = None  # Button | None
         _agent_view_team_button: Any = None  # Button | None
+        _agent_view_overview_button: Any = None  # Button | None
+        _agent_view_builder_button: Any = None  # Button | None
+        _agent_overview_view: Any = None  # Vertical | None
+        _agent_builder_view: Any = None  # Vertical | None
+        _agent_overview_header: Any = None  # SidebarHeader | None
+        _agent_overview_list: Any = None  # SidebarList | None
+        _agent_overview_detail: Any = None  # SidebarDetail | None
+        _agent_overview_status: Any = None  # Static | None
+        _agent_profile_select: Any = None  # Select | None
+        _agent_builder_auto_delegate_checkbox: Any = None  # Checkbox | None
+        _agent_builder_list: Any = None  # SidebarList | None
+        _agent_builder_detail: Any = None  # SidebarDetail | None
+        _agent_builder_agent_id_input: Any = None  # Input | None
+        _agent_builder_agent_name_input: Any = None  # Input | None
+        _agent_builder_agent_summary_input: Any = None  # Input | None
+        _agent_builder_agent_prompt_input: Any = None  # TextArea | None
+        _agent_builder_agent_provider_select: Any = None  # Select | None
+        _agent_builder_agent_tier_select: Any = None  # Select | None
+        _agent_builder_agent_tools_input: Any = None  # Input | None
+        _agent_builder_agent_sops_input: Any = None  # Input | None
+        _agent_builder_agent_kb_input: Any = None  # Input | None
+        _agent_builder_agent_activated_checkbox: Any = None  # Checkbox | None
+        _agent_builder_status: Any = None  # Static | None
         _agent_profile_view: Any = None  # Vertical | None
         _agent_tools_view: Any = None  # Vertical | None
         _agent_team_view: Any = None  # Vertical | None
@@ -1894,6 +1903,10 @@ def run_tui() -> int:
         _settings_env_detail: Any = None  # Static | None
         _settings_env_value_select: Any = None  # Select | None
         _settings_env_value_input: Any = None  # Input | None
+        _settings_safety_tool_consent_input: Any = None  # Input | None
+        _settings_safety_tool_allowlist_input: Any = None  # Input | None
+        _settings_safety_tool_blocklist_input: Any = None  # Input | None
+        _settings_safety_status: Any = None  # Static | None
         _settings_toggle_auto_approve_button: Any = None  # Button | None
         _settings_toggle_bypass_consent_button: Any = None  # Button | None
         _settings_toggle_esc_interrupt_button: Any = None  # Button | None
@@ -1995,13 +2008,15 @@ def run_tui() -> int:
             self._refresh_sop_catalog()
             self._render_sop_panel()
             self._reload_saved_profiles()
-            self._render_agent_tools_panel()
-            self._render_agent_team_panel()
-            self._set_agent_studio_view_mode("profile")
+            self._refresh_agent_tool_catalog()
+            self._set_agent_tools_override_form_values(self.state.agent_studio.session_safety_overrides)
+            self._set_agent_studio_view_mode("overview")
             if self.state.agent_studio.saved_profiles:
                 self._load_profile_into_draft(self.state.agent_studio.saved_profiles[0])
             else:
                 self._new_agent_profile_draft(announce=False)
+            self._render_agent_builder_panel()
+            self._render_agent_overview_panel()
             self._refresh_agent_summary()
             self._refresh_model_select()
             self._refresh_orchestrator_status()
@@ -2635,13 +2650,10 @@ def run_tui() -> int:
             self._refresh_plan_status_bar()
 
         def _selected_agent_profile_id(self) -> str | None:
-            sidebar_list = self._agent_profile_list
-            if sidebar_list is None:
+            selector = self._agent_profile_select
+            if selector is None:
                 return None
-            getter = getattr(sidebar_list, "selected_id", None)
-            if not callable(getter):
-                return None
-            value = str(getter() or "").strip()
+            value = str(getattr(selector, "value", "")).strip()
             if not value or value == _AGENT_PROFILE_SELECT_NONE:
                 return None
             return value
@@ -3017,29 +3029,284 @@ def run_tui() -> int:
                 )
             self._refresh_agent_team_header()
 
+        def _set_agent_overview_status(self, message: str) -> None:
+            widget = self._agent_overview_status
+            if widget is None:
+                return
+            widget.update(message.strip() if isinstance(message, str) else "")
+
+        def _set_agent_builder_status(self, message: str) -> None:
+            widget = self._agent_builder_status
+            if widget is None:
+                return
+            widget.update(message.strip() if isinstance(message, str) else "")
+
+        def _refresh_agent_tool_catalog(self, tool_names: list[str] | None = None) -> None:
+            incoming = [str(name).strip() for name in (tool_names or []) if str(name).strip()]
+            if incoming:
+                self.state.agent_studio.tool_catalog = sorted(set(incoming))
+                return
+            if self.state.agent_studio.tool_catalog:
+                return
+            with contextlib.suppress(Exception):
+                self.state.agent_studio.tool_catalog = sorted(set(get_tools().keys()))
+
+        def _agent_builder_item_by_id(self, item_id: str | None) -> dict[str, Any] | None:
+            target = str(item_id or "").strip()
+            if not target:
+                return None
+            for item in self.state.agent_studio.builder_items:
+                if str(item.get("id", "")).strip() == target:
+                    return item
+            return None
+
+        def _set_agent_overview_selection(self, item: dict[str, Any] | None) -> None:
+            detail = self._agent_overview_detail
+            if detail is None:
+                return
+            if item is None:
+                self.state.agent_studio.activated_selected_item_id = None
+                detail.set_preview("(no activated agents)")
+                detail.set_actions([])
+                return
+            self.state.agent_studio.activated_selected_item_id = str(item.get("id", "")).strip() or None
+            detail.set_preview(render_activated_agent_detail_text(item))
+            detail.set_actions([])
+
+        def _set_agent_builder_form_values(self, agent_def: dict[str, Any] | None) -> None:
+            normalized = normalize_agent_definition(agent_def) if isinstance(agent_def, dict) else None
+            self.state.agent_studio.builder_form_syncing = True
+            try:
+                if self._agent_builder_agent_id_input is not None:
+                    self._agent_builder_agent_id_input.value = str(normalized.get("id", "")).strip() if normalized else ""
+                if self._agent_builder_agent_name_input is not None:
+                    self._agent_builder_agent_name_input.value = (
+                        str(normalized.get("name", "")).strip() if normalized else ""
+                    )
+                if self._agent_builder_agent_summary_input is not None:
+                    self._agent_builder_agent_summary_input.value = (
+                        str(normalized.get("summary", "")).strip() if normalized else ""
+                    )
+                if self._agent_builder_agent_prompt_input is not None:
+                    self._agent_builder_agent_prompt_input.load_text(
+                        str(normalized.get("prompt", "")).strip() if normalized else ""
+                    )
+                if self._agent_builder_agent_provider_select is not None:
+                    provider = str(normalized.get("provider", "")).strip().lower() if normalized else ""
+                    with contextlib.suppress(Exception):
+                        self._agent_builder_agent_provider_select.value = provider or "__inherit__"
+                if self._agent_builder_agent_tier_select is not None:
+                    tier = str(normalized.get("tier", "")).strip().lower() if normalized else ""
+                    with contextlib.suppress(Exception):
+                        self._agent_builder_agent_tier_select.value = tier or "__inherit__"
+                if self._agent_builder_agent_tools_input is not None:
+                    tools = _normalized_tool_name_list(normalized.get("tool_names")) if normalized else []
+                    self._agent_builder_agent_tools_input.value = ", ".join(tools)
+                if self._agent_builder_agent_sops_input is not None:
+                    sops = _normalized_tool_name_list(normalized.get("sop_names")) if normalized else []
+                    self._agent_builder_agent_sops_input.value = ", ".join(sops)
+                if self._agent_builder_agent_kb_input is not None:
+                    self._agent_builder_agent_kb_input.value = (
+                        str(normalized.get("knowledge_base_id", "")).strip() if normalized else ""
+                    )
+                if self._agent_builder_agent_activated_checkbox is not None:
+                    self._agent_builder_agent_activated_checkbox.value = bool(normalized.get("activated")) if normalized else False
+            finally:
+                self.state.agent_studio.builder_form_syncing = False
+
+        def _agent_builder_form_payload(self) -> dict[str, Any] | None:
+            raw_name = str(getattr(self._agent_builder_agent_name_input, "value", "")).strip()
+            if not raw_name:
+                self._notify("Agent name is required.", severity="warning")
+                return None
+            raw_id = str(getattr(self._agent_builder_agent_id_input, "value", "")).strip()
+            tools = self._parse_agent_tools_csv_list(str(getattr(self._agent_builder_agent_tools_input, "value", "")))
+            sops = self._parse_agent_tools_csv_list(str(getattr(self._agent_builder_agent_sops_input, "value", "")))
+            provider = str(getattr(self._agent_builder_agent_provider_select, "value", "")).strip().lower()
+            tier = str(getattr(self._agent_builder_agent_tier_select, "value", "")).strip().lower()
+            payload = normalize_agent_definition(
+                {
+                    "id": raw_id or raw_name,
+                    "name": raw_name,
+                    "summary": str(getattr(self._agent_builder_agent_summary_input, "value", "")).strip(),
+                    "prompt": str(getattr(self._agent_builder_agent_prompt_input, "text", "")).strip(),
+                    "provider": None if provider == "__inherit__" else provider,
+                    "tier": None if tier == "__inherit__" else tier,
+                    "tool_names": tools,
+                    "sop_names": sops,
+                    "knowledge_base_id": str(getattr(self._agent_builder_agent_kb_input, "value", "")).strip() or None,
+                    "activated": bool(getattr(self._agent_builder_agent_activated_checkbox, "value", False)),
+                }
+            )
+            if payload is None:
+                self._notify("Agent draft is invalid.", severity="warning")
+                return None
+            return payload
+
+        def _set_agent_builder_selection(self, item: dict[str, Any] | None) -> None:
+            detail = self._agent_builder_detail
+            if detail is None:
+                return
+            if item is None:
+                self.state.agent_studio.builder_selected_item_id = None
+                detail.set_preview("(no draft agents)")
+                detail.set_actions([])
+                self._set_agent_builder_form_values(None)
+                return
+            self.state.agent_studio.builder_selected_item_id = str(item.get("id", "")).strip() or None
+            detail.set_preview(render_activated_agent_detail_text({"id": item.get("id"), "agent": item.get("agent")}))
+            detail.set_actions([])
+            self._set_agent_builder_form_values(item.get("agent") if isinstance(item.get("agent"), dict) else None)
+
+        def _render_agent_overview_panel(self) -> None:
+            items = build_activated_agent_sidebar_items(self.state.agent_studio.agents)
+            self.state.agent_studio.activated_items = [dict(item) for item in items]
+            list_widget = self._agent_overview_list
+            selected_id = self.state.agent_studio.activated_selected_item_id
+            if list_widget is not None:
+                if not selected_id and items:
+                    selected_id = str(items[0].get("id", "")).strip()
+                list_widget.set_items(items, selected_id=selected_id, emit=False)
+                selected_overview_id = list_widget.selected_id()
+                selected_item = next(
+                    (
+                        item
+                        for item in self.state.agent_studio.activated_items
+                        if str(item.get("id", "")).strip() == str(selected_overview_id or "").strip()
+                    ),
+                    None,
+                )
+                self._set_agent_overview_selection(selected_item)
+            else:
+                self._set_agent_overview_selection(self.state.agent_studio.activated_items[0] if items else None)
+            if self._agent_overview_header is not None:
+                activated_count = sum(
+                    1 for item in self.state.agent_studio.agents if isinstance(item, dict) and bool(item.get("activated"))
+                )
+                self._agent_overview_header.set_badges([f"activated {activated_count}"])
+
+        def _render_agent_builder_panel(self) -> None:
+            self.state.agent_studio.agents = normalize_agent_definitions(self.state.agent_studio.agents)
+            items: list[dict[str, Any]] = []
+            for agent_def in self.state.agent_studio.agents:
+                title = str(agent_def.get("name", "")).strip() or "Unnamed Agent"
+                summary = str(agent_def.get("summary", "")).strip()
+                provider = str(agent_def.get("provider", "")).strip()
+                tier = str(agent_def.get("tier", "")).strip()
+                model_label = "/".join(token for token in (provider, tier) if token) or "inherit"
+                subtitle = summary or f"model: {model_label}"
+                if summary:
+                    subtitle = f"{summary} | {model_label}"
+                items.append(
+                    {
+                        "id": str(agent_def.get("id", "")).strip(),
+                        "title": title,
+                        "subtitle": subtitle,
+                        "state": "active" if bool(agent_def.get("activated")) else "default",
+                        "agent": dict(agent_def),
+                    }
+                )
+            self.state.agent_studio.builder_items = items
+            list_widget = self._agent_builder_list
+            selected_id = self.state.agent_studio.builder_selected_item_id
+            if list_widget is not None:
+                if not selected_id and items:
+                    selected_id = str(items[0].get("id", "")).strip()
+                list_widget.set_items(items, selected_id=selected_id, emit=False)
+                selected_item = self._agent_builder_item_by_id(list_widget.selected_id())
+                if selected_item is None and items:
+                    selected_item = items[0]
+                self._set_agent_builder_selection(selected_item)
+            else:
+                self._set_agent_builder_selection(items[0] if items else None)
+            if self._agent_builder_auto_delegate_checkbox is not None:
+                self._agent_builder_auto_delegate_checkbox.value = bool(self.state.agent_studio.auto_delegate_assistive)
+            self._render_agent_overview_panel()
+
+        def _new_agent_builder_draft(self) -> None:
+            payload = normalize_agent_definition(
+                {
+                    "id": f"agent-{uuid.uuid4().hex[:8]}",
+                    "name": "New Agent",
+                    "summary": "",
+                    "prompt": "",
+                    "activated": False,
+                }
+            )
+            if payload is None:
+                return
+            self.state.agent_studio.builder_selected_item_id = None
+            self._set_agent_builder_form_values(payload)
+            self._set_agent_builder_status("New agent draft.")
+            self._set_agent_draft_dirty(True)
+
+        def _save_agent_builder_draft(self) -> None:
+            payload = self._agent_builder_form_payload()
+            if payload is None:
+                return
+            selected_id = str(self.state.agent_studio.builder_selected_item_id or "").strip()
+            payload_id = str(payload.get("id", "")).strip()
+            next_agents = [dict(item) for item in normalize_agent_definitions(self.state.agent_studio.agents)]
+            if selected_id and selected_id != payload_id:
+                next_agents = [item for item in next_agents if str(item.get("id", "")).strip() != selected_id]
+            replaced = False
+            for idx, existing in enumerate(next_agents):
+                if str(existing.get("id", "")).strip() == payload_id:
+                    next_agents[idx] = payload
+                    replaced = True
+                    break
+            if not replaced:
+                next_agents.append(payload)
+            self.state.agent_studio.agents = normalize_agent_definitions(next_agents)
+            self.state.agent_studio.builder_selected_item_id = payload_id
+            self._render_agent_builder_panel()
+            self._set_agent_builder_status(f"Saved agent '{payload['name']}' in draft.")
+            self._set_agent_draft_dirty(True, note=f"Agent '{payload['name']}' saved in draft.")
+
+        def _delete_selected_builder_agent(self) -> None:
+            selected = self._agent_builder_item_by_id(self.state.agent_studio.builder_selected_item_id)
+            if selected is None:
+                self._notify("Select a draft agent first.", severity="warning")
+                return
+            selected_id = str(selected.get("id", "")).strip()
+            next_agents = [
+                item for item in self.state.agent_studio.agents if str(item.get("id", "")).strip() != selected_id
+            ]
+            self.state.agent_studio.agents = normalize_agent_definitions(next_agents)
+            self.state.agent_studio.builder_selected_item_id = None
+            self._render_agent_builder_panel()
+            self._set_agent_builder_status(f"Deleted agent '{selected_id}' from draft.")
+            self._set_agent_draft_dirty(True, note=f"Agent '{selected_id}' removed from draft.")
+
+        def _insert_activated_agents_run_prompt(self, *, run_now: bool = False) -> None:
+            prompt = build_activated_agents_run_prompt(self.state.agent_studio.agents)
+            if not prompt:
+                self._notify("No activated agents available.", severity="warning")
+                return
+            if not self._set_prompt_editor_text(prompt):
+                self._notify("Prompt editor is unavailable.", severity="warning")
+                return
+            self._set_agent_builder_status("Inserted swarm prompt for activated agents.")
+            if run_now:
+                self.action_submit_prompt()
+
         def _set_agent_studio_view_mode(self, mode: str) -> None:
             normalized = normalize_agent_studio_view_mode(mode)
             self.state.agent_studio.view_mode = normalized
 
-            profile_view = self._agent_profile_view
-            tools_view = self._agent_tools_view
-            team_view = self._agent_team_view
-            if profile_view is not None:
-                profile_view.styles.display = "block" if normalized == "profile" else "none"
-            if tools_view is not None:
-                tools_view.styles.display = "block" if normalized == "tools" else "none"
-            if team_view is not None:
-                team_view.styles.display = "block" if normalized == "team" else "none"
+            overview_view = self._agent_overview_view
+            builder_view = self._agent_builder_view
+            if overview_view is not None:
+                overview_view.styles.display = "block" if normalized == "overview" else "none"
+            if builder_view is not None:
+                builder_view.styles.display = "block" if normalized == "builder" else "none"
 
-            profile_button = self._agent_view_profile_button
-            tools_button = self._agent_view_tools_button
-            team_button = self._agent_view_team_button
-            if profile_button is not None:
-                profile_button.variant = "primary" if normalized == "profile" else "default"
-            if tools_button is not None:
-                tools_button.variant = "primary" if normalized == "tools" else "default"
-            if team_button is not None:
-                team_button.variant = "primary" if normalized == "team" else "default"
+            overview_button = self._agent_view_overview_button
+            builder_button = self._agent_view_builder_button
+            if overview_button is not None:
+                overview_button.variant = "primary" if normalized == "overview" else "default"
+            if builder_button is not None:
+                builder_button.variant = "primary" if normalized == "builder" else "default"
 
         def _kb_id_from_context_sources(self) -> str | None:
             for source in self._context_sources:
@@ -3073,6 +3340,10 @@ def run_tui() -> int:
                 knowledge_base_id=(
                     self._kb_id_from_context_sources() or (current.knowledge_base_id if current else None)
                 ),
+                agents=(normalize_agent_definitions(current.agents) if current is not None else []),
+                auto_delegate_assistive=(
+                    bool(current.auto_delegate_assistive) if current is not None else True
+                ),
                 team_presets=(normalize_team_presets(current.team_presets) if current is not None else []),
             )
 
@@ -3093,49 +3364,28 @@ def run_tui() -> int:
                 self._set_agent_status(f"{base} {note.strip()}")
             else:
                 self._set_agent_status(base)
-            if self._agent_profile_list is not None:
-                self._reload_saved_profiles()
+            self._reload_saved_profiles()
 
         def _reload_saved_profiles(self, *, selected_id: str | None = None) -> None:
             self.state.agent_studio.saved_profiles = sorted(
                 list_profiles(),
                 key=lambda item: (item.name.lower(), item.id.lower()),
             )
-            sidebar_list = self._agent_profile_list
-            if sidebar_list is None:
+            selector = self._agent_profile_select
+            if selector is None:
                 return
 
-            items: list[dict[str, str]] = [
-                {
-                    "id": _AGENT_PROFILE_SELECT_NONE,
-                    "title": "Draft / Session",
-                    "subtitle": "Unsaved local draft",
-                    "state": "syncing" if self.state.agent_studio.draft_dirty else "default",
-                }
-            ]
+            options: list[tuple[str, str]] = [("Current draft / session", _AGENT_PROFILE_SELECT_NONE)]
             for profile in self.state.agent_studio.saved_profiles:
-                profile_subtitle_parts = [profile.id]
                 model_summary = "/".join(
                     part for part in [str(profile.provider or "").strip(), str(profile.tier or "").strip()] if part
                 )
+                label = profile.name
                 if model_summary:
-                    profile_subtitle_parts.append(model_summary)
-                items.append(
-                    {
-                        "id": profile.id,
-                        "title": profile.name,
-                        "subtitle": " | ".join(profile_subtitle_parts),
-                        "state": (
-                            "active"
-                            if self.state.agent_studio.effective_profile
-                            and self.state.agent_studio.effective_profile.id == profile.id
-                            else "default"
-                        ),
-                    }
-                )
+                    label = f"{profile.name} ({model_summary})"
+                options.append((label, profile.id))
 
-            getter = getattr(sidebar_list, "selected_id", None)
-            current_value = str(getter() or "").strip() if callable(getter) else ""
+            current_value = str(getattr(selector, "value", "")).strip()
             candidate = selected_id if selected_id else current_value
             saved_ids = {profile.id for profile in self.state.agent_studio.saved_profiles}
             if candidate == _AGENT_PROFILE_SELECT_NONE:
@@ -3147,13 +3397,12 @@ def run_tui() -> int:
                     else _AGENT_PROFILE_SELECT_NONE
                 )
 
-            self.state.agent_studio.form_syncing = True
+            self.state.agent_studio.profile_select_syncing = True
             try:
-                setter = getattr(sidebar_list, "set_items", None)
-                if callable(setter):
-                    setter(items, selected_id=candidate, emit=False)
+                selector.set_options(options)
+                selector.value = candidate
             finally:
-                self.state.agent_studio.form_syncing = False
+                self.state.agent_studio.profile_select_syncing = False
 
         def _refresh_agent_summary(self) -> None:
             summary = self._agent_summary
@@ -3163,6 +3412,10 @@ def run_tui() -> int:
             self.state.agent_studio.effective_profile = effective
             summary.load_text(render_agent_profile_summary_text(effective.to_dict()))
             summary.scroll_home(animate=False)
+            if not self.state.agent_studio.agents:
+                self.state.agent_studio.agents = normalize_agent_definitions(effective.agents)
+                self.state.agent_studio.auto_delegate_assistive = bool(effective.auto_delegate_assistive)
+            self._render_agent_overview_panel()
 
         def _new_agent_profile_draft(self, *, announce: bool = True) -> None:
             snapshot = self._session_effective_profile()
@@ -3175,36 +3428,40 @@ def run_tui() -> int:
                 context_sources=[dict(source) for source in snapshot.context_sources],
                 active_sops=list(snapshot.active_sops),
                 knowledge_base_id=snapshot.knowledge_base_id,
+                agents=normalize_agent_definitions(snapshot.agents),
+                auto_delegate_assistive=bool(snapshot.auto_delegate_assistive),
                 team_presets=normalize_team_presets(snapshot.team_presets),
             )
-            sidebar_list = self._agent_profile_list
-            if sidebar_list is not None:
-                self.state.agent_studio.form_syncing = True
+            selector = self._agent_profile_select
+            if selector is not None:
+                self.state.agent_studio.profile_select_syncing = True
                 try:
-                    select_by_id = getattr(sidebar_list, "select_by_id", None)
-                    if callable(select_by_id):
-                        select_by_id(_AGENT_PROFILE_SELECT_NONE, emit=False)
+                    selector.value = _AGENT_PROFILE_SELECT_NONE
                 finally:
-                    self.state.agent_studio.form_syncing = False
+                    self.state.agent_studio.profile_select_syncing = False
             self.state.agent_studio.team_presets = normalize_team_presets(draft.team_presets)
             self.state.agent_studio.team_selected_item_id = None
-            self._render_agent_team_panel()
+            self.state.agent_studio.agents = normalize_agent_definitions(draft.agents)
+            self.state.agent_studio.builder_selected_item_id = None
+            self.state.agent_studio.auto_delegate_assistive = bool(draft.auto_delegate_assistive)
+            self._render_agent_builder_panel()
             self._set_agent_form_values(profile_id=draft.id, profile_name=draft.name)
             self._set_agent_draft_dirty(True, note=("New profile draft." if announce else None))
 
         def _load_profile_into_draft(self, profile: AgentProfile) -> None:
-            sidebar_list = self._agent_profile_list
-            if sidebar_list is not None:
-                self.state.agent_studio.form_syncing = True
+            selector = self._agent_profile_select
+            if selector is not None:
+                self.state.agent_studio.profile_select_syncing = True
                 try:
-                    select_by_id = getattr(sidebar_list, "select_by_id", None)
-                    if callable(select_by_id):
-                        select_by_id(profile.id, emit=False)
+                    selector.value = profile.id
                 finally:
-                    self.state.agent_studio.form_syncing = False
+                    self.state.agent_studio.profile_select_syncing = False
             self.state.agent_studio.team_presets = normalize_team_presets(profile.team_presets)
             self.state.agent_studio.team_selected_item_id = None
-            self._render_agent_team_panel()
+            self.state.agent_studio.agents = normalize_agent_definitions(profile.agents)
+            self.state.agent_studio.builder_selected_item_id = None
+            self.state.agent_studio.auto_delegate_assistive = bool(profile.auto_delegate_assistive)
+            self._render_agent_builder_panel()
             self._set_agent_form_values(profile_id=profile.id, profile_name=profile.name)
             self._set_agent_draft_dirty(False, note=f"Loaded profile '{profile.name}'.")
 
@@ -3227,6 +3484,8 @@ def run_tui() -> int:
                     "context_sources": [dict(source) for source in seed.context_sources],
                     "active_sops": list(seed.active_sops),
                     "knowledge_base_id": seed.knowledge_base_id,
+                    "agents": normalize_agent_definitions(self.state.agent_studio.agents),
+                    "auto_delegate_assistive": bool(self.state.agent_studio.auto_delegate_assistive),
                     "team_presets": normalize_team_presets(self.state.agent_studio.team_presets),
                 }
             )
@@ -3536,6 +3795,7 @@ def run_tui() -> int:
             if normalized == "advanced":
                 self._refresh_settings_env_list()
                 self._refresh_settings_env_detail(self._settings_env_selected_key)
+                self._set_agent_tools_override_form_values(self.state.agent_studio.session_safety_overrides)
 
         def _refresh_orchestrator_status(self) -> None:
             """Update the orchestrator status line in the Engage tab."""
@@ -4370,6 +4630,11 @@ def run_tui() -> int:
         def _handle_model_info(self, event: dict[str, Any]) -> None:
             provider = str(event.get("provider", "")).strip().lower()
             tier = str(event.get("tier", "")).strip().lower()
+            tool_names_raw = event.get("tool_names")
+            if isinstance(tool_names_raw, list):
+                self._refresh_agent_tool_catalog([str(item) for item in tool_names_raw])
+            else:
+                self._refresh_agent_tool_catalog(None)
             incoming_value = f"{provider}|{tier}" if provider and tier else ""
             now_mono = time.monotonic()
             if self._model_select_target_until_mono is not None and now_mono >= self._model_select_target_until_mono:
@@ -4423,7 +4688,7 @@ def run_tui() -> int:
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
             self._refresh_agent_summary()
-            self._render_agent_tools_panel()
+            self._render_agent_builder_panel()
 
         def _update_prompt_placeholder(self) -> None:
             input_widget = self.query_one("#prompt", PromptTextArea)
@@ -6640,6 +6905,16 @@ def run_tui() -> int:
             checkbox_id = str(getattr(checkbox, "id", "")).strip()
             if not checkbox_id:
                 return
+            if checkbox_id == "agent_builder_auto_delegate":
+                self.state.agent_studio.auto_delegate_assistive = bool(getattr(event, "value", False))
+                self._set_agent_draft_dirty(True, note="Assistive delegation preference updated.")
+                return
+            if checkbox_id == "agent_builder_agent_activated":
+                if self.state.agent_studio.builder_form_syncing:
+                    return
+                self._set_agent_builder_status("Agent draft changes pending.")
+                self._set_agent_draft_dirty(True)
+                return
             sop_name = self._sop_toggle_id_to_name.get(checkbox_id)
             if not sop_name:
                 return
@@ -6679,6 +6954,23 @@ def run_tui() -> int:
                 self._refresh_settings_models()
                 self._refresh_agent_summary()
                 self._write_transcript_line("[settings] saved model defaults.")
+                return
+            if select_id == "agent_profile_select":
+                if self.state.agent_studio.profile_select_syncing:
+                    return
+                selected_id = str(getattr(event, "value", "")).strip()
+                if not selected_id or selected_id == _AGENT_PROFILE_SELECT_NONE:
+                    self._new_agent_profile_draft(announce=False)
+                    return
+                profile = self._lookup_saved_profile(selected_id)
+                if profile is not None:
+                    self._load_profile_into_draft(profile)
+                return
+            if select_id in {"agent_builder_agent_provider", "agent_builder_agent_tier"}:
+                if self.state.agent_studio.builder_form_syncing:
+                    return
+                self._set_agent_builder_status("Agent draft changes pending.")
+                self._set_agent_draft_dirty(True)
                 return
             if select_id not in {"model_select"}:
                 return
@@ -6826,28 +7118,23 @@ def run_tui() -> int:
                 self._set_artifact_selection(selected_entry)
                 return
 
-            if sidebar_list is self._agent_profile_list:
-                if self.state.agent_studio.form_syncing:
-                    return
+            if sidebar_list is self._agent_overview_list:
                 selected_id = str(getattr(event, "item_id", "")).strip()
-                if not selected_id or selected_id == _AGENT_PROFILE_SELECT_NONE:
-                    return
-                profile = self._lookup_saved_profile(selected_id)
-                if profile is None:
-                    return
-                self._load_profile_into_draft(profile)
+                selected_item = next(
+                    (
+                        item
+                        for item in self.state.agent_studio.activated_items
+                        if str(item.get("id", "")).strip() == selected_id
+                    ),
+                    None,
+                )
+                self._set_agent_overview_selection(selected_item)
                 return
 
-            if sidebar_list is self._agent_tools_list:
+            if sidebar_list is self._agent_builder_list:
                 selected_id = str(getattr(event, "item_id", "")).strip()
-                selected_item = self._agent_tools_item_by_id(selected_id)
-                self._set_agent_tools_selection(selected_item)
-                return
-
-            if sidebar_list is self._agent_team_list:
-                selected_id = str(getattr(event, "item_id", "")).strip()
-                selected_item = self._agent_team_item_by_id(selected_id)
-                self._set_agent_team_selection(selected_item)
+                selected_item = self._agent_builder_item_by_id(selected_id)
+                self._set_agent_builder_selection(selected_item)
                 return
 
         def on_sidebar_detail_action_selected(self, event: Any) -> None:
@@ -6928,16 +7215,43 @@ def run_tui() -> int:
                 self._set_agent_team_status("Team preset draft changes pending.")
                 self._set_agent_draft_dirty(True)
                 return
+            if input_id in {
+                "agent_builder_agent_id",
+                "agent_builder_agent_name",
+                "agent_builder_agent_summary",
+                "agent_builder_agent_tools",
+                "agent_builder_agent_sops",
+                "agent_builder_agent_kb",
+            }:
+                if self.state.agent_studio.builder_form_syncing:
+                    return
+                self._set_agent_builder_status("Agent draft changes pending.")
+                self._set_agent_draft_dirty(True)
+                return
+            if input_id in {
+                "settings_safety_tool_consent",
+                "settings_safety_tool_allowlist",
+                "settings_safety_tool_blocklist",
+            }:
+                if self.state.agent_studio.tools_form_syncing:
+                    return
+                self._set_agent_tools_status("Override draft changes pending.")
+                return
 
         def on_text_area_changed(self, event: Any) -> None:
             text_area = getattr(event, "text_area", None)
             text_area_id = str(getattr(text_area, "id", "")).strip().lower()
-            if text_area_id != "agent_team_preset_spec":
+            if text_area_id == "agent_team_preset_spec":
+                if self.state.agent_studio.team_form_syncing:
+                    return
+                self._set_agent_team_status("Team preset draft changes pending.")
+                self._set_agent_draft_dirty(True)
                 return
-            if self.state.agent_studio.team_form_syncing:
-                return
-            self._set_agent_team_status("Team preset draft changes pending.")
-            self._set_agent_draft_dirty(True)
+            if text_area_id == "agent_builder_agent_prompt":
+                if self.state.agent_studio.builder_form_syncing:
+                    return
+                self._set_agent_builder_status("Agent draft changes pending.")
+                self._set_agent_draft_dirty(True)
 
         def _sync_selected_model_before_run(self) -> None:
             selected_value: str | None = None
@@ -7582,6 +7896,12 @@ def run_tui() -> int:
                 self._refresh_settings_env_detail(spec.key)
                 self._refresh_settings_models()
                 return
+            if button_id == "settings_safety_apply":
+                self._apply_agent_tools_safety_overrides(reset=False)
+                return
+            if button_id == "settings_safety_reset":
+                self._apply_agent_tools_safety_overrides(reset=True)
+                return
             if button_id == "settings_set_scope":
                 import contextlib as _ctx
                 with _ctx.suppress(Exception):
@@ -7597,35 +7917,29 @@ def run_tui() -> int:
                         self._refresh_settings_env_detail(self._settings_env_selected_key)
                         self._write_transcript_line(f"[settings] Scope set to {swarmee_dir}")
                 return
-            if button_id == "agent_view_profile":
-                self._set_agent_studio_view_mode("profile")
+            if button_id in {"agent_view_profile", "agent_view_overview"}:
+                self._set_agent_studio_view_mode("overview")
                 return
-            if button_id == "agent_view_tools":
-                self._set_agent_studio_view_mode("tools")
+            if button_id == "agent_view_builder":
+                self._set_agent_studio_view_mode("builder")
                 return
-            if button_id == "agent_view_team":
-                self._set_agent_studio_view_mode("team")
+            if button_id == "agent_profile_new_from_current":
+                self._new_agent_profile_draft(announce=True)
                 return
-            if button_id == "agent_team_new":
-                self._new_agent_team_preset_draft()
+            if button_id == "agent_builder_agent_new":
+                self._new_agent_builder_draft()
                 return
-            if button_id == "agent_team_save":
-                self._save_agent_team_preset_draft()
+            if button_id == "agent_builder_agent_save":
+                self._save_agent_builder_draft()
                 return
-            if button_id == "agent_team_delete":
-                self._delete_selected_agent_team_preset()
+            if button_id == "agent_builder_agent_delete":
+                self._delete_selected_builder_agent()
                 return
-            if button_id == "agent_team_insert_prompt":
-                self._insert_agent_team_preset_run_prompt(run_now=False)
+            if button_id == "agent_builder_insert_prompt":
+                self._insert_activated_agents_run_prompt(run_now=False)
                 return
-            if button_id == "agent_team_run_now":
-                self._insert_agent_team_preset_run_prompt(run_now=True)
-                return
-            if button_id == "agent_tools_overrides_apply":
-                self._apply_agent_tools_safety_overrides(reset=False)
-                return
-            if button_id == "agent_tools_overrides_reset":
-                self._apply_agent_tools_safety_overrides(reset=True)
+            if button_id == "agent_builder_run_now":
+                self._insert_activated_agents_run_prompt(run_now=True)
                 return
             if button_id == "session_view_timeline":
                 self._set_session_view_mode("timeline")

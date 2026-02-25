@@ -404,7 +404,10 @@ class TestTuiDaemonMode:
         assert "provider" in events[1]
         assert "tier" in events[1]
         assert "tiers" in events[1]
+        assert "tool_names" in events[1]
         assert isinstance(events[1]["tiers"], list)
+        assert isinstance(events[1]["tool_names"], list)
+        assert events[1]["tool_names"] == sorted(events[1]["tool_names"])
 
     def test_tui_daemon_set_tier_emits_updated_model_info(
         self,
@@ -552,7 +555,12 @@ class TestTuiDaemonMode:
                 '{"cmd":"set_profile","profile":{"id":"qa","name":"QA","tier":"deep",'
                 '"system_prompt_snippets":["Keep answers short"],'
                 '"context_sources":[{"type":"note","text":"release checklist"},{"type":"kb","id":"kb-old"}],'
-                '"knowledge_base_id":"kb-new","active_sops":[]}}\n{"cmd":"shutdown"}\n'
+                '"knowledge_base_id":"kb-new","active_sops":[],'
+                '"auto_delegate_assistive":"false",'
+                '"agents":[{"id":"triage-research","name":"Triage Research","summary":"Investigates incoming issues",'
+                '"prompt":"You triage incidents.","provider":"openai","tier":"balanced",'
+                '"tool_names":["file_read","shell","shell"],"sop_names":["incident-triage"],'
+                '"knowledge_base_id":"kb-123","activated":true}]}}\n{"cmd":"shutdown"}\n'
             ),
         )
 
@@ -572,6 +580,21 @@ class TestTuiDaemonMode:
         assert {"type": "note", "text": "release checklist", "id": "release-checklist"} in applied["context_sources"]
         assert {"type": "kb", "id": "kb-new"} in applied["context_sources"]
         assert not any(item.get("id") == "kb-old" for item in applied["context_sources"] if item.get("type") == "kb")
+        assert applied["auto_delegate_assistive"] is False
+        assert applied["agents"] == [
+            {
+                "id": "triage-research",
+                "name": "Triage Research",
+                "summary": "Investigates incoming issues",
+                "prompt": "You triage incidents.",
+                "provider": "openai",
+                "tier": "balanced",
+                "tool_names": ["file_read", "shell"],
+                "sop_names": ["incident-triage"],
+                "knowledge_base_id": "kb-123",
+                "activated": True,
+            }
+        ]
 
     def test_tui_daemon_set_profile_replaces_stale_sop_overrides(
         self,

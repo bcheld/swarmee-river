@@ -161,6 +161,61 @@ def normalize_team_presets(raw_presets: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def normalize_agent_definition(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    name = _normalize_text(raw.get("name"))
+    if name is None:
+        return None
+
+    raw_id = _normalize_text(raw.get("id"))
+    agent_id = _sanitize_context_source_token(raw_id or name)
+    if not agent_id:
+        return None
+
+    summary = str(raw.get("summary", "")).strip()
+    prompt = str(raw.get("prompt", "")).strip()
+    knowledge_base_id = _normalize_text(raw.get("knowledge_base_id"))
+
+    activated_raw = raw.get("activated")
+    if isinstance(activated_raw, bool):
+        activated = activated_raw
+    else:
+        activated = str(activated_raw or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+    return {
+        "id": agent_id,
+        "name": name,
+        "summary": summary,
+        "prompt": prompt,
+        "provider": _normalize_text(raw.get("provider"), lower=True),
+        "tier": _normalize_text(raw.get("tier"), lower=True),
+        "tool_names": _normalize_text_list(raw.get("tool_names")),
+        "sop_names": _normalize_text_list(raw.get("sop_names")),
+        "knowledge_base_id": knowledge_base_id,
+        "activated": activated,
+    }
+
+
+def normalize_agent_definitions(raw_agents: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_agents, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in raw_agents:
+        definition = normalize_agent_definition(item)
+        if definition is None:
+            continue
+        item_id = str(definition.get("id", "")).strip()
+        if not item_id or item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        normalized.append(definition)
+    return normalized
+
+
 @dataclass
 class AgentProfile:
     id: str
@@ -171,6 +226,8 @@ class AgentProfile:
     context_sources: list[dict[str, str]] = field(default_factory=list)
     active_sops: list[str] = field(default_factory=list)
     knowledge_base_id: str | None = None
+    agents: list[dict[str, Any]] = field(default_factory=list)
+    auto_delegate_assistive: bool = True
     team_presets: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
@@ -186,6 +243,12 @@ class AgentProfile:
         if name is None:
             raise ValueError("profile name is required")
 
+        auto_delegate_raw = raw.get("auto_delegate_assistive", True)
+        if isinstance(auto_delegate_raw, bool):
+            auto_delegate_assistive = auto_delegate_raw
+        else:
+            auto_delegate_assistive = str(auto_delegate_raw).strip().lower() not in {"0", "false", "no", "off"}
+
         return cls(
             id=profile_id,
             name=name,
@@ -195,6 +258,8 @@ class AgentProfile:
             context_sources=normalize_context_sources(raw.get("context_sources")),
             active_sops=_normalize_text_list(raw.get("active_sops")),
             knowledge_base_id=_normalize_text(raw.get("knowledge_base_id")),
+            agents=normalize_agent_definitions(raw.get("agents")),
+            auto_delegate_assistive=auto_delegate_assistive,
             team_presets=normalize_team_presets(raw.get("team_presets")),
         )
 
@@ -208,5 +273,7 @@ class AgentProfile:
             "context_sources": [dict(source) for source in self.context_sources],
             "active_sops": list(self.active_sops),
             "knowledge_base_id": self.knowledge_base_id,
+            "agents": normalize_agent_definitions(self.agents),
+            "auto_delegate_assistive": bool(self.auto_delegate_assistive),
             "team_presets": normalize_team_presets(self.team_presets),
         }

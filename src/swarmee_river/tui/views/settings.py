@@ -403,6 +403,23 @@ def compose_settings_tab() -> Iterator[Any]:
                     yield Button("Apply Value", id="settings_env_apply", compact=True, variant="success")
                     yield Button("Use Default", id="settings_env_default", compact=True, variant="default")
                     yield Button("Unset", id="settings_env_unset", compact=True, variant="warning")
+                yield Static("Session Safety Overrides", id="settings_safety_header")
+                yield Input(
+                    placeholder="tool_consent: ask | allow | deny (blank = inherit)",
+                    id="settings_safety_tool_consent",
+                )
+                yield Input(
+                    placeholder="tool_allowlist: tool1, tool2, ... (blank = inherit)",
+                    id="settings_safety_tool_allowlist",
+                )
+                yield Input(
+                    placeholder="tool_blocklist: tool1, tool2, ... (blank = inherit)",
+                    id="settings_safety_tool_blocklist",
+                )
+                with Horizontal(id="settings_safety_actions"):
+                    yield Button("Apply", id="settings_safety_apply", compact=True, variant="success")
+                    yield Button("Reset", id="settings_safety_reset", compact=True, variant="default")
+                yield Static("", id="settings_safety_status")
 
 
 def wire_settings_widgets(app: Any) -> None:
@@ -423,6 +440,10 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_env_detail = app.query_one("#settings_env_detail", Static)
     app._settings_env_value_select = app.query_one("#settings_env_value_select", Select)
     app._settings_env_value_input = app.query_one("#settings_env_value_input", Input)
+    app._settings_safety_tool_consent_input = app.query_one("#settings_safety_tool_consent", Input)
+    app._settings_safety_tool_allowlist_input = app.query_one("#settings_safety_tool_allowlist", Input)
+    app._settings_safety_tool_blocklist_input = app.query_one("#settings_safety_tool_blocklist", Input)
+    app._settings_safety_status = app.query_one("#settings_safety_status", Static)
     app._settings_toggle_auto_approve_button = app.query_one("#settings_toggle_auto_approve", Button)
     app._settings_toggle_bypass_consent_button = app.query_one("#settings_toggle_bypass_consent", Button)
     app._settings_toggle_esc_interrupt_button = app.query_one("#settings_toggle_esc_interrupt", Button)
@@ -439,6 +460,11 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_env_list = app.query_one("#settings_env_list", SidebarList)
     app._settings_scope_current = app.query_one("#settings_scope_current", Static)
     app._settings_directory_tree = app.query_one("#settings_directory_tree", SettingsDirectoryTree)
+    # Backward-compatible aliases for agent safety override helpers.
+    app._agent_tools_override_consent_input = app._settings_safety_tool_consent_input
+    app._agent_tools_override_allowlist_input = app._settings_safety_tool_allowlist_input
+    app._agent_tools_override_blocklist_input = app._settings_safety_tool_blocklist_input
+    app._agent_tools_override_status = app._settings_safety_status
 
 
 __all__ = [
