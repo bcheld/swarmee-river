@@ -522,3 +522,68 @@ def test_runtime_service_set_profile_requires_idle_query_and_proxies(monkeypatch
             await service.stop()
 
     asyncio.run(_scenario())
+
+
+def test_runtime_service_proxies_auth_and_connect_commands(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "auth-connect-token"
+    session_id = "auth-connect-session"
+    attach_cwd = tmp_path / "workspace"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", service.port)
+            writer.write(
+                json.dumps({"cmd": "hello", "token": token, "client_name": "tests", "surface": "tests"}).encode(
+                    "utf-8"
+                )
+                + b"\n"
+            )
+            await writer.drain()
+            hello_event = await _read_event(reader)
+            assert hello_event["event"] == "hello_ack"
+
+            writer.write(json.dumps({"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)}).encode("utf-8") + b"\n")
+            await writer.drain()
+            attached_event = await _read_event(reader)
+            assert attached_event["event"] == "attached"
+
+            assert len(fake_popen.instances) == 1
+            proc = fake_popen.instances[0]
+
+            writes_before = len(proc.stdin.writes)
+            writer.write(json.dumps({"cmd": "auth", "action": "list"}).encode("utf-8") + b"\n")
+            await writer.drain()
+            await asyncio.sleep(0.05)
+            assert len(proc.stdin.writes) == writes_before + 1
+            forwarded_auth = json.loads(proc.stdin.writes[-1].strip())
+            assert forwarded_auth == {"cmd": "auth", "action": "list"}
+
+            writes_before = len(proc.stdin.writes)
+            writer.write(
+                json.dumps({"cmd": "connect", "provider": "bedrock", "method": "sso", "profile": "dev"}).encode(
+                    "utf-8"
+                )
+                + b"\n"
+            )
+            await writer.drain()
+            await asyncio.sleep(0.05)
+            assert len(proc.stdin.writes) == writes_before + 1
+            forwarded_connect = json.loads(proc.stdin.writes[-1].strip())
+            assert forwarded_connect == {"cmd": "connect", "provider": "bedrock", "method": "sso", "profile": "dev"}
+
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())

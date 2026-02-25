@@ -18,9 +18,6 @@ from swarmee_river.tui.agent_studio import normalize_session_safety_overrides, n
 from swarmee_river.tui.event_types import extract_tui_text_chunk
 from swarmee_river.tui.text_sanitize import sanitize_output_text
 
-_TOOL_FAST_COMPLETE_SUPPRESS_START_S = 0.5
-
-
 def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype in {"ready", "attached"}:
         app.state.daemon.ready = True
@@ -43,6 +40,10 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
             app._sync_context_sources_with_daemon(notify_on_failure=True)
         if app._active_sop_names or app._sops_ready_for_sync:
             app._sync_active_sops_with_daemon(notify_on_failure=True)
+        with contextlib.suppress(Exception):
+            app._runtime_proxy_recovery_attempted.clear()
+        with contextlib.suppress(Exception):
+            app._flush_pending_connect_retry()
         app._refresh_agent_summary()
         app._schedule_session_timeline_refresh()
         return True
@@ -237,6 +238,7 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
             "last_progress_render_mono": 0.0,
             "last_heartbeat_rendered_s": 0.0,
             "start_rendered": False,
+            "widget": None,
         }
         app._schedule_tool_start_line(tid)
         app.state.daemon.run_tool_count += 1
@@ -262,6 +264,7 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
                 "last_progress_render_mono": 0.0,
                 "last_heartbeat_rendered_s": 0.0,
                 "start_rendered": False,
+                "widget": None,
             }
             app._tool_blocks[tid] = record
             app._schedule_tool_start_line(tid)
@@ -286,6 +289,10 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
             record["input"] = event.get("input", {})
             if tid in app._tool_pending_start:
                 app._emit_tool_start_line(tid)
+            widget = record.get("widget")
+            if widget is not None and isinstance(record.get("input"), dict):
+                with contextlib.suppress(Exception):
+                    widget.set_input(record["input"])
         return True
 
     if etype == "tool_result":
@@ -307,22 +314,28 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
             if pending_since is not None:
                 app._tool_pending_start.pop(tid, None)
                 app._cancel_tool_start_timer(tid)
-                if duration_s >= _TOOL_FAST_COMPLETE_SUPPRESS_START_S:
-                    app._emit_tool_start_line(tid)
+            if not bool(record.get("start_rendered")):
+                app._emit_tool_start_line(tid)
             app._tool_progress_pending_ids.discard(tid)
             app._flush_tool_progress_render(tid, force=True)
         tool_input = record.get("input") if isinstance(record, dict) else None
         plain = app._tool_result_plain_text(tool_name, status, duration_s, tool_input)
-        app._mount_transcript_widget(
-            app.render_tool_result_line(  # type: ignore[attr-defined]
-                tool_name,
-                status=status,
-                duration_s=duration_s,
-                tool_input=tool_input if isinstance(tool_input, dict) else None,
-                tool_use_id=tid,
-            ),
-            plain_text=plain,
-        )
+        widget = record.get("widget") if isinstance(record, dict) else None
+        if widget is not None:
+            with contextlib.suppress(Exception):
+                widget.set_result(status, duration_s)
+            app._record_transcript_fallback(plain)
+        else:
+            app._mount_transcript_widget(
+                app.render_tool_result_line(  # type: ignore[attr-defined]
+                    tool_name,
+                    status=status,
+                    duration_s=duration_s,
+                    tool_input=tool_input if isinstance(tool_input, dict) else None,
+                    tool_use_id=tid,
+                ),
+                plain_text=plain,
+            )
         if status != "success":
             app.state.session.error_count += 1
             app._write_issue(f"ERROR: tool {tool_name} failed ({status}) [{tid}]")
@@ -452,6 +465,11 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
     if etype == "error":
         error_info = app._classify_tui_error_event(event)
         error_message = str(error_info.get("message", "")).strip()
+        normalized_message = error_message.lower()
+        if normalized_message.startswith("unknown command:"):
+            attempted_cmd = normalized_message.removeprefix("unknown command:").strip().split(" ", 1)[0]
+            if attempted_cmd in {"connect", "auth"} and app._recover_runtime_unknown_proxy_command(attempted_cmd):
+                return True
         error_text = error_message
         if not error_text.startswith("ERROR:"):
             error_text = f"ERROR: {error_text}"
@@ -480,12 +498,32 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
             next_tier = str(error_info.get("next_tier", "")).strip() or app._next_available_tier_name()
             app._show_escalation_actions(next_tier=next_tier or None)
         elif category == ERROR_CATEGORY_AUTH_ERROR:
+            error_message_lower = error_message.lower()
+            daemon_state = getattr(getattr(app, "state", None), "daemon", None)
+            provider_hint = str(getattr(daemon_state, "model_provider_override", "") or "").strip().lower()
+            if not provider_hint:
+                provider_hint = str(getattr(daemon_state, "provider", "") or "").strip().lower()
+            is_aws_auth_error = (
+                "aws" in error_message_lower
+                or "bedrock" in error_message_lower
+                or "credential" in error_message_lower
+                or provider_hint == "bedrock"
+            )
+            auth_hint = "Authentication failed. Verify credentials/permissions for the active provider."
+            if is_aws_auth_error:
+                auth_hint = (
+                    "AWS authentication failed. Open Settings > Models, set AWS profile, then run Connect AWS."
+                )
             app._mount_transcript_widget(
                 app.render_system_message(  # type: ignore[attr-defined]
-                    "Authentication failed. Verify credentials/permissions for the active provider."
+                    auth_hint
                 ),
-                plain_text="Authentication failed. Verify credentials/permissions for the active provider.",
+                plain_text=auth_hint,
             )
+            with contextlib.suppress(Exception):
+                app._switch_side_tab("tab_settings")
+                app._set_settings_view_mode("models")
+                app._refresh_settings_models()
             app._reset_error_action_prompt()
         elif category == ERROR_CATEGORY_FATAL:
             app._reset_error_action_prompt()

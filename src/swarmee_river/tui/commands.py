@@ -4,7 +4,7 @@ from __future__ import annotations
 
 _MODEL_USAGE_TEXT = "Usage: /model show | /model list | /model provider <name> | /model tier <name> | /model reset"
 _CONSENT_USAGE_TEXT = "Usage: /consent <y|n|a|v>"
-_CONNECT_USAGE_TEXT = "Usage: /connect [github_copilot]"
+_CONNECT_USAGE_TEXT = "Usage: /connect [github_copilot] | /connect aws [profile]"
 _AUTH_USAGE_TEXT = "Usage: /auth list | /auth logout [provider]"
 _SEARCH_USAGE_TEXT = "Usage: /search <term>"
 _OPEN_USAGE_TEXT = "Usage: /open <number>"
@@ -101,7 +101,7 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
         return "exit", None
     if normalized in {"/daemon restart", "/restart-daemon"}:
         return "daemon_restart", None
-    if normalized in {"/daemon stop", "/daemon shutdown"}:
+    if normalized in {"/daemon stop", "/daemon shutdown", "/broker stop", "/broker shutdown"}:
         return "daemon_stop", None
     if normalized == "/consent":
         return "consent_usage", None

@@ -17,6 +17,31 @@ import pytest
 from swarmee_river import swarmee
 
 
+def test_help_includes_runtime_broker_commands(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["swarmee", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        swarmee.main()
+    assert int(exc.value.code or 0) == 0
+    stdout = capsys.readouterr().out
+    assert "swarmee daemon stop" in stdout
+    assert "swarmee broker stop" in stdout
+
+
+def test_broker_alias_dispatches_to_daemon_command(monkeypatch) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def _fake_run_daemon_command(raw_args: list[str]) -> int:
+        captured["args"] = list(raw_args)
+        return 0
+
+    monkeypatch.setattr(swarmee, "_run_daemon_command", _fake_run_daemon_command)
+    monkeypatch.setattr(sys, "argv", ["swarmee", "broker", "stop"])
+    with pytest.raises(SystemExit) as exc:
+        swarmee.main()
+    assert int(exc.value.code or 0) == 0
+    assert captured.get("args") == ["stop"]
+
+
 def test_build_resolved_invocation_state_includes_session_safety_overrides() -> None:
     from swarmee_river.settings import default_settings_template
 

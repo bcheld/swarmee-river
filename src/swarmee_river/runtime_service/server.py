@@ -598,6 +598,35 @@ class RuntimeServiceServer:
                 )
                 return
             forwarded = {"cmd": "set_safety_overrides", "overrides": overrides_payload}
+        elif cmd == "connect":
+            if session.query_active:
+                await self._send_error(client, "query_active", "Cannot connect provider while a query is running")
+                return
+            forwarded = {"cmd": "connect"}
+            provider = payload.get("provider")
+            if isinstance(provider, str) and provider.strip():
+                forwarded["provider"] = provider.strip()
+            method = payload.get("method")
+            if isinstance(method, str) and method.strip():
+                forwarded["method"] = method.strip()
+            open_browser = payload.get("open_browser")
+            if isinstance(open_browser, bool):
+                forwarded["open_browser"] = open_browser
+            profile = payload.get("profile")
+            if isinstance(profile, str) and profile.strip():
+                forwarded["profile"] = profile.strip()
+            api_key = payload.get("api_key")
+            if isinstance(api_key, str) and api_key.strip():
+                forwarded["api_key"] = api_key.strip()
+        elif cmd == "auth":
+            if session.query_active:
+                await self._send_error(client, "query_active", "Cannot inspect auth while a query is running")
+                return
+            action = payload.get("action")
+            forwarded = {"cmd": "auth", "action": str(action).strip() if isinstance(action, str) else "list"}
+            provider = payload.get("provider")
+            if isinstance(provider, str) and provider.strip():
+                forwarded["provider"] = provider.strip()
         elif cmd == "interrupt":
             forwarded = {"cmd": "interrupt"}
         elif cmd == "restore_session":
@@ -658,6 +687,8 @@ class RuntimeServiceServer:
             "set_tier",
             "set_profile",
             "set_safety_overrides",
+            "connect",
+            "auth",
             "interrupt",
             "restore_session",
         }:

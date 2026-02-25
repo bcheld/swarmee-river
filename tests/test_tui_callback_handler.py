@@ -237,6 +237,24 @@ def test_throttle_warning():
     assert "30" in events[0]["text"]
 
 
+def test_message_content_none_is_ignored():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: (
+            h.callback_handler(message={"role": "assistant", "content": None}),
+            h.callback_handler(message={"role": "user", "content": None}),
+        ),
+    )
+    assert events == []
+
+
+def test_current_tool_use_not_dict_is_ignored():
+    h = TuiCallbackHandler()
+    events = _capture_events(h, lambda: h.callback_handler(current_tool_use="not-a-dict"))
+    assert events == []
+
+
 def test_tool_input_emitted_from_assistant_message():
     """tool_input event is emitted when assistant message contains toolUse with dict input."""
     h = TuiCallbackHandler()
@@ -255,6 +273,30 @@ def test_tool_input_emitted_from_assistant_message():
     assert len(tool_input_events) == 1
     assert tool_input_events[0]["tool_use_id"] == "t1"
     assert tool_input_events[0]["input"] == {"command": "ls -la", "cwd": "/tmp"}
+
+
+def test_tool_start_emitted_from_assistant_tool_use_without_current_tool_use():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(message={
+            "role": "assistant",
+            "content": [{"toolUse": {"toolUseId": "t-direct", "name": "shell", "input": {"command": "pwd"}}}],
+        }),
+    )
+    assert events == [
+        {
+            "event": "tool_start",
+            "tool_use_id": "t-direct",
+            "tool": "shell",
+            "input": {"command": "pwd"},
+        },
+        {
+            "event": "tool_input",
+            "tool_use_id": "t-direct",
+            "input": {"command": "pwd"},
+        },
+    ]
 
 
 def test_assistant_message_text_emitted_when_data_is_empty():

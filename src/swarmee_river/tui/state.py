@@ -104,7 +104,7 @@ class AppState:
     agent_studio: AgentStudioState = field(default_factory=AgentStudioState)
     engage_view_mode: str = "execution"
     scaffold_view_mode: str = "context"
-    settings_view_mode: str = "env"
+    settings_view_mode: str = "general"
 
 
 __all__ = [

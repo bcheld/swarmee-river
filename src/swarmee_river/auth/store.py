@@ -12,6 +12,9 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "githubcopilot": "github_copilot",
     "github-copilot": "github_copilot",
     "github_copilot": "github_copilot",
+    "aws": "bedrock",
+    "amazon_bedrock": "bedrock",
+    "amazon-bedrock": "bedrock",
 }
 
 

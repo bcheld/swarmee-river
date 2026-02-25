@@ -171,7 +171,6 @@ _TOOL_PROGRESS_RENDER_INTERVAL_S = 0.15
 _TOOL_HEARTBEAT_RENDER_MIN_STEP_S = 0.5
 _TOOL_OUTPUT_RETENTION_MAX_CHARS = 4096
 _TOOL_START_COALESCE_INTERVAL_S = 0.1
-_TOOL_FAST_COMPLETE_SUPPRESS_START_S = 0.5
 _THINKING_DISPLAY_DEBOUNCE_S = 0.2
 _THINKING_ANIMATION_INTERVAL_S = 0.5
 _THINKING_EXPORT_MAX_CHARS = 5000
@@ -577,6 +576,7 @@ def run_tui() -> int:
         textual_app = importlib.import_module("textual.app")
         textual_binding = importlib.import_module("textual.binding")
         textual_containers = importlib.import_module("textual.containers")
+        textual_widget_base = importlib.import_module("textual.widget")
         textual_widgets = importlib.import_module("textual.widgets")
     except ImportError:
         print(
@@ -592,12 +592,12 @@ def run_tui() -> int:
     Horizontal = textual_containers.Horizontal
     Vertical = textual_containers.Vertical
     VerticalScroll = textual_containers.VerticalScroll
+    WidgetBase = textual_widget_base.Widget
     Button = textual_widgets.Button
     Checkbox = textual_widgets.Checkbox
     Header = textual_widgets.Header
     Footer = textual_widgets.Footer
     Input = textual_widgets.Input
-    RichLog = textual_widgets.RichLog
     Select = textual_widgets.Select
     Static = textual_widgets.Static
     TabbedContent = textual_widgets.TabbedContent
@@ -606,19 +606,27 @@ def run_tui() -> int:
     from swarmee_river.tui.views.engage import wire_engage_widgets
     from swarmee_river.tui.views.agents import wire_agents_widgets
     from swarmee_river.tui.views.scaffold import wire_scaffold_widgets
-    from swarmee_river.tui.views.settings import wire_settings_widgets
+    from swarmee_river.tui.views.settings import (
+        build_env_sidebar_items,
+        env_category_options,
+        env_spec_by_key,
+        wire_settings_widgets,
+    )
     from swarmee_river.tui.views.sidebar import compose_sidebar
     from swarmee_river.tui.widgets import (
         ActionSheet,
+        AssistantMessage,
         CommandPalette,
         ConsentPrompt,
         ContextBudgetBar,
         ErrorActionPrompt,
+        ReasoningBlock,
         SidebarDetail,
         SidebarHeader,
         SidebarList,
         StatusBar,
         ThinkingBar,
+        ToolCallBlock,
         extract_consent_tool_name,
         format_tool_input_oneliner,
         render_agent_profile_summary_text,
@@ -629,7 +637,6 @@ def run_tui() -> int:
         render_tool_heartbeat_line,
         render_tool_progress_chunk,
         render_tool_result_line,
-        render_tool_start_line_with_input,
         render_user_message,
     )
 
@@ -1012,15 +1019,93 @@ def run_tui() -> int:
             margin: 0 1 0 0;
         }
 
-        #settings_env_view {
+        #settings_general_view, #settings_models_view {
             height: 1fr;
             layout: vertical;
         }
 
-        #settings_env_header, #settings_scoping_header {
+        #settings_models_view {
+            display: none;
+        }
+
+        #settings_env_view {
+            display: none;
+            height: 1fr;
+            layout: vertical;
+        }
+
+        #settings_general_header, #settings_models_header, #settings_env_header, #settings_scoping_header {
             height: auto;
             color: $text-muted;
             padding: 0 0 1 0;
+        }
+
+        #settings_general_summary, #settings_models_summary {
+            height: auto;
+            color: $accent;
+            padding: 0 0 1 0;
+        }
+
+        #settings_models_defaults_row {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #settings_models_defaults_row Select {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #settings_auth_row, #settings_aws_profile_row {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #settings_auth_row Button {
+            width: 1fr;
+            min-width: 12;
+            margin: 0 1 0 0;
+        }
+
+        #settings_aws_profile_row Input {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #settings_auth_status {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
+        #settings_models_detail, #settings_env_detail {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
+        #settings_models_form_row_1, #settings_models_form_row_2, #settings_models_form_row_3, #settings_models_form_actions {
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #settings_models_form_row_1 Select, #settings_models_form_row_1 Input,
+        #settings_models_form_row_2 Input, #settings_models_form_row_3 Input {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #settings_models_form_actions Button {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #settings_toggle_auto_approve {
+            width: auto;
+            margin: 0 0 1 0;
         }
 
         #settings_scope_current {
@@ -1033,13 +1118,13 @@ def run_tui() -> int:
             margin: 0 0 1 0;
         }
 
-        #settings_env_add_row {
+        #settings_env_edit_row, #settings_env_actions {
             height: auto;
             layout: horizontal;
             margin: 0 0 1 0;
         }
 
-        #settings_env_add_row Input {
+        #settings_env_edit_row Select, #settings_env_edit_row Input {
             width: 1fr;
             margin: 0 1 0 0;
         }
@@ -1509,6 +1594,8 @@ def run_tui() -> int:
         _current_assistant_model: str | None = None
         _current_assistant_timestamp: str | None = None
         _assistant_placeholder_written: bool = False
+        _active_assistant_message: Any = None  # AssistantMessage | None
+        _active_reasoning_block: Any = None  # ReasoningBlock | None
         _current_thinking: bool = False
         _thinking_buffer: list[str] = []
         _thinking_char_count: int = 0
@@ -1603,12 +1690,32 @@ def run_tui() -> int:
         _scaffold_kbs_view: Any = None
         _scaffold_artifacts_view: Any = None
         # Settings tab
+        _settings_view_general_button: Any = None
+        _settings_view_models_button: Any = None
         _settings_view_env_button: Any = None
         _settings_view_scoping_button: Any = None
+        _settings_general_view: Any = None
+        _settings_models_view: Any = None
         _settings_env_view: Any = None
         _settings_scoping_view: Any = None
+        _settings_general_summary: Any = None  # Static | None
+        _settings_models_summary: Any = None  # Static | None
+        _settings_models_list: Any = None  # SidebarList | None
+        _settings_models_detail: Any = None  # Static | None
+        _settings_auth_status: Any = None  # Static | None
+        _settings_aws_profile_input: Any = None  # Input | None
+        _settings_env_category_select: Any = None  # Select | None
+        _settings_env_detail: Any = None  # Static | None
+        _settings_env_value_select: Any = None  # Select | None
+        _settings_env_value_input: Any = None  # Input | None
+        _settings_toggle_auto_approve_button: Any = None  # Button | None
         _settings_env_list: Any = None  # SidebarList | None
         _settings_scope_current: Any = None  # Static | None
+        _settings_env_selected_key: str | None = None
+        _settings_models_selected_id: str | None = None
+        _pending_connect_payload: dict[str, Any] | None = None
+        _pending_connect_retry_payload: dict[str, Any] | None = None
+        _runtime_proxy_recovery_attempted: set[str] = set()
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
@@ -1617,7 +1724,7 @@ def run_tui() -> int:
         def compose(self) -> Any:
             yield Header()
             with Horizontal(id="panes"):
-                yield RichLog(id="transcript")
+                yield VerticalScroll(id="transcript")
                 yield TextArea(
                     text="",
                     read_only=True,
@@ -1660,6 +1767,12 @@ def run_tui() -> int:
             wire_agents_widgets(self)
             wire_scaffold_widgets(self)
             wire_settings_widgets(self)
+            self._apply_project_settings_env_overrides()
+            auto_env = (os.getenv("SWARMEE_AUTO_APPROVE") or "").strip().lower()
+            if auto_env in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}:
+                self._default_auto_approve = True
+            elif auto_env in {"0", "false", "f", "no", "n", "off", "disabled", "disable"}:
+                self._default_auto_approve = False
             self._prompt_metrics = self.query_one("#prompt_metrics", ContextBudgetBar)
             self._status_bar.set_model(self._current_model_summary())
             self.query_one("#prompt", PromptTextArea).focus()
@@ -1671,7 +1784,7 @@ def run_tui() -> int:
             self._reset_error_action_prompt()
             self._set_engage_view_mode("execution")
             self._set_scaffold_view_mode("context")
-            self._set_settings_view_mode("env")
+            self._set_settings_view_mode("general")
             self._set_session_view_mode("timeline")
             self._set_context_add_mode(None)
             self._refresh_context_sop_options()
@@ -1690,7 +1803,10 @@ def run_tui() -> int:
             self._refresh_model_select()
             self._refresh_orchestrator_status()
             self._refresh_plan_actions_visibility()
+            self._refresh_settings_general()
+            self._refresh_settings_models()
             self._refresh_settings_env_list()
+            self._refresh_settings_env_detail(self._settings_env_selected_key)
             self._refresh_settings_scope_display()
             self.title = "Swarmee"
             self.sub_title = self._current_model_summary()
@@ -1704,11 +1820,9 @@ def run_tui() -> int:
             self._write_transcript("Starting Swarmee daemon...")
             self._write_transcript(self.sub_title)
             self._write_transcript("Tips: use /commands in the prompt and the Agent tab for profile actions.")
-            transcript = self.query_one("#transcript", RichLog)
+            transcript = self.query_one("#transcript", VerticalScroll)
             with contextlib.suppress(Exception):
-                transcript.auto_scroll = True
-            with contextlib.suppress(Exception):
-                transcript.max_lines = self._TRANSCRIPT_MAX_LINES
+                transcript.scroll_end(animate=False)
             self._set_transcript_mode("rich", notify=False)
             self._load_session()
             if self.state.daemon.session_id:
@@ -1782,7 +1896,7 @@ def run_tui() -> int:
             normalized = mode.strip().lower()
             if normalized not in {"rich", "text"}:
                 return
-            rich_widget = self.query_one("#transcript", RichLog)
+            rich_widget = self.query_one("#transcript", VerticalScroll)
             text_widget = self.query_one("#transcript_text", TextArea)
             if normalized == "text":
                 proportion = self._get_scroll_proportion(rich_widget)
@@ -1817,9 +1931,20 @@ def run_tui() -> int:
             self._set_transcript_mode(target, notify=True)
 
         def _mount_transcript_widget(self, renderable: Any, *, plain_text: str | None = None) -> None:
-            """Write a renderable into the transcript RichLog."""
-            transcript = self.query_one("#transcript", RichLog)
-            transcript.write(renderable)
+            """Write a renderable widget/content into the transcript view."""
+            transcript = self.query_one("#transcript", VerticalScroll)
+            if isinstance(renderable, WidgetBase):
+                node = renderable
+            else:
+                node = Static(renderable)
+            with contextlib.suppress(Exception):
+                transcript.mount(node)
+            children = list(getattr(transcript, "children", []))
+            if len(children) > self._TRANSCRIPT_MAX_LINES:
+                overflow = len(children) - self._TRANSCRIPT_MAX_LINES
+                for child in children[:overflow]:
+                    with contextlib.suppress(Exception):
+                        child.remove()
             if isinstance(plain_text, str):
                 self._record_transcript_fallback(plain_text)
             elif isinstance(renderable, str):
@@ -1915,16 +2040,22 @@ def run_tui() -> int:
                 self._thinking_started_mono = time.monotonic()
                 self._thinking_frame_index = 0
                 self._ensure_thinking_animation_timer()
+                self._active_reasoning_block = ReasoningBlock(timestamp=self._turn_timestamp())
+                self._mount_transcript_widget(self._active_reasoning_block)
             else:
                 self._current_thinking = True
             if chunk:
                 self._thinking_buffer.append(chunk)
                 self._thinking_char_count += len(chunk)
+                block = self._active_reasoning_block
+                if block is not None:
+                    with contextlib.suppress(Exception):
+                        block.append_delta(chunk)
             self._render_thinking_bar()
             self._schedule_thinking_display_update()
 
         def _dismiss_thinking(self, *, emit_summary: bool = False) -> None:
-            """Hide thinking indicator and optionally persist a transcript summary."""
+            """Hide live thinking UI and finalize the reasoning activity block."""
             had_thinking = bool(
                 self._current_thinking
                 or self._thinking_started_mono is not None
@@ -1942,13 +2073,15 @@ def run_tui() -> int:
             full_thinking = "".join(self._thinking_buffer)
             self._last_thinking_text = full_thinking
             char_count = self._thinking_char_count
-
             if emit_summary:
                 elapsed_label = max(0, int(round(elapsed_s)))
-                summary_line = f"💭 Thought for {elapsed_label}s"
-                if char_count > 0:
-                    summary_line += f" ({char_count:,} chars)"
-                self._mount_transcript_widget(render_system_message(summary_line), plain_text=summary_line)
+                summary_line = f"💭 Reasoning ({elapsed_label}s, {char_count:,} chars)"
+                self._record_transcript_fallback(summary_line)
+            block = self._active_reasoning_block
+            if block is not None:
+                with contextlib.suppress(Exception):
+                    block.finalize(elapsed_s=elapsed_s)
+                self._active_reasoning_block = None
 
             self._reset_thinking_state()
 
@@ -1978,8 +2111,15 @@ def run_tui() -> int:
             if not text:
                 return
             self._current_assistant_chunks.append(text)
-            # Render streamed assistant text incrementally; avoid waiting for text_complete.
-            self._mount_transcript_widget(text, plain_text=text)
+            if self._active_assistant_message is None:
+                self._active_assistant_message = AssistantMessage(
+                    model=self._current_assistant_model,
+                    timestamp=self._current_assistant_timestamp,
+                )
+                self._mount_transcript_widget(self._active_assistant_message)
+            with contextlib.suppress(Exception):
+                self._active_assistant_message.append_delta(text)
+            self._record_transcript_fallback(text)
             self._assistant_placeholder_written = True
 
         def _cancel_tool_progress_flush_timer(self) -> None:
@@ -2072,10 +2212,12 @@ def run_tui() -> int:
                 return False
             tool_name = str(record.get("tool", "unknown"))
             tool_input = record.get("input")
-            self._mount_transcript_widget(
-                render_tool_start_line_with_input(tool_name, tool_input=tool_input, tool_use_id=tool_use_id),
-                plain_text=self._tool_start_plain_text(tool_name, tool_input),
-            )
+            block = ToolCallBlock(tool_name, tool_use_id)
+            if isinstance(tool_input, dict):
+                with contextlib.suppress(Exception):
+                    block.set_input(tool_input)
+            record["widget"] = block
+            self._mount_transcript_widget(block, plain_text=self._tool_start_plain_text(tool_name, tool_input))
             record["start_rendered"] = True
             self._tool_pending_start.pop(tool_use_id, None)
             self._cancel_tool_start_timer(tool_use_id)
@@ -2129,16 +2271,24 @@ def run_tui() -> int:
             record = self._tool_blocks.get(tool_use_id)
             if record is None:
                 return False
+            if not bool(record.get("start_rendered")):
+                self._emit_tool_start_line(tool_use_id)
+            widget = record.get("widget")
             now = time.monotonic()
             last = float(record.get("last_progress_render_mono", 0.0))
             pending = str(record.get("pending_output", ""))
             if pending:
                 if force or (now - last) >= _TOOL_PROGRESS_RENDER_INTERVAL_S:
                     stream = str(record.get("pending_stream", "stdout") or "stdout")
-                    self._mount_transcript_widget(
-                        render_tool_progress_chunk(pending, stream=stream),
-                        plain_text=pending,
-                    )
+                    if widget is not None:
+                        with contextlib.suppress(Exception):
+                            widget.append_output(pending, stream=stream)
+                    else:
+                        self._mount_transcript_widget(
+                            render_tool_progress_chunk(pending, stream=stream),
+                            plain_text=pending,
+                        )
+                    self._record_transcript_fallback(pending)
                     record["pending_output"] = ""
                     record["pending_stream"] = "stdout"
                     record["last_progress_render_mono"] = now
@@ -2155,10 +2305,14 @@ def run_tui() -> int:
             if (now - last) < _TOOL_PROGRESS_RENDER_INTERVAL_S:
                 return False
             tool_name = str(record.get("tool", "unknown"))
-            self._mount_transcript_widget(
-                render_tool_heartbeat_line(tool_name, elapsed_s=elapsed_s, tool_use_id=tool_use_id),
-                plain_text=f"⚙ {tool_name} running... ({elapsed_s:.1f}s)",
-            )
+            if widget is not None:
+                with contextlib.suppress(Exception):
+                    widget.set_elapsed(elapsed_s)
+            else:
+                self._mount_transcript_widget(
+                    render_tool_heartbeat_line(tool_name, elapsed_s=elapsed_s, tool_use_id=tool_use_id),
+                    plain_text=f"⚙ {tool_name} running... ({elapsed_s:.1f}s)",
+                )
             record["last_progress_render_mono"] = now
             record["last_heartbeat_rendered_s"] = elapsed_s
             return True
@@ -3159,15 +3313,33 @@ def run_tui() -> int:
                 self._scaffold_view_artifacts_button.variant = "primary" if mode == "artifacts" else "default"
 
         def _set_settings_view_mode(self, mode: str) -> None:
-            self.state.settings_view_mode = mode
+            normalized = mode.strip().lower()
+            if normalized not in {"general", "models", "env", "scoping"}:
+                normalized = "general"
+            self.state.settings_view_mode = normalized
+            if self._settings_general_view:
+                self._settings_general_view.styles.display = "block" if normalized == "general" else "none"
+            if self._settings_models_view:
+                self._settings_models_view.styles.display = "block" if normalized == "models" else "none"
             if self._settings_env_view:
-                self._settings_env_view.styles.display = "block" if mode == "env" else "none"
+                self._settings_env_view.styles.display = "block" if normalized == "env" else "none"
             if self._settings_scoping_view:
-                self._settings_scoping_view.styles.display = "block" if mode == "scoping" else "none"
+                self._settings_scoping_view.styles.display = "block" if normalized == "scoping" else "none"
+            if self._settings_view_general_button:
+                self._settings_view_general_button.variant = "primary" if normalized == "general" else "default"
+            if self._settings_view_models_button:
+                self._settings_view_models_button.variant = "primary" if normalized == "models" else "default"
             if self._settings_view_env_button:
-                self._settings_view_env_button.variant = "primary" if mode == "env" else "default"
+                self._settings_view_env_button.variant = "primary" if normalized == "env" else "default"
             if self._settings_view_scoping_button:
-                self._settings_view_scoping_button.variant = "primary" if mode == "scoping" else "default"
+                self._settings_view_scoping_button.variant = "primary" if normalized == "scoping" else "default"
+            if normalized == "general":
+                self._refresh_settings_general()
+            if normalized == "models":
+                self._refresh_settings_models()
+            if normalized == "env":
+                self._refresh_settings_env_list()
+                self._refresh_settings_env_detail(self._settings_env_selected_key)
 
         def _refresh_orchestrator_status(self) -> None:
             """Update the orchestrator status line in the Engage tab."""
@@ -3188,13 +3360,449 @@ def run_tui() -> int:
                     pa.styles.display = "none"
 
         def _refresh_settings_env_list(self) -> None:
-            """Populate the Settings env list with current environment variables."""
-            from swarmee_river.tui.views.settings import build_env_sidebar_items
+            """Populate the Settings env list from env.example catalog."""
             widget = self._settings_env_list
             if widget is None:
                 return
-            items = build_env_sidebar_items()
-            widget.set_items(items)
+            category_widget = self._settings_env_category_select
+            category = str(getattr(category_widget, "value", "")).strip() if category_widget is not None else ""
+            if not category:
+                options = env_category_options()
+                category = options[0][1] if options else ""
+                if category_widget is not None and category:
+                    with contextlib.suppress(Exception):
+                        category_widget.set_options(options)
+                        category_widget.value = category
+            items = build_env_sidebar_items(category=category or None)
+            selected = self._settings_env_selected_key if self._settings_env_selected_key else None
+            widget.set_items(items, selected_id=selected, emit=False)
+            current = widget.selected_item()
+            current_id = str((current or {}).get("id", "")).strip()
+            self._settings_env_selected_key = current_id if current_id and not current_id.startswith("__") else None
+
+        def _settings_auth_status_lines(self) -> list[str]:
+            from swarmee_river.utils.provider_utils import has_aws_credentials, has_github_copilot_token
+
+            active_provider = (
+                self.state.daemon.model_provider_override
+                or self.state.daemon.provider
+                or "(auto)"
+            )
+            aws_profile = (os.getenv("AWS_PROFILE") or "").strip() or "default"
+            aws_ok = has_aws_credentials()
+            copilot_ok = has_github_copilot_token()
+            return [
+                f"Active provider: {active_provider}",
+                f"AWS (profile={aws_profile}): {'connected' if aws_ok else 'not connected'}",
+                f"GitHub Copilot: {'connected' if copilot_ok else 'not connected'}",
+            ]
+
+        def _set_settings_env_value_controls(self, *, key: str, current_value: str, default_value: str) -> None:
+            spec = env_spec_by_key(key)
+            select_widget = self._settings_env_value_select
+            input_widget = self._settings_env_value_input
+            if select_widget is not None:
+                options: list[tuple[str, str]] = [("Select constrained value...", "__none__")]
+                if spec is not None and spec.choices:
+                    options.extend((choice, choice) for choice in spec.choices)
+                with contextlib.suppress(Exception):
+                    select_widget.set_options(options)
+                    selected_value = current_value or (default_value if default_value and default_value != "(unset)" else "")
+                    select_widget.value = selected_value if selected_value in {value for _label, value in options} else "__none__"
+            if input_widget is not None:
+                candidate = current_value or (default_value if default_value != "(unset)" else "")
+                with contextlib.suppress(Exception):
+                    input_widget.value = candidate
+
+        def _refresh_settings_env_detail(self, selected_key: str | None) -> None:
+            detail_widget = self._settings_env_detail
+            if detail_widget is None:
+                return
+            key = str(selected_key or "").strip()
+            spec = env_spec_by_key(key)
+            if spec is None:
+                with contextlib.suppress(Exception):
+                    detail_widget.update("Select a variable to view details and edit its value.")
+                return
+
+            current = os.environ.get(spec.key, "").strip()
+            sensitive = spec.key in {
+                "ANTHROPIC_API_KEY",
+                "OPENAI_API_KEY",
+                "SWARMEE_GITHUB_COPILOT_API_KEY",
+                "GITHUB_TOKEN",
+                "GH_TOKEN",
+            }
+            def _mask(raw: str) -> str:
+                if not sensitive or len(raw) <= 8:
+                    return raw
+                return raw[:4] + "..." + raw[-4:]
+
+            current_display = _mask(current) if current else "(unset)"
+            default_display = _mask(spec.default) if spec.default else "(unset)"
+            choices_text = ", ".join(spec.choices) if spec.choices else "free-form value"
+            detail_text = (
+                f"{spec.key}\n"
+                f"Category: {spec.category}\n"
+                f"Current: {current_display}\n"
+                f"Default: {default_display}\n"
+                f"Allowed values: {choices_text}\n"
+                f"{spec.description}"
+            )
+            with contextlib.suppress(Exception):
+                detail_widget.update(detail_text)
+            self._set_settings_env_value_controls(key=spec.key, current_value=current, default_value=spec.default)
+
+        def _refresh_settings_models(self) -> None:
+            from swarmee_river.pricing import resolve_pricing
+            from swarmee_river.settings import load_settings
+
+            if self._settings_models_list is None:
+                return
+
+            settings = load_settings()
+            provider_default = (settings.models.provider or "__auto__").strip().lower()
+            tier_default = (settings.models.default_tier or "balanced").strip().lower()
+
+            self.state.daemon.model_select_syncing = True
+            try:
+                provider_select = self.query_one("#settings_models_provider_select", Select)
+                tier_select = self.query_one("#settings_models_default_tier_select", Select)
+                with contextlib.suppress(Exception):
+                    provider_select.value = provider_default if provider_default else "__auto__"
+                with contextlib.suppress(Exception):
+                    tier_select.value = tier_default if tier_default else "balanced"
+            finally:
+                self.state.daemon.model_select_syncing = False
+
+            rows: list[dict[str, str]] = []
+            for provider_name, provider in settings.models.providers.items():
+                for tier_name, tier in provider.tiers.items():
+                    model_id = str(tier.model_id or "").strip() or "(unset)"
+                    pricing = resolve_pricing(provider=provider_name, model_id=tier.model_id)
+                    pricing_label = ""
+                    if pricing is not None and pricing.input_per_1m is not None and pricing.output_per_1m is not None:
+                        cached = pricing.cached_input_per_1m if pricing.cached_input_per_1m is not None else pricing.input_per_1m
+                        pricing_label = f" | ${pricing.input_per_1m}/1M in, ${pricing.output_per_1m}/1M out, ${cached}/1M cached"
+                    rows.append({
+                        "id": f"{provider_name}|{tier_name}",
+                        "title": f"{provider_name}/{tier_name}",
+                        "subtitle": f"{model_id}{pricing_label}",
+                        "state": "default",
+                    })
+
+            rows = sorted(rows, key=lambda item: str(item.get("id", "")))
+            if not rows:
+                rows = [{
+                    "id": "__none__",
+                    "title": "No model tiers configured",
+                    "subtitle": "Use the form below to add a model tier.",
+                    "state": "default",
+                }]
+            selected_id = self._settings_models_selected_id
+            self._settings_models_list.set_items(rows, selected_id=selected_id, emit=False)
+            selected = self._settings_models_list.selected_item()
+            selected_id = str((selected or {}).get("id", "")).strip()
+            self._settings_models_selected_id = selected_id if selected_id and not selected_id.startswith("__") else None
+
+            summary_widget = self._settings_models_summary
+            if summary_widget is not None:
+                provider_label = provider_default if provider_default != "__auto__" else "auto"
+                with contextlib.suppress(Exception):
+                    summary_widget.update(f"Default provider: {provider_label} | Default tier: {tier_default}")
+
+            auth_widget = self._settings_auth_status
+            if auth_widget is not None:
+                with contextlib.suppress(Exception):
+                    auth_widget.update("\n".join(self._settings_auth_status_lines()))
+
+            aws_input = self._settings_aws_profile_input
+            if aws_input is not None:
+                current_profile = (os.getenv("AWS_PROFILE") or "").strip()
+                if current_profile and not str(getattr(aws_input, "value", "")).strip():
+                    with contextlib.suppress(Exception):
+                        aws_input.value = current_profile
+
+            self._refresh_settings_model_detail()
+
+        def _refresh_settings_model_detail(self) -> None:
+            from swarmee_river.pricing import resolve_pricing
+            from swarmee_river.settings import load_settings
+
+            detail_widget = self._settings_models_detail
+            if detail_widget is None:
+                return
+
+            selected = self._settings_models_selected_id or ""
+            if "|" not in selected:
+                with contextlib.suppress(Exception):
+                    detail_widget.update("Select a model tier to inspect and edit.")
+                return
+            provider_name, tier_name = selected.split("|", 1)
+            settings = load_settings()
+            provider = settings.models.providers.get(provider_name)
+            tier = provider.tiers.get(tier_name) if provider is not None else None
+            if tier is None:
+                with contextlib.suppress(Exception):
+                    detail_widget.update("Selected model tier is no longer available.")
+                return
+            pricing = resolve_pricing(provider=provider_name, model_id=tier.model_id)
+            pricing_label = "Pricing: unavailable"
+            if pricing is not None and pricing.input_per_1m is not None and pricing.output_per_1m is not None:
+                cached = pricing.cached_input_per_1m if pricing.cached_input_per_1m is not None else pricing.input_per_1m
+                pricing_label = (
+                    "Pricing: "
+                    f"${pricing.input_per_1m}/1M input, ${pricing.output_per_1m}/1M output, ${cached}/1M cached input"
+                )
+            detail_lines = [
+                f"Provider: {provider_name}",
+                f"Tier: {tier_name}",
+                f"Model ID: {tier.model_id or '(unset)'}",
+                f"Display: {tier.display_name or '(unset)'}",
+                f"Description: {tier.description or '(unset)'}",
+                pricing_label,
+            ]
+            with contextlib.suppress(Exception):
+                detail_widget.update("\n".join(detail_lines))
+
+            form_provider = self.query_one("#settings_models_form_provider", Select)
+            form_tier = self.query_one("#settings_models_form_tier", Select)
+            model_id_input = self.query_one("#settings_models_form_model_id", Input)
+            display_input = self.query_one("#settings_models_form_display_name", Input)
+            description_input = self.query_one("#settings_models_form_description", Input)
+            price_input_widget = self.query_one("#settings_models_form_price_input", Input)
+            price_output_widget = self.query_one("#settings_models_form_price_output", Input)
+            price_cached_widget = self.query_one("#settings_models_form_price_cached", Input)
+            with contextlib.suppress(Exception):
+                form_provider.value = provider_name
+                form_tier.value = tier_name
+                model_id_input.value = str(tier.model_id or "")
+                display_input.value = str(tier.display_name or "")
+                description_input.value = str(tier.description or "")
+                provider_key = provider_name.upper()
+                env_input = os.getenv(f"SWARMEE_PRICE_{provider_key}_INPUT_PER_1M")
+                env_output = os.getenv(f"SWARMEE_PRICE_{provider_key}_OUTPUT_PER_1M")
+                env_cached = os.getenv(f"SWARMEE_PRICE_{provider_key}_CACHED_INPUT_PER_1M")
+                price_input_widget.value = env_input if env_input is not None else ""
+                price_output_widget.value = env_output if env_output is not None else ""
+                price_cached_widget.value = env_cached if env_cached is not None else ""
+
+        def _load_project_settings_payload(self) -> tuple[dict[str, Any], Path]:
+            from swarmee_river.settings import default_settings_template, deep_merge_dict
+
+            path = Path.cwd() / ".swarmee" / "settings.json"
+            raw: dict[str, Any] = {}
+            if path.exists() and path.is_file():
+                with contextlib.suppress(Exception):
+                    loaded = _json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        raw = loaded
+            defaults = default_settings_template().to_dict()
+            merged = deep_merge_dict(defaults, raw) if raw else defaults
+            return merged, path
+
+        def _save_project_settings_payload(self, payload: dict[str, Any], path: Path) -> None:
+            from swarmee_river.settings import SwarmeeSettings, save_settings
+
+            parsed = SwarmeeSettings.from_dict(payload if isinstance(payload, dict) else {})
+            save_settings(parsed, path=path)
+
+        def _project_settings_env_overrides(self) -> dict[str, str]:
+            payload, _path = self._load_project_settings_payload()
+            env_payload = payload.get("env")
+            if not isinstance(env_payload, dict):
+                return {}
+            resolved: dict[str, str] = {}
+            for raw_key, raw_value in env_payload.items():
+                key = str(raw_key).strip()
+                if not key:
+                    continue
+                if raw_value is None:
+                    continue
+                resolved[key] = str(raw_value).strip()
+            return resolved
+
+        def _apply_project_settings_env_overrides(self) -> None:
+            env_overrides = self._project_settings_env_overrides()
+            for key, value in env_overrides.items():
+                if value:
+                    os.environ[key] = value
+
+        def _persist_project_setting_env_override(self, key: str, value: str | None) -> None:
+            normalized_key = str(key or "").strip()
+            if not normalized_key:
+                return
+            payload, path = self._load_project_settings_payload()
+            env_payload = payload.get("env")
+            if not isinstance(env_payload, dict):
+                env_payload = {}
+            normalized_value = str(value).strip() if value is not None else ""
+            if normalized_value:
+                env_payload[normalized_key] = normalized_value
+                os.environ[normalized_key] = normalized_value
+            else:
+                env_payload.pop(normalized_key, None)
+                os.environ.pop(normalized_key, None)
+            if env_payload:
+                payload["env"] = env_payload
+            else:
+                payload.pop("env", None)
+            self._save_project_settings_payload(payload, path)
+
+        def _save_models_default_selection(self) -> None:
+            payload, path = self._load_project_settings_payload()
+            models = payload.setdefault("models", {})
+            provider_widget = self.query_one("#settings_models_provider_select", Select)
+            tier_widget = self.query_one("#settings_models_default_tier_select", Select)
+            provider_value = str(getattr(provider_widget, "value", "__auto__")).strip().lower()
+            tier_value = str(getattr(tier_widget, "value", "balanced")).strip().lower()
+            if provider_value in {"", "__auto__"}:
+                models["provider"] = None
+            else:
+                models["provider"] = provider_value
+            models["default_tier"] = tier_value or "balanced"
+            self._save_project_settings_payload(payload, path)
+
+        def _save_model_form(self) -> None:
+            provider_widget = self.query_one("#settings_models_form_provider", Select)
+            tier_widget = self.query_one("#settings_models_form_tier", Select)
+            model_id_input = self.query_one("#settings_models_form_model_id", Input)
+            display_input = self.query_one("#settings_models_form_display_name", Input)
+            description_input = self.query_one("#settings_models_form_description", Input)
+            price_input_widget = self.query_one("#settings_models_form_price_input", Input)
+            price_output_widget = self.query_one("#settings_models_form_price_output", Input)
+            price_cached_widget = self.query_one("#settings_models_form_price_cached", Input)
+            provider = str(getattr(provider_widget, "value", "")).strip().lower()
+            tier = str(getattr(tier_widget, "value", "")).strip().lower()
+            model_id = str(getattr(model_id_input, "value", "")).strip()
+            display_name = str(getattr(display_input, "value", "")).strip()
+            description = str(getattr(description_input, "value", "")).strip()
+            price_input = str(getattr(price_input_widget, "value", "")).strip()
+            price_output = str(getattr(price_output_widget, "value", "")).strip()
+            price_cached = str(getattr(price_cached_widget, "value", "")).strip()
+            if not provider or not tier or not model_id:
+                self._write_transcript_line("[settings] provider, tier, and model_id are required.")
+                return
+
+            payload, path = self._load_project_settings_payload()
+            models = payload.setdefault("models", {})
+            providers = models.setdefault("providers", {})
+            provider_dict = providers.setdefault(provider, {})
+            tiers = provider_dict.setdefault("tiers", {})
+            tier_dict: dict[str, Any] = dict(tiers.get(tier, {})) if isinstance(tiers.get(tier), dict) else {}
+            tier_dict["provider"] = provider
+            tier_dict["model_id"] = model_id
+            if display_name:
+                tier_dict["display_name"] = display_name
+            else:
+                tier_dict.pop("display_name", None)
+            if description:
+                tier_dict["description"] = description
+            else:
+                tier_dict.pop("description", None)
+            tiers[tier] = tier_dict
+
+            provider_key = provider.upper()
+            env_payload = payload.get("env")
+            if not isinstance(env_payload, dict):
+                env_payload = {}
+            for env_key, raw_value in (
+                (f"SWARMEE_PRICE_{provider_key}_INPUT_PER_1M", price_input),
+                (f"SWARMEE_PRICE_{provider_key}_OUTPUT_PER_1M", price_output),
+                (f"SWARMEE_PRICE_{provider_key}_CACHED_INPUT_PER_1M", price_cached),
+            ):
+                if raw_value:
+                    try:
+                        float(raw_value)
+                    except ValueError:
+                        self._write_transcript_line(f"[settings] invalid numeric price for {env_key}: {raw_value}")
+                        return
+                    env_payload[env_key] = raw_value
+                    os.environ[env_key] = raw_value
+                else:
+                    env_payload.pop(env_key, None)
+                    os.environ.pop(env_key, None)
+            if env_payload:
+                payload["env"] = env_payload
+            else:
+                payload.pop("env", None)
+
+            self._save_project_settings_payload(payload, path)
+            self._settings_models_selected_id = f"{provider}|{tier}"
+            self._refresh_model_select()
+            self._refresh_settings_models()
+            self._refresh_settings_env_list()
+            self._refresh_settings_env_detail(self._settings_env_selected_key)
+            self._refresh_agent_summary()
+            self._write_transcript_line(f"[settings] saved model {provider}/{tier} -> {model_id}")
+
+        def _delete_model_form_selection(self) -> None:
+            selected = self._settings_models_selected_id or ""
+            if "|" not in selected:
+                self._write_transcript_line("[settings] select a model tier to delete.")
+                return
+            provider, tier = selected.split("|", 1)
+            payload, path = self._load_project_settings_payload()
+            providers = payload.setdefault("models", {}).setdefault("providers", {})
+            provider_dict = providers.get(provider)
+            if not isinstance(provider_dict, dict):
+                self._write_transcript_line("[settings] selected provider is missing.")
+                return
+            tiers = provider_dict.get("tiers")
+            if not isinstance(tiers, dict) or tier not in tiers:
+                self._write_transcript_line("[settings] selected tier is missing.")
+                return
+            tiers.pop(tier, None)
+            if not tiers:
+                providers.pop(provider, None)
+            self._save_project_settings_payload(payload, path)
+            self._settings_models_selected_id = None
+            self._refresh_model_select()
+            self._refresh_settings_models()
+            self._refresh_agent_summary()
+            self._write_transcript_line(f"[settings] deleted model tier {provider}/{tier}")
+
+        def _clear_model_form(self) -> None:
+            for selector_id, default_value in (
+                ("#settings_models_form_provider", "bedrock"),
+                ("#settings_models_form_tier", "balanced"),
+            ):
+                with contextlib.suppress(Exception):
+                    self.query_one(selector_id, Select).value = default_value
+            for input_id in (
+                "#settings_models_form_model_id",
+                "#settings_models_form_display_name",
+                "#settings_models_form_description",
+                "#settings_models_form_price_input",
+                "#settings_models_form_price_output",
+                "#settings_models_form_price_cached",
+            ):
+                with contextlib.suppress(Exception):
+                    self.query_one(input_id, Input).value = ""
+            self._settings_models_selected_id = None
+            self._refresh_settings_model_detail()
+
+        def _refresh_settings_general(self) -> None:
+            summary_widget = self._settings_general_summary
+            if summary_widget is not None:
+                with contextlib.suppress(Exception):
+                    summary_widget.update(
+                        "Workspace settings and runtime behavior.\n"
+                        "Use Models for provider auth and model catalog management."
+                    )
+
+            aws_input = self._settings_aws_profile_input
+            if aws_input is not None:
+                current_profile = (os.getenv("AWS_PROFILE") or "").strip()
+                if current_profile and not str(getattr(aws_input, "value", "")).strip():
+                    with contextlib.suppress(Exception):
+                        aws_input.value = current_profile
+
+            toggle = self._settings_toggle_auto_approve_button
+            if toggle is not None:
+                enabled = bool(self._default_auto_approve)
+                toggle.label = f"Auto-Approve: {'On' if enabled else 'Off'}"
+                toggle.variant = "warning" if enabled else "default"
 
         def _refresh_settings_scope_display(self) -> None:
             """Update the current scope path display in Settings."""
@@ -3385,18 +3993,20 @@ def run_tui() -> int:
                     tiers=self.state.daemon.tiers,
                 )
                 self._refresh_orchestrator_status()
+                self._refresh_settings_models()
                 return
 
             options, selected_value = self._model_select_options()
             self._apply_model_select_options(options, selected_value)
             self._refresh_orchestrator_status()
+            self._refresh_settings_models()
 
         def _apply_model_select_options(self, options: list[tuple[str, str]], selected_value: str) -> None:
-            selector = self.query_one("#model_select", Select)
             self.state.daemon.model_select_syncing = True
             try:
-                selector.set_options(options)
                 with contextlib.suppress(Exception):
+                    selector = self.query_one("#model_select", Select)
+                    selector.set_options(options)
                     selector.value = selected_value
             finally:
                 self.state.daemon.model_select_syncing = False
@@ -4713,6 +5323,13 @@ def run_tui() -> int:
             self._cancel_streaming_flush_timer()
             self._flush_streaming_buffer()
             if not self._current_assistant_chunks:
+                if self._active_assistant_message is not None:
+                    with contextlib.suppress(Exception):
+                        self._active_assistant_message.finalize(
+                            model=self._current_assistant_model,
+                            timestamp=self._current_assistant_timestamp or self._turn_timestamp(),
+                        )
+                self._active_assistant_message = None
                 self._current_assistant_model = None
                 self._current_assistant_timestamp = None
                 self._assistant_placeholder_written = False
@@ -4726,20 +5343,26 @@ def run_tui() -> int:
             meta_parts = [part for part in [model, timestamp] if isinstance(part, str) and part.strip()]
             if meta_parts:
                 plain_lines.append(" · ".join(meta_parts))
-            if not self._assistant_placeholder_written:
+            if self._active_assistant_message is not None:
+                with contextlib.suppress(Exception):
+                    self._active_assistant_message.finalize(model=model, timestamp=timestamp)
+                if meta_parts:
+                    self._record_transcript_fallback(" · ".join(meta_parts))
+            elif not self._assistant_placeholder_written:
                 self._mount_transcript_widget(
                     render_assistant_message(full_text, model=model, timestamp=timestamp),
                     plain_text="\n".join(plain_lines),
                 )
             elif meta_parts:
                 meta_line = " · ".join(meta_parts)
-                self._mount_transcript_widget(render_system_message(meta_line), plain_text=meta_line)
+                self._record_transcript_fallback(meta_line)
 
             self._current_assistant_chunks = []
             self._streaming_buffer = []
             self._current_assistant_model = None
             self._current_assistant_timestamp = None
             self._assistant_placeholder_written = False
+            self._active_assistant_message = None
 
         def _handle_output_line(self, line: str, raw_line: str | None = None) -> None:
             if self.state.daemon.query_active:
@@ -4861,6 +5484,20 @@ def run_tui() -> int:
             except Exception:
                 return None
 
+        def _collapse_intermediate_activity_boxes(self) -> None:
+            block = self._active_reasoning_block
+            if block is not None:
+                with contextlib.suppress(Exception):
+                    block.collapse()
+            for record in list(self._tool_blocks.values()):
+                if not isinstance(record, dict):
+                    continue
+                widget = record.get("widget")
+                if widget is None:
+                    continue
+                with contextlib.suppress(Exception):
+                    widget.collapse()
+
         def _finalize_turn(self, *, exit_status: str) -> None:
             self.state.daemon.run_active_tier_warning_emitted = False
             if self.state.daemon.status_timer is not None:
@@ -4890,6 +5527,7 @@ def run_tui() -> int:
 
             self._finalize_assistant_message()
             self._dismiss_thinking(emit_summary=True)
+            self._collapse_intermediate_activity_boxes()
 
             output_text = "".join(self.state.daemon.turn_output_chunks)
             self.state.daemon.turn_output_chunks = []
@@ -5084,6 +5722,8 @@ def run_tui() -> int:
             self._current_assistant_model = None
             self._current_assistant_timestamp = None
             self._assistant_placeholder_written = False
+            self._active_assistant_message = None
+            self._active_reasoning_block = None
             self._reset_thinking_state()
             self._last_thinking_text = ""
             self._tool_blocks = {}
@@ -5133,6 +5773,9 @@ def run_tui() -> int:
             self._last_prompt = prompt
             self._last_run_auto_approve = auto_approve
             self.state.daemon.query_active = True
+            self._current_assistant_model = self.state.daemon.current_model
+            self._current_assistant_timestamp = self._turn_timestamp()
+            self._assistant_placeholder_written = False
             desired_tier = ""
             pending_value = (self.state.daemon.pending_model_select_value or "").strip().lower()
             if "|" in pending_value:
@@ -5296,7 +5939,7 @@ def run_tui() -> int:
             if self._transcript_mode == "text":
                 transcript_widget = self.query_one("#transcript_text", TextArea)
             else:
-                transcript_widget = self.query_one("#transcript", RichLog)
+                transcript_widget = self.query_one("#transcript", VerticalScroll)
 
             if isinstance(transcript_widget, TextArea):
                 selected_text = self._get_richlog_selection_text(transcript_widget)
@@ -5330,7 +5973,7 @@ def run_tui() -> int:
                 self._apply_split_ratio()
 
         def _apply_split_ratio(self) -> None:
-            transcript = self.query_one("#transcript", RichLog)
+            transcript = self.query_one("#transcript", VerticalScroll)
             transcript_text = self.query_one("#transcript_text", TextArea)
             side = self.query_one("#side", Vertical)
             transcript.styles.width = f"{self._split_ratio}fr"
@@ -5366,7 +6009,7 @@ def run_tui() -> int:
             transcript_text = self._get_transcript_text()
             if term_lower in transcript_text.lower():
                 with contextlib.suppress(Exception):
-                    self.query_one("#transcript", RichLog).scroll_end(animate=True)
+                    self.query_one("#transcript", VerticalScroll).scroll_end(animate=True)
                 self._write_transcript_line("[search] found match in transcript.")
                 return
             self._write_transcript_line(f"[search] no match for '{term}'.")
@@ -5575,7 +6218,13 @@ def run_tui() -> int:
                 # The daemon-reported model_info is the source of truth for startup model state.
                 self.state.daemon.model_provider_override = None
                 self.state.daemon.model_tier_override = None
-                self._default_auto_approve = data.get("default_auto_approve", False)
+                auto_env = (os.getenv("SWARMEE_AUTO_APPROVE") or "").strip().lower()
+                if auto_env in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}:
+                    self._default_auto_approve = True
+                elif auto_env in {"0", "false", "f", "no", "n", "off", "disabled", "disable"}:
+                    self._default_auto_approve = False
+                else:
+                    self._default_auto_approve = data.get("default_auto_approve", False)
                 self._split_ratio = data.get("split_ratio", 2)
                 self.state.session.view_mode = normalize_session_view_mode(data.get("session_view_mode"))
                 self.state.agent_studio.view_mode = normalize_agent_studio_view_mode(data.get("agent_studio_view_mode"))
@@ -5627,7 +6276,20 @@ def run_tui() -> int:
         def on_select_changed(self, event: Any) -> None:
             select_widget = getattr(event, "select", None)
             select_id = str(getattr(select_widget, "id", "")).strip().lower()
-            if select_id != "model_select":
+            if select_id == "settings_env_category":
+                self._refresh_settings_env_list()
+                self._refresh_settings_env_detail(self._settings_env_selected_key)
+                return
+            if select_id in {"settings_models_provider_select", "settings_models_default_tier_select"}:
+                if self.state.daemon.model_select_syncing:
+                    return
+                self._save_models_default_selection()
+                self._refresh_model_select()
+                self._refresh_settings_models()
+                self._refresh_agent_summary()
+                self._write_transcript_line("[settings] saved model defaults.")
+                return
+            if select_id not in {"model_select"}:
                 return
             if self.state.daemon.model_select_syncing:
                 return
@@ -5694,6 +6356,7 @@ def run_tui() -> int:
                 self.state.daemon.model_tier_override = requested_tier or None
             self._update_header_status()
             self._update_prompt_placeholder()
+            self._refresh_model_select()
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
             self._refresh_agent_summary()
@@ -5702,6 +6365,18 @@ def run_tui() -> int:
         def on_sidebar_list_selection_changed(self, event: Any) -> None:
             sidebar_list = getattr(event, "sidebar_list", None)
             if sidebar_list is None:
+                return
+
+            if sidebar_list is self._settings_env_list:
+                selected_id = str(getattr(event, "item_id", "")).strip()
+                self._settings_env_selected_key = selected_id if selected_id and not selected_id.startswith("__") else None
+                self._refresh_settings_env_detail(self._settings_env_selected_key)
+                return
+
+            if sidebar_list is self._settings_models_list:
+                selected_id = str(getattr(event, "item_id", "")).strip()
+                self._settings_models_selected_id = selected_id if selected_id and not selected_id.startswith("__") else None
+                self._refresh_settings_model_detail()
                 return
 
             if sidebar_list is self._session_issue_list:
@@ -6015,6 +6690,95 @@ def run_tui() -> int:
 
             return False
 
+        def _settings_aws_profile_value(self) -> str:
+            widget = self._settings_aws_profile_input
+            if widget is None:
+                return ""
+            return str(getattr(widget, "value", "")).strip()
+
+        def _apply_settings_aws_profile(self, profile: str, *, announce: bool = True) -> None:
+            normalized = profile.strip()
+            if normalized:
+                self._persist_project_setting_env_override("AWS_PROFILE", normalized)
+                if announce:
+                    self._write_transcript_line(f"[settings] AWS profile set to {normalized}")
+            else:
+                self._persist_project_setting_env_override("AWS_PROFILE", None)
+                if announce:
+                    self._write_transcript_line("[settings] AWS profile cleared (using default credential chain).")
+            self._refresh_settings_env_list()
+            self._refresh_settings_env_detail(self._settings_env_selected_key)
+            self._refresh_settings_models()
+
+        def _request_provider_connect(self, provider: str, *, profile: str | None = None) -> bool:
+            from swarmee_river.utils.provider_utils import normalize_provider_name
+
+            raw = (provider or "").strip() or "github_copilot"
+            normalized = normalize_provider_name(raw)
+            if normalized in {"aws", "bedrock"}:
+                normalized = "bedrock"
+            if normalized not in {"github_copilot", "bedrock"}:
+                self._write_transcript_line(_CONNECT_USAGE_TEXT)
+                return False
+
+            proc = self.state.daemon.proc
+            if not self.state.daemon.ready or proc is None or proc.poll() is not None:
+                self._write_transcript_line("[connect] daemon is not ready.")
+                return False
+            if self.state.daemon.query_active:
+                self._write_transcript_line("[connect] cannot connect while a run is active.")
+                return False
+
+            payload: dict[str, Any] = {"cmd": "connect", "provider": normalized}
+            if normalized == "github_copilot":
+                payload.update({"method": "device", "open_browser": True})
+                self._write_transcript_line("[connect] starting provider auth for github_copilot...")
+            else:
+                resolved_profile = (profile or "").strip() or (os.getenv("AWS_PROFILE") or "").strip() or "default"
+                payload.update({"method": "sso", "profile": resolved_profile})
+                self._write_transcript_line(f"[connect] starting provider auth for bedrock (profile={resolved_profile})...")
+            self._pending_connect_payload = dict(payload)
+            if not send_daemon_command(proc, payload):
+                self._write_transcript_line("[connect] failed to send command.")
+                return False
+            return True
+
+        def _recover_runtime_unknown_proxy_command(self, command: str) -> bool:
+            normalized = str(command or "").strip().lower()
+            if normalized not in {"connect", "auth"}:
+                return False
+            if normalized in self._runtime_proxy_recovery_attempted:
+                return False
+            proc = self.state.daemon.proc
+            if not isinstance(proc, _SocketTransport):
+                return False
+            self._runtime_proxy_recovery_attempted.add(normalized)
+            self._write_transcript_line(
+                f"[daemon] runtime broker does not support '{normalized}'. Restarting broker/session transport..."
+            )
+            from swarmee_river.runtime_service.client import shutdown_runtime_broker
+
+            with contextlib.suppress(Exception):
+                shutdown_runtime_broker(cwd=Path.cwd())
+            if normalized == "connect" and isinstance(self._pending_connect_payload, dict):
+                self._pending_connect_retry_payload = dict(self._pending_connect_payload)
+                provider_label = str(self._pending_connect_retry_payload.get("provider", "provider")).strip()
+                self._write_transcript_line(f"[connect] will retry auth for {provider_label} after reconnect.")
+            self._spawn_daemon(restart=True)
+            return True
+
+        def _flush_pending_connect_retry(self) -> None:
+            payload = self._pending_connect_retry_payload
+            if not isinstance(payload, dict):
+                return
+            proc = self.state.daemon.proc
+            if proc is None or proc.poll() is not None or not self.state.daemon.ready or self.state.daemon.query_active:
+                return
+            if send_daemon_command(proc, payload):
+                provider_label = str(payload.get("provider", "provider")).strip()
+                self._write_transcript_line(f"[connect] retrying provider auth for {provider_label}...")
+                self._pending_connect_retry_payload = None
+
         def _handle_pre_run_command(self, text: str) -> bool:
             classified = classify_pre_run_command(text)
             if classified is None:
@@ -6092,20 +6856,14 @@ def run_tui() -> int:
                 self._submit_consent_choice((argument or "").strip())
                 return True
             if action == "connect":
-                provider = (argument or "").strip() or "github_copilot"
-                proc = self.state.daemon.proc
-                if not self.state.daemon.ready or proc is None or proc.poll() is not None:
-                    self._write_transcript_line("[connect] daemon is not ready.")
+                raw = (argument or "").strip()
+                if not raw:
+                    self._request_provider_connect("github_copilot")
                     return True
-                if self.state.daemon.query_active:
-                    self._write_transcript_line("[connect] cannot connect while a run is active.")
-                    return True
-                self._write_transcript_line(f"[connect] starting provider auth for {provider}...")
-                if not send_daemon_command(
-                    proc,
-                    {"cmd": "connect", "provider": provider, "method": "device", "open_browser": True},
-                ):
-                    self._write_transcript_line("[connect] failed to send command.")
+                parts = raw.split(maxsplit=1)
+                provider = parts[0].strip()
+                profile = parts[1].strip() if len(parts) > 1 else None
+                self._request_provider_connect(provider, profile=profile)
                 return True
             if action == "auth_usage":
                 self._write_transcript_line(_AUTH_USAGE_TEXT)
@@ -6241,22 +6999,99 @@ def run_tui() -> int:
             if button_id == "settings_view_env":
                 self._set_settings_view_mode("env")
                 return
+            if button_id == "settings_view_general":
+                self._set_settings_view_mode("general")
+                return
+            if button_id == "settings_view_models":
+                self._set_settings_view_mode("models")
+                return
             if button_id == "settings_view_scoping":
                 self._set_settings_view_mode("scoping")
                 return
-            if button_id == "settings_env_add":
-                import contextlib as _ctx
-                with _ctx.suppress(Exception):
-                    key_input = self.query_one("#settings_env_key", Input)
-                    val_input = self.query_one("#settings_env_value", Input)
-                    key = key_input.value.strip()
-                    val = val_input.value.strip()
-                    if key:
-                        os.environ[key] = val
-                        key_input.value = ""
-                        val_input.value = ""
-                        self._refresh_settings_env_list()
-                        self._write_transcript_line(f"[settings] Set {key}")
+            if button_id == "settings_toggle_auto_approve":
+                self._default_auto_approve = not self._default_auto_approve
+                self._persist_project_setting_env_override(
+                    "SWARMEE_AUTO_APPROVE",
+                    "true" if self._default_auto_approve else "false",
+                )
+                self._update_prompt_placeholder()
+                self._refresh_settings_general()
+                state_label = "enabled" if self._default_auto_approve else "disabled"
+                self._write_transcript_line(f"[settings] auto-approve {state_label}.")
+                return
+            if button_id == "settings_aws_profile_apply":
+                self._apply_settings_aws_profile(self._settings_aws_profile_value(), announce=True)
+                return
+            if button_id == "settings_auth_connect_copilot":
+                self._request_provider_connect("github_copilot")
+                return
+            if button_id == "settings_auth_connect_aws":
+                profile = self._settings_aws_profile_value()
+                self._apply_settings_aws_profile(profile, announce=False)
+                self._request_provider_connect("bedrock", profile=profile or None)
+                return
+            if button_id == "settings_auth_refresh":
+                self._refresh_settings_models()
+                self._write_transcript_line("[settings] refreshed model/auth status.")
+                return
+            if button_id == "settings_models_new":
+                self._clear_model_form()
+                return
+            if button_id == "settings_models_save":
+                self._save_model_form()
+                return
+            if button_id == "settings_models_delete":
+                self._delete_model_form_selection()
+                return
+            if button_id == "settings_env_apply":
+                key = (self._settings_env_selected_key or "").strip()
+                spec = env_spec_by_key(key)
+                if spec is None:
+                    self._write_transcript_line("[settings] select an environment variable first.")
+                    return
+                value_input = str(getattr(self._settings_env_value_input, "value", "")).strip()
+                value_select = str(getattr(self._settings_env_value_select, "value", "")).strip()
+                if spec.choices and value_select not in {"", "__none__"}:
+                    value = value_select
+                else:
+                    value = value_input or (value_select if value_select not in {"", "__none__"} else "")
+                if value:
+                    self._persist_project_setting_env_override(spec.key, value)
+                    self._write_transcript_line(f"[settings] set {spec.key}")
+                else:
+                    self._persist_project_setting_env_override(spec.key, None)
+                    self._write_transcript_line(f"[settings] unset {spec.key}")
+                self._refresh_settings_env_list()
+                self._refresh_settings_env_detail(spec.key)
+                self._refresh_settings_models()
+                return
+            if button_id == "settings_env_default":
+                key = (self._settings_env_selected_key or "").strip()
+                spec = env_spec_by_key(key)
+                if spec is None:
+                    self._write_transcript_line("[settings] select an environment variable first.")
+                    return
+                if spec.default and spec.default != "(unset)":
+                    self._persist_project_setting_env_override(spec.key, spec.default)
+                    self._write_transcript_line(f"[settings] applied default for {spec.key}")
+                else:
+                    self._persist_project_setting_env_override(spec.key, None)
+                    self._write_transcript_line(f"[settings] no explicit default for {spec.key}; variable unset.")
+                self._refresh_settings_env_list()
+                self._refresh_settings_env_detail(spec.key)
+                self._refresh_settings_models()
+                return
+            if button_id == "settings_env_unset":
+                key = (self._settings_env_selected_key or "").strip()
+                spec = env_spec_by_key(key)
+                if spec is None:
+                    self._write_transcript_line("[settings] select an environment variable first.")
+                    return
+                self._persist_project_setting_env_override(spec.key, None)
+                self._write_transcript_line(f"[settings] unset {spec.key}")
+                self._refresh_settings_env_list()
+                self._refresh_settings_env_detail(spec.key)
+                self._refresh_settings_models()
                 return
             if button_id == "settings_set_scope":
                 import contextlib as _ctx
@@ -6267,8 +7102,10 @@ def run_tui() -> int:
                         target = Path(path_val).expanduser().resolve()
                         swarmee_dir = target / ".swarmee"
                         swarmee_dir.mkdir(parents=True, exist_ok=True)
-                        os.environ["SWARMEE_STATE_DIR"] = str(swarmee_dir)
+                        self._persist_project_setting_env_override("SWARMEE_STATE_DIR", str(swarmee_dir))
                         self._refresh_settings_scope_display()
+                        self._refresh_settings_env_list()
+                        self._refresh_settings_env_detail(self._settings_env_selected_key)
                         self._write_transcript_line(f"[settings] Scope set to {swarmee_dir}")
                 return
             if button_id == "agent_view_profile":

@@ -7,6 +7,7 @@ import json as _json
 import re
 from typing import Any
 
+from rich import box as rich_box
 from rich.console import Group as RichGroup
 from rich.markdown import Markdown as RichMarkdown
 from rich.panel import Panel as RichPanel
@@ -16,14 +17,25 @@ from textual.message import Message
 from textual.widgets import Button, Collapsible, Static
 
 
-def render_user_message(text: str, *, timestamp: str | None = None) -> RichText:
-    """Render a user message line for RichLog."""
-    rendered = RichText()
-    rendered.append("YOU>", style="bold cyan")
-    rendered.append(f" {text}")
+def render_user_message(text: str, *, timestamp: str | None = None) -> RichPanel:
+    """Render a user prompt card with a green left accent bar."""
+    body = RichText()
+    lines = str(text or "").splitlines() or [""]
+    for index, line in enumerate(lines):
+        if index:
+            body.append("\n")
+        body.append("▌ ", style="bold #6a9955")
+        body.append(line)
     if isinstance(timestamp, str) and timestamp.strip():
-        rendered.append(f"\n{timestamp.strip()}", style="dim")
-    return rendered
+        body.append(f"\n▌ {timestamp.strip()}", style="#6a9955")
+    return RichPanel(
+        body,
+        title="You",
+        border_style="#36523d",
+        box=rich_box.ROUNDED,
+        style="on #111b13",
+        padding=(0, 1),
+    )
 
 
 def render_system_message(text: str) -> RichText:
@@ -1107,8 +1119,12 @@ class AssistantMessage(Static):
         full = "".join(self._buffer)
         self.update(RichMarkdown(full))
 
-    def finalize(self) -> str:
+    def finalize(self, *, model: str | None = None, timestamp: str | None = None) -> str:
         """Called on text_complete. Returns the full raw text."""
+        if isinstance(model, str) and model.strip():
+            self._model = model.strip()
+        if isinstance(timestamp, str) and timestamp.strip():
+            self._timestamp = timestamp.strip()
         full = "".join(self._buffer)
         meta_parts = [part for part in [self._model, self._timestamp] if part]
         if meta_parts:
@@ -1119,6 +1135,177 @@ class AssistantMessage(Static):
     @property
     def full_text(self) -> str:
         return "".join(self._buffer)
+
+
+class AssistantStreamBlock(Static):
+    """Collapsible assistant response card for live streaming output."""
+
+    DEFAULT_CSS = """
+    AssistantStreamBlock {
+        margin: 1 0 0 0;
+        padding: 0;
+        background: #141414;
+        border-left: heavy #6a9955;
+    }
+    AssistantStreamBlock Collapsible {
+        margin: 0;
+        padding: 0 1;
+    }
+    AssistantStreamBlock .assistant-stream-body {
+        padding: 0 0 0 1;
+    }
+    """
+
+    def __init__(self, *, model: str | None = None, timestamp: str | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._buffer: list[str] = []
+        self._model = model.strip() if isinstance(model, str) and model.strip() else ""
+        self._timestamp = timestamp.strip() if isinstance(timestamp, str) and timestamp.strip() else ""
+
+    def compose(self):  # type: ignore[override]
+        with Collapsible(title=self._header_text(running=True), collapsed=False):
+            yield Static(RichText("Waiting for response...", style="dim"), classes="assistant-stream-body")
+
+    def _header_text(self, *, running: bool) -> str:
+        if running:
+            return "Assistant response (streaming...)"
+        summary = self._summary()
+        meta = self._meta_label()
+        title = f"Assistant response{f' — {summary}' if summary else ''}"
+        if meta:
+            title = f"{title} · {meta}"
+        return title
+
+    def _summary(self) -> str:
+        full = "".join(self._buffer).strip()
+        if not full:
+            return "(no text)"
+        one_line = re.sub(r"\s+", " ", full)
+        return one_line if len(one_line) <= 80 else f"{one_line[:79].rstrip()}…"
+
+    def _meta_label(self) -> str:
+        parts = [part for part in [self._model, self._timestamp] if part]
+        return " · ".join(parts)
+
+    def _refresh_header(self, *, running: bool) -> None:
+        with contextlib.suppress(Exception):
+            collapsible = self.query_one(Collapsible)
+            collapsible.title = self._header_text(running=running)
+
+    def _refresh_body(self) -> None:
+        body = "".join(self._buffer)
+        with contextlib.suppress(Exception):
+            target = self.query_one(".assistant-stream-body", Static)
+            if body.strip():
+                target.update(RichMarkdown(body))
+            else:
+                target.update(RichText("Waiting for response...", style="dim"))
+
+    def append_delta(self, text: str) -> None:
+        chunk = str(text or "")
+        if not chunk:
+            return
+        self._buffer.append(chunk)
+        self._refresh_header(running=True)
+        self._refresh_body()
+        with contextlib.suppress(Exception):
+            self.query_one(Collapsible).collapsed = False
+
+    def finalize(self, *, model: str | None = None, timestamp: str | None = None) -> str:
+        if isinstance(model, str) and model.strip():
+            self._model = model.strip()
+        if isinstance(timestamp, str) and timestamp.strip():
+            self._timestamp = timestamp.strip()
+        self._refresh_body()
+        self._refresh_header(running=False)
+        with contextlib.suppress(Exception):
+            self.query_one(Collapsible).collapsed = True
+        return "".join(self._buffer)
+
+    def collapse(self) -> None:
+        self._refresh_header(running=False)
+        with contextlib.suppress(Exception):
+            self.query_one(Collapsible).collapsed = True
+
+    @property
+    def full_text(self) -> str:
+        return "".join(self._buffer)
+
+
+class ReasoningBlock(Static):
+    """Collapsible card for model reasoning/thinking output."""
+
+    DEFAULT_CSS = """
+    ReasoningBlock {
+        margin: 1 0 0 0;
+        padding: 0;
+        background: #141414;
+        border-left: heavy #6a9955;
+    }
+    ReasoningBlock Collapsible {
+        margin: 0;
+        padding: 0 1;
+    }
+    ReasoningBlock .reasoning-body {
+        padding: 0 0 0 1;
+    }
+    """
+
+    def __init__(self, *, timestamp: str | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._buffer: list[str] = []
+        self._timestamp = timestamp.strip() if isinstance(timestamp, str) and timestamp.strip() else ""
+        self._elapsed_s: float = 0.0
+
+    def compose(self):  # type: ignore[override]
+        with Collapsible(title=self._header_text(running=True), collapsed=False):
+            yield Static(RichText("Thinking...", style="dim"), classes="reasoning-body")
+
+    def _header_text(self, *, running: bool) -> str:
+        if running:
+            return "Reasoning (streaming...)"
+        chars = sum(len(chunk) for chunk in self._buffer)
+        title = f"Reasoning ({chars:,} chars, {self._elapsed_s:.1f}s)"
+        if self._timestamp:
+            title = f"{title} · {self._timestamp}"
+        return title
+
+    def _refresh_header(self, *, running: bool) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one(Collapsible).title = self._header_text(running=running)
+
+    def _refresh_body(self) -> None:
+        text = "".join(self._buffer)
+        with contextlib.suppress(Exception):
+            body = self.query_one(".reasoning-body", Static)
+            if text.strip():
+                body.update(RichMarkdown(text))
+            else:
+                body.update(RichText("Thinking...", style="dim"))
+
+    def append_delta(self, text: str) -> None:
+        chunk = str(text or "")
+        if not chunk:
+            return
+        self._buffer.append(chunk)
+        self._refresh_body()
+        self._refresh_header(running=True)
+        with contextlib.suppress(Exception):
+            self.query_one(Collapsible).collapsed = False
+
+    def finalize(self, *, elapsed_s: float | None = None) -> str:
+        if isinstance(elapsed_s, (int, float)):
+            self._elapsed_s = max(0.0, float(elapsed_s))
+        self._refresh_body()
+        self._refresh_header(running=False)
+        with contextlib.suppress(Exception):
+            self.query_one(Collapsible).collapsed = True
+        return "".join(self._buffer)
+
+    def collapse(self) -> None:
+        self._refresh_header(running=False)
+        with contextlib.suppress(Exception):
+            self.query_one(Collapsible).collapsed = True
 
 
 def _format_tool_input(tool_name: str, tool_input: dict) -> str:
@@ -1211,17 +1398,19 @@ class ToolCallBlock(Static):
     DEFAULT_CSS = """
     ToolCallBlock {
         color: $text-muted;
-        padding: 0 1;
-        margin: 0 0 0 0;
+        padding: 0;
+        margin: 1 0 0 0;
+        background: #141414;
+        border-left: heavy #6a9955;
     }
     ToolCallBlock Collapsible {
-        padding: 0;
+        padding: 0 1;
         margin: 0;
         border: none;
     }
     ToolCallBlock .tool-details {
         color: $text-muted;
-        padding: 0 0 0 2;
+        padding: 0 0 0 1;
     }
     """
 
@@ -1231,10 +1420,12 @@ class ToolCallBlock(Static):
         self._tool_input: dict = {}
         self._status_text = "running..."
         self._result_text: str | None = None
+        self._output_preview: str = ""
+        self._elapsed_s: float = 0.0
         super().__init__(**kwargs)
 
     def compose(self):  # type: ignore[override]
-        with Collapsible(title=self._header_text(), collapsed=True):
+        with Collapsible(title=self._header_text(), collapsed=False):
             yield Static("", classes="tool-details")
 
     @property
@@ -1262,8 +1453,16 @@ class ToolCallBlock(Static):
     def _refresh_details(self) -> None:
         try:
             details = self.query_one(".tool-details", Static)
+            lines: list[str] = []
             formatted = _format_tool_input(self._tool_name, self._tool_input)
-            details.update(formatted if formatted else "(no input details)")
+            if formatted:
+                lines.append(formatted)
+            if self._output_preview.strip():
+                if lines:
+                    lines.append("")
+                lines.append("Output:")
+                lines.append(self._output_preview.rstrip())
+            details.update("\n".join(lines) if lines else "(waiting...)")
         except Exception:
             pass
 
@@ -1274,6 +1473,25 @@ class ToolCallBlock(Static):
     def update_progress(self, chars: int) -> None:
         self._status_text = f"({chars} chars)..."
         self._refresh_header()
+        self._refresh_details()
+
+    def set_elapsed(self, elapsed_s: float) -> None:
+        self._elapsed_s = max(0.0, float(elapsed_s))
+        self._status_text = f"(running {self._elapsed_s:.1f}s)..."
+        self._refresh_header()
+
+    def append_output(self, content: str, *, stream: str = "stdout") -> None:
+        chunk = str(content or "")
+        if not chunk:
+            return
+        prefix = ""
+        if stream == "stderr":
+            prefix = "[stderr] "
+        elif stream == "mixed":
+            prefix = "[mixed] "
+        updated = (self._output_preview + prefix + chunk)[-4096:]
+        self._output_preview = updated
+        self._refresh_details()
 
     def set_result(self, status: str, duration_s: float) -> None:
         if status == "success":
@@ -1281,6 +1499,12 @@ class ToolCallBlock(Static):
         else:
             self._result_text = f"\u2717 {self._tool_name} ({status}) ({duration_s:.1f}s)"
         self._refresh_header()
+        with contextlib.suppress(Exception):
+            self.query_one(Collapsible).collapsed = True
+
+    def collapse(self) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one(Collapsible).collapsed = True
 
 
 class ThinkingIndicator(Static):
@@ -1682,7 +1906,7 @@ class CommandPalette(Static):
         ("/text", "Toggle transcript text mode"),
         ("/thinking", "Show model reasoning"),
         ("/sop", "Browse and toggle SOPs"),
-        ("/connect", "Connect GitHub Copilot auth"),
+        ("/connect", "Connect provider auth (Copilot/AWS)"),
         ("/auth", "List/logout provider auth"),
         ("/copy", "Copy transcript"),
         ("/copy plan", "Copy plan text"),
@@ -1693,6 +1917,9 @@ class CommandPalette(Static):
         ("/open", "Open artifact by number"),
         ("/search", "Search transcript"),
         ("/consent", "Respond to consent"),
+        ("/daemon restart", "Reconnect/restart daemon transport"),
+        ("/daemon stop", "Shut down daemon/broker"),
+        ("/broker stop", "Shut down shared runtime broker"),
         ("/stop", "Stop current run"),
         ("/exit", "Quit TUI"),
     ]

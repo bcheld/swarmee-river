@@ -10,7 +10,9 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -19,6 +21,18 @@ import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+_ROOT_HELP_EPILOG = (
+    "Runtime commands:\n"
+    "  swarmee daemon status            Show runtime broker status\n"
+    "  swarmee daemon start             Start runtime broker\n"
+    "  swarmee daemon stop              Stop runtime broker\n"
+    "  swarmee broker stop              Alias for 'swarmee daemon stop'\n"
+    "  swarmee serve                    Run runtime broker in foreground\n"
+    "  swarmee attach [--tail]          Attach to runtime broker session\n"
+    "\n"
+    "TUI command: swarmee tui"
+)
 
 warnings.filterwarnings(
     "ignore",
@@ -693,9 +707,91 @@ def _render_auth_records_text() -> str:
     return "\n".join(lines)
 
 
+def _run_aws_identity_check(*, profile: str | None) -> tuple[bool, str]:
+    command = ["aws", "sts", "get-caller-identity", "--output", "json"]
+    resolved_profile = (profile or "").strip()
+    if resolved_profile:
+        command.extend(["--profile", resolved_profile])
+    env = dict(os.environ)
+    if resolved_profile:
+        env["AWS_PROFILE"] = resolved_profile
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+    except Exception as exc:
+        return False, str(exc)
+    if result.returncode == 0:
+        return True, ""
+    stderr = (result.stderr or "").strip()
+    stdout = (result.stdout or "").strip()
+    return False, stderr or stdout or f"aws sts failed (exit {result.returncode})"
+
+
+def _connect_aws_credentials(
+    *,
+    profile: str | None,
+    emit: Callable[[str], None],
+) -> None:
+    aws_path = shutil.which("aws")
+    if not aws_path:
+        raise RuntimeError("AWS CLI was not found on PATH. Install AWS CLI v2 and configure a profile.")
+
+    resolved_profile = (profile or os.getenv("AWS_PROFILE") or "default").strip() or "default"
+    os.environ["AWS_PROFILE"] = resolved_profile
+
+    ok, check_message = _run_aws_identity_check(profile=resolved_profile)
+    if ok:
+        emit(f"AWS credentials already valid for profile '{resolved_profile}'.")
+        return
+
+    emit(f"AWS credentials unavailable for profile '{resolved_profile}'. Starting aws sso login...")
+    login_cmd = [aws_path, "sso", "login", "--profile", resolved_profile]
+    login_env = dict(os.environ)
+    login_env["AWS_PROFILE"] = resolved_profile
+
+    try:
+        process = subprocess.Popen(
+            login_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=login_env,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to start AWS SSO login: {exc}") from exc
+
+    try:
+        if process.stdout is not None:
+            for raw_line in process.stdout:
+                line = str(raw_line or "").strip()
+                if line:
+                    emit(f"[aws] {line}")
+    finally:
+        return_code = process.wait()
+
+    if return_code != 0:
+        suffix = f" Last check: {check_message}" if check_message else ""
+        raise RuntimeError(f"AWS SSO login failed for profile '{resolved_profile}'.{suffix}")
+
+    ok_after, verify_message = _run_aws_identity_check(profile=resolved_profile)
+    if not ok_after:
+        raise RuntimeError(
+            f"AWS login completed but credentials are still unavailable for profile '{resolved_profile}': "
+            f"{verify_message}"
+        )
+    emit(f"AWS credentials refreshed for profile '{resolved_profile}'.")
+
+
 def _handle_auth_cli_command(command: str, args: list[str]) -> tuple[bool, str]:
     cmd = (command or "").strip().lower()
     if cmd == "connect":
+        provider = normalize_provider_name(args[0] if args else "github_copilot")
+        if provider == "bedrock":
+            profile = args[1] if len(args) >= 2 else None
+            _connect_aws_credentials(profile=profile, emit=lambda line: print(line))
+            resolved_profile = (str(profile or os.getenv("AWS_PROFILE") or "default")).strip() or "default"
+            return True, f"AWS credentials connected for profile '{resolved_profile}'."
+        if provider != "github_copilot":
+            return True, "Usage: swarmee connect [github_copilot] | swarmee connect aws [profile]"
         result = login_device_flow(status=lambda line: print(line), open_browser=True)
         return True, f"GitHub Copilot connected.\nSaved credentials to: {result.get('path')}"
 
@@ -2369,7 +2465,11 @@ def _run_session_command(raw_args: list[str]) -> int:
 
 def main() -> None:
     # Parse CLI arguments
-    parser = argparse.ArgumentParser(description="Swarmee - An enterprise analytics + coding assistant")
+    parser = argparse.ArgumentParser(
+        description="Swarmee - An enterprise analytics + coding assistant",
+        epilog=_ROOT_HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("query", nargs="*", help="Query to process")
     parser.add_argument(
         "--kb",
@@ -2460,6 +2560,8 @@ def main() -> None:
     if command == "attach":
         raise SystemExit(_run_attach_command([*sub, *extra_args]))
     if command == "daemon":
+        raise SystemExit(_run_daemon_command([*sub, *extra_args]))
+    if command == "broker":
         raise SystemExit(_run_daemon_command([*sub, *extra_args]))
     if command == "session":
         raise SystemExit(_run_session_command([*sub, *extra_args]))
@@ -3095,43 +3197,54 @@ def main() -> None:
                     continue
                 provider = normalize_provider_name(payload.get("provider") or "github_copilot")
                 method = str(payload.get("method", "device")).strip().lower()
-                if provider != "github_copilot":
+                try:
+                    if provider == "github_copilot":
+                        if method == "api":
+                            raw_api_key = payload.get("api_key")
+                            api_key = str(raw_api_key).strip() if isinstance(raw_api_key, str) else ""
+                            if not api_key:
+                                _write_stdout_jsonl(
+                                    _build_tui_error_event(
+                                        "connect(api) requires api_key",
+                                        category_hint=ERROR_CATEGORY_FATAL,
+                                    )
+                                )
+                                continue
+                            path = save_api_key(api_key)
+                            _write_stdout_jsonl(
+                                {"event": "warning", "text": f"Saved GitHub Copilot API key to: {path}"}
+                            )
+                        else:
+                            open_browser = bool(payload.get("open_browser", True))
+                            result = login_device_flow(
+                                open_browser=open_browser,
+                                status=lambda line: _write_stdout_jsonl({"event": "warning", "text": line}),
+                            )
+                            _write_stdout_jsonl(
+                                {
+                                    "event": "warning",
+                                    "text": f"GitHub Copilot connected. Saved credentials to: {result.get('path')}",
+                                }
+                            )
+                        _write_stdout_jsonl(_current_model_info_event())
+                        continue
+
+                    if provider == "bedrock":
+                        requested_profile = payload.get("profile")
+                        profile = str(requested_profile).strip() if isinstance(requested_profile, str) else ""
+                        _connect_aws_credentials(
+                            profile=profile or None,
+                            emit=lambda line: _write_stdout_jsonl({"event": "warning", "text": line}),
+                        )
+                        _write_stdout_jsonl(_current_model_info_event())
+                        continue
+
                     _write_stdout_jsonl(
                         _build_tui_error_event(
                             f"Unsupported connect provider: {provider}",
                             category_hint=ERROR_CATEGORY_FATAL,
                         )
                     )
-                    continue
-                try:
-                    if method == "api":
-                        raw_api_key = payload.get("api_key")
-                        api_key = str(raw_api_key).strip() if isinstance(raw_api_key, str) else ""
-                        if not api_key:
-                            _write_stdout_jsonl(
-                                _build_tui_error_event(
-                                    "connect(api) requires api_key",
-                                    category_hint=ERROR_CATEGORY_FATAL,
-                                )
-                            )
-                            continue
-                        path = save_api_key(api_key)
-                        _write_stdout_jsonl(
-                            {"event": "warning", "text": f"Saved GitHub Copilot API key to: {path}"}
-                        )
-                    else:
-                        open_browser = bool(payload.get("open_browser", True))
-                        result = login_device_flow(
-                            open_browser=open_browser,
-                            status=lambda line: _write_stdout_jsonl({"event": "warning", "text": line}),
-                        )
-                        _write_stdout_jsonl(
-                            {
-                                "event": "warning",
-                                "text": f"GitHub Copilot connected. Saved credentials to: {result.get('path')}",
-                            }
-                        )
-                    _write_stdout_jsonl(_current_model_info_event())
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_AUTH_ERROR))
                 continue

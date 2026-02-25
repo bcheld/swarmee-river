@@ -50,6 +50,11 @@ def test_resolve_model_provider_normalizes_copilot_aliases() -> None:
     assert notice is None
 
 
+def test_normalize_provider_name_maps_aws_alias_to_bedrock() -> None:
+    assert provider_utils.normalize_provider_name("aws") == "bedrock"
+    assert provider_utils.normalize_provider_name("amazon-bedrock") == "bedrock"
+
+
 def test_resolve_model_provider_falls_back_to_github_copilot_when_bedrock_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(provider_utils, "has_aws_credentials", lambda: False)
     monkeypatch.setattr(provider_utils, "has_openai_api_key", lambda: False)

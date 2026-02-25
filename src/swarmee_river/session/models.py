@@ -8,7 +8,7 @@ from strands.models import Model
 
 from swarmee_river.settings import ModelTier, ProviderModels, SwarmeeSettings
 from swarmee_river.utils import model_utils
-from swarmee_river.utils.provider_utils import has_github_copilot_token, normalize_provider_name
+from swarmee_river.utils.provider_utils import has_aws_credentials, has_github_copilot_token, normalize_provider_name
 
 _TIER_ORDER: list[str] = ["fast", "balanced", "deep", "long"]
 
@@ -296,6 +296,9 @@ class SessionModelManager:
         provider = normalize_provider_name(tier.provider)
         if not provider:
             return False, "provider missing"
+        if provider == "bedrock":
+            if not has_aws_credentials():
+                return False, "AWS credentials missing/expired"
         if provider == "openai":
             if not (tier.client_args and tier.client_args.get("api_key")) and not os.getenv("OPENAI_API_KEY"):
                 return False, "OPENAI_API_KEY missing"

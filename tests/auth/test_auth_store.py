@@ -3,6 +3,7 @@ from __future__ import annotations
 from swarmee_river.auth.store import (
     get_provider_record,
     list_auth_records,
+    normalize_provider_name,
     set_provider_record,
 )
 
@@ -47,3 +48,7 @@ def test_list_auth_records_includes_both_sources(tmp_path, monkeypatch) -> None:
     providers = {(str(item.get("provider")), str(item.get("source"))) for item in records}
     assert ("github_copilot", "swarmee") in providers
     assert ("github_copilot", "opencode") in providers
+
+
+def test_normalize_provider_name_maps_aws_to_bedrock() -> None:
+    assert normalize_provider_name("aws") == "bedrock"

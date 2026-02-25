@@ -65,6 +65,15 @@ _PLAN_STEP_START_RE = re.compile(r"starting\s+step\s+(?P<num>\d+)\s*:\s*(?P<desc
 _PLAN_STEP_DONE_RE = re.compile(r"completed\s+step\s+(?P<num>\d+)\b", re.IGNORECASE)
 
 
+def _message_content_blocks(message: Any) -> list[dict[str, Any]]:
+    if not isinstance(message, dict):
+        return []
+    raw_content = message.get("content")
+    if not isinstance(raw_content, list):
+        return []
+    return [item for item in raw_content if isinstance(item, dict)]
+
+
 def format_message(message: str, color: str | None = None, max_length: int = 50) -> str:
     """Format message with color and length control."""
     if len(message) > max_length:
@@ -182,8 +191,8 @@ class CallbackHandler:
         del structured_output_prompt
         del result
         del extra_event_fields
-        message = message or {}
-        current_tool_use = current_tool_use or {}
+        message = message if isinstance(message, dict) else {}
+        current_tool_use = current_tool_use if isinstance(current_tool_use, dict) else {}
 
         # Cleanup calls (e.g., from top-level exception handlers) should never re-raise an interrupt.
         if force_stop:
@@ -275,51 +284,46 @@ class CallbackHandler:
                             self.current_spinner.update(f"🛠️  {tool_name}: {current_size} chars")
 
         # Process messages
-        if isinstance(message, dict):
-            # Handle assistant messages (tool starts)
-            if message.get("role") == "assistant":
-                for content in message.get("content", []):
-                    if isinstance(content, dict):
-                        tool_use = content.get("toolUse")
-                        if tool_use:
-                            tool_name = tool_use.get("name")
-                            if self.current_spinner:
-                                self.current_spinner.info(f"🔧 Starting {tool_name}...")
+        if message.get("role") == "assistant":
+            for content in _message_content_blocks(message):
+                tool_use = content.get("toolUse")
+                if tool_use:
+                    tool_name = tool_use.get("name")
+                    if self.current_spinner:
+                        self.current_spinner.info(f"🔧 Starting {tool_name}...")
 
-            # Handle user messages (tool results)
-            elif message.get("role") == "user":
-                for content in message.get("content", []):
-                    if isinstance(content, dict):
-                        tool_result = content.get("toolResult")
-                        if tool_result:
-                            tool_id = tool_result.get("toolUseId")
-                            status = tool_result.get("status")
+        elif message.get("role") == "user":
+            for content in _message_content_blocks(message):
+                tool_result = content.get("toolResult")
+                if tool_result:
+                    tool_id = tool_result.get("toolUseId")
+                    status = tool_result.get("status")
 
-                            if isinstance(tool_id, str) and tool_id in self.tool_histories:
-                                tool_info = self.tool_histories[tool_id]
-                                duration = round(time.time() - tool_info["start_time"], 2)
+                    if isinstance(tool_id, str) and tool_id in self.tool_histories:
+                        tool_info = self.tool_histories[tool_id]
+                        duration = round(time.time() - tool_info["start_time"], 2)
 
-                                # Prepare notification message
-                                if status == "success":
-                                    status_message = f"{tool_info['name']} completed in {duration}s"
-                                else:
-                                    status_message = f"{tool_info['name']} failed after {duration}s"
+                        # Prepare notification message
+                        if status == "success":
+                            status_message = f"{tool_info['name']} completed in {duration}s"
+                        else:
+                            status_message = f"{tool_info['name']} failed after {duration}s"
 
-                                # Update spinner only if not in Lambda
-                                if self.current_spinner:
-                                    if status == "success":
-                                        self.current_spinner.succeed(status_message)
-                                    else:
-                                        self.current_spinner.fail(status_message)
+                        # Update spinner only if not in Lambda
+                        if self.current_spinner:
+                            if status == "success":
+                                self.current_spinner.succeed(status_message)
+                            else:
+                                self.current_spinner.fail(status_message)
 
-                                # Send notification
-                                # Uncomment for enabling notifications.
-                                # self.notify(title, message, sound=(status != "success"))
+                        # Send notification
+                        # Uncomment for enabling notifications.
+                        # self.notify(title, message, sound=(status != "success"))
 
-                                # Cleanup
-                                del self.tool_histories[tool_id]
-                                self.current_spinner = None
-                                self.current_tool = None
+                        # Cleanup
+                        del self.tool_histories[tool_id]
+                        self.current_spinner = None
+                        self.current_tool = None
 
 
 class TuiCallbackHandler:
@@ -839,8 +843,8 @@ class TuiCallbackHandler:
     ) -> None:
         del structured_output_model, structured_output_prompt
         del console, start_event_loop
-        message = message or {}
-        current_tool_use = current_tool_use or {}
+        message = message if isinstance(message, dict) else {}
+        current_tool_use = current_tool_use if isinstance(current_tool_use, dict) else {}
 
         self._update_plan_metadata_from_invocation_state(invocation_state)
 
@@ -866,7 +870,7 @@ class TuiCallbackHandler:
             self._assistant_text_snapshot += data
             emitted_stream_text = True
 
-        if not emitted_stream_text and isinstance(message, dict):
+        if not emitted_stream_text:
             emitted_stream_text = self._emit_assistant_message_text(self._extract_text_from_assistant_message(message))
 
         if not emitted_stream_text and extra_event_fields:
@@ -931,37 +935,43 @@ class TuiCallbackHandler:
             tool_use_id, status, tool_name = extra_tool_result
             self._emit_tool_result(tool_use_id, status, tool_name=tool_name)
 
-        if isinstance(message, dict):
-            if message.get("role") == "assistant":
-                for content in message.get("content", []):
-                    if isinstance(content, dict):
-                        tool_use = content.get("toolUse")
-                        if tool_use:
-                            tid = tool_use.get("toolUseId")
-                            tool_name = tool_use.get("name")
-                            tool_input = tool_use.get("input")
-                            self._emit_plan_progress_from_tool(tool_name=tool_name, tool_input=tool_input)
-                            if isinstance(tid, str) and isinstance(tool_input, dict):
-                                self._emit({
-                                    "event": "tool_input",
-                                    "tool_use_id": tid,
-                                    "input": tool_input,
-                                })
+        if message.get("role") == "assistant":
+            for content in _message_content_blocks(message):
+                tool_use = content.get("toolUse")
+                if tool_use:
+                    tid = self._resolve_tool_use_id(
+                        tool_use.get("toolUseId") or tool_use.get("tool_use_id") or tool_use.get("id")
+                    )
+                    tool_name = tool_use.get("name")
+                    tool_input = tool_use.get("input")
+                    self._emit_plan_progress_from_tool(tool_name=tool_name, tool_input=tool_input)
+                    if isinstance(tid, str):
+                        self._ensure_tool_history(
+                            tid,
+                            tool_name=str(tool_name) if tool_name is not None else None,
+                            tool_input=tool_input,
+                            emit_start=(tid not in self.tool_histories),
+                        )
+                        if isinstance(tool_input, dict):
+                            self._emit({
+                                "event": "tool_input",
+                                "tool_use_id": tid,
+                                "input": tool_input,
+                            })
 
-            elif message.get("role") == "user":
-                for content in message.get("content", []):
-                    if isinstance(content, dict):
-                        tool_result = content.get("toolResult")
-                        if tool_result:
-                            tid = tool_result.get("toolUseId")
-                            status = tool_result.get("status", "unknown")
-                            if isinstance(tid, str):
-                                tool_label = tool_result.get("name")
-                                self._emit_tool_result(
-                                    tid,
-                                    str(status),
-                                    tool_name=str(tool_label) if tool_label else None,
-                                )
+        elif message.get("role") == "user":
+            for content in _message_content_blocks(message):
+                tool_result = content.get("toolResult")
+                if tool_result:
+                    tid = tool_result.get("toolUseId")
+                    status = tool_result.get("status", "unknown")
+                    if isinstance(tid, str):
+                        tool_label = tool_result.get("name")
+                        self._emit_tool_result(
+                            tid,
+                            str(status),
+                            tool_name=str(tool_label) if tool_label else None,
+                        )
 
         if event_loop_throttled_delay:
             self._emit({
