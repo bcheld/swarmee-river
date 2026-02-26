@@ -59,6 +59,8 @@ def classify_model_command(normalized: str) -> tuple[str, str | None] | None:
 def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
     """Classify commands handled before active-run gating."""
     normalized = text.lower()
+    if normalized == "/help":
+        return "help", None
     if normalized == "/restore":
         return "restore", None
     if normalized == "/new":

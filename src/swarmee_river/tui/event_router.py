@@ -12,11 +12,66 @@ from swarmee_river.error_classification import (
     ERROR_CATEGORY_FATAL,
     ERROR_CATEGORY_TOOL_ERROR,
     ERROR_CATEGORY_TRANSIENT,
+    classify_error_message,
+    normalize_error_category,
 )
 from swarmee_river.profiles import AgentProfile
 from swarmee_river.tui.agent_studio import normalize_session_safety_overrides, normalize_team_presets
 from swarmee_river.tui.event_types import extract_tui_text_chunk
 from swarmee_river.tui.text_sanitize import sanitize_output_text
+
+_TRANSIENT_TOAST_TIMEOUT_S = 5.0
+_FATAL_TOAST_TIMEOUT_S = 3600.0
+
+
+def classify_tui_error_event(event: dict[str, Any]) -> dict[str, Any]:
+    message = str(event.get("message", event.get("text", ""))).strip()
+    category_hint = normalize_error_category(event.get("category"))
+    tool_use_id = str(event.get("tool_use_id", "")).strip() or None
+    classified = classify_error_message(message, category_hint=category_hint, tool_use_id=tool_use_id)
+    retry_after_raw = event.get("retry_after_s")
+    retry_after_s: int | None = None
+    if isinstance(retry_after_raw, (int, float)):
+        retry_after_s = int(retry_after_raw)
+    elif isinstance(retry_after_raw, str) and retry_after_raw.strip().isdigit():
+        retry_after_s = int(retry_after_raw.strip())
+    next_tier = str(event.get("next_tier", "")).strip() or None
+    return {
+        "message": message,
+        "category": str(classified.get("category", ERROR_CATEGORY_FATAL)),
+        "retryable": bool(event.get("retryable", classified.get("retryable", False))),
+        "tool_use_id": str(classified.get("tool_use_id", "")).strip() or None,
+        "retry_after_s": retry_after_s if isinstance(retry_after_s, int) and retry_after_s > 0 else None,
+        "next_tier": next_tier,
+    }
+
+
+def summarize_error_for_toast(error_info: dict[str, Any]) -> tuple[str, str, float | None]:
+    category = str(error_info.get("category", ERROR_CATEGORY_FATAL))
+    message = str(error_info.get("message", "")).strip()
+    retry_after_s = error_info.get("retry_after_s")
+
+    if category == ERROR_CATEGORY_TRANSIENT:
+        delay = int(retry_after_s) if isinstance(retry_after_s, int) and retry_after_s > 0 else 1
+        return f"Rate limited - retrying in {delay}s", "warning", _TRANSIENT_TOAST_TIMEOUT_S
+
+    if category == ERROR_CATEGORY_TOOL_ERROR:
+        tool_use_id = str(error_info.get("tool_use_id", "")).strip()
+        if tool_use_id:
+            return f"Tool failed ({tool_use_id})", "error", 6.0
+        return "Tool execution failed", "error", 6.0
+
+    if category == ERROR_CATEGORY_ESCALATABLE:
+        return "Model/context limit hit - escalation available", "warning", 8.0
+
+    if category == ERROR_CATEGORY_AUTH_ERROR:
+        return "Auth/permissions error - check credentials", "error", 10.0
+
+    if message:
+        first = message.splitlines()[0].strip()
+        if first:
+            return first[:140], "error", _FATAL_TOAST_TIMEOUT_S
+    return "Fatal error", "error", _FATAL_TOAST_TIMEOUT_S
 
 def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype in {"ready", "attached"}:
@@ -353,6 +408,7 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
                     plain_text="Tool failed. Retry or skip using buttons above the prompt.",
                 )
                 app._show_tool_error_actions(tool_use_id=tid, tool_name=tool_name)
+        app._schedule_session_timeline_refresh()
         return True
 
     if etype == "consent_prompt":
@@ -476,7 +532,7 @@ def _handle_artifact_events(app: Any, etype: str, event: dict[str, Any]) -> bool
 
 def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype == "error":
-        error_info = app._classify_tui_error_event(event)
+        error_info = classify_tui_error_event(event)
         error_message = str(error_info.get("message", "")).strip()
         normalized_message = error_message.lower()
         if normalized_message.startswith("unknown command:"):
@@ -495,7 +551,7 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
         app.state.session.error_count += 1
         app._write_issue(error_text)
         app._update_header_status()
-        toast_message, severity, timeout = app._summarize_error_for_toast(error_info)
+        toast_message, severity, timeout = summarize_error_for_toast(error_info)
         app._notify(toast_message, severity=severity, timeout=timeout)
 
         category = str(error_info.get("category", ERROR_CATEGORY_FATAL))
@@ -549,6 +605,7 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
         app.state.session.warning_count += 1
         app._write_issue(warn_text)
         app._update_header_status()
+        app._notify(warn_text, severity="warning", timeout=4)
         return True
 
     return False

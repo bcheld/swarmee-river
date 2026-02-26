@@ -21,15 +21,6 @@ from pathlib import Path
 from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
-from swarmee_river.error_classification import (
-    ERROR_CATEGORY_AUTH_ERROR,
-    ERROR_CATEGORY_ESCALATABLE,
-    ERROR_CATEGORY_FATAL,
-    ERROR_CATEGORY_TOOL_ERROR,
-    ERROR_CATEGORY_TRANSIENT,
-    classify_error_message,
-    normalize_error_category,
-)
 from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, save_profile
 from swarmee_river.profiles.models import normalize_agent_definitions
 from swarmee_river.runtime_service.client import ensure_runtime_broker
@@ -76,7 +67,13 @@ from swarmee_river.tui.commands import (
     classify_post_run_command,
     classify_pre_run_command,
 )
-from swarmee_river.tui.event_router import handle_daemon_event as _handle_daemon_event_router
+from swarmee_river.tui.event_router import (
+    _FATAL_TOAST_TIMEOUT_S,
+    _TRANSIENT_TOAST_TIMEOUT_S,
+    classify_tui_error_event,
+    handle_daemon_event as _handle_daemon_event_router,
+    summarize_error_for_toast,
+)
 from swarmee_river.tui.event_types import (
     ParsedEvent,
     extract_tui_text_chunk,
@@ -98,6 +95,7 @@ from swarmee_river.tui.model_select import (
     model_select_options,
     parse_model_select_value,
     resolve_model_config_summary,
+    resolve_model_fallback_notice,
 )
 from swarmee_river.tui.sidebar_artifacts import (
     add_recent_artifacts,
@@ -180,8 +178,6 @@ _TOOL_START_COALESCE_INTERVAL_S = 0.1
 _THINKING_DISPLAY_DEBOUNCE_S = 0.2
 _THINKING_ANIMATION_INTERVAL_S = 0.5
 _THINKING_EXPORT_MAX_CHARS = 5000
-_TRANSIENT_TOAST_TIMEOUT_S = 5.0
-_FATAL_TOAST_TIMEOUT_S = 3600.0
 
 # Compatibility re-exports for callers importing pure helpers from tui.app.
 _COMPAT_REEXPORTS = (
@@ -523,56 +519,6 @@ def should_skip_active_run_tier_warning(
     requested = f"{requested_provider.strip().lower()}|{requested_tier.strip().lower()}"
     pending = (pending_value or "").strip().lower()
     return bool(requested) and requested == pending
-
-
-def classify_tui_error_event(event: dict[str, Any]) -> dict[str, Any]:
-    message = str(event.get("message", event.get("text", ""))).strip()
-    category_hint = normalize_error_category(event.get("category"))
-    tool_use_id = str(event.get("tool_use_id", "")).strip() or None
-    classified = classify_error_message(message, category_hint=category_hint, tool_use_id=tool_use_id)
-    retry_after_raw = event.get("retry_after_s")
-    retry_after_s: int | None = None
-    if isinstance(retry_after_raw, (int, float)):
-        retry_after_s = int(retry_after_raw)
-    elif isinstance(retry_after_raw, str) and retry_after_raw.strip().isdigit():
-        retry_after_s = int(retry_after_raw.strip())
-    next_tier = str(event.get("next_tier", "")).strip() or None
-    return {
-        "message": message,
-        "category": str(classified.get("category", ERROR_CATEGORY_FATAL)),
-        "retryable": bool(event.get("retryable", classified.get("retryable", False))),
-        "tool_use_id": str(classified.get("tool_use_id", "")).strip() or None,
-        "retry_after_s": retry_after_s if isinstance(retry_after_s, int) and retry_after_s > 0 else None,
-        "next_tier": next_tier,
-    }
-
-
-def summarize_error_for_toast(error_info: dict[str, Any]) -> tuple[str, str, float | None]:
-    category = str(error_info.get("category", ERROR_CATEGORY_FATAL))
-    message = str(error_info.get("message", "")).strip()
-    retry_after_s = error_info.get("retry_after_s")
-
-    if category == ERROR_CATEGORY_TRANSIENT:
-        delay = int(retry_after_s) if isinstance(retry_after_s, int) and retry_after_s > 0 else 1
-        return f"Rate limited - retrying in {delay}s", "warning", _TRANSIENT_TOAST_TIMEOUT_S
-
-    if category == ERROR_CATEGORY_TOOL_ERROR:
-        tool_use_id = str(error_info.get("tool_use_id", "")).strip()
-        if tool_use_id:
-            return f"Tool failed ({tool_use_id})", "error", 6.0
-        return "Tool execution failed", "error", 6.0
-
-    if category == ERROR_CATEGORY_ESCALATABLE:
-        return "Model/context limit hit - escalation available", "warning", 8.0
-
-    if category == ERROR_CATEGORY_AUTH_ERROR:
-        return "Auth/permissions error - check credentials", "error", 10.0
-
-    if message:
-        first = message.splitlines()[0].strip()
-        if first:
-            return first[:140], "error", _FATAL_TOAST_TIMEOUT_S
-    return "Fatal error", "error", _FATAL_TOAST_TIMEOUT_S
 
 
 def artifact_paths_from_event(event: ParsedEvent) -> list[str]:
@@ -950,10 +896,10 @@ def run_tui() -> int:
             if key == "space":
                 event.stop()
                 event.prevent_default()
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(AttributeError, TypeError):
                     self.insert(" ")
                     return
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(AttributeError, TypeError):
                     self.insert_text_at_cursor(" ")
                     return
 
@@ -1731,6 +1677,7 @@ def run_tui() -> int:
             ("escape", "interrupt_run", "Interrupt run"),
             ("ctrl+t", "toggle_transcript_mode", "Toggle transcript mode"),
             Binding("ctrl+k", "open_action_sheet", "Actions", priority=True, show=False),
+            Binding("ctrl+p", "open_action_sheet", "Actions", priority=True),
             Binding("ctrl+space", "open_action_sheet", "Actions", priority=True, show=False),
             ("ctrl+c", "copy_selection", "Copy selection"),
             ("meta+c", "copy_selection", "Copy selection"),
@@ -1823,6 +1770,8 @@ def run_tui() -> int:
         _prompt_estimate_timer: Any = None
         _pending_prompt_estimate_text: str = ""
         _last_assistant_text: str = ""
+        _last_transcript_dedup_line: str = ""
+        _last_transcript_dedup_count: int = 0
         _prompt_history: list[str] = []
         _history_index: int = -1
         _MAX_PROMPT_HISTORY: int = 50
@@ -1984,23 +1933,40 @@ def run_tui() -> int:
             yield Footer()
 
         def on_mount(self) -> None:
+            self._bind_ui_widgets()
+            self._apply_startup_env()
+            self._reset_ui_panels()
+            self._initialize_agent_studio()
+            self._refresh_all_views()
+            self._display_startup_banner()
+            self._load_session()
+            if self.state.daemon.session_id:
+                self._schedule_session_timeline_refresh(delay=0.1)
+            self._refresh_agent_summary()
+            self._spawn_daemon()
+
+        def _bind_ui_widgets(self) -> None:
             self._command_palette = self.query_one("#command_palette", CommandPalette)
             self._action_sheet = self.query_one("#action_sheet", ActionSheet)
             self._thinking_bar = self.query_one("#thinking_bar", ThinkingBar)
             self._status_bar = self.query_one("#status_bar", StatusBar)
             self._consent_prompt_widget = self.query_one("#consent_prompt", ConsentPrompt)
             self._error_action_prompt_widget = self.query_one("#error_action_prompt", ErrorActionPrompt)
+            self._prompt_metrics = self.query_one("#prompt_metrics", ContextBudgetBar)
             wire_engage_widgets(self)
             wire_agents_widgets(self)
             wire_scaffold_widgets(self)
             wire_settings_widgets(self)
+
+        def _apply_startup_env(self) -> None:
             self._apply_project_settings_env_overrides()
             auto_env = (os.getenv("SWARMEE_AUTO_APPROVE") or "").strip().lower()
             if auto_env in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}:
                 self._default_auto_approve = True
             elif auto_env in {"0", "false", "f", "no", "n", "off", "disabled", "disable"}:
                 self._default_auto_approve = False
-            self._prompt_metrics = self.query_one("#prompt_metrics", ContextBudgetBar)
+
+        def _reset_ui_panels(self) -> None:
             self._status_bar.set_model(self._current_model_summary())
             self.query_one("#prompt", PromptTextArea).focus()
             self._reset_plan_panel()
@@ -2014,6 +1980,8 @@ def run_tui() -> int:
             self._set_settings_view_mode("general")
             self._set_session_view_mode("timeline")
             self._set_context_add_mode(None)
+
+        def _initialize_agent_studio(self) -> None:
             self._refresh_context_sop_options()
             self._render_context_sources_panel()
             self._refresh_sop_catalog()
@@ -2028,6 +1996,8 @@ def run_tui() -> int:
                 self._new_agent_profile_draft(announce=False)
             self._render_agent_builder_panel()
             self._render_agent_overview_panel()
+
+        def _refresh_all_views(self) -> None:
             self._refresh_agent_summary()
             self._refresh_model_select()
             self._refresh_orchestrator_status()
@@ -2037,24 +2007,22 @@ def run_tui() -> int:
             self.title = "Swarmee"
             self.sub_title = self._current_model_summary()
             self._update_prompt_placeholder()
-            # Show ASCII art banner at the top of the transcript.
-            # Write plain lines so selection/export keeps exact banner text.
+
+        def _display_startup_banner(self) -> None:
             from swarmee_river.utils.welcome_utils import SWARMEE_BANNER
 
             for banner_line in SWARMEE_BANNER.strip().splitlines():
                 self._mount_transcript_widget(banner_line, plain_text=banner_line)
             self._write_transcript("Starting Swarmee daemon...")
             self._write_transcript(self.sub_title)
+            fallback_notice = resolve_model_fallback_notice()
+            if fallback_notice:
+                self._write_transcript(f"[model] {fallback_notice}")
             self._write_transcript("Tips: use /commands in the prompt and the Agent tab for profile actions.")
             transcript = self.query_one("#transcript", VerticalScroll)
             with contextlib.suppress(Exception):
                 transcript.scroll_end(animate=False)
             self._set_transcript_mode("rich", notify=False)
-            self._load_session()
-            if self.state.daemon.session_id:
-                self._schedule_session_timeline_refresh(delay=0.1)
-            self._refresh_agent_summary()
-            self._spawn_daemon()
 
         def _record_transcript_fallback(self, text: str) -> None:
             clean = sanitize_output_text(text).rstrip("\n")
@@ -2188,14 +2156,14 @@ def run_tui() -> int:
             timer = self._thinking_display_timer
             self._thinking_display_timer = None
             if timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timer.stop()
 
         def _cancel_thinking_animation_timer(self) -> None:
             timer = self._thinking_animation_timer
             self._thinking_animation_timer = None
             if timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timer.stop()
 
         def _thinking_elapsed_s(self) -> float:
@@ -2315,7 +2283,7 @@ def run_tui() -> int:
             timer = self._streaming_flush_timer
             self._streaming_flush_timer = None
             if timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timer.stop()
 
         def _schedule_streaming_flush(self) -> None:
@@ -2352,7 +2320,7 @@ def run_tui() -> int:
             timer = self._tool_progress_flush_timer
             self._tool_progress_flush_timer = None
             if timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timer.stop()
 
         def _schedule_tool_progress_flush(self, tool_use_id: str | None = None) -> None:
@@ -2385,10 +2353,27 @@ def run_tui() -> int:
             for tool_use_id in list(self._tool_blocks.keys()):
                 self._flush_tool_progress_render(tool_use_id, force=True)
 
+        def _flush_transcript_dedup(self) -> None:
+            """Flush any pending deduplicated transcript line."""
+            if self._last_transcript_dedup_count > 1:
+                msg = f"{self._last_transcript_dedup_line} (×{self._last_transcript_dedup_count})"
+                self._write_transcript(msg)
+            # count == 1 lines were already written immediately in _write_transcript_line;
+            # no need to re-emit them here.
+            self._last_transcript_dedup_line = ""
+            self._last_transcript_dedup_count = 0
+
         def _write_transcript_line(self, line: str) -> None:
             """Write a plain text line to the transcript (used for TUI-internal messages)."""
             if self.state.daemon.query_active:
                 self.state.daemon.turn_output_chunks.append(sanitize_output_text(f"[tui] {line}\n"))
+            # Deduplicate consecutive identical lines.
+            if line == self._last_transcript_dedup_line:
+                self._last_transcript_dedup_count += 1
+                return
+            self._flush_transcript_dedup()
+            self._last_transcript_dedup_line = line
+            self._last_transcript_dedup_count = 1
             self._write_transcript(line)
 
         def _tool_input_summary(self, tool_name: str, tool_input: Any) -> str:
@@ -2417,7 +2402,7 @@ def run_tui() -> int:
         def _cancel_tool_start_timer(self, tool_use_id: str) -> None:
             timer = self._tool_pending_start_timers.pop(tool_use_id, None)
             if timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timer.stop()
 
         def _clear_pending_tool_starts(self) -> None:
@@ -4243,7 +4228,7 @@ def run_tui() -> int:
             path = Path.cwd() / ".swarmee" / "settings.json"
             raw: dict[str, Any] = {}
             if path.exists() and path.is_file():
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError, ValueError):
                     loaded = _json.loads(path.read_text(encoding="utf-8"))
                     if isinstance(loaded, dict):
                         raw = loaded
@@ -4590,7 +4575,7 @@ def run_tui() -> int:
             timer = self.state.session.timeline_refresh_timer
             self.state.session.timeline_refresh_timer = None
             if timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timer.stop()
             self.state.session.timeline_refresh_timer = self.set_timer(delay, self._launch_session_timeline_refresh)
 
@@ -5138,7 +5123,7 @@ def run_tui() -> int:
             timer = self._prompt_estimate_timer
             self._prompt_estimate_timer = None
             if timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timer.stop()
             self._prompt_estimate_timer = self.set_timer(0.2, self._apply_prompt_estimate)
 
@@ -5911,7 +5896,7 @@ def run_tui() -> int:
             timer = self._consent_hide_timer
             self._consent_hide_timer = None
             if timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timer.stop()
 
         def _complete_consent_prompt_hide(self, expected_nonce: int) -> None:
@@ -6227,12 +6212,6 @@ def run_tui() -> int:
             """Process a structured JSONL event from the subprocess."""
             _handle_daemon_event_router(self, event)
 
-        def _classify_tui_error_event(self, event: dict[str, Any]) -> dict[str, Any]:
-            return classify_tui_error_event(event)
-
-        def _summarize_error_for_toast(self, error_info: dict[str, Any]) -> tuple[str, str, float | None]:
-            return summarize_error_for_toast(error_info)
-
         def render_plan_panel(self, plan_json: dict[str, Any]) -> Any:
             return render_plan_panel(plan_json)
 
@@ -6417,6 +6396,11 @@ def run_tui() -> int:
                 self._call_from_thread_safe(self._handle_daemon_exit, proc, return_code=return_code)
 
         def _shutdown_transport(self, proc: _DaemonTransport) -> None:
+            if isinstance(proc, _SocketTransport):
+                # Just disconnect; the broker keeps the session daemon alive
+                # for other attached clients and cleans up after idle timeout.
+                proc.close()
+                return
             send_daemon_command(proc, {"cmd": "shutdown"})
             with contextlib.suppress(Exception):
                 proc.wait(timeout=3.0)
@@ -6664,12 +6648,12 @@ def run_tui() -> int:
             timer = self._prompt_estimate_timer
             self._prompt_estimate_timer = None
             if timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timer.stop()
             timeline_timer = self.state.session.timeline_refresh_timer
             self.state.session.timeline_refresh_timer = None
             if timeline_timer is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError):
                     timeline_timer.stop()
             self._cancel_streaming_flush_timer()
             self._cancel_tool_progress_flush_timer()
@@ -7730,6 +7714,10 @@ def run_tui() -> int:
             action, argument = classified
             if action == "open":
                 self._open_artifact(argument or "")
+                return True
+            if action == "help":
+                lines = [f"  {cmd:<16} {desc}" for cmd, desc in CommandPalette.TUI_COMMANDS]
+                self._write_transcript_line("Available commands:\n" + "\n".join(lines))
                 return True
             if action == "open_usage":
                 self._write_transcript_line(_OPEN_USAGE_TEXT)

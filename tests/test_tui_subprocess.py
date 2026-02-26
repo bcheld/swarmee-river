@@ -135,6 +135,7 @@ def test_classify_model_command_matrix():
 
 def test_classify_pre_run_command_matrix():
     cases = {
+        "/help": ("help", None),
         "/open 12": ("open", "12"),
         "/open": ("open_usage", None),
         "/search bug": ("search", "bug"),
@@ -1825,3 +1826,89 @@ def test_stop_process_escalates(monkeypatch):
         assert proc.send_signal_calls == []
     assert proc.terminate_called is False
     assert proc.kill_called is False
+
+
+# ── event_router direct-import tests ──
+
+
+def test_event_router_exports_classify_and_summarize() -> None:
+    from swarmee_river.tui.event_router import classify_tui_error_event, summarize_error_for_toast
+
+    event = {"message": "rate limit exceeded", "category": "transient", "retryable": True, "retry_after_s": 3}
+    result = classify_tui_error_event(event)
+    assert result["category"] == "transient"
+    assert result["retry_after_s"] == 3
+
+    msg, sev, _timeout = summarize_error_for_toast(result)
+    assert "3s" in msg
+    assert sev == "warning"
+
+
+def test_summarize_error_for_toast_auth_error() -> None:
+    msg, sev, timeout = tui_app.summarize_error_for_toast({"category": "auth_error", "message": "bad creds"})
+    assert sev == "error"
+    assert timeout == 10.0
+    assert "credentials" in msg.lower()
+
+
+def test_summarize_error_for_toast_escalatable() -> None:
+    msg, sev, timeout = tui_app.summarize_error_for_toast({"category": "escalatable", "message": "context exceeded"})
+    assert sev == "warning"
+    assert timeout == 8.0
+
+
+def test_summarize_error_for_toast_tool_error_with_id() -> None:
+    msg, sev, _timeout = tui_app.summarize_error_for_toast(
+        {"category": "tool_error", "message": "failed", "tool_use_id": "tu_123"}
+    )
+    assert "tu_123" in msg
+    assert sev == "error"
+
+
+def test_summarize_error_for_toast_fatal_fallback() -> None:
+    msg, sev, _timeout = tui_app.summarize_error_for_toast({"category": "fatal", "message": ""})
+    assert msg == "Fatal error"
+    assert sev == "error"
+
+
+def test_classify_tui_error_event_string_retry_after() -> None:
+    result = tui_app.classify_tui_error_event({"message": "throttled", "retry_after_s": "7"})
+    assert result["retry_after_s"] == 7
+
+
+def test_classify_tui_error_event_missing_message_uses_text() -> None:
+    result = tui_app.classify_tui_error_event({"text": "something broke"})
+    assert result["message"] == "something broke"
+
+
+def test_warning_event_handler_calls_notify() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class FakeState:
+        class session:
+            warning_count = 0
+            error_count = 0
+
+    notifications = []
+    issues = []
+
+    class FakeApp:
+        state = FakeState()
+
+        def _write_issue(self, text):
+            issues.append(text)
+
+        def _update_header_status(self):
+            pass
+
+        def _notify(self, msg, *, severity="information", timeout=2.5):
+            notifications.append((msg, severity, timeout))
+
+    app = FakeApp()
+    event = {"text": "some warning"}
+    result = _handle_error_warning_events(app, "warning", event)
+    assert result is True
+    assert app.state.session.warning_count == 1
+    assert len(notifications) == 1
+    assert notifications[0][1] == "warning"
+    assert "WARN:" in issues[0]

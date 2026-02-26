@@ -28,6 +28,10 @@ class ClientState:
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
+_SESSION_IDLE_TIMEOUT_S: float = float(os.environ.get("SWARMEE_SESSION_IDLE_TIMEOUT", "3600"))
+_BROKER_IDLE_TIMEOUT_S: float = float(os.environ.get("SWARMEE_BROKER_IDLE_TIMEOUT", "3600"))
+
+
 @dataclass
 class SessionState:
     session_id: str
@@ -40,6 +44,7 @@ class SessionState:
     consent_pending: bool = False
     controller_client_id: str | None = None
     started_new_session: bool = False
+    idle_timeout_task: asyncio.Task[None] | None = None
 
 
 class RuntimeServiceServer:
@@ -74,6 +79,7 @@ class RuntimeServiceServer:
         self._sessions: dict[str, SessionState] = {}
         self._client_seq = 0
         self._running = False
+        self._broker_idle_task: asyncio.Task[None] | None = None
 
     @property
     def sessions(self) -> dict[str, SessionState]:
@@ -108,6 +114,7 @@ class RuntimeServiceServer:
             return
 
         self._running = False
+        self._cancel_broker_idle_timer()
 
         server = self._server
         self._server = None
@@ -117,6 +124,7 @@ class RuntimeServiceServer:
                 await server.wait_closed()
 
         for session in list(self._sessions.values()):
+            self._cancel_session_idle_timer(session)
             await self._stop_session_process(session)
 
         client_states = list(self._clients.values())
@@ -187,6 +195,7 @@ class RuntimeServiceServer:
             client.writer.close()
             with contextlib.suppress(Exception):
                 await client.writer.wait_closed()
+        self._maybe_schedule_broker_idle()
 
     def _detach_client_from_session(self, client: ClientState) -> None:
         session_id = client.session_id
@@ -201,6 +210,60 @@ class RuntimeServiceServer:
         if session.controller_client_id == client.client_id:
             session.controller_client_id = None
             session.consent_pending = False
+        if not session.client_ids and not session.query_active:
+            self._schedule_session_idle_cleanup(session)
+
+    # -- Idle cleanup --------------------------------------------------------
+
+    def _cancel_session_idle_timer(self, session: SessionState) -> None:
+        task = session.idle_timeout_task
+        if task is not None and not task.done():
+            task.cancel()
+        session.idle_timeout_task = None
+
+    def _schedule_session_idle_cleanup(self, session: SessionState) -> None:
+        self._cancel_session_idle_timer(session)
+        if _SESSION_IDLE_TIMEOUT_S <= 0:
+            return
+        session.idle_timeout_task = asyncio.ensure_future(self._idle_session_cleanup(session))
+
+    async def _idle_session_cleanup(self, session: SessionState) -> None:
+        try:
+            await asyncio.sleep(_SESSION_IDLE_TIMEOUT_S)
+        except asyncio.CancelledError:
+            return
+        # Re-check: another client may have attached during the wait.
+        if session.client_ids or session.query_active:
+            return
+        await self._stop_session_process(session)
+        self._sessions.pop(session.session_id, None)
+        self._maybe_schedule_broker_idle()
+
+    def _cancel_broker_idle_timer(self) -> None:
+        task = self._broker_idle_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._broker_idle_task = None
+
+    def _maybe_schedule_broker_idle(self) -> None:
+        """Schedule broker self-shutdown if no clients and no sessions remain."""
+        if self._clients or self._sessions:
+            self._cancel_broker_idle_timer()
+            return
+        if self._broker_idle_task is not None and not self._broker_idle_task.done():
+            return  # already scheduled
+        if _BROKER_IDLE_TIMEOUT_S <= 0:
+            return
+        self._broker_idle_task = asyncio.ensure_future(self._idle_broker_shutdown())
+
+    async def _idle_broker_shutdown(self) -> None:
+        try:
+            await asyncio.sleep(_BROKER_IDLE_TIMEOUT_S)
+        except asyncio.CancelledError:
+            return
+        if self._clients or self._sessions:
+            return
+        self._stopped.set()
 
     async def _wait_for_process_exit(self, process: subprocess.Popen[str], *, timeout_s: float) -> bool:
         def _wait() -> bool:
@@ -479,8 +542,10 @@ class RuntimeServiceServer:
             await self._send_error(client, "session_start_failed", "Failed to start session daemon", detail=str(exc))
             return
 
+        self._cancel_session_idle_timer(session)
         session.client_ids.add(client.client_id)
         client.session_id = session_id
+        self._cancel_broker_idle_timer()
 
         await self._send_event(
             client,
@@ -742,8 +807,18 @@ async def run_runtime_service(*, port: int = 0, token: str | None = None) -> Non
         with contextlib.suppress(NotImplementedError, RuntimeError):
             loop.add_signal_handler(sig, _request_stop)
 
+    async def _wait_either() -> None:
+        done, pending = await asyncio.wait(
+            [asyncio.ensure_future(stop_event.wait()), asyncio.ensure_future(server._stopped.wait())],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
     try:
-        await stop_event.wait()
+        await _wait_either()
     except asyncio.CancelledError:
         raise
     finally:

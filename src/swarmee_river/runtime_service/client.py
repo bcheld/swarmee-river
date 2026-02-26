@@ -51,6 +51,35 @@ def _discovery_is_reachable(path: Path, *, timeout_s: float = 0.5) -> bool:
     return True
 
 
+def _kill_stale_broker_process(discovery_path: Path) -> None:
+    """Best-effort kill of the broker process recorded in a stale discovery file."""
+    try:
+        discovery = load_runtime_discovery(discovery_path)
+    except Exception:
+        return
+    pid = discovery.pid
+    if pid is None or pid <= 0:
+        return
+    try:
+        os.kill(pid, 0)  # check if process exists
+    except OSError:
+        return
+    import signal as _signal
+
+    with contextlib.suppress(Exception):
+        os.kill(pid, _signal.SIGTERM)
+    # Give it a moment to exit before we proceed.
+    for _ in range(10):
+        time.sleep(0.1)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return  # process exited
+    # Still alive — force kill.
+    with contextlib.suppress(Exception):
+        os.kill(pid, _signal.SIGKILL)
+
+
 def ensure_runtime_broker(
     *,
     cwd: Path | None = None,
@@ -67,6 +96,8 @@ def ensure_runtime_broker(
     if _discovery_is_reachable(discovery):
         return discovery
 
+    # Kill the stale broker process before starting a new one.
+    _kill_stale_broker_process(discovery)
     with contextlib.suppress(Exception):
         if discovery.exists():
             discovery.unlink()
@@ -111,6 +142,7 @@ def shutdown_runtime_broker(*, cwd: Path | None = None, timeout_s: float = 6.0) 
     if not discovery_path.exists():
         return False
     if not _discovery_is_reachable(discovery_path):
+        _kill_stale_broker_process(discovery_path)
         with contextlib.suppress(Exception):
             discovery_path.unlink()
         return True

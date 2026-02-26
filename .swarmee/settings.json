@@ -1,4 +1,10 @@
 {
+  "env": {
+    "SWARMEE_CONTEXT_MANAGER": "summarize",
+    "SWARMEE_LOG_EVENTS": "false",
+    "SWARMEE_PREFLIGHT": "enabled",
+    "SWARMEE_PREFLIGHT_LEVEL": "summary"
+  },
   "harness": {
     "tier_profiles": {
       "balanced": {

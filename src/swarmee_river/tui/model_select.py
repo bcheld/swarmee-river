@@ -56,8 +56,26 @@ def resolve_model_config_summary(*, provider_override: str | None = None, tier_o
         model_id = None
 
     suffix = f" ({model_id})" if model_id else ""
-    fallback = " (fallback)" if notice else ""
-    return f"Model: {selected_provider}/{tier}{suffix}{fallback}"
+    return f"Model: {selected_provider}/{tier}{suffix}"
+
+
+def resolve_model_fallback_notice(*, provider_override: str | None = None) -> str | None:
+    """Return the provider fallback notice string, if any, for one-time display."""
+    try:
+        from swarmee_river.settings import load_settings
+        from swarmee_river.utils.provider_utils import resolve_model_provider
+    except Exception:
+        return None
+    try:
+        settings = load_settings()
+    except Exception:
+        return None
+    _, notice = resolve_model_provider(
+        cli_provider=None,
+        env_provider=provider_override if provider_override is not None else os.getenv("SWARMEE_MODEL_PROVIDER"),
+        settings_provider=settings.models.provider,
+    )
+    return notice or None
 
 
 def _model_option_model_id(
@@ -331,4 +349,5 @@ __all__ = [
     "model_select_options",
     "parse_model_select_value",
     "resolve_model_config_summary",
+    "resolve_model_fallback_notice",
 ]

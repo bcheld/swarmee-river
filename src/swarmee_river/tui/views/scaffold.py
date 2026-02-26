@@ -12,7 +12,7 @@ from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader, SidebarList
 
 def compose_scaffold_tab(*, context_select_placeholder: str) -> Iterator[Any]:
     """Yield the Scaffold tab pane."""
-    with TabPane("Scaffold", id="tab_scaffold"):
+    with TabPane("Context", id="tab_scaffold"):
         with Vertical(id="scaffold_panel"):
             with Horizontal(id="scaffold_view_switch"):
                 yield Button("Context", id="scaffold_view_context", compact=True, variant="primary")

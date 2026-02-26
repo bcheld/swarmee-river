@@ -2008,6 +2008,7 @@ class CommandPalette(Static):
     """
 
     TUI_COMMANDS: list[tuple[str, str]] = [
+        ("/help", "Show available commands"),
         ("/plan", "Generate a plan"),
         ("/run", "Execute immediately"),
         ("/approve", "Execute pending plan"),

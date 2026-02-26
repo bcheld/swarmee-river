@@ -1,4 +1,4 @@
-"""Engage sidebar tab UI composition and widget wiring."""
+"""Run sidebar tab UI composition and widget wiring."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ from swarmee_river.tui.widgets import PlanActions, SidebarDetail, SidebarHeader,
 
 
 def compose_engage_tab() -> Iterator[Any]:
-    """Yield the Engage tab pane.
+    """Yield the Run tab pane.
 
     Sub-views:
     - Execution: orchestrator status + plan display (default).
     - Planning: interactive plan development (start/continue).
     - Session: timeline and issues.
     """
-    with TabPane("Engage", id="tab_engage"):
+    with TabPane("Run", id="tab_engage"):
         with Vertical(id="engage_panel"):
             with Horizontal(id="engage_view_switch"):
                 yield Button("Execution", id="engage_view_execution", compact=True, variant="primary")
@@ -68,7 +68,7 @@ def compose_engage_tab() -> Iterator[Any]:
 
 
 def wire_engage_widgets(app: Any) -> None:
-    """Bind Engage tab widgets onto app fields used by event handlers."""
+    """Bind Run tab widgets onto app fields used by event handlers."""
     from textual.containers import Vertical, VerticalScroll
     from textual.widgets import Button
 
