@@ -50,6 +50,8 @@ class PlanState:
     step_counter: int = 0
     completion_announced: bool = False
     received_structured_plan: bool = False
+    plan_json: dict | None = None
+    pre_planning_split_ratio: int | None = None
 
 
 @dataclass

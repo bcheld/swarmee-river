@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, TabPane, TextArea, Static
 
 from swarmee_river.tui.widgets import PlanActions, SidebarDetail, SidebarHeader, SidebarList
@@ -46,7 +46,9 @@ def compose_engage_tab() -> Iterator[Any]:
                     id="engage_planning_header",
                 )
                 yield Button("Start Plan", id="engage_start_plan", variant="success")
-                yield Vertical(id="engage_plan_items")
+                yield Static("", id="engage_plan_summary")
+                with VerticalScroll(id="engage_plan_items"):
+                    pass
                 yield Button("Continue", id="engage_continue_plan", variant="primary")
 
             # -- Session sub-view --------------------------------------------
@@ -67,7 +69,7 @@ def compose_engage_tab() -> Iterator[Any]:
 
 def wire_engage_widgets(app: Any) -> None:
     """Bind Engage tab widgets onto app fields used by event handlers."""
-    from textual.containers import Vertical
+    from textual.containers import Vertical, VerticalScroll
     from textual.widgets import Button
 
     app._engage_view_execution_button = app.query_one("#engage_view_execution", Button)
@@ -77,6 +79,8 @@ def wire_engage_widgets(app: Any) -> None:
     app._engage_planning_view = app.query_one("#engage_planning_view", Vertical)
     app._engage_session_view = app.query_one("#engage_session_view", Vertical)
     app._engage_orchestrator_status = app.query_one("#engage_orchestrator_status", Static)
+    app._engage_plan_summary = app.query_one("#engage_plan_summary", Static)
+    app._engage_plan_items = app.query_one("#engage_plan_items", VerticalScroll)
 
     # Session widgets
     app._session_header = app.query_one("#session_issues_header", SidebarHeader)

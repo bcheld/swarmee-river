@@ -14,7 +14,7 @@ from rich.panel import Panel as RichPanel
 from rich.text import Text as RichText
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
-from textual.widgets import Button, Collapsible, Static
+from textual.widgets import Button, Checkbox, Collapsible, Input, Static
 
 
 def render_user_message(text: str, *, timestamp: str | None = None) -> RichPanel:
@@ -1681,6 +1681,97 @@ class PlanCard(Static):
             lines.append("")
         lines.append("[dim]/approve  /replan  /clearplan[/dim]")
         return "\n".join(lines)
+
+
+class PlanStepRow(Vertical):
+    """Interactive plan step: checkbox + detail line + expandable comment input."""
+
+    DEFAULT_CSS = """
+    PlanStepRow {
+        height: auto;
+        padding: 0;
+        margin: 0 0 1 0;
+    }
+    PlanStepRow .plan-step-detail {
+        height: auto;
+        margin: 0 0 0 4;
+        color: $text-muted;
+    }
+    PlanStepRow .plan-step-comment {
+        height: auto;
+        margin: 0 0 0 4;
+        display: none;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        step_index: int,
+        description: str,
+        files_to_edit: list[str] | None = None,
+        files_to_read: list[str] | None = None,
+        tools_expected: list[str] | None = None,
+        risks: list[str] | None = None,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._step_index = step_index
+        self._description = description
+        self._files_to_edit = files_to_edit or []
+        self._files_to_read = files_to_read or []
+        self._tools_expected = tools_expected or []
+        self._risks = risks or []
+
+    @property
+    def step_index(self) -> int:
+        return self._step_index
+
+    @property
+    def is_included(self) -> bool:
+        with contextlib.suppress(Exception):
+            cb = self.query_one(f"#plan_step_cb_{self._step_index}", Checkbox)
+            return bool(cb.value)
+        return True
+
+    @property
+    def comment(self) -> str:
+        with contextlib.suppress(Exception):
+            inp = self.query_one(f"#plan_step_comment_{self._step_index}", Input)
+            return (inp.value or "").strip()
+        return ""
+
+    def compose(self):  # type: ignore[override]
+        yield Checkbox(
+            f"{self._step_index + 1}. {self._description}",
+            id=f"plan_step_cb_{self._step_index}",
+            value=True,
+        )
+        detail_parts: list[str] = []
+        if self._files_to_edit:
+            detail_parts.append(f"edit: {', '.join(self._files_to_edit[:3])}")
+        if self._files_to_read:
+            detail_parts.append(f"read: {', '.join(self._files_to_read[:3])}")
+        if self._risks:
+            detail_parts.append(f"risks: {', '.join(self._risks[:2])}")
+        if detail_parts:
+            yield Static(" | ".join(detail_parts), classes="plan-step-detail")
+        yield Input(
+            placeholder="Add feedback for this step...",
+            id=f"plan_step_comment_{self._step_index}",
+            classes="plan-step-comment",
+        )
+
+    def toggle_comment_visibility(self) -> None:
+        with contextlib.suppress(Exception):
+            comment_input = self.query_one(
+                f"#plan_step_comment_{self._step_index}", Input
+            )
+            if self.is_included:
+                comment_input.styles.display = "none"
+            else:
+                comment_input.styles.display = "block"
+                comment_input.focus()
 
 
 class PlanActions(Static):

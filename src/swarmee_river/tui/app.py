@@ -741,6 +741,7 @@ def run_tui() -> int:
         ConsentPrompt,
         ContextBudgetBar,
         ErrorActionPrompt,
+        PlanStepRow,
         ReasoningBlock,
         SidebarDetail,
         SidebarHeader,
@@ -1087,6 +1088,14 @@ def run_tui() -> int:
             border: round #3b3b3b;
             padding: 0 1;
             margin: 0 0 1 0;
+            scrollbar-background: #2f2f2f;
+            scrollbar-color: #7f7f7f;
+        }
+
+        #engage_plan_summary {
+            height: auto;
+            color: $text;
+            padding: 0 0 1 0;
         }
 
         #engage_session_view {
@@ -1877,6 +1886,8 @@ def run_tui() -> int:
         _engage_planning_view: Any = None
         _engage_session_view: Any = None
         _engage_orchestrator_status: Any = None  # Static | None
+        _engage_plan_summary: Any = None  # Static | None
+        _engage_plan_items: Any = None  # VerticalScroll | None
         # Scaffold tab
         _scaffold_view_context_button: Any = None
         _scaffold_view_sops_button: Any = None
@@ -2648,6 +2659,180 @@ def run_tui() -> int:
             text_lines.append("/approve  /replan  /clearplan")
             self._set_plan_panel("\n".join(text_lines))
             self._refresh_plan_status_bar()
+
+        def _populate_planning_view(self, plan_json: dict[str, Any]) -> None:
+            """Populate the interactive planning view with PlanStepRow widgets."""
+            import contextlib as _ctx
+
+            self.state.plan.plan_json = dict(plan_json)
+
+            # Render summary + assumptions + questions
+            summary_widget = self._engage_plan_summary
+            if summary_widget is not None:
+                summary_lines: list[str] = []
+                summary_text = str(plan_json.get("summary", "")).strip()
+                if summary_text:
+                    summary_lines.append(f"[bold]Summary:[/bold] {summary_text}")
+                assumptions = plan_json.get("assumptions", [])
+                if isinstance(assumptions, list) and assumptions:
+                    summary_lines.append("")
+                    summary_lines.append("[bold]Assumptions:[/bold]")
+                    for assumption in assumptions[:5]:
+                        summary_lines.append(f"  - {assumption}")
+                questions = plan_json.get("questions", [])
+                if isinstance(questions, list) and questions:
+                    summary_lines.append("")
+                    summary_lines.append("[bold yellow]Questions:[/bold yellow]")
+                    for question in questions[:5]:
+                        summary_lines.append(f"  ? {question}")
+                summary_widget.update("\n".join(summary_lines) if summary_lines else "")
+
+            # Clear existing plan step rows
+            container = self._engage_plan_items
+            if container is None:
+                with _ctx.suppress(Exception):
+                    from textual.containers import VerticalScroll
+                    container = self.query_one("#engage_plan_items", VerticalScroll)
+                    self._engage_plan_items = container
+            if container is None:
+                return
+            for child in list(container.children):
+                with _ctx.suppress(Exception):
+                    child.remove()
+
+            # Mount PlanStepRow widgets
+            steps = plan_json.get("steps", [])
+            if not isinstance(steps, list) or not steps:
+                from textual.widgets import Static as _Static
+                container.mount(_Static("[dim](no steps in plan)[/dim]"))
+                return
+            for index, step in enumerate(steps):
+                if isinstance(step, dict):
+                    desc = str(step.get("description", step.get("title", str(step)))).strip()
+                    files_to_edit = step.get("files_to_edit", [])
+                    files_to_read = step.get("files_to_read", [])
+                    tools_expected = step.get("tools_expected", [])
+                    risks = step.get("risks", [])
+                else:
+                    desc = str(step).strip()
+                    files_to_edit = []
+                    files_to_read = []
+                    tools_expected = []
+                    risks = []
+                row = PlanStepRow(
+                    step_index=index,
+                    description=desc,
+                    files_to_edit=files_to_edit,
+                    files_to_read=files_to_read,
+                    tools_expected=tools_expected,
+                    risks=risks,
+                    id=f"plan_step_row_{index}",
+                )
+                container.mount(row)
+
+            # Toggle button visibility: hide "Start Plan", show "Continue"
+            with _ctx.suppress(Exception):
+                self.query_one("#engage_start_plan", Button).styles.display = "none"
+            with _ctx.suppress(Exception):
+                self.query_one("#engage_continue_plan", Button).styles.display = "block"
+            # Update header
+            with _ctx.suppress(Exception):
+                from textual.widgets import Static as _Static
+                self.query_one("#engage_planning_header", _Static).update(
+                    "Review the plan below. Uncheck steps to exclude,\n"
+                    "add comments to request changes, then press Continue."
+                )
+
+        def _handle_planning_continue(self) -> None:
+            """Process the Continue action in the Planning view."""
+            import contextlib as _ctx
+
+            container = self._engage_plan_items
+            if container is None:
+                return
+
+            rows: list[PlanStepRow] = [
+                child for child in container.children if isinstance(child, PlanStepRow)
+            ]
+            if not rows:
+                self._write_transcript_line("[plan] no plan steps to process.")
+                return
+
+            all_included = True
+            has_comments = False
+            feedback_parts: list[str] = []
+
+            for row in rows:
+                included = row.is_included
+                comment = row.comment
+                if not included:
+                    all_included = False
+                    feedback_parts.append(
+                        f"- Step {row.step_index + 1}: EXCLUDED"
+                        + (f" (reason: {comment})" if comment else "")
+                    )
+                elif comment:
+                    has_comments = True
+                    feedback_parts.append(
+                        f"- Step {row.step_index + 1}: MODIFY ({comment})"
+                    )
+
+            if all_included and not has_comments:
+                # All steps approved — approve and execute
+                self._restore_planning_sidebar_width()
+                self._set_engage_view_mode("execution")
+                if self.state.plan.pending_prompt:
+                    self._dispatch_plan_action("approve")
+                else:
+                    self._write_transcript_line("[plan] plan finalized. Enter a prompt to execute.")
+                return
+
+            # Build annotated feedback prompt for refinement
+            plan_json = self.state.plan.plan_json
+            original_summary = (
+                str((plan_json or {}).get("summary", "")).strip() if plan_json else ""
+            )
+            feedback_prompt = (
+                f"Revise the previous plan"
+                + (f" ({original_summary})" if original_summary else "")
+                + " based on user feedback:\n"
+                + "\n".join(feedback_parts)
+            )
+            self._write_transcript_line("[plan] Sending refinement feedback...")
+            self._start_run(feedback_prompt, auto_approve=False, mode="plan")
+
+        def _restore_planning_sidebar_width(self) -> None:
+            """Restore sidebar width saved before planning expansion."""
+            saved = self.state.plan.pre_planning_split_ratio
+            if saved is not None:
+                self._split_ratio = max(1, min(4, int(saved)))
+                self.state.plan.pre_planning_split_ratio = None
+                self._apply_split_ratio()
+            else:
+                while self._split_ratio < 2:
+                    self.action_widen_transcript()
+
+        def _clear_planning_view(self) -> None:
+            """Reset the interactive planning view to its empty state."""
+            import contextlib as _ctx
+            if self._engage_plan_summary is not None:
+                with _ctx.suppress(Exception):
+                    self._engage_plan_summary.update("")
+            container = self._engage_plan_items
+            if container is not None:
+                for child in list(container.children):
+                    with _ctx.suppress(Exception):
+                        child.remove()
+            with _ctx.suppress(Exception):
+                self.query_one("#engage_start_plan", Button).styles.display = "block"
+            with _ctx.suppress(Exception):
+                self.query_one("#engage_continue_plan", Button).styles.display = "none"
+            with _ctx.suppress(Exception):
+                from textual.widgets import Static as _Static
+                self.query_one("#engage_planning_header", _Static).update(
+                    "Describe what you want to build. The orchestrator will\n"
+                    "develop a plan you can review and refine."
+                )
 
         def _selected_agent_profile_id(self) -> str | None:
             selector = self._agent_profile_select
@@ -3546,8 +3731,10 @@ def run_tui() -> int:
             self.state.plan.updates_seen = False
             self.state.plan.step_counter = 0
             self.state.plan.completion_announced = False
+            self.state.plan.plan_json = None
             self._refresh_plan_status_bar()
             self._refresh_plan_actions_visibility()
+            self._clear_planning_view()
 
         def _reset_issues_panel(self) -> None:
             self.state.session.issue_lines = []
@@ -6905,6 +7092,16 @@ def run_tui() -> int:
             checkbox_id = str(getattr(checkbox, "id", "")).strip()
             if not checkbox_id:
                 return
+            # Plan step checkbox toggles
+            if checkbox_id.startswith("plan_step_cb_"):
+                try:
+                    index = int(checkbox_id.split("_")[-1])
+                except (ValueError, IndexError):
+                    return
+                with contextlib.suppress(Exception):
+                    row = self.query_one(f"#plan_step_row_{index}", PlanStepRow)
+                    row.toggle_comment_visibility()
+                return
             if checkbox_id == "agent_builder_auto_delegate":
                 self.state.agent_studio.auto_delegate_assistive = bool(getattr(event, "value", False))
                 self._set_agent_draft_dirty(True, note="Assistive delegation preference updated.")
@@ -7195,6 +7392,9 @@ def run_tui() -> int:
         def on_input_changed(self, event: Any) -> None:
             input_widget = getattr(event, "input", None)
             input_id = str(getattr(input_widget, "id", "")).strip().lower()
+            # Plan step comments — no action needed on change
+            if input_id.startswith("plan_step_comment_"):
+                return
             if input_id in {"agent_profile_id", "agent_profile_name"}:
                 if self.state.agent_studio.form_syncing:
                     return
@@ -7717,15 +7917,15 @@ def run_tui() -> int:
                 self._set_engage_view_mode("session")
                 return
             if button_id == "engage_start_plan":
+                if self.state.plan.pre_planning_split_ratio is None:
+                    self.state.plan.pre_planning_split_ratio = self._split_ratio
                 if self._split_ratio > 1:
                     self.action_widen_side()
                 self._set_engage_view_mode("planning")
                 self._seed_prompt_with_command("/plan ")
                 return
             if button_id == "engage_continue_plan":
-                while self._split_ratio < 2:
-                    self.action_widen_transcript()
-                self._set_engage_view_mode("execution")
+                self._handle_planning_continue()
                 return
             if button_id == "scaffold_view_context":
                 self._set_scaffold_view_mode("context")

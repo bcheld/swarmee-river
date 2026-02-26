@@ -400,6 +400,15 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
                 app.render_plan_panel(plan_json),  # type: ignore[attr-defined]
                 plain_text=rendered if isinstance(rendered, str) else _json.dumps(plan_json, indent=2),
             )
+            # Auto-switch to interactive Planning view
+            app._populate_planning_view(plan_json)
+            if app.state.plan.pre_planning_split_ratio is None:
+                app.state.plan.pre_planning_split_ratio = app._split_ratio
+            while app._split_ratio > 1:
+                app.action_widen_side()
+            app._set_engage_view_mode("planning")
+            with contextlib.suppress(Exception):
+                app._switch_side_tab("tab_engage")
         else:
             app._refresh_plan_status_bar()
         return True
