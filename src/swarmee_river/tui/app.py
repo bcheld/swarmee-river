@@ -6668,6 +6668,11 @@ def run_tui() -> int:
             if timeline_timer is not None:
                 with contextlib.suppress(RuntimeError):
                     timeline_timer.stop()
+            status_timer = self.state.daemon.status_timer
+            self.state.daemon.status_timer = None
+            if status_timer is not None:
+                with contextlib.suppress(RuntimeError):
+                    status_timer.stop()
             self._cancel_streaming_flush_timer()
             self._cancel_tool_progress_flush_timer()
             self._clear_pending_tool_starts()
@@ -6677,7 +6682,8 @@ def run_tui() -> int:
             if self.state.daemon.runner_thread is not None and self.state.daemon.runner_thread.is_alive():
                 with contextlib.suppress(Exception):
                     self.state.daemon.runner_thread.join(timeout=1.0)
-            self._save_session()
+            with contextlib.suppress(Exception):
+                self._save_session()
             self.exit(return_code=0)
 
         def action_copy_transcript(self) -> None:

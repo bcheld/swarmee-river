@@ -227,6 +227,15 @@ class RuntimeServiceClient:
         self._writer = sock.makefile("w", encoding="utf-8", errors="replace", newline="\n")
 
     def close(self) -> None:
+        # Shutdown the socket first to interrupt any blocking recv() in reader
+        # threads.  BufferedReader.close() needs the buffer lock, but a blocked
+        # readline() holds it — shutdown(SHUT_RDWR) causes recv() to return
+        # immediately, releasing the lock so close() can proceed.
+        if self._sock is not None:
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
         if self._writer is not None:
             try:
                 self._writer.close()
