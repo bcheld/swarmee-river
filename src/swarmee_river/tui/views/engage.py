@@ -45,11 +45,11 @@ def compose_engage_tab() -> Iterator[Any]:
                     "develop a plan you can review and refine.",
                     id="engage_planning_header",
                 )
-                yield Button("Start Plan", id="engage_start_plan", variant="success")
+                yield Button("Start Plan", id="engage_start_plan", variant="success", compact=True)
                 yield Static("", id="engage_plan_summary")
                 with VerticalScroll(id="engage_plan_items"):
                     pass
-                yield Button("Continue", id="engage_continue_plan", variant="primary")
+                yield Button("Continue", id="engage_continue_plan", variant="primary", compact=True)
 
             # -- Session sub-view --------------------------------------------
             with Vertical(id="engage_session_view"):

@@ -1031,17 +1031,30 @@ def run_tui() -> int:
 
         #engage_plan_items {
             height: 1fr;
+            min-height: 8;
             border: round #3b3b3b;
             padding: 0 1;
             margin: 0 0 1 0;
             scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
             scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
         }
 
         #engage_plan_summary {
             height: auto;
+            max-height: 8;
+            overflow-y: auto;
             color: $text;
             padding: 0 0 1 0;
+            scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
+            scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
         }
 
         #engage_session_view {
@@ -6961,6 +6974,13 @@ def run_tui() -> int:
                     "prompt_history": self._prompt_history[-self._MAX_PROMPT_HISTORY :],
                     "last_prompt": self._last_prompt,
                     "plan_text": self.state.plan.text,
+                    "plan_json": self.state.plan.plan_json,
+                    "plan_pending_prompt": self.state.plan.pending_prompt,
+                    "plan_current_steps": self.state.plan.current_steps,
+                    "plan_current_step_statuses": self.state.plan.current_step_statuses,
+                    "plan_current_summary": self.state.plan.current_summary,
+                    "plan_current_steps_total": self.state.plan.current_steps_total,
+                    "plan_step_counter": self.state.plan.step_counter,
                     "artifacts": self.state.artifacts.recent_paths,
                     "context_sources": self._context_sources,
                     "active_sop_names": sorted(self._active_sop_names),
@@ -6989,6 +7009,20 @@ def run_tui() -> int:
                 plan_text = data.get("plan_text", "")
                 if plan_text and plan_text != "(no plan)":
                     self._set_plan_panel(plan_text)
+                plan_json = data.get("plan_json")
+                if plan_json and isinstance(plan_json, dict):
+                    self.state.plan.plan_json = plan_json
+                    self.state.plan.pending_prompt = data.get("plan_pending_prompt") or None
+                    self.state.plan.current_summary = str(data.get("plan_current_summary", "")).strip()
+                    self.state.plan.current_steps = data.get("plan_current_steps") or []
+                    self.state.plan.current_steps_total = int(data.get("plan_current_steps_total", 0) or 0)
+                    self.state.plan.step_counter = int(data.get("plan_step_counter", 0) or 0)
+                    raw_statuses = data.get("plan_current_step_statuses") or []
+                    self.state.plan.current_step_statuses = raw_statuses if isinstance(raw_statuses, list) else []
+                    self.state.plan.received_structured_plan = True
+                    self._render_plan_panel_from_status()
+                    self._refresh_plan_actions_visibility()
+                    self._populate_planning_view(plan_json)
                 artifacts = data.get("artifacts", [])
                 if artifacts:
                     self.state.artifacts.recent_paths = artifacts
@@ -7011,6 +7045,11 @@ def run_tui() -> int:
                     self.state.daemon.available_restore_turn_count = max(0, int(restore_turn_count_raw or 0))
                 except (TypeError, ValueError):
                     self.state.daemon.available_restore_turn_count = 0
+                if self.state.daemon.available_restore_session_id:
+                    self._write_transcript_line(
+                        f"Previous session found ({self.state.daemon.available_restore_turn_count} turns). "
+                        "Type /restore to resume or /new to start fresh."
+                    )
                 # Do not restore model overrides from prior sessions.
                 # The daemon-reported model_info is the source of truth for startup model state.
                 self.state.daemon.model_provider_override = None
