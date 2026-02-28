@@ -16,7 +16,7 @@ def compose_engage_tab() -> Iterator[Any]:
     Sub-views:
     - Execution: orchestrator status + plan display (default).
     - Planning: interactive plan development (start/continue).
-    - Session: timeline and issues.
+    - Session: timeline and artifacts.
     """
     with TabPane("Run", id="tab_engage"):
         with Vertical(id="engage_panel"):
@@ -56,15 +56,15 @@ def compose_engage_tab() -> Iterator[Any]:
                 with Vertical(id="session_panel"):
                     with Horizontal(id="session_view_switch"):
                         yield Button("Timeline", id="session_view_timeline", compact=True, variant="primary")
-                        yield Button("Issues", id="session_view_issues", compact=True, variant="default")
+                        yield Button("Artifacts", id="session_view_artifacts", compact=True, variant="default")
                     with Vertical(id="session_timeline_view"):
                         yield SidebarHeader("Timeline", id="session_timeline_header")
                         yield SidebarList(id="session_timeline_list")
                         yield SidebarDetail(id="session_timeline_detail")
-                    with Vertical(id="session_issues_view"):
-                        yield SidebarHeader("Issues", id="session_issues_header")
-                        yield SidebarList(id="session_issue_list")
-                        yield SidebarDetail(id="session_issue_detail")
+                    with Vertical(id="session_artifacts_view"):
+                        yield SidebarHeader("Artifacts", id="session_artifacts_header")
+                        yield SidebarList(id="session_artifacts_list")
+                        yield SidebarDetail(id="session_artifacts_detail")
 
 
 def wire_engage_widgets(app: Any) -> None:
@@ -83,15 +83,27 @@ def wire_engage_widgets(app: Any) -> None:
     app._engage_plan_items = app.query_one("#engage_plan_items", VerticalScroll)
 
     # Session widgets
-    app._session_header = app.query_one("#session_issues_header", SidebarHeader)
     app._session_view_timeline_button = app.query_one("#session_view_timeline", Button)
-    app._session_view_issues_button = app.query_one("#session_view_issues", Button)
+    app._session_view_artifacts_button = app.query_one("#session_view_artifacts", Button)
     app._session_timeline_view = app.query_one("#session_timeline_view", Vertical)
-    app._session_issues_view = app.query_one("#session_issues_view", Vertical)
+    app._session_artifacts_view = app.query_one("#session_artifacts_view", Vertical)
     app._session_timeline_header = app.query_one("#session_timeline_header", SidebarHeader)
     app._session_timeline_list = app.query_one("#session_timeline_list", SidebarList)
     app._session_timeline_detail = app.query_one("#session_timeline_detail", SidebarDetail)
-    app._session_issue_list = app.query_one("#session_issue_list", SidebarList)
-    app._session_issue_detail = app.query_one("#session_issue_detail", SidebarDetail)
+    app._session_artifacts_header = app.query_one("#session_artifacts_header", SidebarHeader)
+    app._session_artifacts_list = app.query_one("#session_artifacts_list", SidebarList)
+    app._session_artifacts_detail = app.query_one("#session_artifacts_detail", SidebarDetail)
+
+    # Backward-compat aliases for app.py code that still references old names.
+    # Artifact widgets now live in session; these map to the new locations.
+    app._artifacts_header = app._session_artifacts_header
+    app._artifacts_list = app._session_artifacts_list
+    app._artifacts_detail = app._session_artifacts_detail
+    # Issues widgets are removed; set to None so guarded accesses pass.
+    app._session_header = app._session_timeline_header
+    app._session_view_issues_button = None
+    app._session_issues_view = None
+    app._session_issue_list = None
+    app._session_issue_detail = None
 
 __all__ = ["compose_engage_tab", "wire_engage_widgets"]

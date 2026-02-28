@@ -80,6 +80,19 @@ class SessionState:
 
 
 @dataclass
+class ToolingState:
+    view_mode: str = "prompts"  # "prompts", "tools", "sops", "kbs"
+    tool_catalog: list[dict[str, Any]] = field(default_factory=list)
+    tool_selected_id: str | None = None
+    prompt_templates: list[dict[str, Any]] = field(default_factory=list)
+    prompt_selected_id: str | None = None
+    sop_catalog: list[dict[str, Any]] = field(default_factory=list)
+    sop_selected_id: str | None = None
+    kb_entries: list[dict[str, Any]] = field(default_factory=list)
+    kb_selected_id: str | None = None
+
+
+@dataclass
 class AgentStudioState:
     view_mode: str = "overview"
     saved_profiles: list[Any] = field(default_factory=list)
@@ -114,8 +127,9 @@ class AppState:
     artifacts: ArtifactsState = field(default_factory=ArtifactsState)
     session: SessionState = field(default_factory=SessionState)
     agent_studio: AgentStudioState = field(default_factory=AgentStudioState)
+    tooling: ToolingState = field(default_factory=ToolingState)
     engage_view_mode: str = "execution"
-    scaffold_view_mode: str = "context"
+    tooling_view_mode: str = "prompts"
     settings_view_mode: str = "general"
 
 
@@ -126,4 +140,5 @@ __all__ = [
     "DaemonState",
     "PlanState",
     "SessionState",
+    "ToolingState",
 ]

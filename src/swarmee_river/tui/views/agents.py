@@ -99,7 +99,7 @@ def compose_agents_tab() -> Iterator[Any]:
                         compact=True,
                     )
                 yield Input(
-                    placeholder="Tools (comma-separated, blank = inherit)",
+                    placeholder="Tools (names or @tag refs, comma-separated, blank = inherit)",
                     id="agent_builder_agent_tools",
                 )
                 yield Input(

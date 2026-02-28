@@ -107,10 +107,10 @@ def session_issue_actions(issue: dict[str, Any] | None) -> list[dict[str, str]]:
 
 
 def normalize_session_view_mode(mode: str | None) -> str:
-    """Normalize session panel mode for Timeline/Issues toggle."""
+    """Normalize session panel mode for Timeline/Artifacts toggle."""
     normalized = str(mode or "").strip().lower()
-    if normalized == "issues":
-        return "issues"
+    if normalized in {"artifacts", "issues"}:
+        return normalized
     return "timeline"
 
 

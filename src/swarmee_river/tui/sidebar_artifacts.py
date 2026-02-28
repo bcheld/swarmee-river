@@ -2,15 +2,8 @@
 
 from __future__ import annotations
 
-import re
-import uuid
 from pathlib import Path
 from typing import Any
-
-
-def _sanitize_context_source_id(value: str) -> str:
-    token = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (value or "").strip())
-    return token.strip("-") or uuid.uuid4().hex[:12]
 
 
 def add_recent_artifacts(existing: list[str], new_paths: list[str], *, max_items: int = 20) -> list[str]:
@@ -84,15 +77,12 @@ def build_artifact_sidebar_items(entries: list[dict[str, Any]]) -> list[dict[str
     return items
 
 
-def artifact_context_source_payload(path: str, *, source_id: str | None = None) -> dict[str, str]:
-    """Build a file context-source payload for an artifact path."""
-    normalized_path = str(path or "").strip()
-    if not normalized_path:
-        raise ValueError("artifact path is required")
+def artifact_context_source_payload(path: str, *, source_id: str) -> dict[str, str]:
+    """Build a context-source payload from an artifact path."""
     return {
         "type": "file",
-        "path": normalized_path,
-        "id": _sanitize_context_source_id(source_id or uuid.uuid4().hex),
+        "path": str(path).strip(),
+        "id": str(source_id).strip(),
     }
 
 
