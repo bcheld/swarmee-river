@@ -27,6 +27,7 @@ _ROOT_HELP_EPILOG = (
     "  swarmee daemon status            Show runtime broker status\n"
     "  swarmee daemon start             Start runtime broker\n"
     "  swarmee daemon stop              Stop runtime broker\n"
+    "  swarmee daemon stop all          Stop all runtime brokers across scopes\n"
     "  swarmee broker stop              Alias for 'swarmee daemon stop'\n"
     "  swarmee serve                    Run runtime broker in foreground\n"
     "  swarmee attach [--tail]          Attach to runtime broker session\n"
@@ -1957,6 +1958,13 @@ def _build_daemon_command_parser() -> argparse.ArgumentParser:
         default="status",
         help="Daemon action (default: status).",
     )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        choices=["all"],
+        default=None,
+        help="Optional stop target (only 'all' is supported).",
+    )
     parser.add_argument("--cwd", type=str, default=None, help="Scope cwd for daemon state resolution.")
     parser.add_argument(
         "--state-dir",
@@ -1965,6 +1973,79 @@ def _build_daemon_command_parser() -> argparse.ArgumentParser:
         help="Override runtime state directory.",
     )
     return parser
+
+
+def _runtime_broker_pids() -> list[int]:
+    if os.name != "posix":
+        return []
+    try:
+        output = subprocess.check_output(
+            ["ps", "-ax", "-o", "pid=,command="],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception:
+        return []
+
+    pids: list[int] = []
+    self_pid = os.getpid()
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_text, command = parts
+        if "swarmee_river.swarmee" not in command:
+            continue
+        if re.search(r"(?:^|\\s)serve(?:\\s|$)", command) is None:
+            continue
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid <= 0 or pid == self_pid:
+            continue
+        pids.append(pid)
+    return sorted(set(pids))
+
+
+def _stop_all_runtime_brokers(*, timeout_s: float = 6.0) -> tuple[int, int]:
+    pids = _runtime_broker_pids()
+    if not pids:
+        return 0, 0
+
+    import signal as _signal
+
+    for pid in pids:
+        with contextlib.suppress(Exception):
+            os.kill(pid, _signal.SIGTERM)
+
+    deadline = time.monotonic() + max(0.5, float(timeout_s))
+    alive: set[int] = set(pids)
+    while alive and time.monotonic() < deadline:
+        for pid in list(alive):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                alive.discard(pid)
+        if alive:
+            time.sleep(0.1)
+
+    for pid in list(alive):
+        with contextlib.suppress(Exception):
+            os.kill(pid, _signal.SIGKILL)
+    for pid in list(alive):
+        with contextlib.suppress(Exception):
+            os.kill(pid, 0)
+            continue
+        alive.discard(pid)
+
+    stopped = len(pids) - len(alive)
+    failed = len(alive)
+    return stopped, failed
 
 
 def _print_attach_event(event: dict[str, Any], *, streaming_state: dict[str, bool]) -> None:
@@ -2207,7 +2288,11 @@ def _run_daemon_command(raw_args: list[str]) -> int:
         return 1
 
     action = str(args.action or "status").strip().lower()
+    target = str(args.target or "").strip().lower()
     if action == "start":
+        if target:
+            print("Error: 'all' target is only valid with 'stop'.")
+            return 1
         try:
             discovery = ensure_runtime_broker(cwd=daemon_cwd)
             print(f"[daemon] running (discovery: {discovery})")
@@ -2217,12 +2302,25 @@ def _run_daemon_command(raw_args: list[str]) -> int:
             return 1
 
     if action == "stop":
+        if target == "all":
+            stopped_count, failed_count = _stop_all_runtime_brokers()
+            if stopped_count == 0 and failed_count == 0:
+                print("[daemon] no runtime brokers found.")
+                return 0
+            if failed_count:
+                print(f"[daemon] stopped {stopped_count} broker(s), failed to stop {failed_count}.")
+                return 1
+            print(f"[daemon] stopped {stopped_count} broker(s).")
+            return 0
         stopped = shutdown_runtime_broker(cwd=daemon_cwd)
         if stopped:
             print("[daemon] stopped.")
             return 0
         print("[daemon] not running.")
         return 0
+    if target:
+        print("Error: 'all' target is only valid with 'stop'.")
+        return 1
 
     discovery = runtime_discovery_path(cwd=daemon_cwd)
     if not discovery.exists():

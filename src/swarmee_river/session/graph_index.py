@@ -101,13 +101,13 @@ def _read_latest_messages_snapshot(path: Path) -> list[Any]:
     return latest
 
 
-def _discover_session_log_path(session_id: str, *, cwd: Path | None = None) -> Path | None:
+def _discover_session_log_paths(session_id: str, *, cwd: Path | None = None) -> list[Path]:
     try:
         matches = list(logs_dir(cwd=cwd).glob(f"*_{session_id}.jsonl"))
     except OSError:
-        return None
+        return []
     if not matches:
-        return None
+        return []
 
     def _mtime(path: Path) -> float:
         try:
@@ -115,8 +115,8 @@ def _discover_session_log_path(session_id: str, *, cwd: Path | None = None) -> P
         except OSError:
             return 0.0
 
-    matches.sort(key=_mtime, reverse=True)
-    return matches[0]
+    matches.sort(key=_mtime)
+    return matches
 
 
 def _build_turns(messages: list[Any]) -> list[dict[str, Any]]:
@@ -210,8 +210,9 @@ def _detect_tool_outcome(result_field: Any) -> tuple[bool | None, str | None]:
     return None, None
 
 
-def _build_events_and_tools(log_path: Path | None) -> tuple[list[dict[str, Any]], dict[str, int], int]:
-    if log_path is None or not log_path.exists():
+def _build_events_and_tools(log_paths: list[Path]) -> tuple[list[dict[str, Any]], dict[str, int], int]:
+    active_paths = [p for p in log_paths if p.exists()]
+    if not active_paths:
         return [], {}, 0
 
     events: list[dict[str, Any]] = []
@@ -223,81 +224,82 @@ def _build_events_and_tools(log_path: Path | None) -> tuple[list[dict[str, Any]]
     # so we can merge them into the corresponding after_model_call event.
     pending_before: dict[str, dict[str, Any]] = {}
 
-    try:
-        with log_path.open("r", encoding="utf-8", errors="replace") as fh:
-            for raw_line in fh:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                parsed = _safe_json_loads(line)
-                if parsed is None:
-                    continue
-                event_name = str(parsed.get("event", "")).strip()
-                if event_name not in notable:
-                    continue
+    for log_path in active_paths:
+        try:
+            with log_path.open("r", encoding="utf-8", errors="replace") as fh:
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    parsed = _safe_json_loads(line)
+                    if parsed is None:
+                        continue
+                    event_name = str(parsed.get("event", "")).strip()
+                    if event_name not in notable:
+                        continue
 
-                entry: dict[str, Any] = {"event": event_name}
-                ts = parsed.get("ts")
-                if isinstance(ts, str) and ts.strip():
-                    entry["ts"] = ts.strip()
-                invocation_id = parsed.get("invocation_id")
-                if isinstance(invocation_id, str) and invocation_id.strip():
-                    entry["invocation_id"] = invocation_id.strip()
-                duration = _coerce_duration(parsed.get("duration_s"))
-                if duration is not None:
-                    entry["duration_s"] = duration
+                    entry: dict[str, Any] = {"event": event_name}
+                    ts = parsed.get("ts")
+                    if isinstance(ts, str) and ts.strip():
+                        entry["ts"] = ts.strip()
+                    invocation_id = parsed.get("invocation_id")
+                    if isinstance(invocation_id, str) and invocation_id.strip():
+                        entry["invocation_id"] = invocation_id.strip()
+                    duration = _coerce_duration(parsed.get("duration_s"))
+                    if duration is not None:
+                        entry["duration_s"] = duration
 
-                if event_name == "after_tool_call":
-                    tool = str(parsed.get("tool", "")).strip()
-                    if tool:
-                        entry["tool"] = tool
-                        tool_counts[tool] = tool_counts.get(tool, 0) + 1
-                    tool_use_id = str(parsed.get("toolUseId", "")).strip()
-                    if tool_use_id:
-                        entry["tool_use_id"] = tool_use_id
+                    if event_name == "after_tool_call":
+                        tool = str(parsed.get("tool", "")).strip()
+                        if tool:
+                            entry["tool"] = tool
+                            tool_counts[tool] = tool_counts.get(tool, 0) + 1
+                        tool_use_id = str(parsed.get("toolUseId", "")).strip()
+                        if tool_use_id:
+                            entry["tool_use_id"] = tool_use_id
 
-                    success, error = _detect_tool_outcome(parsed.get("result"))
-                    if success is not None:
-                        entry["success"] = success
-                    if isinstance(error, str) and error.strip():
-                        entry["error"] = error.strip()
-                        errors += 1
-                    elif success is False:
-                        errors += 1
+                        success, error = _detect_tool_outcome(parsed.get("result"))
+                        if success is not None:
+                            entry["success"] = success
+                        if isinstance(error, str) and error.strip():
+                            entry["error"] = error.strip()
+                            errors += 1
+                        elif success is False:
+                            errors += 1
 
-                elif event_name == "before_model_call":
-                    # Stash context composition metrics; merge into after_model_call later.
-                    call_id = str(parsed.get("model_call_id", "")).strip()
-                    before_data: dict[str, Any] = {}
-                    for key in ("messages", "system_prompt_chars", "tool_count", "tool_schema_chars",
-                                "model_id", "message_breakdown"):
-                        val = parsed.get(key)
-                        if val is not None:
-                            before_data[key] = val
-                    if call_id:
-                        pending_before[call_id] = before_data
-                    # Don't emit before_model_call as a separate timeline event.
-                    continue
+                    elif event_name == "before_model_call":
+                        # Stash context composition metrics; merge into after_model_call later.
+                        call_id = str(parsed.get("model_call_id", "")).strip()
+                        before_data: dict[str, Any] = {}
+                        for key in ("messages", "system_prompt_chars", "tool_count", "tool_schema_chars",
+                                    "model_id", "message_breakdown"):
+                            val = parsed.get(key)
+                            if val is not None:
+                                before_data[key] = val
+                        if call_id:
+                            pending_before[call_id] = before_data
+                        # Don't emit before_model_call as a separate timeline event.
+                        continue
 
-                elif event_name == "after_model_call":
-                    call_id = str(parsed.get("model_call_id", "")).strip()
-                    if call_id:
-                        entry["model_call_id"] = call_id
-                    # Merge context composition from the matching before_model_call.
-                    before = pending_before.pop(call_id, None) if call_id else None
-                    if isinstance(before, dict):
-                        entry.update(before)
-                    # Preserve usage and model_id from the after event itself.
-                    usage = parsed.get("usage")
-                    if isinstance(usage, dict):
-                        entry["usage"] = usage
-                    model_id = parsed.get("model_id")
-                    if isinstance(model_id, str) and model_id.strip():
-                        entry["model_id"] = model_id.strip()
+                    elif event_name == "after_model_call":
+                        call_id = str(parsed.get("model_call_id", "")).strip()
+                        if call_id:
+                            entry["model_call_id"] = call_id
+                        # Merge context composition from the matching before_model_call.
+                        before = pending_before.pop(call_id, None) if call_id else None
+                        if isinstance(before, dict):
+                            entry.update(before)
+                        # Preserve usage and model_id from the after event itself.
+                        usage = parsed.get("usage")
+                        if isinstance(usage, dict):
+                            entry["usage"] = usage
+                        model_id = parsed.get("model_id")
+                        if isinstance(model_id, str) and model_id.strip():
+                            entry["model_id"] = model_id.strip()
 
-                events.append(entry)
-    except OSError:
-        return [], {}, 0
+                    events.append(entry)
+        except OSError:
+            continue
 
     return events, dict(sorted(tool_counts.items())), errors
 
@@ -308,11 +310,11 @@ def build_session_graph_index(session_id: str, *, cwd: Path | None = None) -> di
         raise ValueError("session_id is required")
 
     messages_log_path = _messages_log_path(sid, cwd=cwd)
-    log_path = _discover_session_log_path(sid, cwd=cwd)
+    log_paths = _discover_session_log_paths(sid, cwd=cwd)
 
     messages = _read_latest_messages_snapshot(messages_log_path)
     turns = _build_turns(messages)
-    events, tool_counts, error_count = _build_events_and_tools(log_path)
+    events, tool_counts, error_count = _build_events_and_tools(log_paths)
 
     return {
         "schema": _GRAPH_INDEX_SCHEMA,
@@ -321,7 +323,7 @@ def build_session_graph_index(session_id: str, *, cwd: Path | None = None) -> di
         "generated_at": _iso_ts(),
         "sources": {
             "messages_log": str(messages_log_path) if messages_log_path.exists() else None,
-            "logs_file": str(log_path) if log_path is not None and log_path.exists() else None,
+            "logs_files": [str(p) for p in log_paths if p.exists()],
         },
         "stats": {
             "turns": len(turns),

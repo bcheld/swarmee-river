@@ -649,12 +649,43 @@ def stop_process(proc: subprocess.Popen[str], *, timeout_s: float = 2.0) -> None
     )
 
 
+def get_swarmee_tui_class() -> type:
+    """Return the SwarmeeTUI class, building it if necessary.
+
+    ``run_tui`` sets ``run_tui._app_class`` before calling ``.run()``.
+    We trigger class construction by calling ``run_tui()`` with the app's
+    ``run`` method patched to abort immediately.
+
+    Raises ImportError if Textual is unavailable.
+    """
+    cached = getattr(run_tui, "_app_class", None)
+    if cached is not None:
+        return cached
+
+    import unittest.mock as _mock
+
+    class _AbortRun(BaseException):
+        pass
+
+    with _mock.patch("textual.app.App.run", side_effect=_AbortRun):
+        try:
+            run_tui()
+        except _AbortRun:
+            pass
+
+    result = getattr(run_tui, "_app_class", None)
+    if result is None:
+        raise ImportError("SwarmeeTUI class could not be constructed (is Textual installed?)")
+    return result
+
+
 def run_tui() -> int:
     """Run the full-screen TUI if Textual is installed."""
     try:
         textual_app = importlib.import_module("textual.app")
         textual_binding = importlib.import_module("textual.binding")
         textual_containers = importlib.import_module("textual.containers")
+        textual_screen = importlib.import_module("textual.screen")
         textual_widget_base = importlib.import_module("textual.widget")
         textual_widgets = importlib.import_module("textual.widgets")
     except ImportError:
@@ -667,6 +698,7 @@ def run_tui() -> int:
         return 1
 
     AppBase = textual_app.App
+    ModalScreen = textual_screen.ModalScreen
     Binding = textual_binding.Binding
     Horizontal = textual_containers.Horizontal
     Vertical = textual_containers.Vertical
@@ -926,6 +958,62 @@ def run_tui() -> int:
             if inspect.isawaitable(result):
                 await result
 
+    class ConfirmPlanCancelScreen(ModalScreen[bool]):
+        """Confirmation modal before clearing full plan state."""
+
+        DEFAULT_CSS = """
+        ConfirmPlanCancelScreen {
+            align: center middle;
+            background: rgba(0, 0, 0, 0.7);
+        }
+        #plan_cancel_confirm_dialog {
+            width: 56;
+            height: auto;
+            border: round $warning;
+            background: $panel;
+            padding: 1 2;
+            layout: vertical;
+        }
+        #plan_cancel_confirm_title {
+            height: auto;
+            color: $warning;
+            text-style: bold;
+            padding: 0 0 1 0;
+        }
+        #plan_cancel_confirm_body {
+            height: auto;
+            color: $text;
+            padding: 0 0 1 0;
+        }
+        #plan_cancel_confirm_actions {
+            height: auto;
+            layout: horizontal;
+        }
+        #plan_cancel_confirm_actions Button {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+        """
+
+        def compose(self) -> Any:  # type: ignore[override]
+            with Vertical(id="plan_cancel_confirm_dialog"):
+                yield Static("Cancel plan?", id="plan_cancel_confirm_title")
+                yield Static(
+                    "This clears the current plan and refinement state.\n"
+                    "Transcript history is preserved.",
+                    id="plan_cancel_confirm_body",
+                )
+                with Horizontal(id="plan_cancel_confirm_actions"):
+                    yield Button("Back", id="plan_cancel_confirm_back", variant="default", compact=True)
+                    yield Button("Confirm", id="plan_cancel_confirm_confirm", variant="error", compact=True)
+
+        def on_button_pressed(self, event: Any) -> None:
+            button_id = str(getattr(getattr(event, "button", None), "id", "")).strip().lower()
+            if button_id == "plan_cancel_confirm_confirm":
+                self.dismiss(True)
+                return
+            self.dismiss(False)
+
     class SwarmeeTUI(
         TranscriptMixin,
         ThinkingMixin,
@@ -1032,13 +1120,11 @@ def run_tui() -> int:
             margin: 0 1 0 0;
         }
 
-        #engage_execution_view {
-            height: 1fr;
-            layout: vertical;
+        #engage_view_switch Button:last-child {
+            margin-right: 0;
         }
 
-        #engage_planning_view {
-            display: none;
+        #engage_plan_view {
             height: 1fr;
             layout: vertical;
         }
@@ -1056,6 +1142,7 @@ def run_tui() -> int:
         }
 
         #engage_plan_items {
+            display: none;
             height: 1fr;
             min-height: 8;
             border: round #3b3b3b;
@@ -1070,6 +1157,7 @@ def run_tui() -> int:
         }
 
         #engage_plan_summary {
+            display: none;
             height: auto;
             max-height: 8;
             overflow-y: auto;
@@ -1081,6 +1169,27 @@ def run_tui() -> int:
             scrollbar-color: #7f7f7f;
             scrollbar-color-hover: #999999;
             scrollbar-color-active: #b3b3b3;
+        }
+
+        #engage_plan_questions {
+            display: none;
+            height: auto;
+            max-height: 14;
+            border: round #3b3b3b;
+            padding: 0 1;
+            margin: 0 0 1 0;
+            scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
+            scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
+        }
+
+        #engage_continue_plan,
+        #engage_clear_plan,
+        #engage_cancel_plan {
+            display: none;
         }
 
         #engage_session_view {
@@ -1129,12 +1238,16 @@ def run_tui() -> int:
             margin: 0 1 0 0;
         }
 
-        #tooling_prompts_view {
+        #tooling_view_switch Button:last-child {
+            margin-right: 0;
+        }
+
+        #tooling_tools_view {
             height: 1fr;
             layout: vertical;
         }
 
-        #tooling_tools_view {
+        #tooling_prompts_view {
             display: none;
             height: 1fr;
             layout: vertical;
@@ -1259,6 +1372,10 @@ def run_tui() -> int:
             margin: 0 1 0 0;
         }
 
+        #settings_models_form_actions Button:last-child {
+            margin-right: 0;
+        }
+
         .settings-section-label {
             height: auto;
             color: $text-muted;
@@ -1283,6 +1400,12 @@ def run_tui() -> int:
             width: 1fr;
             min-width: 10;
             margin: 0 1 0 0;
+        }
+
+        #settings_general_runtime_row Button:last-child,
+        #settings_general_features_row Button:last-child,
+        #settings_general_guardrails_row Button:last-child {
+            margin-right: 0;
         }
 
         #settings_general_context_row Select {
@@ -1316,6 +1439,10 @@ def run_tui() -> int:
             width: 1fr;
             min-width: 8;
             margin: 0 1 0 0;
+        }
+
+        #settings_env_actions Button:last-child {
+            margin-right: 0;
         }
 
         #settings_directory_tree {
@@ -1377,6 +1504,10 @@ def run_tui() -> int:
             width: 1fr;
             min-width: 12;
             margin: 0 1 0 0;
+        }
+
+        #session_view_switch Button:last-child {
+            margin-right: 0;
         }
 
         #session_timeline_view {
@@ -1527,6 +1658,60 @@ def run_tui() -> int:
         #settings_safety_actions Button {
             width: 1fr;
             margin: 0 1 0 0;
+        }
+
+        #settings_safety_actions Button:last-child {
+            margin-right: 0;
+        }
+
+        /* ── Responsive core button groups (sidebar-width driven) ── */
+        .layout-narrow #engage_view_switch,
+        .layout-narrow #tooling_view_switch,
+        .layout-narrow #session_view_switch,
+        .layout-narrow #settings_general_runtime_row,
+        .layout-narrow #settings_general_features_row,
+        .layout-narrow #settings_general_guardrails_row,
+        .layout-narrow #settings_models_form_actions,
+        .layout-narrow #settings_env_actions,
+        .layout-narrow #settings_safety_actions {
+            layout: vertical;
+        }
+
+        .layout-narrow #engage_view_switch Button,
+        .layout-narrow #tooling_view_switch Button,
+        .layout-narrow #session_view_switch Button,
+        .layout-narrow #settings_general_runtime_row Button,
+        .layout-narrow #settings_general_features_row Button,
+        .layout-narrow #settings_general_guardrails_row Button,
+        .layout-narrow #settings_models_form_actions Button,
+        .layout-narrow #settings_env_actions Button,
+        .layout-narrow #settings_safety_actions Button {
+            width: 1fr;
+            min-width: 0;
+            margin: 0 0 1 0;
+        }
+
+        .layout-narrow #engage_view_switch Button:last-child,
+        .layout-narrow #tooling_view_switch Button:last-child,
+        .layout-narrow #session_view_switch Button:last-child,
+        .layout-narrow #settings_general_runtime_row Button:last-child,
+        .layout-narrow #settings_general_features_row Button:last-child,
+        .layout-narrow #settings_general_guardrails_row Button:last-child,
+        .layout-narrow #settings_models_form_actions Button:last-child,
+        .layout-narrow #settings_env_actions Button:last-child,
+        .layout-narrow #settings_safety_actions Button:last-child {
+            margin-bottom: 0;
+        }
+
+        .layout-narrow #engage_continue_plan,
+        .layout-narrow #engage_clear_plan,
+        .layout-narrow #engage_cancel_plan {
+            width: 1fr;
+            margin: 0 0 1 0;
+        }
+
+        .layout-narrow #engage_cancel_plan {
+            margin-bottom: 0;
         }
 
         #settings_safety_status {
@@ -1806,14 +1991,13 @@ def run_tui() -> int:
         _agent_profile_name_input: Any = None  # Input | None
         _agent_profile_status: Any = None  # Static | None
         # Engage tab
-        _engage_view_execution_button: Any = None
-        _engage_view_planning_button: Any = None
+        _engage_view_plan_button: Any = None
         _engage_view_session_button: Any = None
-        _engage_execution_view: Any = None
-        _engage_planning_view: Any = None
+        _engage_plan_view: Any = None
         _engage_session_view: Any = None
         _engage_orchestrator_status: Any = None  # Static | None
         _engage_plan_summary: Any = None  # Static | None
+        _engage_plan_questions: Any = None  # VerticalScroll | None
         _engage_plan_items: Any = None  # VerticalScroll | None
         # Tooling tab
         _tooling_view_prompts_button: Any = None
@@ -1930,6 +2114,7 @@ def run_tui() -> int:
             self._bind_ui_widgets()
             self._apply_startup_env()
             self._reset_ui_panels()
+            self._update_responsive_layout_classes()
             self._initialize_agent_studio()
             self._refresh_all_views()
             self._display_startup_banner()
@@ -1938,6 +2123,41 @@ def run_tui() -> int:
                 self._schedule_session_timeline_refresh(delay=0.1)
             self._refresh_agent_summary()
             self._spawn_daemon()
+
+        def _sidebar_width(self) -> int:
+            side = None
+            with contextlib.suppress(Exception):
+                side = self.query_one("#side", Vertical)
+            if side is not None:
+                with contextlib.suppress(Exception):
+                    width = int(getattr(getattr(side, "content_region", None), "width", 0) or 0)
+                    if width > 0:
+                        return width
+                with contextlib.suppress(Exception):
+                    width = int(getattr(getattr(side, "region", None), "width", 0) or 0)
+                    if width > 0:
+                        return width
+                with contextlib.suppress(Exception):
+                    width = int(getattr(getattr(side, "size", None), "width", 0) or 0)
+                    if width > 0:
+                        return width
+            app_width = int(getattr(getattr(self, "size", None), "width", 0) or 0)
+            if app_width <= 0:
+                return 0
+            return max(1, app_width // 3)
+
+        def _update_responsive_layout_classes(self) -> None:
+            sidebar_width = self._sidebar_width()
+            is_narrow = sidebar_width < 36
+            is_wide = sidebar_width >= 46
+            is_medium = not is_narrow and not is_wide
+            self.set_class(is_wide, "layout-wide")
+            self.set_class(is_medium, "layout-medium")
+            self.set_class(is_narrow, "layout-narrow")
+
+        def on_resize(self, event: Any) -> None:
+            _ = event
+            self._update_responsive_layout_classes()
 
         def _bind_ui_widgets(self) -> None:
             self._command_palette = self.query_one("#command_palette", CommandPalette)
@@ -1969,8 +2189,8 @@ def run_tui() -> int:
             self._reset_artifacts_panel()
             self._reset_consent_panel()
             self._reset_error_action_prompt()
-            self._set_engage_view_mode("execution")
-            self._set_tooling_view_mode("prompts")
+            self._set_engage_view_mode("plan")
+            self._set_tooling_view_mode("tools")
             self._set_settings_view_mode("general")
             self._set_session_view_mode("timeline")
             self._set_context_add_mode(None)
@@ -2166,7 +2386,7 @@ def run_tui() -> int:
                 return
             if action == "view:plan":
                 self._switch_side_tab("tab_engage")
-                self._set_engage_view_mode("execution")
+                self._set_engage_view_mode("plan")
                 return
             if action == "view:artifacts":
                 self._switch_side_tab("tab_engage")
@@ -2657,25 +2877,34 @@ def run_tui() -> int:
 
         def on_button_pressed(self, event: Any) -> None:
             button_id = str(getattr(getattr(event, "button", None), "id", "")).strip().lower()
-            if button_id == "engage_view_execution":
-                self._set_engage_view_mode("execution")
-                return
-            if button_id == "engage_view_planning":
-                self._set_engage_view_mode("planning")
+            if button_id == "engage_view_plan":
+                self._set_engage_view_mode("plan")
                 return
             if button_id == "engage_view_session":
                 self._set_engage_view_mode("session")
                 return
             if button_id == "engage_start_plan":
+                from textual.widgets import TextArea
+
                 if self.state.plan.pre_planning_split_ratio is None:
                     self.state.plan.pre_planning_split_ratio = self._split_ratio
                 if self._split_ratio > 1:
                     self.action_widen_side()
-                self._set_engage_view_mode("planning")
-                self._seed_prompt_with_command("/plan ")
+                self._set_engage_view_mode("plan")
+                plan_prompt = str(self.query_one("#plan", TextArea).text or "").strip()
+                if not plan_prompt:
+                    self._notify("Enter a planning prompt in the Plan box first.", severity="warning", timeout=4.0)
+                    return
+                self._start_run(plan_prompt, auto_approve=False, mode="plan")
                 return
             if button_id == "engage_continue_plan":
                 self._handle_planning_continue()
+                return
+            if button_id == "engage_clear_plan":
+                self._clear_planning_view()
+                return
+            if button_id == "engage_cancel_plan":
+                self.push_screen(ConfirmPlanCancelScreen(), self._handle_plan_cancel_confirmation)
                 return
             if button_id == "tooling_view_prompts":
                 self._set_tooling_view_mode("prompts")
@@ -3014,6 +3243,13 @@ def run_tui() -> int:
                 return
 
             self._start_run(text, auto_approve=self._default_auto_approve)
+
+        def _handle_plan_cancel_confirmation(self, confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            self._cancel_plan_and_reset()
+
+    run_tui._app_class = SwarmeeTUI  # expose for testing
 
     try:
         SwarmeeTUI().run()

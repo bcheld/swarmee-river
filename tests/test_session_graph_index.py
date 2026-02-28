@@ -133,21 +133,27 @@ def test_session_graph_index_builds_and_persists_with_corruption_tolerance(
     assert index["schema_version"] == 1
     assert index["session_id"] == session_id
     assert isinstance(index["generated_at"], str) and index["generated_at"]
-    assert index["sources"] == {"messages_log": str(messages_log), "logs_file": str(new_log)}
+    assert index["sources"] == {
+        "messages_log": str(messages_log),
+        "logs_files": [str(old_log), str(new_log)],
+    }
 
-    assert index["stats"] == {"turns": 2, "tools": 3, "errors": 1}
-    assert index["tools"]["counts"] == {"calc": 1, "failing_tool": 1, "list_dir": 1}
+    # Both log files are now merged: old_log contributes ignored_tool (success=True,
+    # no error), new_log contributes list_dir, calc, model_call, invocation, failing_tool.
+    assert index["stats"] == {"turns": 2, "tools": 4, "errors": 1}
+    assert index["tools"]["counts"] == {"calc": 1, "failing_tool": 1, "ignored_tool": 1, "list_dir": 1}
 
     turns = index["turns"]
     assert [turn["user_text"] for turn in turns] == ["Find all tests", "Thanks"]
     assert [turn["assistant_text"] for turn in turns] == ["Scanning the repository now.", "Done."]
 
     assert [event["event"] for event in index["events"]] == [
-        "after_tool_call",
-        "after_tool_call",
+        "after_tool_call",   # ignored_tool from old_log
+        "after_tool_call",   # list_dir from new_log
+        "after_tool_call",   # calc from new_log
         "after_model_call",
         "after_invocation",
-        "after_tool_call",
+        "after_tool_call",   # failing_tool
     ]
     calc_event = next(event for event in index["events"] if event.get("tool") == "calc")
     assert "success" not in calc_event

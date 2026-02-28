@@ -506,7 +506,7 @@ class OutputMixin:
             extracted_plan = extract_plan_section_from_output(_sanitize(output_text))
             if extracted_plan:
                 self.state.plan.pending_prompt = self._last_prompt
-                self._set_plan_panel(extracted_plan)
+                self.state.plan.text = extracted_plan
                 self._refresh_plan_actions_visibility()
                 self._write_transcript_line(render_tui_hint_after_plan())
 

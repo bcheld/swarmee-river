@@ -56,6 +56,7 @@ class PlanState:
 
 @dataclass
 class ArtifactsState:
+    session_id: str | None = None
     recent_paths: list[str] = field(default_factory=list)
     entries: list[dict[str, Any]] = field(default_factory=list)
     selected_item_id: str | None = None
@@ -81,7 +82,7 @@ class SessionState:
 
 @dataclass
 class ToolingState:
-    view_mode: str = "prompts"  # "prompts", "tools", "sops", "kbs"
+    view_mode: str = "tools"  # "tools", "prompts", "sops", "kbs"
     tool_catalog: list[dict[str, Any]] = field(default_factory=list)
     tool_selected_id: str | None = None
     prompt_templates: list[dict[str, Any]] = field(default_factory=list)
@@ -128,8 +129,8 @@ class AppState:
     session: SessionState = field(default_factory=SessionState)
     agent_studio: AgentStudioState = field(default_factory=AgentStudioState)
     tooling: ToolingState = field(default_factory=ToolingState)
-    engage_view_mode: str = "execution"
-    tooling_view_mode: str = "prompts"
+    engage_view_mode: str = "plan"
+    tooling_view_mode: str = "tools"
     settings_view_mode: str = "general"
 
 

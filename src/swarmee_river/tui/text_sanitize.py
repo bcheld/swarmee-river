@@ -60,7 +60,7 @@ def looks_like_plan_output(text: str) -> bool:
 
 def render_tui_hint_after_plan() -> str:
     """Hint shown when a plan-only run is detected."""
-    return "Plan detected. Type /approve to execute, /replan to regenerate, /clearplan to clear."
+    return "Plan detected. Use Run > Plan controls to review, refine, or continue."
 
 
 def _parse_tui_event_line(line: str) -> dict[str, Any] | None:

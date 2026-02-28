@@ -258,6 +258,8 @@ class TranscriptMixin:
         transcript_text.styles.width = f"{self._split_ratio}fr"
         side.styles.width = "1fr"
         self.refresh(layout=True)
+        with contextlib.suppress(Exception):
+            self._update_responsive_layout_classes()
 
     def action_toggle_transcript_mode(self) -> None:
         self._toggle_transcript_mode()

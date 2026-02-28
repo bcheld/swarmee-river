@@ -24,6 +24,7 @@ def test_help_includes_runtime_broker_commands(monkeypatch, capsys) -> None:
     assert int(exc.value.code or 0) == 0
     stdout = capsys.readouterr().out
     assert "swarmee daemon stop" in stdout
+    assert "swarmee daemon stop all" in stdout
     assert "swarmee broker stop" in stdout
 
 
@@ -40,6 +41,19 @@ def test_broker_alias_dispatches_to_daemon_command(monkeypatch) -> None:
         swarmee.main()
     assert int(exc.value.code or 0) == 0
     assert captured.get("args") == ["stop"]
+
+
+def test_daemon_stop_all_invokes_global_shutdown_helper(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(swarmee, "_stop_all_runtime_brokers", lambda timeout_s=6.0: (2, 0))
+    result = swarmee._run_daemon_command(["stop", "all"])
+    assert result == 0
+    assert "stopped 2 broker(s)." in capsys.readouterr().out
+
+
+def test_daemon_start_with_all_target_is_rejected(capsys) -> None:
+    result = swarmee._run_daemon_command(["start", "all"])
+    assert result == 1
+    assert "only valid with 'stop'" in capsys.readouterr().out
 
 
 def test_build_resolved_invocation_state_includes_session_safety_overrides() -> None:

@@ -86,26 +86,24 @@ def _normalize_context_sources(sources: list[dict[str, Any]]) -> list[dict[str, 
 class ContextSourcesMixin:
     def _set_engage_view_mode(self, mode: str) -> None:
         normalized = (mode or "").strip().lower()
-        if normalized not in {"execution", "planning", "session"}:
-            normalized = "execution"
+        if normalized in {"execution", "planning"}:
+            normalized = "plan"
+        if normalized not in {"plan", "session"}:
+            normalized = "plan"
         self.state.engage_view_mode = normalized
-        if self._engage_execution_view:
-            self._engage_execution_view.styles.display = "block" if normalized == "execution" else "none"
-        if self._engage_planning_view:
-            self._engage_planning_view.styles.display = "block" if normalized == "planning" else "none"
+        if self._engage_plan_view:
+            self._engage_plan_view.styles.display = "block" if normalized == "plan" else "none"
         if self._engage_session_view:
             self._engage_session_view.styles.display = "block" if normalized == "session" else "none"
-        if self._engage_view_execution_button:
-            self._engage_view_execution_button.variant = "primary" if normalized == "execution" else "default"
-        if self._engage_view_planning_button:
-            self._engage_view_planning_button.variant = "primary" if normalized == "planning" else "default"
+        if self._engage_view_plan_button:
+            self._engage_view_plan_button.variant = "primary" if normalized == "plan" else "default"
         if self._engage_view_session_button:
             self._engage_view_session_button.variant = "primary" if normalized == "session" else "default"
 
     def _set_tooling_view_mode(self, mode: str) -> None:
         normalized = (mode or "").strip().lower()
         if normalized not in {"prompts", "tools", "sops", "kbs"}:
-            normalized = "prompts"
+            normalized = "tools"
         self.state.tooling.view_mode = normalized
         self.state.tooling_view_mode = normalized
 

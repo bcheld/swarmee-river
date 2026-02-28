@@ -13,9 +13,23 @@ from swarmee_river.tui.sidebar_artifacts import (
 
 
 class ArtifactsMixin:
+    def _active_session_id(self) -> str | None:
+        value = str(self.state.daemon.session_id or "").strip()
+        return value or None
+
+    def _sync_artifact_session_scope(self) -> None:
+        active_session_id = self._active_session_id()
+        if self.state.artifacts.session_id == active_session_id:
+            return
+        self.state.artifacts.session_id = active_session_id
+        self.state.artifacts.recent_paths = []
+        self.state.artifacts.entries = []
+        self.state.artifacts.selected_item_id = None
+
     def _load_indexed_artifact_entries(self, *, limit: int = 200) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
         seen_paths: set[str] = set()
+        active_session_id = self._active_session_id()
         try:
             store = ArtifactStore()
             indexed = store.list(limit=limit)
@@ -23,6 +37,15 @@ class ArtifactsMixin:
             indexed = []
 
         for raw in indexed:
+            if active_session_id:
+                if not isinstance(raw, dict):
+                    continue
+                meta_raw = raw.get("meta")
+                meta = meta_raw if isinstance(meta_raw, dict) else {}
+                raw_session_id = str(meta.get("session_id", "")).strip()
+                # Session panel should only show artifacts tagged with the active daemon session.
+                if raw_session_id != active_session_id:
+                    continue
             normalized = normalize_artifact_index_entry(raw if isinstance(raw, dict) else {})
             if normalized is None:
                 continue
@@ -136,6 +159,7 @@ class ArtifactsMixin:
         )
 
     def _render_artifacts_panel(self) -> None:
+        self._sync_artifact_session_scope()
         self.state.artifacts.entries = self._load_indexed_artifact_entries(limit=200)
         if self._artifacts_header is not None:
             badge_count = len(self.state.artifacts.entries)
@@ -170,12 +194,14 @@ class ArtifactsMixin:
         return "\n".join(lines).rstrip() + "\n"
 
     def _reset_artifacts_panel(self) -> None:
+        self.state.artifacts.session_id = self._active_session_id()
         self.state.artifacts.recent_paths = []
         self.state.artifacts.entries = []
         self.state.artifacts.selected_item_id = None
         self._render_artifacts_panel()
 
     def _add_artifact_paths(self, paths: list[str]) -> None:
+        self._sync_artifact_session_scope()
         updated = add_recent_artifacts(self.state.artifacts.recent_paths, paths, max_items=20)
         if updated != self.state.artifacts.recent_paths:
             self.state.artifacts.recent_paths = updated

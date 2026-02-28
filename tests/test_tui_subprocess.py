@@ -8,6 +8,9 @@ from __future__ import annotations
 import sys
 
 from swarmee_river.tui import app as tui_app
+from swarmee_river.tui.mixins.artifacts import ArtifactsMixin
+from swarmee_river.tui.mixins.context_sources import ContextSourcesMixin
+from swarmee_river.tui.state import AppState
 
 
 def test_build_swarmee_cmd_run_mode():
@@ -1344,6 +1347,141 @@ def test_run_tui_compose_and_agent_studio_switch_smoke(monkeypatch):
     assert captured["switched"] is True
 
 
+def test_run_tui_responsive_layout_class_switching(monkeypatch):
+    import textual.app as textual_app
+    from textual.message_pump import active_app
+
+    captured = {"wide": False, "medium": False, "narrow": False}
+
+    def _fake_run(self, *args, **kwargs):
+        token = active_app.set(self)
+        self._compose_stacks.append([])
+        self._composed.append([])
+        try:
+            list(self.compose())
+        finally:
+            self._compose_stacks.pop()
+            self._composed.pop()
+            active_app.reset(token)
+
+        self._sidebar_width = lambda: 50
+        self._update_responsive_layout_classes()
+        captured["wide"] = self.has_class("layout-wide")
+
+        self._sidebar_width = lambda: 40
+        self._update_responsive_layout_classes()
+        captured["medium"] = self.has_class("layout-medium")
+
+        self._sidebar_width = lambda: 30
+        self._update_responsive_layout_classes()
+        captured["narrow"] = self.has_class("layout-narrow")
+
+    monkeypatch.setattr(textual_app.App, "run", _fake_run)
+    result = tui_app.run_tui()
+
+    assert result == 0
+    assert captured["wide"] is True
+    assert captured["medium"] is True
+    assert captured["narrow"] is True
+
+
+def test_tui_state_defaults_use_plan_and_tools_modes():
+    state = AppState()
+    assert state.engage_view_mode == "plan"
+    assert state.tooling_view_mode == "tools"
+    assert state.tooling.view_mode == "tools"
+
+
+def test_set_engage_view_mode_maps_legacy_values_to_plan():
+    class _Styles:
+        def __init__(self) -> None:
+            self.display = "none"
+
+    class _View:
+        def __init__(self) -> None:
+            self.styles = _Styles()
+
+    class _Button:
+        def __init__(self) -> None:
+            self.variant = "default"
+
+    class _Dummy(ContextSourcesMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self._engage_plan_view = _View()
+            self._engage_session_view = _View()
+            self._engage_view_plan_button = _Button()
+            self._engage_view_session_button = _Button()
+
+    app = _Dummy()
+    app._set_engage_view_mode("execution")
+    assert app.state.engage_view_mode == "plan"
+    assert app._engage_plan_view.styles.display == "block"
+    assert app._engage_view_plan_button.variant == "primary"
+
+    app._set_engage_view_mode("planning")
+    assert app.state.engage_view_mode == "plan"
+    assert app._engage_plan_view.styles.display == "block"
+    assert app._engage_session_view.styles.display == "none"
+
+
+def test_artifact_entries_are_scoped_to_active_session(monkeypatch):
+    class _Dummy(ArtifactsMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.daemon.session_id = "session-a"
+
+    app = _Dummy()
+
+    class _Store:
+        def list(self, *, limit: int = 50):
+            return [
+                {
+                    "id": "a1",
+                    "kind": "tui_transcript",
+                    "path": "/tmp/a1.txt",
+                    "created_at": "2026-02-01T10:00:00",
+                    "meta": {"session_id": "session-a"},
+                },
+                {
+                    "id": "b1",
+                    "kind": "tui_transcript",
+                    "path": "/tmp/b1.txt",
+                    "created_at": "2026-02-01T11:00:00",
+                    "meta": {"session_id": "session-b"},
+                },
+                {
+                    "id": "legacy",
+                    "kind": "tui_transcript",
+                    "path": "/tmp/legacy.txt",
+                    "created_at": "2026-02-01T12:00:00",
+                },
+            ]
+
+    monkeypatch.setattr("swarmee_river.tui.mixins.artifacts.ArtifactStore", _Store)
+    entries = app._load_indexed_artifact_entries(limit=20)
+
+    assert [entry["id"] for entry in entries] == ["a1"]
+
+
+def test_sync_artifact_session_scope_resets_on_session_change():
+    class _Dummy(ArtifactsMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.daemon.session_id = "session-b"
+            self.state.artifacts.session_id = "session-a"
+            self.state.artifacts.recent_paths = ["/tmp/old.txt"]
+            self.state.artifacts.entries = [{"id": "old"}]
+            self.state.artifacts.selected_item_id = "old"
+
+    app = _Dummy()
+    app._sync_artifact_session_scope()
+    assert app.state.artifacts.session_id == "session-b"
+    assert app.state.artifacts.recent_paths == []
+    assert app.state.artifacts.entries == []
+    assert app.state.artifacts.selected_item_id is None
+
+
 # ---------------------------------------------------------------------------
 # parse_tui_event tests
 # ---------------------------------------------------------------------------
@@ -1508,7 +1646,6 @@ def test_plan_card_renders_steps():
     assert "Fix login" in rendered
     assert "1." in rendered
     assert "Read auth module" in rendered
-    assert "/approve" in rendered
 
 
 def test_plan_card_mark_step_complete():

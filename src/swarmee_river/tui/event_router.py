@@ -76,9 +76,10 @@ def summarize_error_for_toast(error_info: dict[str, Any]) -> tuple[str, str, flo
 def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype in {"ready", "attached"}:
         app.state.daemon.ready = True
+        previous_session_id = str(app.state.daemon.session_id or "").strip() or None
         session_id = str(event.get("session_id", "")).strip()
         if session_id:
-            app.state.daemon.session_id = session_id
+            app._on_active_session_changed(previous_session_id, session_id)
             app._save_session()
         if etype == "attached":
             clients_raw = event.get("clients")
@@ -100,7 +101,8 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
         with contextlib.suppress(Exception):
             app._flush_pending_connect_retry()
         app._refresh_agent_summary()
-        app._schedule_session_timeline_refresh()
+        if not session_id:
+            app._schedule_session_timeline_refresh()
         return True
 
     if etype == "session_available":
@@ -120,9 +122,10 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
         return True
 
     if etype == "session_restored":
+        previous_session_id = str(app.state.daemon.session_id or "").strip() or None
         session_id = str(event.get("session_id", "")).strip()
         if session_id:
-            app.state.daemon.session_id = session_id
+            app._on_active_session_changed(previous_session_id, session_id)
         turn_count_raw = event.get("turn_count", 0)
         try:
             app.state.daemon.last_restored_turn_count = max(0, int(turn_count_raw or 0))
@@ -131,7 +134,8 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
         app.state.daemon.available_restore_session_id = None
         app.state.daemon.available_restore_turn_count = 0
         app._save_session()
-        app._schedule_session_timeline_refresh()
+        if not session_id:
+            app._schedule_session_timeline_refresh()
         return True
 
     if etype == "replay_turn":
@@ -159,6 +163,8 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
     if etype == "turn_complete":
         exit_status = str(event.get("exit_status", "ok"))
         app._finalize_turn(exit_status=exit_status)
+        with contextlib.suppress(Exception):
+            app._set_planning_controls_enabled(enabled=True)
         if exit_status in {"ok", "interrupted"}:
             app._reset_error_action_prompt()
         app._schedule_session_timeline_refresh()
@@ -434,7 +440,7 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         plan_json = event.get("plan_json")
         if plan_json and not rendered:
             rendered = _json.dumps(plan_json, indent=2)
-        app._set_plan_panel(rendered)
+        app.state.plan.text = str(rendered or "")
         app.state.plan.received_structured_plan = True
         app.state.plan.completion_announced = False
         app.state.plan.step_counter = 0
@@ -462,7 +468,7 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
                 app.state.plan.pre_planning_split_ratio = app._split_ratio
             while app._split_ratio > 1:
                 app.action_widen_side()
-            app._set_engage_view_mode("planning")
+            app._set_engage_view_mode("plan")
             with contextlib.suppress(Exception):
                 app._switch_side_tab("tab_engage")
         else:

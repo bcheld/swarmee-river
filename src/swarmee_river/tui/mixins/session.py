@@ -27,12 +27,26 @@ from swarmee_river.tui.sidebar_session import (
 )
 
 
+def _load_session_id(raw: Any) -> str | None:
+    """Safely extract a session_id from persisted JSON, rejecting falsy / sentinel values.
+
+    ``str(None)`` produces ``"None"`` which is truthy — previous code accidentally
+    persisted this sentinel into tui_session.json, causing every subsequent daemon
+    to inherit ``SWARMEE_SESSION_ID="None"`` and write to ``*_None.jsonl`` files
+    instead of per-session log files.
+    """
+    if not isinstance(raw, str):
+        return None
+    sid = raw.strip()
+    # Reject stale sentinel produced by str(None) bug and similar artifacts.
+    if not sid or sid.lower() == "none":
+        return None
+    return sid
+
+
 class SessionMixin:
     def _reset_plan_panel(self) -> None:
-        self._set_plan_panel(
-            "No active plan. Enter a prompt to get started,\n"
-            "or switch to Planning to develop a plan interactively."
-        )
+        self._set_plan_panel("")
         self.state.plan.current_steps_total = 0
         self.state.plan.current_summary = ""
         self.state.plan.current_steps = []
@@ -280,15 +294,26 @@ class SessionMixin:
             try:
                 loaded = await asyncio.to_thread(load_session_graph_index, session_id)
                 existing_index = loaded if isinstance(loaded, dict) else None
-            except Exception:
+            except Exception as _load_err:
                 existing_index = None
+                self._append_session_issue(
+                    severity="warning",
+                    title="Timeline cache load failed",
+                    text=repr(_load_err),
+                    category="issue",
+                )
             built_index = None
-            _build_err: Exception | None = None
             try:
                 built_index = await asyncio.to_thread(build_session_graph_index, session_id, cwd=Path.cwd())
                 await asyncio.to_thread(write_session_graph_index, session_id, built_index)
-            except Exception:
+            except Exception as _build_err:
                 built_index = None
+                self._append_session_issue(
+                    severity="warning",
+                    title="Timeline index build failed",
+                    text=repr(_build_err),
+                    category="issue",
+                )
             index = built_index
             if isinstance(index, dict):
                 built_events = index.get("events")
@@ -302,6 +327,9 @@ class SessionMixin:
             elif isinstance(existing_index, dict):
                 index = existing_index
             if isinstance(index, dict):
+                indexed_session_id = str(index.get("session_id", "")).strip()
+                if indexed_session_id and indexed_session_id != session_id:
+                    return
                 events_raw = index.get("events")
                 normalized_events: list[dict[str, Any]] = []
                 if isinstance(events_raw, list):
@@ -311,6 +339,9 @@ class SessionMixin:
                         event = dict(raw)
                         event.setdefault("id", f"timeline-{offset}")
                         normalized_events.append(event)
+                # Drop stale async updates if active session changed while refreshing.
+                if str(self.state.daemon.session_id or "").strip() != session_id:
+                    return
                 self.state.session.timeline_index = index
                 self.state.session.timeline_events = normalized_events
                 self._render_session_timeline_panel()
@@ -445,7 +476,6 @@ class SessionMixin:
                 "plan_current_summary": self.state.plan.current_summary,
                 "plan_current_steps_total": self.state.plan.current_steps_total,
                 "plan_step_counter": self.state.plan.step_counter,
-                "artifacts": self.state.artifacts.recent_paths,
                 "context_sources": self._context_sources,
                 "active_sop_names": sorted(self._active_sop_names),
                 "daemon_session_id": self.state.daemon.session_id,
@@ -490,10 +520,8 @@ class SessionMixin:
                 self._render_plan_panel_from_status()
                 self._refresh_plan_actions_visibility()
                 self._populate_planning_view(plan_json)
-            artifacts = data.get("artifacts", [])
-            if artifacts:
-                self.state.artifacts.recent_paths = artifacts
-                self._render_artifacts_panel()
+            else:
+                self._set_plan_input_mode(editable=True)
             self._context_sources = _normalize_context_sources(data.get("context_sources", []))
             self._render_context_sources_panel()
             self._context_ready_for_sync = bool(self._context_sources)
@@ -503,9 +531,9 @@ class SessionMixin:
             self._refresh_sop_catalog()
             self._render_sop_panel()
             self._sops_ready_for_sync = bool(self._active_sop_names)
-            self.state.daemon.session_id = str(data.get("daemon_session_id", "")).strip() or None
-            self.state.daemon.available_restore_session_id = (
-                str(data.get("available_restore_session_id", "")).strip() or None
+            self.state.daemon.session_id = _load_session_id(data.get("daemon_session_id"))
+            self.state.daemon.available_restore_session_id = _load_session_id(
+                data.get("available_restore_session_id")
             )
             restore_turn_count_raw = data.get("available_restore_turn_count", 0)
             try:
@@ -566,5 +594,18 @@ class SessionMixin:
         self.state.daemon.available_restore_session_id = None
         self.state.daemon.available_restore_turn_count = 0
         self.state.daemon.last_restored_turn_count = 0
+        self._reset_session_timeline_panel()
         self._write_transcript_line("[session] starting fresh.")
         self._save_session()
+
+    def _on_active_session_changed(self, old_session_id: str | None, new_session_id: str | None) -> None:
+        previous = str(old_session_id or "").strip() or None
+        current = str(new_session_id or "").strip() or None
+        if previous == current:
+            return
+        self.state.daemon.session_id = current
+        self._reset_issues_panel()
+        self._reset_session_timeline_panel()
+        self._reset_artifacts_panel()
+        if current:
+            self._schedule_session_timeline_refresh(delay=0.1)

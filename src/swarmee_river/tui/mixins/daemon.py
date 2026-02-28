@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from swarmee_river.runtime_service.client import ensure_runtime_broker
 from swarmee_river.tui.transport import (
@@ -16,6 +16,10 @@ from swarmee_river.tui.transport import (
 
 
 class DaemonMixin:
+    # Override in tests to inject a mock transport instead of spawning a subprocess.
+    # Set to a callable() -> _DaemonTransport before the app starts.
+    _test_transport_factory: "Callable[[], _DaemonTransport] | None" = None
+
     def _handle_daemon_exit(self, proc: _DaemonTransport, *, return_code: int) -> None:
         if self.state.daemon.proc is not proc:
             return
@@ -106,38 +110,47 @@ class DaemonMixin:
             else:
                 return
 
-        requested_session_id = (self.state.daemon.session_id or "").strip() or uuid.uuid4().hex
+        _stored_sid = (self.state.daemon.session_id or "").strip()
+        requested_session_id = (_stored_sid if _stored_sid.lower() != "none" else "") or uuid.uuid4().hex
         self.state.daemon.session_id = requested_session_id
         daemon: _DaemonTransport | None = None
         broker_error: Exception | None = None
 
-        try:
-            ensure_runtime_broker(cwd=Path.cwd())
-        except Exception as exc:
-            broker_error = exc
-
-        try:
-            daemon = _SocketTransport.connect(
-                session_id=requested_session_id,
-                cwd=Path.cwd(),
-                client_name="swarmee-tui",
-                surface="tui",
-            )
-        except Exception as exc:
-            if broker_error is None:
-                broker_error = exc
-
-        if daemon is None:
+        if self._test_transport_factory is not None:
             try:
-                daemon_proc = spawn_swarmee_daemon(
-                    session_id=requested_session_id,
-                    env_overrides=self._model_env_overrides(),
-                )
-                daemon = _SubprocessTransport(daemon_proc)
+                daemon = self._test_transport_factory()
             except Exception as exc:
                 self.state.daemon.ready = False
-                self._write_transcript_line(f"[daemon] failed to start: {exc}")
+                self._write_transcript_line(f"[daemon] test transport factory failed: {exc}")
                 return
+        else:
+            try:
+                ensure_runtime_broker(cwd=Path.cwd())
+            except Exception as exc:
+                broker_error = exc
+
+            try:
+                daemon = _SocketTransport.connect(
+                    session_id=requested_session_id,
+                    cwd=Path.cwd(),
+                    client_name="swarmee-tui",
+                    surface="tui",
+                )
+            except Exception as exc:
+                if broker_error is None:
+                    broker_error = exc
+
+            if daemon is None:
+                try:
+                    daemon_proc = spawn_swarmee_daemon(
+                        session_id=requested_session_id,
+                        env_overrides=self._model_env_overrides(),
+                    )
+                    daemon = _SubprocessTransport(daemon_proc)
+                except Exception as exc:
+                    self.state.daemon.ready = False
+                    self._write_transcript_line(f"[daemon] failed to start: {exc}")
+                    return
 
         self.state.daemon.proc = daemon
         self.state.daemon.ready = False

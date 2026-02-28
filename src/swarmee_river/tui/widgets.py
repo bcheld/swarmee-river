@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json as _json
 import re
+import textwrap
 from typing import Any
 
 from rich import box as rich_box
@@ -14,7 +15,7 @@ from rich.panel import Panel as RichPanel
 from rich.text import Text as RichText
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
-from textual.widgets import Button, Checkbox, Collapsible, Input, Static
+from textual.widgets import Button, Checkbox, Collapsible, Input, Static, TextArea
 
 
 def render_user_message(text: str, *, timestamp: str | None = None) -> RichPanel:
@@ -258,8 +259,6 @@ def render_plan_panel_with_status(
             lines.append(f"{marker} {index}. {desc}")
     else:
         lines.append("(no steps)")
-    lines.append("")
-    lines.append("/approve  /replan  /clearplan")
     return RichPanel(RichText("\n".join(lines)), title="Plan", border_style="green")
 
 
@@ -1640,10 +1639,6 @@ class PlanCard(Static):
             desc = step if isinstance(step, str) else step.get("description", step.get("title", str(step)))
             check = "\u2611" if self._step_status[i] else "\u2610"  # ☑ / ☐
             lines.append(f"  {check} {i + 1}. {desc}")
-
-        if steps:
-            lines.append("")
-        lines.append("[dim]/approve  /replan  /clearplan[/dim]")
         return "\n".join(lines)
 
     def mark_step_complete(self, step_index: int) -> None:
@@ -1677,9 +1672,6 @@ class PlanCard(Static):
             else:
                 check = "\u2610"
             lines.append(f"  {check} {i + 1}. {desc}")
-        if steps:
-            lines.append("")
-        lines.append("[dim]/approve  /replan  /clearplan[/dim]")
         return "\n".join(lines)
 
 
@@ -1692,10 +1684,29 @@ class PlanStepRow(Vertical):
         padding: 0;
         margin: 0 0 1 0;
     }
+    PlanStepRow .plan-step-row {
+        height: auto;
+        layout: horizontal;
+        margin: 0 0 0 0;
+    }
+    PlanStepRow .plan-step-toggle {
+        width: 3;
+        min-width: 3;
+        margin: 0 1 0 0;
+    }
+    PlanStepRow .plan-step-description {
+        width: 1fr;
+        height: auto;
+        color: $text;
+        text-wrap: wrap;
+        overflow-x: hidden;
+    }
     PlanStepRow .plan-step-detail {
         height: auto;
         margin: 0 0 0 4;
         color: $text-muted;
+        text-wrap: wrap;
+        overflow-x: hidden;
     }
     PlanStepRow .plan-step-comment {
         height: auto;
@@ -1742,11 +1753,21 @@ class PlanStepRow(Vertical):
         return ""
 
     def compose(self):  # type: ignore[override]
-        yield Checkbox(
-            f"{self._step_index + 1}. {self._description}",
-            id=f"plan_step_cb_{self._step_index}",
-            value=True,
-        )
+        with Horizontal(classes="plan-step-row"):
+            yield Checkbox(
+                "",
+                id=f"plan_step_cb_{self._step_index}",
+                value=True,
+                classes="plan-step-toggle",
+            )
+            yield Static(
+                RichText(
+                    f"{self._step_index + 1}. {self._description}",
+                    no_wrap=False,
+                    overflow="fold",
+                ),
+                classes="plan-step-description",
+            )
         detail_parts: list[str] = []
         if self._files_to_edit:
             detail_parts.append(f"edit: {', '.join(self._files_to_edit[:3])}")
@@ -1755,7 +1776,10 @@ class PlanStepRow(Vertical):
         if self._risks:
             detail_parts.append(f"risks: {', '.join(self._risks[:2])}")
         if detail_parts:
-            yield Static(" | ".join(detail_parts), classes="plan-step-detail")
+            yield Static(
+                RichText("\n".join(detail_parts), no_wrap=False, overflow="fold"),
+                classes="plan-step-detail",
+            )
         yield Input(
             placeholder="Add feedback for this step...",
             id=f"plan_step_comment_{self._step_index}",
@@ -1772,6 +1796,111 @@ class PlanStepRow(Vertical):
             else:
                 comment_input.styles.display = "block"
                 comment_input.focus()
+
+
+class PlanQuestionRow(Vertical):
+    """Interactive refinement question with an auto-expanding answer box."""
+
+    DEFAULT_CSS = """
+    PlanQuestionRow {
+        height: auto;
+        padding: 0;
+        margin: 0 0 1 0;
+    }
+    PlanQuestionRow .plan-question-text {
+        height: auto;
+        color: $text-muted;
+        margin: 0 0 0 0;
+    }
+    PlanQuestionRow .plan-question-answer {
+        height: 3;
+        min-height: 3;
+        max-height: 7;
+        margin: 0 0 0 0;
+    }
+    """
+
+    _MIN_VIS_LINES = 1
+    _MAX_VIS_LINES = 5
+
+    def __init__(self, *, question_index: int, question: str, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._question_index = question_index
+        self._question = str(question or "").strip()
+
+    @property
+    def question_index(self) -> int:
+        return self._question_index
+
+    @property
+    def question(self) -> str:
+        return self._question
+
+    @property
+    def answer(self) -> str:
+        with contextlib.suppress(Exception):
+            answer_box = self.query_one(f"#plan_question_answer_{self._question_index}", TextArea)
+            return str(answer_box.text or "").strip()
+        return ""
+
+    def compose(self):  # type: ignore[override]
+        yield Static(f"Q{self._question_index + 1}. {self._question}", classes="plan-question-text")
+        yield TextArea(
+            text="",
+            id=f"plan_question_answer_{self._question_index}",
+            classes="plan-question-answer",
+            soft_wrap=True,
+        )
+
+    def on_mount(self) -> None:
+        self._sync_height()
+
+    def on_text_area_changed(self, event: Any) -> None:
+        text_area = getattr(event, "text_area", None)
+        text_area_id = str(getattr(text_area, "id", "")).strip()
+        if text_area_id != f"plan_question_answer_{self._question_index}":
+            return
+        self._sync_height()
+
+    def on_resize(self, event: Any) -> None:
+        _ = event
+        self._sync_height()
+
+    def _wrapped_line_count(self, text: str, width: int) -> int:
+        normalized = str(text or "")
+        logical_lines = normalized.split("\n") or [""]
+        total = 0
+        for line in logical_lines:
+            expanded = line.expandtabs(4)
+            wrapped = textwrap.wrap(
+                expanded,
+                width=max(1, width),
+                replace_whitespace=False,
+                drop_whitespace=False,
+                break_long_words=True,
+                break_on_hyphens=False,
+            )
+            total += max(1, len(wrapped))
+        return max(1, total)
+
+    def _sync_height(self) -> None:
+        with contextlib.suppress(Exception):
+            answer_box = self.query_one(f"#plan_question_answer_{self._question_index}", TextArea)
+            width = int(getattr(getattr(answer_box, "content_region", None), "width", 0) or 0)
+            if width <= 0:
+                width = max(1, int(getattr(getattr(answer_box, "size", None), "width", 1) or 1) - 2)
+            line_count = self._wrapped_line_count(str(answer_box.text or ""), width)
+            visible_lines = max(self._MIN_VIS_LINES, min(self._MAX_VIS_LINES, line_count))
+            # Add 2 rows for TextArea chrome.
+            answer_box.styles.height = visible_lines + 2
+            if line_count > self._MAX_VIS_LINES:
+                answer_box.styles.overflow_y = "auto"
+                with contextlib.suppress(Exception):
+                    answer_box.scroll_end(animate=False)
+            else:
+                answer_box.styles.overflow_y = "hidden"
+            with contextlib.suppress(Exception):
+                answer_box.refresh(layout=True)
 
 
 class PlanActions(Static):

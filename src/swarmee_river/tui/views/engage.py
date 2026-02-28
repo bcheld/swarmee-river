@@ -7,49 +7,45 @@ from typing import Any, Iterator
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, TabPane, TextArea, Static
 
-from swarmee_river.tui.widgets import PlanActions, SidebarDetail, SidebarHeader, SidebarList
+from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader, SidebarList
 
 
 def compose_engage_tab() -> Iterator[Any]:
     """Yield the Run tab pane.
 
     Sub-views:
-    - Execution: orchestrator status + plan display (default).
-    - Planning: interactive plan development (start/continue).
+    - Plan: orchestrator status + plan display + interactive planning controls (default).
     - Session: timeline and artifacts.
     """
     with TabPane("Run", id="tab_engage"):
         with Vertical(id="engage_panel"):
             with Horizontal(id="engage_view_switch"):
-                yield Button("Execution", id="engage_view_execution", compact=True, variant="primary")
-                yield Button("Planning", id="engage_view_planning", compact=True, variant="default")
+                yield Button("Plan", id="engage_view_plan", compact=True, variant="primary")
                 yield Button("Session", id="engage_view_session", compact=True, variant="default")
 
-            # -- Execution sub-view (default) --------------------------------
-            with Vertical(id="engage_execution_view"):
+            # -- Plan sub-view (default) -------------------------------------
+            with Vertical(id="engage_plan_view"):
                 yield Static("Orchestrator", id="engage_orchestrator_status")
                 yield TextArea(
-                    text="No active plan. Enter a prompt to get started,\nor switch to Planning to develop a plan interactively.",
-                    language="markdown",
-                    read_only=True,
-                    show_cursor=False,
+                    text="",
+                    read_only=False,
+                    show_cursor=True,
                     id="plan",
                     soft_wrap=True,
                 )
-                yield PlanActions(id="plan_actions")
-
-            # -- Planning sub-view -------------------------------------------
-            with Vertical(id="engage_planning_view"):
                 yield Static(
-                    "Describe what you want to build. The orchestrator will\n"
-                    "develop a plan you can review and refine.",
+                    "Planning controls",
                     id="engage_planning_header",
                 )
                 yield Button("Start Plan", id="engage_start_plan", variant="success", compact=True)
                 yield Static("", id="engage_plan_summary")
                 with VerticalScroll(id="engage_plan_items"):
                     pass
+                with VerticalScroll(id="engage_plan_questions"):
+                    pass
                 yield Button("Continue", id="engage_continue_plan", variant="primary", compact=True)
+                yield Button("Clear", id="engage_clear_plan", variant="default", compact=True)
+                yield Button("Cancel", id="engage_cancel_plan", variant="warning", compact=True)
 
             # -- Session sub-view --------------------------------------------
             with Vertical(id="engage_session_view"):
@@ -72,14 +68,13 @@ def wire_engage_widgets(app: Any) -> None:
     from textual.containers import Vertical, VerticalScroll
     from textual.widgets import Button
 
-    app._engage_view_execution_button = app.query_one("#engage_view_execution", Button)
-    app._engage_view_planning_button = app.query_one("#engage_view_planning", Button)
+    app._engage_view_plan_button = app.query_one("#engage_view_plan", Button)
     app._engage_view_session_button = app.query_one("#engage_view_session", Button)
-    app._engage_execution_view = app.query_one("#engage_execution_view", Vertical)
-    app._engage_planning_view = app.query_one("#engage_planning_view", Vertical)
+    app._engage_plan_view = app.query_one("#engage_plan_view", Vertical)
     app._engage_session_view = app.query_one("#engage_session_view", Vertical)
     app._engage_orchestrator_status = app.query_one("#engage_orchestrator_status", Static)
     app._engage_plan_summary = app.query_one("#engage_plan_summary", Static)
+    app._engage_plan_questions = app.query_one("#engage_plan_questions", VerticalScroll)
     app._engage_plan_items = app.query_one("#engage_plan_items", VerticalScroll)
 
     # Session widgets

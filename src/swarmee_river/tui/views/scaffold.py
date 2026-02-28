@@ -1,7 +1,7 @@
 """Tooling sidebar tab UI composition and widget wiring.
 
 Formerly the "Context / Scaffold" tab — renamed to **Tooling** with subtabs:
-Prompts, Tools, SOPs, KBs.
+Tools, Prompts, SOPs, KBs.
 """
 
 from __future__ import annotations
@@ -19,12 +19,26 @@ def compose_tooling_tab() -> Iterator[Any]:
     with TabPane("Tooling", id="tab_tooling"):
         with Vertical(id="tooling_panel"):
             with Horizontal(id="tooling_view_switch"):
-                yield Button("Prompts", id="tooling_view_prompts", compact=True, variant="primary")
-                yield Button("Tools", id="tooling_view_tools", compact=True, variant="default")
+                yield Button("Tools", id="tooling_view_tools", compact=True, variant="primary")
+                yield Button("Prompts", id="tooling_view_prompts", compact=True, variant="default")
                 yield Button("SOPs", id="tooling_view_sops", compact=True, variant="default")
                 yield Button("KBs", id="tooling_view_kbs", compact=True, variant="default")
 
-            # -- Prompts sub-view (default) ------------------------------------
+            # -- Tools sub-view (default) --------------------------------------
+            with Vertical(id="tooling_tools_view"):
+                yield SidebarHeader("Tool Catalog", id="tooling_tools_header")
+                yield SidebarList(id="tooling_tools_list")
+                yield SidebarDetail(id="tooling_tools_detail")
+                yield Input(placeholder="Tags (comma-separated)", id="tooling_tool_tags_input")
+                with Horizontal(id="tooling_tool_access_row"):
+                    yield Checkbox("Read", value=False, id="tooling_tool_access_read")
+                    yield Checkbox("Write", value=False, id="tooling_tool_access_write")
+                    yield Checkbox("Execute", value=False, id="tooling_tool_access_execute")
+                with Horizontal(id="tooling_tool_actions"):
+                    yield Button("Save Tags", id="tooling_tool_save_tags", compact=True, variant="success")
+                    yield Button("S3 Import", id="tooling_tools_s3_import", compact=True, variant="default")
+
+            # -- Prompts sub-view ----------------------------------------------
             with Vertical(id="tooling_prompts_view"):
                 yield SidebarHeader("Prompt Templates", id="tooling_prompts_header")
                 yield SidebarList(id="tooling_prompts_list")
@@ -40,20 +54,6 @@ def compose_tooling_tab() -> Iterator[Any]:
                     yield Button("Save", id="tooling_prompt_save", compact=True, variant="success")
                     yield Button("Delete", id="tooling_prompt_delete", compact=True, variant="warning")
                     yield Button("S3 Import", id="tooling_prompts_s3_import", compact=True, variant="default")
-
-            # -- Tools sub-view ------------------------------------------------
-            with Vertical(id="tooling_tools_view"):
-                yield SidebarHeader("Tool Catalog", id="tooling_tools_header")
-                yield SidebarList(id="tooling_tools_list")
-                yield SidebarDetail(id="tooling_tools_detail")
-                yield Input(placeholder="Tags (comma-separated)", id="tooling_tool_tags_input")
-                with Horizontal(id="tooling_tool_access_row"):
-                    yield Checkbox("Read", value=False, id="tooling_tool_access_read")
-                    yield Checkbox("Write", value=False, id="tooling_tool_access_write")
-                    yield Checkbox("Execute", value=False, id="tooling_tool_access_execute")
-                with Horizontal(id="tooling_tool_actions"):
-                    yield Button("Save Tags", id="tooling_tool_save_tags", compact=True, variant="success")
-                    yield Button("S3 Import", id="tooling_tools_s3_import", compact=True, variant="default")
 
             # -- SOPs sub-view -------------------------------------------------
             with Vertical(id="tooling_sops_view"):
