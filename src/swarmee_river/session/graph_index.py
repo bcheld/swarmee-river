@@ -217,7 +217,11 @@ def _build_events_and_tools(log_path: Path | None) -> tuple[list[dict[str, Any]]
     events: list[dict[str, Any]] = []
     tool_counts: dict[str, int] = {}
     errors = 0
-    notable = {"after_tool_call", "after_model_call", "after_invocation"}
+    notable = {"after_tool_call", "after_model_call", "after_invocation", "before_model_call"}
+
+    # Temporary storage for before_model_call entries, keyed by model_call_id,
+    # so we can merge them into the corresponding after_model_call event.
+    pending_before: dict[str, dict[str, Any]] = {}
 
     try:
         with log_path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -260,6 +264,37 @@ def _build_events_and_tools(log_path: Path | None) -> tuple[list[dict[str, Any]]
                         errors += 1
                     elif success is False:
                         errors += 1
+
+                elif event_name == "before_model_call":
+                    # Stash context composition metrics; merge into after_model_call later.
+                    call_id = str(parsed.get("model_call_id", "")).strip()
+                    before_data: dict[str, Any] = {}
+                    for key in ("messages", "system_prompt_chars", "tool_count", "tool_schema_chars",
+                                "model_id", "message_breakdown"):
+                        val = parsed.get(key)
+                        if val is not None:
+                            before_data[key] = val
+                    if call_id:
+                        pending_before[call_id] = before_data
+                    # Don't emit before_model_call as a separate timeline event.
+                    continue
+
+                elif event_name == "after_model_call":
+                    call_id = str(parsed.get("model_call_id", "")).strip()
+                    if call_id:
+                        entry["model_call_id"] = call_id
+                    # Merge context composition from the matching before_model_call.
+                    before = pending_before.pop(call_id, None) if call_id else None
+                    if isinstance(before, dict):
+                        entry.update(before)
+                    # Preserve usage and model_id from the after event itself.
+                    usage = parsed.get("usage")
+                    if isinstance(usage, dict):
+                        entry["usage"] = usage
+                    model_id = parsed.get("model_id")
+                    if isinstance(model_id, str) and model_id.strip():
+                        entry["model_id"] = model_id.strip()
+
                 events.append(entry)
     except OSError:
         return [], {}, 0

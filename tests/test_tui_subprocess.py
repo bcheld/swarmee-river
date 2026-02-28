@@ -1057,14 +1057,79 @@ def test_build_session_timeline_sidebar_items_populates_from_index_events():
 
     items = tui_app.build_session_timeline_sidebar_items(index["events"])
 
-    # Model calls are filtered out — only tool/error/invocation events remain
-    assert len(items) == 1
+    # Both tool calls and model calls are shown in the timeline.
+    assert len(items) == 2
     assert items[0]["id"] == "timeline-1"
     assert "shell" in items[0]["title"]
     assert "error" in items[0]["title"]
     assert items[0]["state"] == "error"
+    # Model call appears second
+    assert items[1]["id"] == "timeline-2"
+    assert "LLM call" in items[1]["title"]
+    assert items[1]["state"] == "default"
     # Subtitle uses relative time
     assert "ago" in items[0]["subtitle"]
+
+
+def test_model_call_with_usage_shows_token_summary_in_sidebar():
+    events = [
+        {
+            "id": "m1",
+            "event": "after_model_call",
+            "duration_s": 1.2,
+            "ts": "2026-02-23T12:00:00",
+            "usage": {"input_tokens": 3200, "output_tokens": 800, "cache_read_input_tokens": 2100},
+        },
+    ]
+    items = tui_app.build_session_timeline_sidebar_items(events)
+    assert len(items) == 1
+    assert "3.2k in" in items[0]["title"]
+    assert "800 out" in items[0]["title"]
+    assert "2.1k cached" in items[0]["title"]
+
+
+def test_model_call_detail_renders_token_and_composition_sections():
+    event = {
+        "id": "m1",
+        "event": "after_model_call",
+        "duration_s": 1.5,
+        "model_call_id": "abc123",
+        "model_id": "anthropic.claude-3-5-sonnet",
+        "usage": {
+            "input_tokens": 5000,
+            "output_tokens": 1200,
+            "cache_read_input_tokens": 3500,
+        },
+        "system_prompt_chars": 8400,
+        "tool_count": 25,
+        "tool_schema_chars": 32000,
+        "messages": 12,
+        "message_breakdown": {"user": 4, "assistant": 3, "tool": 5},
+    }
+    detail = tui_app.render_session_timeline_detail_text(event)
+    assert "Token Usage" in detail
+    assert "5,000" in detail
+    assert "1,200" in detail
+    assert "3,500" in detail
+    assert "70%" in detail  # 3500/5000 = 70%
+    assert "Context Composition" in detail
+    assert "8,400" in detail
+    assert "32,000" in detail
+    assert "25 tools" in detail
+    assert "user=4" in detail
+    assert "Metadata" in detail
+    assert "anthropic.claude-3-5-sonnet" in detail
+
+
+def test_model_call_detail_degrades_gracefully_without_usage():
+    event = {
+        "id": "m1",
+        "event": "after_model_call",
+        "duration_s": 0.8,
+    }
+    detail = tui_app.render_session_timeline_detail_text(event)
+    assert "no usage data" in detail
+    assert "LLM call" in detail
 
 
 def test_session_timeline_detail_and_actions_render_without_crashing():
@@ -1375,9 +1440,7 @@ def test_spawn_swarmee_daemon_configures_subprocess(monkeypatch):
     assert env["SWARMEE_SESSION_ID"] == "abc123"
     assert env["SWARMEE_MODEL_TIER"] == "fast"
     assert env["SWARMEE_TUI_EVENTS"] == "1"
-
-
-def test_format_tool_input_shell():
+    assert env["SWARMEE_LOG_EVENTS"] == "1"
     from swarmee_river.tui.widgets import _format_tool_input
 
     result = _format_tool_input("shell", {"command": "git status", "cwd": "/tmp"})

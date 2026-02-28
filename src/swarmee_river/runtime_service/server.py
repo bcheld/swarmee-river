@@ -339,6 +339,7 @@ class RuntimeServiceServer:
         env = dict(os.environ)
         env["SWARMEE_TUI_EVENTS"] = "1"
         env["SWARMEE_SPINNERS"] = "0"
+        env["SWARMEE_LOG_EVENTS"] = "1"
         env["SWARMEE_SESSION_ID"] = session.session_id
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")

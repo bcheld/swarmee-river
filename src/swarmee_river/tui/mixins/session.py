@@ -282,6 +282,8 @@ class SessionMixin:
                 existing_index = loaded if isinstance(loaded, dict) else None
             except Exception:
                 existing_index = None
+            built_index = None
+            _build_err: Exception | None = None
             try:
                 built_index = await asyncio.to_thread(build_session_graph_index, session_id, cwd=Path.cwd())
                 await asyncio.to_thread(write_session_graph_index, session_id, built_index)

@@ -1536,6 +1536,18 @@ def _build_agent_runtime(
             session_safety_overrides=session_safety_overrides,
         )
 
+        # Inject agent-level context metadata for LLM call inspector hooks.
+        sw = invocation_state.get("swarmee")
+        if isinstance(sw, dict):
+            sys_prompt = getattr(agent, "system_prompt", None) or ""
+            sw["system_prompt_chars"] = len(sys_prompt)
+            agent_tools = getattr(agent, "tools", None) or []
+            sw["tool_count"] = len(agent_tools)
+            try:
+                sw["tool_schema_chars"] = sum(len(json.dumps(t, default=str)) for t in agent_tools)
+            except Exception:
+                sw["tool_schema_chars"] = 0
+
         interrupt_event.clear()
         set_interrupt_event(interrupt_event)
         with interrupt_watcher_from_env(interrupt_event):

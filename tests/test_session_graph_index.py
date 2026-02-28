@@ -79,10 +79,23 @@ def test_session_graph_index_builds_and_persists_with_corruption_tolerance(
                 "result": "{truncated-json",
             },
             {
+                "event": "before_model_call",
+                "ts": "2026-02-23T12:00:01.5",
+                "model_call_id": "model-1",
+                "messages": 8,
+                "system_prompt_chars": 4200,
+                "tool_count": 15,
+                "tool_schema_chars": 18000,
+                "model_id": "gpt-4",
+                "message_breakdown": {"user": 3, "assistant": 2, "tool": 3},
+            },
+            {
                 "event": "after_model_call",
                 "ts": "2026-02-23T12:00:02",
                 "model_call_id": "model-1",
                 "duration_s": 1.25,
+                "model_id": "gpt-4",
+                "usage": {"input_tokens": 2500, "output_tokens": 600, "cache_read_input_tokens": 1800},
             },
             {
                 "event": "after_invocation",
@@ -142,6 +155,18 @@ def test_session_graph_index_builds_and_persists_with_corruption_tolerance(
     failing_event = next(event for event in index["events"] if event.get("tool") == "failing_tool")
     assert failing_event["success"] is False
     assert failing_event["error"] == "boom"
+
+    # Verify enriched model call event (before_model_call merged into after_model_call).
+    model_event = next(event for event in index["events"] if event["event"] == "after_model_call")
+    assert model_event["model_call_id"] == "model-1"
+    assert model_event["model_id"] == "gpt-4"
+    assert model_event["usage"] == {"input_tokens": 2500, "output_tokens": 600, "cache_read_input_tokens": 1800}
+    # Context composition fields merged from before_model_call.
+    assert model_event["system_prompt_chars"] == 4200
+    assert model_event["tool_count"] == 15
+    assert model_event["tool_schema_chars"] == 18000
+    assert model_event["messages"] == 8
+    assert model_event["message_breakdown"] == {"user": 3, "assistant": 2, "tool": 3}
 
     monkeypatch.chdir(tmp_path)
     written = write_session_graph_index(session_id, index)

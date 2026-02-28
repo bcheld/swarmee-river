@@ -254,6 +254,8 @@ def _build_swarmee_subprocess_env(
     env["SWARMEE_SPINNERS"] = "0"
     # Enable structured JSONL event output for TUI consumption.
     env["SWARMEE_TUI_EVENTS"] = "1"
+    # Ensure JSONL event logging is active so the Session Timeline has data.
+    env["SWARMEE_LOG_EVENTS"] = "1"
     existing_warning_filters = env.get("PYTHONWARNINGS", "").strip()
     tui_warning_filters = [
         # `PYTHONWARNINGS` is parsed via `warnings._setoption`, which `re.escape`s message+module.
