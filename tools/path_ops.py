@@ -7,6 +7,7 @@ from typing import Any, List, Optional
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.path_utils import SKIP_DIRS, safe_cwd
 from swarmee_river.utils.text_utils import truncate
 
@@ -215,3 +216,7 @@ def glob(
 
     text = "\n".join(results).strip() if results else "(no matches)"
     return {"status": "success", "content": [{"text": truncate(text, max_chars)}]}
+
+
+set_permissions(list, "read")
+set_permissions(glob, "read")

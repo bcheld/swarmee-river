@@ -15,6 +15,7 @@ from strands import tool
 
 from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.session.store import SessionStore
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
 
 _DEFAULT_S3_PREFIX = "swarmee/sessions"
@@ -1031,3 +1032,6 @@ def session_s3(
         return _error(str(exc), max_chars=max_chars)
     except Exception as exc:
         return _error(f"session_s3 failed: {exc}", max_chars=max_chars)
+
+
+set_permissions(session_s3, "write")

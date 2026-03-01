@@ -5,6 +5,7 @@ from io import StringIO
 
 from strands import Agent, tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.kb_utils import load_system_prompt
 
 
@@ -46,3 +47,6 @@ def strand(
 
     except Exception as e:
         return {"status": "error", "content": [{"text": f"Error running Strands: {e}"}]}
+
+
+set_permissions(strand, "execute")

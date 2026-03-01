@@ -7,6 +7,7 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.path_utils import SKIP_DIRS, safe_cwd
 from swarmee_river.utils.text_utils import truncate
 
@@ -143,3 +144,6 @@ def run_project_context(
         return {"status": "success", "content": [{"text": truncate("\n\n".join(parts), max_chars)}]}
 
     return {"status": "error", "content": [{"text": f"Unknown action: {action}"}]}
+
+
+set_permissions(project_context, "read")

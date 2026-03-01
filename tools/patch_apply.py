@@ -8,6 +8,7 @@ from typing import Any, Optional
 from strands import tool
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
 
 
@@ -132,3 +133,6 @@ def patch_apply(
         summary_lines.append("touched:\n" + "\n".join(f"- {p}" for p in touched))
 
     return {"status": "success", "content": [{"text": "\n".join(summary_lines)}]}
+
+
+set_permissions(patch_apply, "write")

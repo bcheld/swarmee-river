@@ -7,6 +7,7 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.path_utils import resolve_target
 from swarmee_river.utils.text_utils import truncate
 
@@ -138,3 +139,6 @@ def editor(
         }
     except Exception as exc:
         return {"status": "error", "content": [{"text": f"Editor command failed: {exc}"}]}
+
+
+set_permissions(editor, "write")

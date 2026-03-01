@@ -6,6 +6,8 @@ from typing import Any, Optional
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
+
 _SENSITIVE_KEY_RE = re.compile(
     r"(?:"
     r"secret|token|password|passwd|private|credential|session|cookie|"
@@ -120,3 +122,6 @@ def environment(
             {"text": "Unsupported action. Use one of: list, get, set, unset, export/dump (action=... or command=...)."}
         ],
     }
+
+
+set_permissions(environment, "read")

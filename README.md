@@ -248,6 +248,8 @@ Swarmee includes 30+ built-in tools across these categories:
 - **Utilities** — calculator, current_time, environment, welcome, stop
 - **Optional (strands_tools pack)** — Slack, generate_image, image_reader, nova_reels, memory, workflow, cron, speak
 
+Every tool declares `read`, `write`, and/or `execute` **permissions** used for plan-mode gating (only read tools allowed during planning), TUI access-class badges, and safety policy enforcement. See [`docs/tool_permissions.md`](docs/tool_permissions.md) for the full reference, permission table, and guide to annotating new tools.
+
 Hot-load your own tools by placing Python files in `./tools/`. Full tool catalog: [`docs/opencode-port/tool_catalog.md`](docs/opencode-port/tool_catalog.md).
 
 Install the optional Strands Tools pack:

@@ -5,6 +5,7 @@ from typing import Any
 from strands import tool
 
 from swarmee_river.state_paths import todo_path
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.path_utils import safe_cwd
 
 
@@ -52,3 +53,7 @@ def todowrite(
 
     mode = "appended" if append else "updated"
     return {"status": "success", "content": [{"text": f"Todo list {mode}: {path}"}]}
+
+
+set_permissions(todoread, "read")
+set_permissions(todowrite, "write")

@@ -5,6 +5,8 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
+
 
 @tool
 def current_time(*, utc: bool = True) -> dict[str, Any]:
@@ -15,3 +17,6 @@ def current_time(*, utc: bool = True) -> dict[str, Any]:
     """
     now = datetime.now(timezone.utc) if utc else datetime.now().astimezone()
     return {"status": "success", "content": [{"text": now.isoformat()}]}
+
+
+set_permissions(current_time, "read")

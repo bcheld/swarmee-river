@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.path_utils import SKIP_DIRS, safe_cwd
 from swarmee_river.utils.text_utils import truncate
 
@@ -218,3 +219,8 @@ def file_read(
     if not numbered:
         numbered = "(no content in selected range)"
     return {"status": "success", "content": [{"text": truncate(numbered, max_chars)}]}
+
+
+set_permissions(file_list, "read")
+set_permissions(file_search, "read")
+set_permissions(file_read, "read")

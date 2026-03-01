@@ -5,6 +5,7 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.path_utils import resolve_target
 
 
@@ -47,3 +48,6 @@ def file_write(
         "status": "success",
         "content": [{"text": f"{action} {len(content)} chars to {rel}"}],
     }
+
+
+set_permissions(file_write, "write")

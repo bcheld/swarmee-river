@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from swarmee_river.state_paths import state_dir
+from swarmee_river.tool_permissions import STRANDS_TOOL_PERMISSIONS, get_permissions
 
 _TOOL_OVERRIDES_FILENAME = "tool_metadata.json"
 
@@ -66,6 +67,20 @@ def _heuristic_access(name: str) -> tuple[bool, bool, bool]:
     return r, w, x
 
 
+def _resolve_permissions(name: str, tool_obj: Any) -> tuple[bool, bool, bool]:
+    """Three-tier permission resolution: declared > SDK fallback > heuristic."""
+    # 1) Declared .permissions attribute on the tool object.
+    declared = get_permissions(tool_obj)
+    if declared is not None:
+        return ("read" in declared, "write" in declared, "execute" in declared)
+    # 2) SDK fallback map for tools we cannot annotate directly.
+    sdk_perms = STRANDS_TOOL_PERMISSIONS.get(name)
+    if sdk_perms is not None:
+        return ("read" in sdk_perms, "write" in sdk_perms, "execute" in sdk_perms)
+    # 3) Legacy hardcoded heuristic sets.
+    return _heuristic_access(name)
+
+
 def _overrides_path() -> Path:
     return state_dir() / _TOOL_OVERRIDES_FILENAME
 
@@ -117,7 +132,7 @@ def discover_tools_with_metadata(tools_dict: dict[str, Any] | None = None) -> li
                     docstring = stripped
                     break
 
-        r, w, x = _heuristic_access(name)
+        r, w, x = _resolve_permissions(name, tool_obj)
         source = "custom" if name in _CUSTOM_TOOL_NAMES else "builtin"
 
         meta = ToolMeta(

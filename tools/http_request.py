@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
 
 
@@ -126,3 +127,6 @@ def http_request(
         return {"status": "error", "content": [{"text": f"URLError: {e}"}]}
     except Exception as e:
         return {"status": "error", "content": [{"text": f"http_request failed: {e}"}]}
+
+
+set_permissions(http_request, "execute")

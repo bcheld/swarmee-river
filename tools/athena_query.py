@@ -7,6 +7,7 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
 
 _BLOCKED_SQL_KEYWORDS = {
@@ -483,3 +484,6 @@ def athena_query(
         return _query_status(query_execution_id=query_execution_id, max_chars=max_chars)
 
     return _error(f"Unknown action: {mode}", max_chars=max_chars)
+
+
+set_permissions(athena_query, "read", "execute")

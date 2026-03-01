@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
 
 
@@ -276,3 +277,6 @@ def git(
         return {"status": "error", "content": [{"text": "Unknown stash_action. Use list|push|pop."}]}
 
     return {"status": "error", "content": [{"text": f"Unknown action: {action}"}]}
+
+
+set_permissions(git, "execute")

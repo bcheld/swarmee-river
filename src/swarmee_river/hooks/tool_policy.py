@@ -10,6 +10,7 @@ from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.opencode_aliases import canonical_tool_name, equivalent_tool_names, normalize_tool_name
 from swarmee_river.permissions import evaluate_declarative_rule_action
 from swarmee_river.settings import SafetyConfig
+from swarmee_river.tool_permissions import STRANDS_TOOL_PERMISSIONS, get_permissions
 from swarmee_river.utils.env_utils import csv_env, truthy_env
 
 _WINDOWS_POSIX_BIASED_TOKENS = {
@@ -94,6 +95,45 @@ def _matches_tool_set(tool_name: str, configured_tools: set[str]) -> bool:
     return bool(equivalent_tool_names(tool_name).intersection(configured_tools))
 
 
+# Hardcoded fallback used when permission-based derivation is unavailable.
+_FALLBACK_PLAN_MODE_ALLOWED_TOOLS: set[str] = {
+    "retrieve", "sop", "project_context", "file_read", "file_list",
+    "file_search", "read", "grep", "list", "glob", "todoread",
+}
+
+
+def _build_plan_mode_allowlist(tools_dict: dict[str, Any]) -> set[str]:
+    """Derive the plan-mode tool allowlist from declared permissions.
+
+    Returns tool names that have only ``"read"`` permission or no permissions
+    (informational tools like ``plan_progress``, ``think``, ``stop``).
+    Tools with ``"write"`` or ``"execute"`` permission are excluded.
+
+    Always includes ``"project_context"`` regardless of permission since plan
+    mode restricts it separately via action allowlist.
+    """
+    allowed: set[str] = set()
+    for name, tool_obj in tools_dict.items():
+        # 1) Declared .permissions attribute.
+        declared = get_permissions(tool_obj)
+        if declared is not None:
+            perms = declared
+        else:
+            # 2) SDK fallback map.
+            sdk = STRANDS_TOOL_PERMISSIONS.get(name)
+            if sdk is not None:
+                perms = sdk
+            else:
+                # Unknown tool — skip it (conservative).
+                continue
+        if "write" in perms or "execute" in perms:
+            continue
+        allowed.add(name)
+    # project_context is restricted separately via action allowlist.
+    allowed.add("project_context")
+    return allowed
+
+
 class ToolPolicyHooks(HookProvider):
     """
     Simple guardrails for tool use in enterprise environments.
@@ -110,21 +150,21 @@ class ToolPolicyHooks(HookProvider):
         self.swarm_enabled = truthy_env("SWARMEE_SWARM_ENABLED", True)
         self._safety = safety
         # Plan mode should stay read-only to prevent the model from mutating the repo while planning.
-        # We allow repo inspection tools so plans can be grounded in reality.
-        self.plan_mode_allowed_tools = {
-            "retrieve",
-            "sop",
-            "project_context",
-            "file_read",
-            "file_list",
-            "file_search",
-            "read",
-            "grep",
-            "list",
-            "glob",
-            "todoread",
-        }
+        # Derived from permission metadata when tools are available; falls back to a hardcoded set.
+        self._plan_mode_allowed_tools_cached: set[str] | None = None
         self.plan_mode_project_context_actions = {"summary", "files", "tree", "search", "read", "git_status"}
+
+    @property
+    def plan_mode_allowed_tools(self) -> set[str]:
+        if self._plan_mode_allowed_tools_cached is not None:
+            return self._plan_mode_allowed_tools_cached
+        try:
+            from swarmee_river.tools import get_tools
+            tools_dict = get_tools()
+            self._plan_mode_allowed_tools_cached = _build_plan_mode_allowlist(tools_dict)
+        except Exception:
+            self._plan_mode_allowed_tools_cached = set(_FALLBACK_PLAN_MODE_ALLOWED_TOOLS)
+        return self._plan_mode_allowed_tools_cached
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, BeforeToolCallEvent, self.before_tool_call)

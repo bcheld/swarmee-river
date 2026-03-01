@@ -9,6 +9,7 @@ from typing import Any, Optional
 from strands import tool
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
 
 
@@ -118,3 +119,6 @@ def run_checks(
         "status": "success" if overall_ok else "error",
         "content": [{"text": "\n\n".join(results)}],
     }
+
+
+set_permissions(run_checks, "execute")

@@ -10,6 +10,16 @@ from swarmee_river.settings import PermissionRule, SafetyConfig, ToolRule
 
 _VALID_ACTIONS = {"allow", "ask", "deny"}
 _CONDITION_KEYS = {"command_regex", "command_glob", "path_regex", "path_glob", "host_regex", "host_glob", "method"}
+
+# HIGH_RISK_TOOLS is intentionally kept as a static set rather than derived at
+# runtime from ``tool_permissions`` annotations.  This avoids circular imports
+# (permissions.py is imported during the consent hot-path before tools are
+# loaded) and ensures the consent gate stays predictable even if a tool's
+# metadata is misconfigured.  Relationship to ``tool_permissions``:
+#   - Every tool in this set should have ``"write"`` or ``"execute"``
+#     permission declared via ``set_permissions()``.
+#   - Not all write/execute tools are high-risk; this set captures those that
+#     require interactive consent by default.
 _HIGH_RISK_TOOLS = {
     "shell",
     "bash",

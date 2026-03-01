@@ -7,6 +7,7 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.path_utils import safe_cwd
 from swarmee_river.utils.text_utils import truncate
 
@@ -776,3 +777,6 @@ def office(
         max_replacements=max_replacements,
         max_chars=max_chars,
     )
+
+
+set_permissions(office, "read")

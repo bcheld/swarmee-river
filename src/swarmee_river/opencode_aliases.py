@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.import_utils import load_optional_attr
 from tools import file_ops
 from tools.patch_apply import patch_apply as patch_apply_fallback
@@ -254,6 +255,14 @@ def edit(
         "view_range": view_range,
     }
     return _invoke_alias("edit", payload)
+
+
+set_permissions(grep, "read")
+set_permissions(read, "read")
+set_permissions(bash, "execute")
+set_permissions(patch, "write")
+set_permissions(write, "write")
+set_permissions(edit, "write")
 
 
 def opencode_alias_tools() -> dict[str, Callable[..., Any]]:

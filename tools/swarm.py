@@ -5,6 +5,8 @@ from typing import Any, Optional, cast
 from strands import Agent, tool
 from strands.multiagent import Swarm
 
+from swarmee_river.tool_permissions import set_permissions
+
 
 def _create_custom_agents(
     agent_specs: list[dict[str, Any]],
@@ -153,3 +155,6 @@ async def swarm(
         return {"status": "success", "content": [{"text": "\n".join(response_parts)}]}
     except Exception as e:
         return {"status": "error", "content": [{"text": f"⚠️ Swarm execution failed: {str(e)}"}]}
+
+
+set_permissions(swarm, "execute")

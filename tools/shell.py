@@ -6,6 +6,8 @@ from typing import Any, Optional
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
+
 
 @tool
 def shell(
@@ -81,3 +83,6 @@ def shell(
             {"text": combined or "(no output)"},
         ],
     }
+
+
+set_permissions(shell, "execute")

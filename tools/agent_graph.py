@@ -8,6 +8,7 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.agent_utils import create_sub_agent, extract_text, run_coroutine
 
 
@@ -289,3 +290,6 @@ async def agent_graph(
         return _manager_response(_MANAGER.status(graph_id), as_text_dump=True)
 
     return _tool_response(status="error", text="Unsupported operation.")
+
+
+set_permissions(agent_graph, "execute")

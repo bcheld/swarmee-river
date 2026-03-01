@@ -13,6 +13,8 @@ from typing import Any, Dict
 import boto3
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -167,3 +169,6 @@ def store_in_kb(content: str, title: str | None = None, knowledge_base_id: str |
             {"text": "⏱️ Processing in background..."},
         ],
     }
+
+
+set_permissions(store_in_kb, "write")

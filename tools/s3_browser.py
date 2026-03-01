@@ -10,6 +10,7 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
 
 
@@ -490,3 +491,6 @@ def s3_browser(
         )
 
     return _error(f"Unknown action: {mode}", max_chars=max_chars)
+
+
+set_permissions(s3_browser, "read")

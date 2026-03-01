@@ -4,6 +4,7 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.agent_utils import create_sub_agent, extract_text, run_coroutine
 
 
@@ -52,3 +53,7 @@ def use_llm(
     Back-compat alias for deprecated `use_llm` → `use_agent`.
     """
     return use_agent(prompt=prompt, system_prompt=system_prompt, agent=agent)
+
+
+set_permissions(use_agent, "execute")
+set_permissions(use_llm, "execute")

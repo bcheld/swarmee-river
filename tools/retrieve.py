@@ -5,6 +5,7 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
 
 
@@ -83,3 +84,6 @@ def retrieve(
         lines.append("")
 
     return {"status": "success", "content": [{"text": truncate("\n".join(lines).strip(), max_chars)}]}
+
+
+set_permissions(retrieve, "read")

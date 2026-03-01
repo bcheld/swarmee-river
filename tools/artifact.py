@@ -7,6 +7,7 @@ from typing import Any
 from strands import tool
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.tool_permissions import set_permissions
 from tools.store_in_kb import store_in_kb as _store_in_kb
 
 
@@ -123,3 +124,6 @@ def artifact(
         return _store_in_kb(content=text, title=doc_title, knowledge_base_id=kb_id)
 
     return {"status": "error", "content": [{"text": f"Unknown action: {action}"}]}
+
+
+set_permissions(artifact, "write")

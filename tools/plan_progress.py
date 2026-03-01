@@ -4,6 +4,8 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
+
 
 @tool
 def plan_progress(
@@ -46,3 +48,6 @@ def plan_progress(
     if isinstance(note, str) and note.strip():
         summary = f"{summary}, note={note.strip()}"
     return {"status": "success", "content": [{"text": summary}]}
+
+
+set_permissions(plan_progress)

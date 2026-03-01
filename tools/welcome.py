@@ -4,6 +4,8 @@ from pathlib import Path
 
 from strands.types.tools import ToolResult, ToolUse
 
+from swarmee_river.tool_permissions import set_permissions
+
 # Default welcome text (kept intentionally small to avoid bloating the system prompt)
 DEFAULT_WELCOME_TEXT = """# Swarmee
 
@@ -127,3 +129,6 @@ def welcome(tool: ToolUse) -> ToolResult:
             "status": "error",
             "content": [{"text": f"Error: {str(e)}"}],
         }
+
+
+set_permissions(welcome, "write")
