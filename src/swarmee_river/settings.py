@@ -157,6 +157,7 @@ class ModelsConfig:
     providers: dict[str, ProviderModels] = field(default_factory=dict)
     auto_escalation: AutoEscalation = field(default_factory=AutoEscalation)
     availability: dict[str, Any] = field(default_factory=dict)
+    hidden_tiers: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ModelsConfig":
@@ -182,6 +183,24 @@ class ModelsConfig:
 
         auto = raw.get("auto_escalation")
         availability = raw.get("availability")
+        hidden_tiers_raw = raw.get("hidden_tiers")
+        hidden_tiers: list[str] = []
+        if isinstance(hidden_tiers_raw, list):
+            seen_hidden: set[str] = set()
+            for item in hidden_tiers_raw:
+                token = str(item or "").strip().lower()
+                if "|" not in token:
+                    continue
+                provider_name, tier_name = token.split("|", 1)
+                provider_name = normalize_provider_name(provider_name.strip())
+                tier_name = tier_name.strip().lower()
+                if not provider_name or not tier_name:
+                    continue
+                key = f"{provider_name}|{tier_name}"
+                if key in seen_hidden:
+                    continue
+                seen_hidden.add(key)
+                hidden_tiers.append(key)
         return cls(
             provider=normalize_provider_name(provider) if isinstance(provider, str) and provider.strip() else None,
             default_tier=default_tier,
@@ -189,6 +208,7 @@ class ModelsConfig:
             providers=providers,
             auto_escalation=AutoEscalation.from_dict(auto) if isinstance(auto, dict) else AutoEscalation(),
             availability=availability if isinstance(availability, dict) else {},
+            hidden_tiers=hidden_tiers,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -198,6 +218,7 @@ class ModelsConfig:
             "providers": {k: v.to_dict() for k, v in self.providers.items()},
             "auto_escalation": self.auto_escalation.to_dict(),
             "availability": self.availability,
+            "hidden_tiers": list(self.hidden_tiers),
         }
         if self.provider:
             out["provider"] = self.provider
@@ -442,6 +463,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
             providers=models.providers,
             auto_escalation=models.auto_escalation,
             availability=models.availability,
+            hidden_tiers=models.hidden_tiers,
         )
 
     if forced_tier and forced_tier.strip():
@@ -452,6 +474,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
             providers=models.providers,
             auto_escalation=models.auto_escalation,
             availability=models.availability,
+            hidden_tiers=models.hidden_tiers,
         )
 
     if tier_auto is not None:
@@ -467,6 +490,37 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
             providers=models.providers,
             auto_escalation=auto,
             availability=models.availability,
+            hidden_tiers=models.hidden_tiers,
+        )
+
+    hidden_tiers = list(models.hidden_tiers)
+    if hidden_tiers:
+        hidden_keys = {str(item).strip().lower() for item in hidden_tiers if str(item).strip()}
+        filtered_providers: dict[str, ProviderModels] = {}
+        for provider_name, provider in models.providers.items():
+            filtered_tiers: dict[str, ModelTier] = {}
+            for tier_name, tier in provider.tiers.items():
+                if f"{provider_name}|{tier_name}".lower() in hidden_keys:
+                    continue
+                filtered_tiers[tier_name] = tier
+            if filtered_tiers:
+                filtered_providers[provider_name] = ProviderModels(
+                    display_name=provider.display_name,
+                    description=provider.description,
+                    tiers=filtered_tiers,
+                    extra=provider.extra,
+                )
+        selected_provider = models.provider
+        if selected_provider and selected_provider not in filtered_providers:
+            selected_provider = None
+        models = ModelsConfig(
+            provider=selected_provider,
+            default_tier=models.default_tier,
+            tiers=models.tiers,
+            providers=filtered_providers,
+            auto_escalation=models.auto_escalation,
+            availability=models.availability,
+            hidden_tiers=hidden_tiers,
         )
 
     if models is not settings.models:
@@ -618,8 +672,7 @@ def default_settings_template() -> SwarmeeSettings:
                             model_id="gpt-4o-mini",
                             display_name="GPT-4o mini (Copilot)",
                             description=(
-                                "Lower latency default for Copilot "
-                                "(override via SWARMEE_GITHUB_COPILOT_FAST_MODEL_ID)."
+                                "Lower latency default for Copilot (override via SWARMEE_GITHUB_COPILOT_FAST_MODEL_ID)."
                             ),
                         ),
                         "balanced": ModelTier(
@@ -642,8 +695,7 @@ def default_settings_template() -> SwarmeeSettings:
                             model_id="gpt-5",
                             display_name="GPT-5 (Copilot long)",
                             description=(
-                                "Long-form outputs on Copilot "
-                                "(override via SWARMEE_GITHUB_COPILOT_LONG_MODEL_ID)."
+                                "Long-form outputs on Copilot (override via SWARMEE_GITHUB_COPILOT_LONG_MODEL_ID)."
                             ),
                         ),
                     },

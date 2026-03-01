@@ -14,19 +14,19 @@ def scope_root(*, cwd: Path | None = None) -> Path:
     3) User home directory when no repository is detected
     """
     base = (cwd or Path.cwd()).expanduser().resolve()
-    
+
     # 1) Check for explicit .swarmee directory
     for candidate in (base, *base.parents):
         swarmee_marker = candidate / ".swarmee"
         if swarmee_marker.is_dir():
             return candidate
-            
+
     # 2) Check for git repository
     for candidate in (base, *base.parents):
         git_marker = candidate / ".git"
         if git_marker.exists():
             return candidate
-            
+
     # 3) Fallback to home directory
     return Path.home().expanduser().resolve()
 

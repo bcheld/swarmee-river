@@ -32,12 +32,8 @@ def test_callback_style_tool_events_emit_start_progress_result() -> None:
     handler = TuiCallbackHandler()
 
     def run() -> None:
-        handler.callback_handler(
-            tool_start={"tool_use_id": "tool-1", "tool": "shell", "input": {"command": "echo hi"}}
-        )
-        handler.callback_handler(
-            tool_progress={"tool_use_id": "tool-1", "stream": "stdout", "content": "hi\n"}
-        )
+        handler.callback_handler(tool_start={"tool_use_id": "tool-1", "tool": "shell", "input": {"command": "echo hi"}})
+        handler.callback_handler(tool_progress={"tool_use_id": "tool-1", "stream": "stdout", "content": "hi\n"})
         handler.callback_handler(tool_end={"tool_use_id": "tool-1", "status": "success"})
 
     events = _capture_events(handler, run)

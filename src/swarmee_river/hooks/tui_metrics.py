@@ -97,9 +97,7 @@ def _compute_cost_usd(*, usage: dict[str, Any], provider: str | None, model_id: 
     input_rate = env_input if env_input is not None else (default_pricing.input_per_1m if default_pricing else None)
     output_rate = env_output if env_output is not None else (default_pricing.output_per_1m if default_pricing else None)
     cached_rate = (
-        env_cached
-        if env_cached is not None
-        else (default_pricing.cached_input_per_1m if default_pricing else None)
+        env_cached if env_cached is not None else (default_pricing.cached_input_per_1m if default_pricing else None)
     )
 
     return _estimate_cost_usd(
@@ -127,7 +125,9 @@ def _estimate_cost_usd(
     - SWARMEE_PRICE_INPUT_PER_1M / SWARMEE_PRICE_OUTPUT_PER_1M / SWARMEE_PRICE_CACHED_INPUT_PER_1M
     - SWARMEE_PRICE_<PROVIDER>_INPUT_PER_1M / ... (e.g., OPENAI, BEDROCK, OLLAMA)
     """
-    input_rate = input_rate_per_1m if input_rate_per_1m is not None else _as_float(os.getenv("SWARMEE_PRICE_INPUT_PER_1M"))
+    input_rate = (
+        input_rate_per_1m if input_rate_per_1m is not None else _as_float(os.getenv("SWARMEE_PRICE_INPUT_PER_1M"))
+    )
     output_rate = (
         output_rate_per_1m if output_rate_per_1m is not None else _as_float(os.getenv("SWARMEE_PRICE_OUTPUT_PER_1M"))
     )

@@ -48,12 +48,14 @@ def render_tool_catalog_items(catalog: list[Any]) -> list[dict[str, str]]:
             parts.append(f"Tags: {tag_str}")
         subtitle = "  ".join(parts) if parts else ""
 
-        items.append({
-            "id": name,
-            "title": title,
-            "subtitle": subtitle,
-            "state": "default",
-        })
+        items.append(
+            {
+                "id": name,
+                "title": title,
+                "subtitle": subtitle,
+                "state": "default",
+            }
+        )
     return items
 
 
@@ -127,12 +129,14 @@ def render_prompt_list_items(templates: list[Any]) -> list[dict[str, str]]:
         if source and source != "local":
             subtitle_parts.append(f"({source})")
 
-        items.append({
-            "id": tid,
-            "title": name or tid,
-            "subtitle": "  ".join(subtitle_parts),
-            "state": "default",
-        })
+        items.append(
+            {
+                "id": tid,
+                "title": name or tid,
+                "subtitle": "  ".join(subtitle_parts),
+                "state": "default",
+            }
+        )
     return items
 
 
@@ -157,6 +161,56 @@ def render_prompt_detail(tmpl: Any) -> str:
         lines.append(f"Source: {source}")
     if content:
         lines.append(f"\n{content}")
+    return "\n".join(lines)
+
+
+def render_sop_detail(sop: Any, *, active: bool = False) -> str:
+    """Format full detail text for a single SOP record."""
+    if isinstance(sop, dict):
+        name = str(sop.get("name", ""))
+        source = str(sop.get("source", ""))
+        path = str(sop.get("path", ""))
+        preview = str(sop.get("first_paragraph_preview", ""))
+        content = str(sop.get("content", ""))
+    else:
+        name = getattr(sop, "name", "")
+        source = getattr(sop, "source", "")
+        path = getattr(sop, "path", "")
+        preview = getattr(sop, "first_paragraph_preview", "")
+        content = getattr(sop, "content", "")
+
+    lines = [f"# {name}"]
+    lines.append(f"Status: {'active' if active else 'inactive'}")
+    lines.append("Press Enter to activate/deactivate.")
+    if source:
+        lines.append(f"Source: {source}")
+    if path:
+        lines.append(f"Path: {path}")
+    if preview:
+        lines.append(f"\nPreview:\n{preview}")
+    if content:
+        lines.append(f"\nContent:\n{content}")
+    return "\n".join(lines)
+
+
+def render_kb_detail(entry: Any) -> str:
+    """Format full detail text for a single knowledge-base entry."""
+    if isinstance(entry, dict):
+        kb_id = str(entry.get("id", ""))
+        name = str(entry.get("name", ""))
+        description = str(entry.get("description", ""))
+    else:
+        kb_id = getattr(entry, "id", "")
+        name = getattr(entry, "name", "")
+        description = getattr(entry, "description", "")
+
+    resolved_id = kb_id.strip() or "(none)"
+    resolved_name = name.strip() or resolved_id
+    lines = [f"# {resolved_name}", f"ID: {resolved_id}"]
+    if description.strip():
+        lines.append(f"\n{description.strip()}")
+    else:
+        lines.append("\n(no description)")
     return "\n".join(lines)
 
 
@@ -196,10 +250,79 @@ def build_tool_table_rows(catalog: list[Any]) -> list[tuple[str, str, str, str]]
     return rows
 
 
+def build_prompt_table_rows(templates: list[Any]) -> list[tuple[str, str, str, str, str]]:
+    """Build DataTable row tuples from prompt templates."""
+    rows: list[tuple[str, str, str, str, str]] = []
+    for tmpl in templates:
+        if isinstance(tmpl, dict):
+            template_id = str(tmpl.get("id", ""))
+            name = str(tmpl.get("name", ""))
+            content = str(tmpl.get("content", ""))
+            tags = tmpl.get("tags", [])
+            source = str(tmpl.get("source", ""))
+        else:
+            template_id = str(getattr(tmpl, "id", ""))
+            name = str(getattr(tmpl, "name", ""))
+            content = str(getattr(tmpl, "content", ""))
+            tags = getattr(tmpl, "tags", [])
+            source = str(getattr(tmpl, "source", ""))
+        tag_str = ", ".join(str(tag).strip() for tag in tags if str(tag).strip())
+        preview = content.replace("\n", " ").strip()
+        if len(preview) > 80:
+            preview = preview[:79].rstrip() + "…"
+        rows.append((template_id, name or template_id, tag_str, source, preview))
+    return rows
+
+
+def build_sop_table_rows(sops: list[Any], active_names: set[str] | None = None) -> list[tuple[str, str, str, str]]:
+    """Build DataTable row tuples from SOP catalog records."""
+    active = {str(name).strip() for name in (active_names or set()) if str(name).strip()}
+    rows: list[tuple[str, str, str, str]] = []
+    for sop in sops:
+        if isinstance(sop, dict):
+            name = str(sop.get("name", ""))
+            source = str(sop.get("source", ""))
+            preview = str(sop.get("first_paragraph_preview", ""))
+        else:
+            name = str(getattr(sop, "name", ""))
+            source = str(getattr(sop, "source", ""))
+            preview = str(getattr(sop, "first_paragraph_preview", ""))
+        if not name.strip():
+            continue
+        preview = preview.strip() or "(no preview available)"
+        if len(preview) > 100:
+            preview = preview[:99].rstrip() + "…"
+        rows.append((name, "yes" if name in active else "no", source or "unknown", preview))
+    return rows
+
+
+def build_kb_table_rows(entries: list[Any]) -> list[tuple[str, str, str]]:
+    """Build DataTable row tuples from knowledge-base records."""
+    rows: list[tuple[str, str, str]] = []
+    for index, entry in enumerate(entries):
+        if isinstance(entry, dict):
+            kb_id = str(entry.get("id", entry.get("name", f"kb-{index + 1}"))).strip() or f"kb-{index + 1}"
+            name = str(entry.get("name", entry.get("id", f"KB {index + 1}"))).strip() or f"KB {index + 1}"
+            description = str(entry.get("description", "")).strip()
+        else:
+            kb_id = str(getattr(entry, "id", f"kb-{index + 1}")).strip() or f"kb-{index + 1}"
+            name = str(getattr(entry, "name", kb_id)).strip() or kb_id
+            description = str(getattr(entry, "description", "")).strip()
+        if len(description) > 100:
+            description = description[:99].rstrip() + "…"
+        rows.append((kb_id, name, description))
+    return rows
+
+
 __all__ = [
+    "build_kb_table_rows",
+    "build_prompt_table_rows",
+    "build_sop_table_rows",
     "build_tool_table_rows",
+    "render_kb_detail",
     "render_prompt_detail",
     "render_prompt_list_items",
+    "render_sop_detail",
     "render_tool_catalog_items",
     "render_tool_detail",
 ]

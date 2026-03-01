@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from functools import lru_cache
-import os
 from pathlib import Path
 from typing import Any, Iterator
 
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, DirectoryTree, Input, Select, Static, TabPane
-
-from swarmee_river.tui.widgets import SidebarList
+from textual.widgets import Button, DataTable, DirectoryTree, Input, Select, Static, TabPane
 
 
 class SettingsDirectoryTree(DirectoryTree):
@@ -223,20 +221,65 @@ def build_env_sidebar_items(category: str | None = None) -> list[dict[str, str]]
         current_value = os.environ.get(spec.key, "").strip()
         shown_current = _mask_value(spec.key, current_value) if current_value else "(unset)"
         shown_default = _mask_value(spec.key, spec.default) if spec.default != "(unset)" else "(unset)"
-        items.append({
-            "id": spec.key,
-            "title": spec.key,
-            "subtitle": f"current: {shown_current} | default: {shown_default}",
-            "state": "success" if current_value else "default",
-        })
+        items.append(
+            {
+                "id": spec.key,
+                "title": spec.key,
+                "subtitle": f"current: {shown_current} | default: {shown_default}",
+                "state": "success" if current_value else "default",
+            }
+        )
     if not items:
-        items.append({
-            "id": "__no_env__",
-            "title": "No variables in this category",
-            "subtitle": "Select another category or verify env.example parsing.",
-            "state": "default",
-        })
+        items.append(
+            {
+                "id": "__no_env__",
+                "title": "No variables in this category",
+                "subtitle": "Select another category or verify env.example parsing.",
+                "state": "default",
+            }
+        )
     return items
+
+
+def build_env_table_rows(category: str | None = None) -> list[tuple[str, str, str, str]]:
+    """Build DataTable rows for configurable environment variables."""
+    selected_category = (category or "").strip()
+    specs = env_var_specs()
+    if selected_category:
+        specs = tuple(spec for spec in specs if spec.category == selected_category)
+
+    rows: list[tuple[str, str, str, str]] = []
+    for spec in specs:
+        current_value = os.environ.get(spec.key, "").strip()
+        shown_current = _mask_value(spec.key, current_value) if current_value else "(unset)"
+        shown_default = _mask_value(spec.key, spec.default) if spec.default != "(unset)" else "(unset)"
+        state = "set" if current_value else "unset"
+        rows.append((spec.key, shown_current, shown_default, state))
+    return rows
+
+
+def build_models_table_rows(settings: Any) -> list[tuple[str, str, str, str]]:
+    """Build DataTable rows for model provider/tier catalog."""
+    from swarmee_river.pricing import resolve_pricing
+
+    rows: list[tuple[str, str, str, str]] = []
+    providers = getattr(getattr(settings, "models", None), "providers", {}) or {}
+    for provider_name, provider in providers.items():
+        tiers = getattr(provider, "tiers", {}) or {}
+        for tier_name, tier in tiers.items():
+            model_id = str(getattr(tier, "model_id", "") or "").strip() or "(unset)"
+            pricing = resolve_pricing(provider=provider_name, model_id=getattr(tier, "model_id", None))
+            pricing_label = ""
+            if pricing is not None and pricing.input_per_1m is not None and pricing.output_per_1m is not None:
+                cached = (
+                    pricing.cached_input_per_1m if pricing.cached_input_per_1m is not None else pricing.input_per_1m
+                )
+                pricing_label = (
+                    f" | ${pricing.input_per_1m}/1M in, ${pricing.output_per_1m}/1M out, ${cached}/1M cached"
+                )
+            row_id = f"{provider_name}|{tier_name}"
+            rows.append((row_id, f"{provider_name}/{tier_name}", model_id, pricing_label))
+    return sorted(rows, key=lambda item: item[0])
 
 
 def compose_settings_tab() -> Iterator[Any]:
@@ -255,9 +298,15 @@ def compose_settings_tab() -> Iterator[Any]:
 
                 yield Static("Runtime", classes="settings-section-label")
                 with Horizontal(id="settings_general_runtime_row"):
-                    yield Button("Auto-Approve: Off", id="settings_toggle_auto_approve", compact=True, variant="default")
-                    yield Button("Bypass Consent: Off", id="settings_toggle_bypass_consent", compact=True, variant="default")
-                    yield Button("ESC Interrupt: On", id="settings_toggle_esc_interrupt", compact=True, variant="default")
+                    yield Button(
+                        "Auto-Approve: Off", id="settings_toggle_auto_approve", compact=True, variant="default"
+                    )
+                    yield Button(
+                        "Bypass Consent: Off", id="settings_toggle_bypass_consent", compact=True, variant="default"
+                    )
+                    yield Button(
+                        "ESC Interrupt: On", id="settings_toggle_esc_interrupt", compact=True, variant="default"
+                    )
 
                 yield Static("Context", classes="settings-section-label")
                 with Horizontal(id="settings_general_context_row"):
@@ -299,10 +348,14 @@ def compose_settings_tab() -> Iterator[Any]:
 
                 yield Static("Guardrails", classes="settings-section-label")
                 with Horizontal(id="settings_general_guardrails_row"):
-                    yield Button("Limit Results: On", id="settings_toggle_limit_tool_results", compact=True, variant="default")
+                    yield Button(
+                        "Limit Results: On", id="settings_toggle_limit_tool_results", compact=True, variant="default"
+                    )
                     yield Button("Truncate: On", id="settings_toggle_truncate_results", compact=True, variant="default")
                     yield Button("Redact Logs: On", id="settings_toggle_log_redact", compact=True, variant="default")
-                    yield Button("Freeze Tools: Off", id="settings_toggle_freeze_tools", compact=True, variant="default")
+                    yield Button(
+                        "Freeze Tools: Off", id="settings_toggle_freeze_tools", compact=True, variant="default"
+                    )
 
                 yield Static("Workspace", classes="settings-section-label")
                 yield Static("", id="settings_scope_current")
@@ -347,7 +400,7 @@ def compose_settings_tab() -> Iterator[Any]:
                     yield Input(placeholder="AWS profile (default)", id="settings_aws_profile_input")
                     yield Button("Apply", id="settings_aws_profile_apply", compact=True, variant="default")
                 yield Static("", id="settings_auth_status")
-                yield SidebarList(id="settings_models_list")
+                yield DataTable(id="settings_models_table", cursor_type="row")
                 yield Static("", id="settings_models_detail")
                 with Horizontal(id="settings_models_form_row_1"):
                     yield Select(
@@ -383,13 +436,19 @@ def compose_settings_tab() -> Iterator[Any]:
                 with Horizontal(id="settings_models_form_actions"):
                     yield Button("New", id="settings_models_new", compact=True, variant="default")
                     yield Button("Save Model", id="settings_models_save", compact=True, variant="success")
+                    yield Button(
+                        "Restore Defaults",
+                        id="settings_models_restore_defaults",
+                        compact=True,
+                        variant="default",
+                    )
                     yield Button("Delete", id="settings_models_delete", compact=True, variant="error")
 
             # -- Advanced sub-view (all env vars by category) ----------------
             with Vertical(id="settings_advanced_view"):
                 yield Static("Advanced Configuration", id="settings_env_header")
                 yield Select(options=env_category_options(), allow_blank=False, id="settings_env_category")
-                yield SidebarList(id="settings_env_list")
+                yield DataTable(id="settings_env_table", cursor_type="row")
                 yield Static("", id="settings_env_detail")
                 with Horizontal(id="settings_env_edit_row"):
                     yield Select(
@@ -432,7 +491,7 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_advanced_view = app.query_one("#settings_advanced_view", Vertical)
     app._settings_general_summary = app.query_one("#settings_general_summary", Static)
     app._settings_models_summary = app.query_one("#settings_models_summary", Static)
-    app._settings_models_list = app.query_one("#settings_models_list", SidebarList)
+    app._settings_models_table = app.query_one("#settings_models_table", DataTable)
     app._settings_models_detail = app.query_one("#settings_models_detail", Static)
     app._settings_auth_status = app.query_one("#settings_auth_status", Static)
     app._settings_aws_profile_input = app.query_one("#settings_aws_profile_input", Input)
@@ -457,7 +516,7 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_toggle_truncate_results_button = app.query_one("#settings_toggle_truncate_results", Button)
     app._settings_toggle_log_redact_button = app.query_one("#settings_toggle_log_redact", Button)
     app._settings_toggle_freeze_tools_button = app.query_one("#settings_toggle_freeze_tools", Button)
-    app._settings_env_list = app.query_one("#settings_env_list", SidebarList)
+    app._settings_env_table = app.query_one("#settings_env_table", DataTable)
     app._settings_scope_current = app.query_one("#settings_scope_current", Static)
     app._settings_directory_tree = app.query_one("#settings_directory_tree", SettingsDirectoryTree)
     # Backward-compatible aliases for agent safety override helpers.
@@ -469,6 +528,8 @@ def wire_settings_widgets(app: Any) -> None:
 
 __all__ = [
     "EnvVarSpec",
+    "build_models_table_rows",
+    "build_env_table_rows",
     "build_env_sidebar_items",
     "compose_settings_tab",
     "env_category_options",

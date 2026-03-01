@@ -89,10 +89,7 @@ def default_model_config(provider: str) -> dict[str, Any]:
             client_args["default_headers"] = {"Copilot-Integration-Id": integration_id}
 
         api_key = (
-            os.getenv("SWARMEE_GITHUB_COPILOT_API_KEY")
-            or os.getenv("GITHUB_TOKEN")
-            or os.getenv("GH_TOKEN")
-            or ""
+            os.getenv("SWARMEE_GITHUB_COPILOT_API_KEY") or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or ""
         ).strip()
         if not api_key:
             try:

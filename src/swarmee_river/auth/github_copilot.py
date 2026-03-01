@@ -177,9 +177,7 @@ def login_device_flow(
 ) -> dict[str, Any]:
     emit = status or (lambda _text: None)
     resolved_client_id = (
-        (client_id or "").strip()
-        or (os.getenv("SWARMEE_GITHUB_COPILOT_CLIENT_ID") or "").strip()
-        or GITHUB_CLIENT_ID
+        (client_id or "").strip() or (os.getenv("SWARMEE_GITHUB_COPILOT_CLIENT_ID") or "").strip() or GITHUB_CLIENT_ID
     )
 
     device = _post_form_json(

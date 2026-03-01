@@ -62,8 +62,7 @@ class PlanMixin:
         self._set_planning_controls_enabled(enabled=not self.state.daemon.query_active)
         with contextlib.suppress(Exception):
             self.query_one("#engage_planning_header", Static).update(
-                "Review the plan below. Uncheck steps to exclude,\n"
-                "add comments and answers, then press Continue."
+                "Review the plan below. Uncheck steps to exclude,\nadd comments and answers, then press Continue."
             )
 
     def _extract_plan_step_descriptions(self, plan_json: dict[str, Any]) -> list[str]:
@@ -155,6 +154,7 @@ class PlanMixin:
         if container is None:
             with _ctx.suppress(Exception):
                 from textual.containers import VerticalScroll
+
                 container = self.query_one("#engage_plan_items", VerticalScroll)
                 self._engage_plan_items = container
         if container is None:
@@ -218,7 +218,6 @@ class PlanMixin:
 
     def _handle_planning_continue(self) -> None:
         """Process the Continue action in the Planning view."""
-        import contextlib as _ctx
 
         from swarmee_river.tui.widgets import PlanQuestionRow, PlanStepRow
 
@@ -226,9 +225,7 @@ class PlanMixin:
         if container is None:
             return
 
-        rows: list[PlanStepRow] = [
-            child for child in container.children if isinstance(child, PlanStepRow)
-        ]
+        rows: list[PlanStepRow] = [child for child in container.children if isinstance(child, PlanStepRow)]
 
         all_included = True
         has_comments = False
@@ -241,21 +238,16 @@ class PlanMixin:
             if not included:
                 all_included = False
                 feedback_parts.append(
-                    f"- Step {row.step_index + 1}: EXCLUDED"
-                    + (f" (reason: {comment})" if comment else "")
+                    f"- Step {row.step_index + 1}: EXCLUDED" + (f" (reason: {comment})" if comment else "")
                 )
             elif comment:
                 has_comments = True
-                feedback_parts.append(
-                    f"- Step {row.step_index + 1}: MODIFY ({comment})"
-                )
+                feedback_parts.append(f"- Step {row.step_index + 1}: MODIFY ({comment})")
 
         question_rows: list[PlanQuestionRow] = []
         questions_container = self._engage_plan_questions
         if questions_container is not None:
-            question_rows = [
-                child for child in questions_container.children if isinstance(child, PlanQuestionRow)
-            ]
+            question_rows = [child for child in questions_container.children if isinstance(child, PlanQuestionRow)]
         if not rows and not question_rows:
             self._write_transcript_line("[plan] no plan feedback to process.")
             return
@@ -284,11 +276,9 @@ class PlanMixin:
 
         # Build annotated feedback prompt for refinement
         plan_json = self.state.plan.plan_json
-        original_summary = (
-            str((plan_json or {}).get("summary", "")).strip() if plan_json else ""
-        )
+        original_summary = str((plan_json or {}).get("summary", "")).strip() if plan_json else ""
         feedback_prompt = (
-            f"Revise the previous plan"
+            "Revise the previous plan"
             + (f" ({original_summary})" if original_summary else "")
             + " based on user feedback:\n"
             + "\n".join(feedback_parts)
@@ -319,6 +309,7 @@ class PlanMixin:
     def _clear_planning_view(self) -> None:
         """Reset the interactive planning view to its empty state."""
         import contextlib as _ctx
+
         self._set_plan_panel("")
         if self._engage_plan_summary is not None:
             with _ctx.suppress(Exception):

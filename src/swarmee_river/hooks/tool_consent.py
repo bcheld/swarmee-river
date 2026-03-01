@@ -121,9 +121,7 @@ class ToolConsentHooks(HookProvider):
         decision_key = self._decision_key(tool_name)
 
         sw = event.invocation_state.get("swarmee", {}) if isinstance(event.invocation_state, dict) else {}
-        session_overrides = (
-            sw.get("session_safety_overrides", {}) if isinstance(sw, dict) else {}
-        )
+        session_overrides = sw.get("session_safety_overrides", {}) if isinstance(sw, dict) else {}
         if isinstance(session_overrides, dict):
             override_consent = str(session_overrides.get("tool_consent", "")).strip().lower()
             if override_consent == "allow":

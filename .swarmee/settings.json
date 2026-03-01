@@ -37,6 +37,7 @@
     },
     "availability": {},
     "default_tier": "balanced",
+    "hidden_tiers": [],
     "provider": "bedrock",
     "providers": {
       "bedrock": {

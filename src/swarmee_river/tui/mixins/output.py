@@ -8,6 +8,18 @@ from swarmee_river.state_paths import logs_dir
 from swarmee_river.tui.text_sanitize import sanitize_output_text
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
+_THINKING_EXPORT_MAX_CHARS = 5000
+
+
+def _artifact_paths_from_event(event: Any) -> list[str]:
+    kind = str(getattr(event, "kind", "")).strip().lower()
+    if kind != "artifact":
+        return []
+    meta = getattr(event, "meta", None)
+    if not isinstance(meta, dict):
+        return []
+    path = str(meta.get("path", "")).strip()
+    return [path] if path else []
 
 
 class OutputMixin:
@@ -21,6 +33,7 @@ class OutputMixin:
 
     def _show_thinking_text(self) -> None:
         from swarmee_river.tui.widgets import render_system_message
+
         current_text = "".join(self._thinking_buffer).strip()
         text = current_text or (self._last_thinking_text or "").strip()
         if not text:
@@ -48,6 +61,7 @@ class OutputMixin:
 
     def _complete_consent_prompt_hide(self, expected_nonce: int) -> None:
         from textual.widgets import TextArea
+
         self._consent_hide_timer = None
         if expected_nonce != self._consent_prompt_nonce:
             return
@@ -68,6 +82,7 @@ class OutputMixin:
 
     def _show_consent_prompt(self, *, context: str, options: list[str] | None = None, alert: bool = True) -> None:
         from swarmee_river.tui.widgets import ConsentPrompt, extract_consent_tool_name
+
         widget = self._consent_prompt_widget
         if widget is None:
             with contextlib.suppress(Exception):
@@ -145,6 +160,7 @@ class OutputMixin:
 
     def _resume_after_error(self, *, escalate: bool) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         if self.state.daemon.query_active:
             self._write_transcript_line("[run] already running; use /stop.")
             return
@@ -173,6 +189,7 @@ class OutputMixin:
 
     def _retry_failed_tool(self) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         action = self._pending_error_action or {}
         tool_use_id = str(action.get("tool_use_id", "")).strip()
         if not tool_use_id:
@@ -192,6 +209,7 @@ class OutputMixin:
 
     def _skip_failed_tool(self) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         action = self._pending_error_action or {}
         tool_use_id = str(action.get("tool_use_id", "")).strip()
         if not tool_use_id:
@@ -211,6 +229,7 @@ class OutputMixin:
 
     def _apply_consent_capture(self, line: str) -> None:
         from swarmee_river.tui.event_types import update_consent_capture as _update_consent_capture
+
         previously_active = self._consent_active
         next_active, next_buffer = _update_consent_capture(
             self._consent_active,
@@ -243,6 +262,7 @@ class OutputMixin:
 
     def _submit_consent_choice(self, choice: str) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         normalized_choice = choice.strip().lower()
         if normalized_choice not in _CONSENT_CHOICES:
             self._write_transcript_line("Usage: /consent <y|n|a|v>")
@@ -265,14 +285,13 @@ class OutputMixin:
             with contextlib.suppress(Exception):
                 widget.show_confirmation(decision_line, approved=approved)
         self._schedule_consent_prompt_hide(delay=1.0)
-        if not send_daemon_command(
-            self.state.daemon.proc, {"cmd": "consent_response", "choice": normalized_choice}
-        ):
+        if not send_daemon_command(self.state.daemon.proc, {"cmd": "consent_response", "choice": normalized_choice}):
             self._write_transcript_line("[consent] failed to send response (stdin unavailable).")
             return
 
     def _finalize_assistant_message(self) -> None:
         from swarmee_river.tui.widgets import render_assistant_message
+
         self._cancel_streaming_flush_timer()
         self._flush_streaming_buffer()
         if not self._current_assistant_chunks:
@@ -320,6 +339,7 @@ class OutputMixin:
     def _handle_output_line(self, line: str, raw_line: str | None = None) -> None:
         from swarmee_river.tui.event_router import handle_daemon_event as _handle_daemon_event_router
         from swarmee_river.tui.event_types import parse_output_line, parse_tui_event
+
         if self.state.daemon.query_active:
             chunk = raw_line if raw_line is not None else (line + "\n")
             self.state.daemon.turn_output_chunks.append(sanitize_output_text(chunk))
@@ -368,14 +388,17 @@ class OutputMixin:
     def _handle_tui_event(self, event: dict[str, Any]) -> None:
         """Process a structured JSONL event from the subprocess."""
         from swarmee_river.tui.event_router import handle_daemon_event as _handle_daemon_event_router
+
         _handle_daemon_event_router(self, event)
 
     def render_plan_panel(self, plan_json: dict[str, Any]) -> Any:
         from swarmee_river.tui.widgets import render_plan_panel
+
         return render_plan_panel(plan_json)
 
     def render_system_message(self, text: str) -> Any:
         from swarmee_river.tui.widgets import render_system_message
+
         return render_system_message(text)
 
     def render_tool_result_line(
@@ -388,6 +411,7 @@ class OutputMixin:
         tool_use_id: str | None = None,
     ) -> Any:
         from swarmee_river.tui.widgets import render_tool_result_line
+
         return render_tool_result_line(
             tool_name,
             status=status,
@@ -453,8 +477,10 @@ class OutputMixin:
 
     def _finalize_turn(self, *, exit_status: str) -> None:
         import time
+
+        from swarmee_river.tui.text_sanitize import extract_plan_section_from_output, render_tui_hint_after_plan
         from swarmee_river.tui.text_sanitize import sanitize_output_text as _sanitize
-        from swarmee_river.tui.text_sanitize import render_tui_hint_after_plan, extract_plan_section_from_output
+
         self.state.daemon.run_active_tier_warning_emitted = False
         if self.state.daemon.status_timer is not None:
             self.state.daemon.status_timer.stop()
@@ -475,10 +501,7 @@ class OutputMixin:
             self._flush_tool_progress_render(tool_use_id, force=True)
 
         run_tool_count = self.state.daemon.run_tool_count
-        completion_line = (
-            f"[run] completed in {elapsed:.1f}s "
-            f"({run_tool_count} tool calls, status={exit_status})"
-        )
+        completion_line = f"[run] completed in {elapsed:.1f}s ({run_tool_count} tool calls, status={exit_status})"
         self._write_transcript(completion_line)
 
         self._finalize_assistant_message()

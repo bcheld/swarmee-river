@@ -861,9 +861,7 @@ class TestTuiDaemonMode:
         events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
         assert any(event.get("event") == "session_restored" and event.get("turn_count") == 1 for event in events)
         assert any(
-            event.get("event") == "replay_turn"
-            and event.get("role") == "user"
-            and event.get("text") == "What changed?"
+            event.get("event") == "replay_turn" and event.get("role") == "user" and event.get("text") == "What changed?"
             for event in events
         )
         assert any(
@@ -906,6 +904,7 @@ class TestTuiDaemonMode:
 
         def _thread_factory(*args, **kwargs):
             if kwargs.get("name") == "swarmee-session-save":
+
                 class _ImmediateThread:
                     def start(self_inner):
                         target = kwargs.get("target")

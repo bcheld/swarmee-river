@@ -11,7 +11,7 @@ _STDOUT_JSONL_LOCK = Lock()
 
 @contextlib.contextmanager
 def _lock_context(lock: Lock | None) -> Iterator[None]:
-    with (lock or _STDOUT_JSONL_LOCK):
+    with lock or _STDOUT_JSONL_LOCK:
         yield
 
 

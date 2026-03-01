@@ -196,15 +196,15 @@ def test_profile_schema_normalizes_agents_and_auto_delegate_assistive() -> None:
         {
             "id": "triage-research",
             "name": "Triage Research",
-                "summary": "Investigates incoming issues",
-                "prompt": "You triage and categorize incidents.",
-                "provider": "openai",
-                "tier": "balanced",
-                "tool_names": ["file_read", "shell", "SHELL"],
-                "sop_names": ["incident-triage"],
-                "knowledge_base_id": "kb-123",
-                "activated": True,
-            },
+            "summary": "Investigates incoming issues",
+            "prompt": "You triage and categorize incidents.",
+            "provider": "openai",
+            "tier": "balanced",
+            "tool_names": ["file_read", "shell", "SHELL"],
+            "sop_names": ["incident-triage"],
+            "knowledge_base_id": "kb-123",
+            "activated": True,
+        },
         {
             "id": "No-Spec-Fields",
             "name": "No Spec Fields",
@@ -218,6 +218,7 @@ def test_profile_schema_normalizes_agents_and_auto_delegate_assistive() -> None:
             "activated": False,
         },
     ]
+
 
 def test_default_state_dir_profiles_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     state_root = tmp_path / "state-root"

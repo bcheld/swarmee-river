@@ -12,6 +12,7 @@ from swarmee_river.tui.transport import (
     _DaemonTransport,
     _SocketTransport,
     _SubprocessTransport,
+    send_daemon_command,
 )
 
 
@@ -98,7 +99,7 @@ class DaemonMixin:
         self._write_transcript_line("[daemon] failed to send shutdown command.")
 
     def _spawn_daemon(self, *, restart: bool = False) -> None:
-        from swarmee_river.tui.transport import send_daemon_command, spawn_swarmee_daemon
+        from swarmee_river.tui.transport import spawn_swarmee_daemon
 
         self.state.daemon.is_shutting_down = False
         proc = self.state.daemon.proc
@@ -178,8 +179,9 @@ class DaemonMixin:
             self._status_bar.set_elapsed(time.time() - self.state.daemon.run_start_time)
 
     def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
-        from swarmee_river.tui.transport import send_daemon_command
         from textual.widgets import Select
+
+        from swarmee_river.tui.transport import send_daemon_command
 
         if not self.state.daemon.ready:
             self._write_transcript_line("[run] daemon is not ready. Use /daemon restart.")
@@ -273,6 +275,7 @@ class DaemonMixin:
                 selector = self.query_one("#model_select", Select)
                 selected_value = str(getattr(selector, "value", "")).strip()
                 from swarmee_river.tui.model_select import parse_model_select_value
+
                 parsed = parse_model_select_value(selected_value)
                 if parsed is not None:
                     _provider_name, parsed_tier = parsed
@@ -321,9 +324,10 @@ class DaemonMixin:
         self._reset_error_action_prompt()
 
     def _request_provider_connect(self, provider: str, *, profile: str | None = None) -> bool:
-        from swarmee_river.utils.provider_utils import normalize_provider_name
-        from swarmee_river.tui.commands import _CONNECT_USAGE_TEXT
         import os
+
+        from swarmee_river.tui.commands import _CONNECT_USAGE_TEXT
+        from swarmee_river.utils.provider_utils import normalize_provider_name
 
         raw = (provider or "").strip() or "github_copilot"
         normalized = normalize_provider_name(raw)
@@ -357,7 +361,9 @@ class DaemonMixin:
 
     def _recover_runtime_unknown_proxy_command(self, command: str) -> bool:
         from pathlib import Path
+
         from swarmee_river.runtime_service.client import shutdown_runtime_broker
+
         normalized = str(command or "").strip().lower()
         if normalized not in {"connect", "auth"}:
             return False
@@ -393,20 +399,20 @@ class DaemonMixin:
 
     def _handle_pre_run_command(self, text: str) -> bool:
         from swarmee_river.tui.commands import (
-            classify_pre_run_command,
-            _OPEN_USAGE_TEXT,
-            _CONTEXT_USAGE_TEXT,
-            _SOP_USAGE_TEXT,
-            _EXPAND_USAGE_TEXT,
-            _SEARCH_USAGE_TEXT,
-            _TEXT_USAGE_TEXT,
-            _THINKING_USAGE_TEXT,
+            _AUTH_USAGE_TEXT,
             _COMPACT_USAGE_TEXT,
             _CONSENT_USAGE_TEXT,
-            _AUTH_USAGE_TEXT,
-            _CONNECT_USAGE_TEXT,
+            _CONTEXT_USAGE_TEXT,
+            _EXPAND_USAGE_TEXT,
+            _OPEN_USAGE_TEXT,
+            _SEARCH_USAGE_TEXT,
+            _SOP_USAGE_TEXT,
+            _TEXT_USAGE_TEXT,
+            _THINKING_USAGE_TEXT,
+            classify_pre_run_command,
         )
         from swarmee_river.tui.widgets import CommandPalette
+
         classified = classify_pre_run_command(text)
         if classified is None:
             return False
@@ -529,6 +535,7 @@ class DaemonMixin:
 
     def _handle_post_run_command(self, text: str) -> bool:
         from swarmee_river.tui.commands import classify_post_run_command
+
         classified = classify_post_run_command(text)
         if classified is None:
             return False

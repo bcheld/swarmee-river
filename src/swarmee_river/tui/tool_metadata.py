@@ -14,22 +14,62 @@ from swarmee_river.tool_permissions import STRANDS_TOOL_PERMISSIONS, get_permiss
 _TOOL_OVERRIDES_FILENAME = "tool_metadata.json"
 
 # Heuristic R/W/X defaults keyed by tool name substring.
-_READ_TOOLS = frozenset({
-    "file_read", "file_list", "file_search", "glob", "list", "retrieve",
-    "s3_browser", "environment", "current_time", "athena_query",
-    "snowflake_query", "office", "image_reader", "todoread", "sop",
-    "memory", "journal",
-})
-_WRITE_TOOLS = frozenset({
-    "file_write", "editor", "patch_apply", "artifact", "store_in_kb",
-    "todowrite", "welcome", "session_s3",
-})
-_EXECUTE_TOOLS = frozenset({
-    "shell", "python_repl", "git", "run_checks", "http_request",
-    "agent_graph", "swarm", "use_agent", "use_llm", "strand",
-    "calculator", "workflow", "cron", "slack", "speak", "generate_image",
-    "nova_reels", "use_aws", "load_tool",
-})
+_READ_TOOLS = frozenset(
+    {
+        "file_read",
+        "file_list",
+        "file_search",
+        "glob",
+        "list",
+        "retrieve",
+        "s3_browser",
+        "environment",
+        "current_time",
+        "athena_query",
+        "snowflake_query",
+        "office",
+        "image_reader",
+        "todoread",
+        "sop",
+        "memory",
+        "journal",
+    }
+)
+_WRITE_TOOLS = frozenset(
+    {
+        "file_write",
+        "editor",
+        "patch_apply",
+        "artifact",
+        "store_in_kb",
+        "todowrite",
+        "welcome",
+        "session_s3",
+    }
+)
+_EXECUTE_TOOLS = frozenset(
+    {
+        "shell",
+        "python_repl",
+        "git",
+        "run_checks",
+        "http_request",
+        "agent_graph",
+        "swarm",
+        "use_agent",
+        "use_llm",
+        "strand",
+        "calculator",
+        "workflow",
+        "cron",
+        "slack",
+        "speak",
+        "generate_image",
+        "nova_reels",
+        "use_aws",
+        "load_tool",
+    }
+)
 
 
 @dataclass
@@ -115,6 +155,7 @@ def discover_tools_with_metadata(tools_dict: dict[str, Any] | None = None) -> li
     """
     if tools_dict is None:
         from swarmee_river.tools import get_tools
+
         tools_dict = get_tools()
 
     overrides = load_tool_metadata_overrides()
@@ -165,16 +206,37 @@ def discover_tools_with_metadata(tools_dict: dict[str, Any] | None = None) -> li
 
 
 # Names from _CUSTOM_TOOLS in tools.py for source classification.
-_CUSTOM_TOOL_NAMES = frozenset({
-    "file_list", "file_search", "file_read", "office", "s3_browser",
-    "session_s3", "snowflake_query", "athena_query", "glob", "list",
-    "store_in_kb", "strand", "welcome", "sop", "artifact", "git",
-    "patch_apply", "plan_progress", "run_checks", "todoread", "todowrite",
-    "agent_graph", "swarm",
-})
+_CUSTOM_TOOL_NAMES = frozenset(
+    {
+        "file_list",
+        "file_search",
+        "file_read",
+        "office",
+        "s3_browser",
+        "session_s3",
+        "snowflake_query",
+        "athena_query",
+        "glob",
+        "list",
+        "store_in_kb",
+        "strand",
+        "welcome",
+        "sop",
+        "artifact",
+        "git",
+        "patch_apply",
+        "plan_progress",
+        "run_checks",
+        "todoread",
+        "todowrite",
+        "agent_graph",
+        "swarm",
+    }
+)
 
 
 # ── Tag query helpers ──────────────────────────────────────────────────────
+
 
 def tools_by_tag(tag: str, catalog: list[ToolMeta]) -> list[str]:
     """Return tool names whose tags include *tag* (case-insensitive)."""

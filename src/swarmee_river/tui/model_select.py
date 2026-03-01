@@ -248,15 +248,9 @@ def daemon_model_select_options(
     override_provider_name = (override_provider or "").strip().lower()
     override_tier_name = (override_tier or "").strip().lower()
     override_value = (
-        f"{override_provider_name}|{override_tier_name}"
-        if override_provider_name and override_tier_name
-        else ""
+        f"{override_provider_name}|{override_tier_name}" if override_provider_name and override_tier_name else ""
     )
-    if (
-        override_value
-        and override_value not in available_values
-        and override_provider_name == provider_name
-    ):
+    if override_value and override_value not in available_values and override_provider_name == provider_name:
         options.insert(0, (f"{override_provider_name}/{override_tier_name} (selected)", override_value))
         available_values.add(override_value)
 

@@ -166,6 +166,7 @@ class _ClientReader:
         self.client.close()
         self._thread.join(timeout=1.0)
 
+
 def test_runtime_broker_smoke_broadcast_and_controller_gating(monkeypatch, tmp_path: Path) -> None:
     async def _fake_start_session_process(self: RuntimeServiceServer, session: SessionState) -> None:
         process = _FakeDaemonProcess(session.session_id)

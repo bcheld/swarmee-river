@@ -68,21 +68,21 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
     if normalized == "/context":
         return "context_usage", None
     if normalized.startswith("/context "):
-        return "context", text[len("/context "):]
+        return "context", text[len("/context ") :]
     if normalized == "/sop":
         return "sop_usage", None
     if normalized.startswith("/sop "):
-        return "sop", text[len("/sop "):]
+        return "sop", text[len("/sop ") :]
     if normalized.startswith("/open "):
-        return "open", text[len("/open "):]
+        return "open", text[len("/open ") :]
     if normalized == "/open":
         return "open_usage", None
     if normalized.startswith("/expand "):
-        return "expand", text[len("/expand "):]
+        return "expand", text[len("/expand ") :]
     if normalized == "/expand":
         return "expand_usage", None
     if normalized.startswith("/search "):
-        return "search", text[len("/search "):]
+        return "search", text[len("/search ") :]
     if normalized == "/search":
         return "search_usage", None
     if normalized == "/text":
@@ -116,7 +116,7 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
     if normalized == "/auth":
         return "auth_usage", None
     if normalized.startswith("/auth "):
-        return "auth", text[len("/auth "):].strip()
+        return "auth", text[len("/auth ") :].strip()
     model = classify_model_command(normalized)
     if model is not None:
         action, argument = model
@@ -136,11 +136,11 @@ def classify_post_run_command(text: str) -> tuple[str, str | None] | None:
     if normalized == "/plan":
         return "plan_mode", None
     if text.startswith("/plan "):
-        return "plan_prompt", text[len("/plan "):].strip()
+        return "plan_prompt", text[len("/plan ") :].strip()
     if normalized == "/run":
         return "run_mode", None
     if text.startswith("/run "):
-        return "run_prompt", text[len("/run "):].strip()
+        return "run_prompt", text[len("/run ") :].strip()
     return None
 
 

@@ -457,11 +457,7 @@ def _extract_text_from_message_for_replay(message: Any) -> str:
 
 
 def _turn_count_from_messages(messages: list[Any]) -> int:
-    return sum(
-        1
-        for item in messages
-        if isinstance(item, dict) and str(item.get("role", "")).strip().lower() == "user"
-    )
+    return sum(1 for item in messages if isinstance(item, dict) and str(item.get("role", "")).strip().lower() == "user")
 
 
 def _event_loop_running() -> bool:
@@ -624,13 +620,15 @@ def _emit_tui_context_event_if_enabled(agent: Any) -> None:
             chars_per_token=chars_per_token,
         )
         budget = int(os.getenv("SWARMEE_CONTEXT_BUDGET_TOKENS", "20000"))
-        _emit_tui_event({
-            "event": "context",
-            "prompt_tokens_est": prompt_tokens_est,
-            "budget_tokens": budget,
-            "chars_per_token": chars_per_token,
-            "messages": len(getattr(agent, "messages", []) or []),
-        })
+        _emit_tui_event(
+            {
+                "event": "context",
+                "prompt_tokens_est": prompt_tokens_est,
+                "budget_tokens": budget,
+                "chars_per_token": chars_per_token,
+                "messages": len(getattr(agent, "messages", []) or []),
+            }
+        )
     except Exception:
         pass
 
@@ -806,7 +804,7 @@ def _handle_auth_cli_command(command: str, args: list[str]) -> tuple[bool, str]:
     if cmd != "auth":
         return False, ""
 
-    subcmd = (args[0].strip().lower() if args else "list")
+    subcmd = args[0].strip().lower() if args else "list"
     if subcmd in {"list", "ls"}:
         return True, _render_auth_records_text()
     if subcmd == "logout":
@@ -828,8 +826,7 @@ def _handle_auth_cli_command(command: str, args: list[str]) -> tuple[bool, str]:
             key = (os.getenv("SWARMEE_GITHUB_COPILOT_API_KEY") or "").strip()
             if not key:
                 return True, (
-                    "Set SWARMEE_GITHUB_COPILOT_API_KEY and re-run `swarmee auth login --api-key` "
-                    "to save it locally."
+                    "Set SWARMEE_GITHUB_COPILOT_API_KEY and re-run `swarmee auth login --api-key` to save it locally."
                 )
             path = save_api_key(key)
             return True, f"Saved GitHub Copilot API key to: {path}"
@@ -837,8 +834,7 @@ def _handle_auth_cli_command(command: str, args: list[str]) -> tuple[bool, str]:
         return True, f"GitHub Copilot connected.\nSaved credentials to: {result.get('path')}"
     return (
         True,
-        "Usage: swarmee auth list | swarmee auth login [github_copilot] [--api-key] | "
-        "swarmee auth logout [provider]",
+        "Usage: swarmee auth list | swarmee auth login [github_copilot] [--api-key] | swarmee auth logout [provider]",
     )
 
 
@@ -906,11 +902,13 @@ def _build_runtime_hooks(
         if callable(consent_prompt_fn):
             return str(consent_prompt_fn(text) or "")
         if _tui_events_enabled():
-            _emit_tui_event({
-                "event": "consent_prompt",
-                "context": text,
-                "options": ["y", "n", "a", "v"],
-            })
+            _emit_tui_event(
+                {
+                    "event": "consent_prompt",
+                    "context": text,
+                    "options": ["y", "n", "a", "v"],
+                }
+            )
             try:
                 return input().strip()
             except (KeyboardInterrupt, EOFError):
@@ -1505,8 +1503,7 @@ def _build_agent_runtime(
                     (
                         "Assistive Delegation Roster:\n"
                         "When a task matches one of these roles, prefer delegating via a single `swarm` call.\n"
-                        "If delegation does not fit, continue normally.\n\n"
-                        + "\n".join(guidance_lines)
+                        "If delegation does not fit, continue normally.\n\n" + "\n".join(guidance_lines)
                     ),
                 )
             else:
@@ -1725,6 +1722,7 @@ def _build_agent_runtime(
         prompt_cache.queue_one_off(approved_plan_section)
         refresh_system_prompt(welcome_text_local)
         try:
+
             def _run_execute_once() -> Any:
                 result = run_agent(user_request, invocation_state=invocation_state)
                 if knowledge_base_id:
@@ -1810,15 +1808,11 @@ def _build_agent_runtime(
             if tier_provider is None:
                 raise ValueError(f"Unknown tier: {requested_tier}")
             if requested_provider and requested_provider != tier_provider:
-                raise ValueError(
-                    "set_profile.profile.provider does not match the requested tier's provider"
-                )
+                raise ValueError("set_profile.profile.provider does not match the requested tier's provider")
         elif requested_provider:
             current_provider = _current_provider_name()
             if current_provider and requested_provider != current_provider:
-                raise ValueError(
-                    "set_profile.profile.provider requires a matching profile.tier for runtime apply"
-                )
+                raise ValueError("set_profile.profile.provider requires a matching profile.tier for runtime apply")
 
         resolved_sops: list[tuple[str, str]] = []
         for sop_name in normalized.active_sops:
@@ -2821,11 +2815,13 @@ def main() -> None:
             return response
 
     def _daemon_consent_prompt(text: str) -> str:
-        _write_stdout_jsonl({
-            "event": "consent_prompt",
-            "context": text,
-            "options": ["y", "n", "a", "v"],
-        })
+        _write_stdout_jsonl(
+            {
+                "event": "consent_prompt",
+                "context": text,
+                "options": ["y", "n", "a", "v"],
+            }
+        )
         _set_daemon_consent_response("")
         daemon_consent_event.clear()
         daemon_consent_event.wait()
@@ -2982,9 +2978,7 @@ def main() -> None:
                     "event": "replay_turn",
                     "role": role,
                     "text": text,
-                    "timestamp": str(
-                        message.get("timestamp") or message.get("ts") or message.get("created_at") or ""
-                    ),
+                    "timestamp": str(message.get("timestamp") or message.get("ts") or message.get("created_at") or ""),
                 }
                 if role == "assistant":
                     model_value = message.get("model") or message.get("model_id") or message.get("name")

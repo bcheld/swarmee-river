@@ -2,53 +2,35 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import importlib
 import inspect
 import json as _json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from swarmee_river.artifacts import ArtifactStore
-from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, save_profile
-from swarmee_river.profiles.models import normalize_agent_definitions
-from swarmee_river.runtime_service.client import ensure_runtime_broker
-from swarmee_river.session.graph_index import (
-    build_session_graph_index,
-    load_session_graph_index,
-    write_session_graph_index,
-)
-from swarmee_river.state_paths import logs_dir, sessions_dir
 from swarmee_river.tui.agent_studio import (
     _normalized_tool_name_list,
     _policy_tier_profile,
-    build_activated_agent_sidebar_items,
-    build_activated_agents_run_prompt,
     build_agent_policy_lens,
     build_agent_team_sidebar_items,
     build_agent_tools_safety_sidebar_items,
     build_team_preset_run_prompt,
-    normalize_agent_definition,
     normalize_agent_studio_view_mode,
     normalize_session_safety_overrides,
     normalize_team_preset,
     normalize_team_presets,
-    render_activated_agent_detail_text,
     render_agent_team_detail_text,
     render_agent_tools_safety_detail_text,
 )
-from swarmee_river.tools import get_tools
 from swarmee_river.tui.commands import (
     _AUTH_USAGE_TEXT,
     _COMPACT_USAGE_TEXT,
@@ -67,13 +49,6 @@ from swarmee_river.tui.commands import (
     classify_post_run_command,
     classify_pre_run_command,
 )
-from swarmee_river.tui.event_router import (
-    _FATAL_TOAST_TIMEOUT_S,
-    _TRANSIENT_TOAST_TIMEOUT_S,
-    classify_tui_error_event,
-    handle_daemon_event as _handle_daemon_event_router,
-    summarize_error_for_toast,
-)
 from swarmee_river.tui.event_types import (
     ParsedEvent,
     extract_tui_text_chunk,
@@ -86,6 +61,18 @@ from swarmee_river.tui.event_types import (
 from swarmee_river.tui.event_types import (
     update_consent_capture as _event_update_consent_capture,
 )
+from swarmee_river.tui.mixins.agent_studio import AgentStudioMixin
+from swarmee_river.tui.mixins.artifacts import ArtifactsMixin
+from swarmee_river.tui.mixins.context_sources import ContextSourcesMixin
+from swarmee_river.tui.mixins.daemon import DaemonMixin
+from swarmee_river.tui.mixins.output import OutputMixin
+from swarmee_river.tui.mixins.plan import PlanMixin
+from swarmee_river.tui.mixins.prompt_ui import PromptUIMixin
+from swarmee_river.tui.mixins.session import SessionMixin
+from swarmee_river.tui.mixins.settings import SettingsMixin
+from swarmee_river.tui.mixins.thinking import ThinkingMixin
+from swarmee_river.tui.mixins.tools import ToolsMixin
+from swarmee_river.tui.mixins.transcript import TranscriptMixin
 from swarmee_river.tui.model_select import (
     _MODEL_AUTO_VALUE,
     _MODEL_LOADING_VALUE,
@@ -122,18 +109,6 @@ from swarmee_river.tui.sops import (
     discover_available_sop_names,
     discover_available_sops,
 )
-from swarmee_river.tui.mixins.agent_studio import AgentStudioMixin
-from swarmee_river.tui.mixins.artifacts import ArtifactsMixin
-from swarmee_river.tui.mixins.context_sources import ContextSourcesMixin
-from swarmee_river.tui.mixins.daemon import DaemonMixin
-from swarmee_river.tui.mixins.output import OutputMixin
-from swarmee_river.tui.mixins.plan import PlanMixin
-from swarmee_river.tui.mixins.prompt_ui import PromptUIMixin
-from swarmee_river.tui.mixins.session import SessionMixin
-from swarmee_river.tui.mixins.settings import SettingsMixin
-from swarmee_river.tui.mixins.thinking import ThinkingMixin
-from swarmee_river.tui.mixins.tools import ToolsMixin
-from swarmee_river.tui.mixins.transcript import TranscriptMixin
 from swarmee_river.tui.state import AppState
 from swarmee_river.tui.text_sanitize import (
     extract_plan_section,
@@ -144,11 +119,6 @@ from swarmee_river.tui.text_sanitize import (
 )
 from swarmee_river.tui.transport import (
     _build_swarmee_subprocess_env as _transport_build_swarmee_subprocess_env,
-)
-from swarmee_river.tui.transport import (
-    _DaemonTransport,
-    _SocketTransport,
-    _SubprocessTransport,
 )
 from swarmee_river.tui.transport import (
     send_daemon_command as _transport_send_daemon_command,
@@ -686,7 +656,6 @@ def run_tui() -> int:
         textual_binding = importlib.import_module("textual.binding")
         textual_containers = importlib.import_module("textual.containers")
         textual_screen = importlib.import_module("textual.screen")
-        textual_widget_base = importlib.import_module("textual.widget")
         textual_widgets = importlib.import_module("textual.widgets")
     except ImportError:
         print(
@@ -703,53 +672,31 @@ def run_tui() -> int:
     Horizontal = textual_containers.Horizontal
     Vertical = textual_containers.Vertical
     VerticalScroll = textual_containers.VerticalScroll
-    WidgetBase = textual_widget_base.Widget
     Button = textual_widgets.Button
-    Checkbox = textual_widgets.Checkbox
     Header = textual_widgets.Header
     Footer = textual_widgets.Footer
     Input = textual_widgets.Input
     Select = textual_widgets.Select
     Static = textual_widgets.Static
-    TabbedContent = textual_widgets.TabbedContent
     TextArea = textual_widgets.TextArea
 
-    from swarmee_river.tui.views.engage import wire_engage_widgets
     from swarmee_river.tui.views.agents import wire_agents_widgets
+    from swarmee_river.tui.views.engage import wire_engage_widgets
     from swarmee_river.tui.views.scaffold import wire_scaffold_widgets
     from swarmee_river.tui.views.settings import (
-        build_env_sidebar_items,
-        env_category_options,
         env_spec_by_key,
         wire_settings_widgets,
     )
     from swarmee_river.tui.views.sidebar import compose_sidebar
     from swarmee_river.tui.widgets import (
         ActionSheet,
-        AssistantMessage,
         CommandPalette,
         ConsentPrompt,
         ContextBudgetBar,
         ErrorActionPrompt,
         PlanStepRow,
-        ReasoningBlock,
-        SidebarDetail,
-        SidebarHeader,
-        SidebarList,
         StatusBar,
         ThinkingBar,
-        ToolCallBlock,
-        extract_consent_tool_name,
-        format_tool_input_oneliner,
-        render_agent_profile_summary_text,
-        render_assistant_message,
-        render_plan_panel,
-        render_system_message,
-        render_tool_details_panel,
-        render_tool_heartbeat_line,
-        render_tool_progress_chunk,
-        render_tool_result_line,
-        render_user_message,
     )
 
     class PromptTextArea(TextArea):
@@ -999,8 +946,7 @@ def run_tui() -> int:
             with Vertical(id="plan_cancel_confirm_dialog"):
                 yield Static("Cancel plan?", id="plan_cancel_confirm_title")
                 yield Static(
-                    "This clears the current plan and refinement state.\n"
-                    "Transcript history is preserved.",
+                    "This clears the current plan and refinement state.\nTranscript history is preserved.",
                     id="plan_cancel_confirm_body",
                 )
                 with Horizontal(id="plan_cancel_confirm_actions"):
@@ -1257,7 +1203,16 @@ def run_tui() -> int:
             layout: vertical;
         }
 
-        #tooling_tools_table {
+        #tooling_tools_table,
+        #tooling_prompts_table,
+        #tooling_sops_table,
+        #tooling_kbs_table,
+        #session_timeline_table,
+        #session_artifacts_table,
+        #agent_overview_table,
+        #agent_builder_table,
+        #settings_models_table,
+        #settings_env_table {
             height: 2fr;
             border: round #3b3b3b;
             scrollbar-background: #2f2f2f;
@@ -1268,17 +1223,38 @@ def run_tui() -> int:
             scrollbar-color-active: #b3b3b3;
         }
 
-        #tooling_tools_table > .datatable--cursor {
+        #tooling_tools_table > .datatable--cursor,
+        #tooling_prompts_table > .datatable--cursor,
+        #tooling_sops_table > .datatable--cursor,
+        #tooling_kbs_table > .datatable--cursor,
+        #session_timeline_table > .datatable--cursor,
+        #session_artifacts_table > .datatable--cursor,
+        #agent_overview_table > .datatable--cursor,
+        #agent_builder_table > .datatable--cursor,
+        #settings_models_table > .datatable--cursor,
+        #settings_env_table > .datatable--cursor {
             background: $accent 30%;
             color: $text;
         }
 
-        #tooling_tools_table > .datatable--header {
+        #tooling_tools_table > .datatable--header,
+        #tooling_prompts_table > .datatable--header,
+        #tooling_sops_table > .datatable--header,
+        #tooling_kbs_table > .datatable--header,
+        #session_timeline_table > .datatable--header,
+        #session_artifacts_table > .datatable--header,
+        #agent_overview_table > .datatable--header,
+        #agent_builder_table > .datatable--header,
+        #settings_models_table > .datatable--header,
+        #settings_env_table > .datatable--header {
             background: #2f2f2f;
             color: $text;
         }
 
-        #tooling_tools_view SidebarDetail {
+        #tooling_tools_view SidebarDetail,
+        #tooling_prompts_view SidebarDetail,
+        #tooling_sops_view SidebarDetail,
+        #tooling_kbs_view SidebarDetail {
             height: 1fr;
         }
 
@@ -1390,7 +1366,8 @@ def run_tui() -> int:
             padding: 0 0 1 0;
         }
 
-        #settings_models_form_row_1, #settings_models_form_row_2, #settings_models_form_row_3, #settings_models_form_actions {
+        #settings_models_form_row_1, #settings_models_form_row_2,
+        #settings_models_form_row_3, #settings_models_form_actions {
             height: auto;
             layout: horizontal;
             margin: 0 0 1 0;
@@ -1513,11 +1490,6 @@ def run_tui() -> int:
             layout: vertical;
         }
 
-        #artifacts_list {
-            margin: 0 0 1 0;
-            min-height: 10;
-        }
-
         #artifacts_detail {
             height: 1fr;
         }
@@ -1556,7 +1528,7 @@ def run_tui() -> int:
             layout: vertical;
         }
 
-        #session_timeline_list {
+        #session_timeline_table {
             margin: 0 0 1 0;
             min-height: 10;
         }
@@ -1565,7 +1537,7 @@ def run_tui() -> int:
             height: 1fr;
         }
 
-        #session_artifacts_list {
+        #session_artifacts_table {
             margin: 0 0 1 0;
             min-height: 10;
         }
@@ -1604,7 +1576,7 @@ def run_tui() -> int:
             padding: 0 0 1 0;
         }
 
-        #agent_overview_list, #agent_builder_agent_list {
+        #agent_overview_table, #agent_builder_table {
             width: 1fr;
             margin: 0 0 1 0;
             min-height: 8;
@@ -1763,46 +1735,6 @@ def run_tui() -> int:
             padding: 0 0 1 0;
         }
 
-        #sop_list {
-            height: 1fr;
-            border: round #3b3b3b;
-            padding: 0 1;
-            margin: 0 0 1 0;
-            scrollbar-background: #2f2f2f;
-            scrollbar-background-hover: #3a3a3a;
-            scrollbar-background-active: #454545;
-            scrollbar-color: #7f7f7f;
-            scrollbar-color-hover: #999999;
-            scrollbar-color-active: #b3b3b3;
-        }
-
-        .sop-row {
-            height: auto;
-            margin: 0 0 1 0;
-            padding: 0;
-            layout: vertical;
-            border-bottom: solid #333333;
-        }
-
-        .sop-row-header {
-            height: auto;
-            layout: horizontal;
-            margin: 0;
-            padding: 0;
-        }
-
-        .sop-source-label {
-            width: auto;
-            min-width: 14;
-            color: $text-muted;
-            padding: 0 0 0 1;
-        }
-
-        .sop-preview {
-            color: $text-muted;
-            padding: 0 0 0 3;
-        }
-
         #plan_actions {
             display: none;
             height: auto;
@@ -1912,7 +1844,6 @@ def run_tui() -> int:
         _context_ready_for_sync: bool = False
         _sop_catalog: list[dict[str, str]] = []
         _active_sop_names: set[str] = set()
-        _sop_toggle_id_to_name: dict[str, str] = {}
         _sops_ready_for_sync: bool = False
         # Conversation view state
         _current_assistant_chunks: list[str] = []
@@ -1942,7 +1873,6 @@ def run_tui() -> int:
         _error_action_prompt_widget: Any = None  # ErrorActionPrompt | None
         _pending_error_action: dict[str, Any] | None = None
         _context_sources_list: Any = None  # VerticalScroll | None
-        _sop_list: Any = None  # VerticalScroll | None
         _context_input: Any = None  # Input | None
         _context_sop_select: Any = None  # Select | None
         _session_header: Any = None  # SidebarHeader | None
@@ -1953,12 +1883,15 @@ def run_tui() -> int:
         _session_issues_view: Any = None  # Vertical | None (backward compat)
         _session_artifacts_view: Any = None  # Vertical | None
         _session_timeline_header: Any = None  # SidebarHeader | None
-        _session_timeline_list: Any = None  # SidebarList | None
+        _session_timeline_table: Any = None  # DataTable | None
         _session_timeline_detail: Any = None  # SidebarDetail | None
+        _session_artifacts_header: Any = None  # SidebarHeader | None
+        _session_artifacts_table: Any = None  # DataTable | None
+        _session_artifacts_detail: Any = None  # SidebarDetail | None
         _session_issue_list: Any = None  # SidebarList | None
         _session_issue_detail: Any = None  # SidebarDetail | None
         _artifacts_header: Any = None  # SidebarHeader | None
-        _artifacts_list: Any = None  # SidebarList | None
+        _artifacts_table: Any = None  # DataTable | None
         _artifacts_detail: Any = None  # SidebarDetail | None
         _command_palette: Any = None  # CommandPalette | None
         _action_sheet: Any = None  # ActionSheet | None
@@ -1987,12 +1920,12 @@ def run_tui() -> int:
         _agent_overview_view: Any = None  # Vertical | None
         _agent_builder_view: Any = None  # Vertical | None
         _agent_overview_header: Any = None  # SidebarHeader | None
-        _agent_overview_list: Any = None  # SidebarList | None
+        _agent_overview_table: Any = None  # DataTable | None
         _agent_overview_detail: Any = None  # SidebarDetail | None
         _agent_overview_status: Any = None  # Static | None
         _agent_profile_select: Any = None  # Select | None
         _agent_builder_auto_delegate_checkbox: Any = None  # Checkbox | None
-        _agent_builder_list: Any = None  # SidebarList | None
+        _agent_builder_table: Any = None  # DataTable | None
         _agent_builder_detail: Any = None  # SidebarDetail | None
         _agent_builder_agent_id_input: Any = None  # Input | None
         _agent_builder_agent_name_input: Any = None  # Input | None
@@ -2047,7 +1980,7 @@ def run_tui() -> int:
         _tooling_sops_view: Any = None
         _tooling_kbs_view: Any = None
         _tooling_prompts_header: Any = None
-        _tooling_prompts_list: Any = None
+        _tooling_prompts_table: Any = None
         _tooling_prompts_detail: Any = None
         _tooling_prompt_name_input: Any = None
         _tooling_prompt_content_input: Any = None
@@ -2055,8 +1988,10 @@ def run_tui() -> int:
         _tooling_tools_table: Any = None
         _tooling_tools_detail: Any = None
         _tooling_sops_header: Any = None
+        _tooling_sops_table: Any = None
+        _tooling_sops_detail: Any = None
         _tooling_kbs_header: Any = None
-        _kbs_list: Any = None
+        _tooling_kbs_table: Any = None
         _kbs_detail: Any = None
         # Settings tab
         _settings_view_general_button: Any = None
@@ -2067,7 +2002,7 @@ def run_tui() -> int:
         _settings_advanced_view: Any = None
         _settings_general_summary: Any = None  # Static | None
         _settings_models_summary: Any = None  # Static | None
-        _settings_models_list: Any = None  # SidebarList | None
+        _settings_models_table: Any = None  # DataTable | None
         _settings_models_detail: Any = None  # Static | None
         _settings_auth_status: Any = None  # Static | None
         _settings_aws_profile_input: Any = None  # Input | None
@@ -2092,7 +2027,7 @@ def run_tui() -> int:
         _settings_toggle_truncate_results_button: Any = None  # Button | None
         _settings_toggle_log_redact_button: Any = None  # Button | None
         _settings_toggle_freeze_tools_button: Any = None  # Button | None
-        _settings_env_list: Any = None  # SidebarList | None
+        _settings_env_table: Any = None  # DataTable | None
         _settings_scope_current: Any = None  # Static | None
         _settings_directory_tree: Any = None  # DirectoryTree | None
         _settings_env_selected_key: str | None = None
@@ -2233,7 +2168,7 @@ def run_tui() -> int:
             self._refresh_context_sop_options()
             self._render_context_sources_panel()
             self._refresh_sop_catalog()
-            self._render_sop_panel()
+            self._refresh_tooling_sops_table()
             self._reload_saved_profiles()
             self._refresh_agent_tool_catalog()
             self._set_agent_tools_override_form_values(self.state.agent_studio.session_safety_overrides)
@@ -2247,6 +2182,7 @@ def run_tui() -> int:
             # Tooling tab initialization
             self._refresh_tooling_prompts_list()
             self._refresh_tooling_tools_list()
+            self._refresh_tooling_kbs_table()
 
         def _refresh_all_views(self) -> None:
             self._refresh_agent_summary()
@@ -2275,12 +2211,9 @@ def run_tui() -> int:
                 transcript.scroll_end(animate=False)
             self._set_transcript_mode("rich", notify=False)
 
-
-
         # _set_agents_view_mode removed — Agents tab uses _set_agent_studio_view_mode
 
         # ── Tooling tab helpers ─────────────────────────────────────────
-
 
         def _build_action_sheet_actions(self) -> tuple[str, list[dict[str, str]]]:
             if self._action_sheet_mode == "tier_menu":
@@ -2451,8 +2384,6 @@ def run_tui() -> int:
             with contextlib.suppress(Exception):
                 self.notify(message, severity=severity, timeout=timeout)
 
-
-
         def action_quit(self) -> None:
             self.state.daemon.is_shutting_down = True
             timer = self._prompt_estimate_timer
@@ -2541,11 +2472,6 @@ def run_tui() -> int:
                 self._set_agent_builder_status("Agent draft changes pending.")
                 self._set_agent_draft_dirty(True)
                 return
-            sop_name = self._sop_toggle_id_to_name.get(checkbox_id)
-            if not sop_name:
-                return
-            value = bool(getattr(event, "value", False))
-            self._set_sop_active(sop_name, value, sync=True, announce=True)
 
         def on_select_changed(self, event: Any) -> None:
             select_widget = getattr(event, "select", None)
@@ -2714,58 +2640,10 @@ def run_tui() -> int:
             if sidebar_list is None:
                 return
 
-            if sidebar_list is self._settings_env_list:
-                selected_id = str(getattr(event, "item_id", "")).strip()
-                self._settings_env_selected_key = selected_id if selected_id and not selected_id.startswith("__") else None
-                self._refresh_settings_env_detail(self._settings_env_selected_key)
-                return
-
-            if sidebar_list is self._settings_models_list:
-                selected_id = str(getattr(event, "item_id", "")).strip()
-                self._settings_models_selected_id = selected_id if selected_id and not selected_id.startswith("__") else None
-                self._refresh_settings_model_detail()
-                return
-
             if sidebar_list is self._session_issue_list:
                 selected_id = str(getattr(event, "item_id", "")).strip()
                 selected_issue = self._session_issue_by_id(selected_id)
                 self._set_session_issue_selection(selected_issue)
-                return
-
-            if sidebar_list is self._session_timeline_list:
-                selected_id = str(getattr(event, "item_id", "")).strip()
-                selected_event = self._session_timeline_event_by_id(selected_id)
-                self._set_session_timeline_selection(selected_event)
-                return
-
-            if sidebar_list is self._artifacts_list:
-                selected_id = str(getattr(event, "item_id", "")).strip()
-                selected_entry = self._artifact_entry_by_item_id(selected_id)
-                self._set_artifact_selection(selected_entry)
-                return
-
-            if sidebar_list is self._agent_overview_list:
-                selected_id = str(getattr(event, "item_id", "")).strip()
-                selected_item = next(
-                    (
-                        item
-                        for item in self.state.agent_studio.activated_items
-                        if str(item.get("id", "")).strip() == selected_id
-                    ),
-                    None,
-                )
-                self._set_agent_overview_selection(selected_item)
-                return
-
-            if sidebar_list is self._agent_builder_list:
-                selected_id = str(getattr(event, "item_id", "")).strip()
-                selected_item = self._agent_builder_item_by_id(selected_id)
-                self._set_agent_builder_selection(selected_item)
-                return
-
-            if sidebar_list is self._tooling_prompts_list:
-                selected_id = str(getattr(event, "item_id", "")).strip()
-                self._tooling_select_prompt(selected_id)
                 return
 
         def on_data_table_row_selected(self, event: Any) -> None:
@@ -2777,6 +2655,79 @@ def run_tui() -> int:
                     self._tooling_select_tool(selected_id)
                     self._tooling_tool_open_tag_editor()
                 return
+            if table is not None and table is self._tooling_sops_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is None:
+                    return
+                selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                self._tooling_select_sop(selected_id)
+                if not selected_id:
+                    return
+                next_active = selected_id not in self._active_sop_names
+                self._set_sop_active(selected_id, next_active, sync=True, announce=True)
+                return
+            if table is not None and table is self._tooling_prompts_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._tooling_select_prompt(selected_id)
+                return
+            if table is not None and table is self._tooling_kbs_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._tooling_select_kb(selected_id)
+                return
+            if table is not None and table is self._session_timeline_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._set_session_timeline_selection(self._session_timeline_event_by_id(selected_id))
+                return
+            if table is not None and table is self._session_artifacts_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._set_artifact_selection(self._artifact_entry_by_item_id(selected_id))
+                return
+            if table is not None and table is self._agent_overview_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    selected_item = next(
+                        (
+                            item
+                            for item in self.state.agent_studio.activated_items
+                            if str(item.get("id", "")).strip() == selected_id
+                        ),
+                        None,
+                    )
+                    self._set_agent_overview_selection(selected_item)
+                return
+            if table is not None and table is self._agent_builder_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._set_agent_builder_selection(self._agent_builder_item_by_id(selected_id))
+                return
+            if table is not None and table is self._settings_models_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._settings_models_selected_id = (
+                        selected_id if selected_id and not selected_id.startswith("__") else None
+                    )
+                    self._refresh_settings_model_detail()
+                return
+            if table is not None and table is self._settings_env_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._settings_env_selected_key = (
+                        selected_id if selected_id and not selected_id.startswith("__") else None
+                    )
+                    self._refresh_settings_env_detail(self._settings_env_selected_key)
+                return
 
         def on_data_table_row_highlighted(self, event: Any) -> None:
             table = getattr(event, "data_table", None)
@@ -2785,6 +2736,74 @@ def run_tui() -> int:
                 if row_key is not None:
                     selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
                     self._tooling_select_tool(selected_id)
+                return
+            if table is not None and table is self._tooling_prompts_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._tooling_select_prompt(selected_id)
+                return
+            if table is not None and table is self._tooling_sops_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._tooling_select_sop(selected_id)
+                return
+            if table is not None and table is self._tooling_kbs_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._tooling_select_kb(selected_id)
+                return
+            if table is not None and table is self._session_timeline_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._set_session_timeline_selection(self._session_timeline_event_by_id(selected_id))
+                return
+            if table is not None and table is self._session_artifacts_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._set_artifact_selection(self._artifact_entry_by_item_id(selected_id))
+                return
+            if table is not None and table is self._agent_overview_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    selected_item = next(
+                        (
+                            item
+                            for item in self.state.agent_studio.activated_items
+                            if str(item.get("id", "")).strip() == selected_id
+                        ),
+                        None,
+                    )
+                    self._set_agent_overview_selection(selected_item)
+                return
+            if table is not None and table is self._agent_builder_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._set_agent_builder_selection(self._agent_builder_item_by_id(selected_id))
+                return
+            if table is not None and table is self._settings_models_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._settings_models_selected_id = (
+                        selected_id if selected_id and not selected_id.startswith("__") else None
+                    )
+                    self._refresh_settings_model_detail()
+                return
+            if table is not None and table is self._settings_env_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._settings_env_selected_key = (
+                        selected_id if selected_id and not selected_id.startswith("__") else None
+                    )
+                    self._refresh_settings_env_detail(self._settings_env_selected_key)
                 return
 
         def on_sidebar_detail_action_selected(self, event: Any) -> None:
@@ -3092,6 +3111,9 @@ def run_tui() -> int:
             if button_id == "settings_models_save":
                 self._save_model_form()
                 return
+            if button_id == "settings_models_restore_defaults":
+                self._restore_model_form_selection()
+                return
             if button_id == "settings_models_delete":
                 self._delete_model_form_selection()
                 return
@@ -3153,6 +3175,7 @@ def run_tui() -> int:
                 return
             if button_id == "settings_set_scope":
                 import contextlib as _ctx
+
                 with _ctx.suppress(Exception):
                     path_input = self.query_one("#settings_scope_path_input", Input)
                     path_val = path_input.value.strip()
@@ -3287,7 +3310,7 @@ def run_tui() -> int:
                 self._write_transcript_line(f"[run] unknown command: {text}")
                 return
 
-            self._start_run(text, auto_approve=self._default_auto_approve)
+            self._start_run(text, auto_approve=self._default_auto_approve, mode="execute")
 
         def _handle_plan_cancel_confirmation(self, confirmed: bool | None) -> None:
             if not confirmed:

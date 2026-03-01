@@ -127,18 +127,39 @@ class ContextSourcesMixin:
 
     def _refresh_tooling_prompts_list(self) -> None:
         from swarmee_river.tui.prompt_templates import discover_prompt_templates
-        from swarmee_river.tui.tooling_handlers import render_prompt_list_items
+        from swarmee_river.tui.tooling_handlers import build_prompt_table_rows
 
         templates = [item.to_dict() for item in discover_prompt_templates()]
         self.state.tooling.prompt_templates = templates
-        list_widget = self._tooling_prompts_list
-        if list_widget is None:
+        table = self._tooling_prompts_table
+        if table is None:
             return
-        selected_id = str(self.state.tooling.prompt_selected_id or "").strip() or None
-        list_widget.set_items(render_prompt_list_items(templates), selected_id=selected_id, emit=False)
-        selected = list_widget.selected_item()
-        selected_item_id = str((selected or {}).get("id", "")).strip() if isinstance(selected, dict) else ""
-        self._tooling_select_prompt(selected_item_id if selected_item_id else None)
+
+        prev_selected = str(self.state.tooling.prompt_selected_id or "").strip() or None
+        if not table.columns:
+            table.add_column("Name", key="name")
+            table.add_column("Tags", key="tags")
+            table.add_column("Source", key="source", width=10)
+            table.add_column("Preview", key="preview")
+
+        table.clear()
+        rows = build_prompt_table_rows(templates)
+        for template_id, name, tags, source, preview in rows:
+            table.add_row(name, tags, source, preview, key=template_id)
+
+        if prev_selected and rows:
+            for idx, (template_id, _, _, _, _) in enumerate(rows):
+                if template_id == prev_selected:
+                    with contextlib.suppress(Exception):
+                        table.move_cursor(row=idx)
+                    self._tooling_select_prompt(prev_selected)
+                    return
+        if rows:
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=0)
+            self._tooling_select_prompt(rows[0][0])
+            return
+        self._tooling_select_prompt(None)
 
     def _tooling_select_prompt(self, selected_id: str | None) -> None:
         from swarmee_river.tui.tooling_handlers import render_prompt_detail
@@ -147,11 +168,7 @@ class ContextSourcesMixin:
         selected: dict[str, Any] | None = None
         if target_id:
             selected = next(
-                (
-                    item
-                    for item in self.state.tooling.prompt_templates
-                    if str(item.get("id", "")).strip() == target_id
-                ),
+                (item for item in self.state.tooling.prompt_templates if str(item.get("id", "")).strip() == target_id),
                 None,
             )
         self.state.tooling.prompt_selected_id = str(selected.get("id", "")).strip() if selected else None
@@ -159,9 +176,9 @@ class ContextSourcesMixin:
         if self._tooling_prompts_detail is not None:
             with contextlib.suppress(Exception):
                 if selected is None:
-                    self._tooling_prompts_detail.update("Select a prompt template to view and edit.")
+                    self._tooling_prompts_detail.set_preview("Select a prompt template to view and edit.")
                 else:
-                    self._tooling_prompts_detail.update(render_prompt_detail(selected))
+                    self._tooling_prompts_detail.set_preview(render_prompt_detail(selected))
 
         if self._tooling_prompt_name_input is not None:
             with contextlib.suppress(Exception):
@@ -181,20 +198,145 @@ class ContextSourcesMixin:
                 self._tooling_prompt_content_input.text = ""
         if self._tooling_prompts_detail is not None:
             with contextlib.suppress(Exception):
-                self._tooling_prompts_detail.update("New template. Enter a name and content, then Save.")
+                self._tooling_prompts_detail.set_preview("New template. Enter a name and content, then Save.")
+
+    def _refresh_tooling_sops_table(self) -> None:
+        from swarmee_river.tui.tooling_handlers import build_sop_table_rows
+
+        self.state.tooling.sop_catalog = [dict(item) for item in self._sop_catalog]
+        table = self._tooling_sops_table
+        if table is None:
+            return
+
+        prev_selected = str(self.state.tooling.sop_selected_id or "").strip() or None
+        if not table.columns:
+            table.add_column("Name", key="name")
+            table.add_column("Active", key="active", width=7)
+            table.add_column("Source", key="source", width=18)
+            table.add_column("Preview", key="preview")
+
+        table.clear()
+        rows = build_sop_table_rows(self.state.tooling.sop_catalog, set(self._active_sop_names))
+        for name, active, source, preview in rows:
+            table.add_row(name, active, source, preview, key=name)
+
+        if prev_selected and rows:
+            for idx, (name, _, _, _) in enumerate(rows):
+                if name == prev_selected:
+                    with contextlib.suppress(Exception):
+                        table.move_cursor(row=idx)
+                    self._tooling_select_sop(prev_selected)
+                    return
+        if rows:
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=0)
+            self._tooling_select_sop(rows[0][0])
+            return
+        self._tooling_select_sop(None)
+
+    def _tooling_select_sop(self, selected_id: str | None) -> None:
+        from swarmee_river.tui.tooling_handlers import render_sop_detail
+
+        target_id = str(selected_id or "").strip()
+        selected: dict[str, Any] | None = None
+        if target_id:
+            selected = next(
+                (item for item in self.state.tooling.sop_catalog if str(item.get("name", "")).strip() == target_id),
+                None,
+            )
+        self.state.tooling.sop_selected_id = str(selected.get("name", "")).strip() if selected else None
+        detail = self._tooling_sops_detail
+        if detail is not None:
+            with contextlib.suppress(Exception):
+                if selected is None:
+                    detail.set_preview("Select an SOP to view details. Press Enter to activate/deactivate.")
+                else:
+                    sop_name = str(selected.get("name", "")).strip()
+                    detail.set_preview(render_sop_detail(selected, active=(sop_name in self._active_sop_names)))
+
+    def _refresh_tooling_kbs_table(self) -> None:
+        from swarmee_river.tui.tooling_handlers import build_kb_table_rows
+
+        table = self._tooling_kbs_table
+        if table is None:
+            return
+
+        prev_selected = str(self.state.tooling.kb_selected_id or "").strip() or None
+        if not table.columns:
+            table.add_column("Name", key="name")
+            table.add_column("ID", key="id", width=24)
+            table.add_column("Description", key="description")
+
+        table.clear()
+        rows = build_kb_table_rows(self.state.tooling.kb_entries)
+        for kb_id, name, description in rows:
+            table.add_row(name, kb_id, description, key=kb_id)
+
+        empty_state = None
+        with contextlib.suppress(Exception):
+            empty_state = self.query_one("#kbs_empty_state")
+        if empty_state is not None:
+            with contextlib.suppress(Exception):
+                empty_state.styles.display = "none" if rows else "block"
+
+        if prev_selected and rows:
+            for idx, (kb_id, _, _) in enumerate(rows):
+                if kb_id == prev_selected:
+                    with contextlib.suppress(Exception):
+                        table.move_cursor(row=idx)
+                    self._tooling_select_kb(prev_selected)
+                    return
+        if rows:
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=0)
+            self._tooling_select_kb(rows[0][0])
+            return
+        self._tooling_select_kb(None)
+
+    def _tooling_select_kb(self, selected_id: str | None) -> None:
+        from swarmee_river.tui.tooling_handlers import render_kb_detail
+
+        target_id = str(selected_id or "").strip()
+        selected: dict[str, Any] | None = None
+        if target_id:
+            selected = next(
+                (
+                    item
+                    for index, item in enumerate(self.state.tooling.kb_entries)
+                    if str(item.get("id", item.get("name", f"kb-{index + 1}"))).strip() == target_id
+                ),
+                None,
+            )
+        self.state.tooling.kb_selected_id = target_id if selected is not None else None
+        if self._kbs_detail is not None:
+            with contextlib.suppress(Exception):
+                if selected is None:
+                    self._kbs_detail.set_preview("Select a knowledge base entry to view details.")
+                else:
+                    self._kbs_detail.set_preview(render_kb_detail(selected))
 
     def _tooling_prompt_save(self) -> None:
         from swarmee_river.tui.prompt_templates import PromptTemplate, load_prompt_templates, save_prompt_templates
 
-        name = str(getattr(self._tooling_prompt_name_input, "value", "")).strip() if self._tooling_prompt_name_input else ""
-        content = str(getattr(self._tooling_prompt_content_input, "text", "")).strip() if self._tooling_prompt_content_input else ""
+        name = (
+            str(getattr(self._tooling_prompt_name_input, "value", "")).strip()
+            if self._tooling_prompt_name_input
+            else ""
+        )
+        content = (
+            str(getattr(self._tooling_prompt_content_input, "text", "")).strip()
+            if self._tooling_prompt_content_input
+            else ""
+        )
         if not name:
             self._notify("Template name is required.", severity="warning")
             return
 
         templates = load_prompt_templates()
         selected_id = str(self.state.tooling.prompt_selected_id or "").strip()
-        existing = next((item for item in templates if str(item.id).strip() == selected_id), None) if selected_id else None
+        existing = (
+            next((item for item in templates if str(item.id).strip() == selected_id), None) if selected_id else None
+        )
         if existing is None:
             selected_from_catalog = next(
                 (
@@ -291,11 +433,7 @@ class ContextSourcesMixin:
         selected: dict[str, Any] | None = None
         if target_id:
             selected = next(
-                (
-                    item
-                    for item in self.state.tooling.tool_catalog
-                    if str(item.get("name", "")).strip() == target_id
-                ),
+                (item for item in self.state.tooling.tool_catalog if str(item.get("name", "")).strip() == target_id),
                 None,
             )
         self.state.tooling.tool_selected_id = str(selected.get("name", "")).strip() if selected else None
@@ -314,18 +452,10 @@ class ContextSourcesMixin:
             self._notify("Select a tool first.", severity="warning")
             return
         selected = next(
-            (
-                item
-                for item in self.state.tooling.tool_catalog
-                if str(item.get("name", "")).strip() == selected_name
-            ),
+            (item for item in self.state.tooling.tool_catalog if str(item.get("name", "")).strip() == selected_name),
             None,
         )
-        current_tags = ", ".join(
-            str(tag).strip()
-            for tag in ((selected or {}).get("tags") or [])
-            if str(tag).strip()
-        )
+        current_tags = ", ".join(str(tag).strip() for tag in ((selected or {}).get("tags") or []) if str(tag).strip())
         self.push_screen(
             TagEditScreen(selected_name, current_tags),
             callback=self._on_tag_edit_complete,
@@ -367,7 +497,9 @@ class ContextSourcesMixin:
                 for item in imported:
                     if not isinstance(item, dict):
                         continue
-                    prompt_id = str(item.get("id", "")).strip() or _sanitize_context_source_id(str(item.get("name", "")).strip())
+                    prompt_id = str(item.get("id", "")).strip() or _sanitize_context_source_id(
+                        str(item.get("name", "")).strip()
+                    )
                     existing[prompt_id] = PromptTemplate(
                         id=prompt_id,
                         name=str(item.get("name", "")).strip() or prompt_id,
@@ -392,12 +524,16 @@ class ContextSourcesMixin:
                         if not name:
                             continue
                         current = dict(overrides.get(name, {}))
-                        current.update({
-                            "tags": [str(tag).strip() for tag in (item.get("tags") or []) if str(tag).strip()],
-                            "access_read": bool(item.get("access_read", current.get("access_read", False))),
-                            "access_write": bool(item.get("access_write", current.get("access_write", False))),
-                            "access_execute": bool(item.get("access_execute", current.get("access_execute", False))),
-                        })
+                        current.update(
+                            {
+                                "tags": [str(tag).strip() for tag in (item.get("tags") or []) if str(tag).strip()],
+                                "access_read": bool(item.get("access_read", current.get("access_read", False))),
+                                "access_write": bool(item.get("access_write", current.get("access_write", False))),
+                                "access_execute": bool(
+                                    item.get("access_execute", current.get("access_execute", False))
+                                ),
+                            }
+                        )
                         if str(item.get("description", "")).strip():
                             current["description"] = str(item.get("description", "")).strip()
                         overrides[name] = current
@@ -419,7 +555,7 @@ class ContextSourcesMixin:
             if normalized == "sops":
                 imported = import_sops_from_s3()
                 self._refresh_sop_catalog()
-                self._render_sop_panel()
+                self._refresh_tooling_sops_table()
                 self._write_transcript_line(
                     f"[tooling] fetched {len(imported)} SOP definitions from S3 (manual install may be required)."
                 )
@@ -428,18 +564,7 @@ class ContextSourcesMixin:
             if normalized == "kbs":
                 imported = import_kbs_from_s3()
                 self.state.tooling.kb_entries = [dict(item) for item in imported if isinstance(item, dict)]
-                if self._kbs_list is not None:
-                    entries = self.state.tooling.kb_entries
-                    items = [
-                        {
-                            "id": str(item.get("id", item.get("name", f"kb-{index + 1}"))).strip() or f"kb-{index + 1}",
-                            "title": str(item.get("name", item.get("id", f"KB {index + 1}"))).strip() or f"KB {index + 1}",
-                            "subtitle": str(item.get("description", "")).strip(),
-                            "state": "default",
-                        }
-                        for index, item in enumerate(entries)
-                    ]
-                    self._kbs_list.set_items(items, emit=False)
+                self._refresh_tooling_kbs_table()
                 self._write_transcript_line(f"[tooling] imported {len(imported)} knowledge base records from S3.")
                 return
 
@@ -525,13 +650,9 @@ class ContextSourcesMixin:
             selector.set_options(options)
             selector.value = _CONTEXT_SELECT_PLACEHOLDER
 
-    def _sop_checkbox_id(self, name: str) -> str:
-        token = re.sub(r"[^a-zA-Z0-9_.-]+", "_", name.strip().lower())
-        token = token.strip("_") or "sop"
-        return f"sop_toggle_{token}"
-
     def _refresh_sop_catalog(self) -> None:
         self._sop_catalog = discover_available_sops()
+        self.state.tooling.sop_catalog = [dict(item) for item in self._sop_catalog]
         available_names = {item.get("name", "").strip() for item in self._sop_catalog}
         self._active_sop_names = {name for name in self._active_sop_names if name in available_names}
         self._sops_ready_for_sync = bool(self._active_sop_names)
@@ -543,43 +664,6 @@ class ContextSourcesMixin:
             if sop_name.lower() == target:
                 return item
         return None
-
-    def _render_sop_panel(self) -> None:
-        from textual.containers import Horizontal, Vertical, VerticalScroll
-        from textual.widgets import Checkbox, Static
-
-        container = self._sop_list
-        if container is None:
-            with contextlib.suppress(Exception):
-                container = self.query_one("#sop_list", VerticalScroll)
-                self._sop_list = container
-        if container is None:
-            return
-
-        self._sop_toggle_id_to_name = {}
-        for child in list(container.children):
-            with contextlib.suppress(Exception):
-                child.remove()
-
-        if not self._sop_catalog:
-            container.mount(Static("[dim](no SOPs found)[/dim]"))
-            return
-
-        for sop in self._sop_catalog:
-            name = str(sop.get("name", "")).strip()
-            if not name:
-                continue
-            source = str(sop.get("source", "")).strip() or "unknown"
-            preview = str(sop.get("first_paragraph_preview", "")).strip() or "(no preview available)"
-            checkbox_id = self._sop_checkbox_id(name)
-            self._sop_toggle_id_to_name[checkbox_id] = name
-            row = Vertical(classes="sop-row")
-            container.mount(row)
-            header = Horizontal(classes="sop-row-header")
-            row.mount(header)
-            header.mount(Checkbox(name, id=checkbox_id, value=(name in self._active_sop_names)))
-            header.mount(Static(f"[dim]{source}[/dim]", classes="sop-source-label"))
-            row.mount(Static(preview, classes="sop-preview"))
 
     def _sync_active_sops_with_daemon(self, *, notify_on_failure: bool = False) -> bool:
         proc = self.state.daemon.proc
@@ -622,7 +706,7 @@ class ContextSourcesMixin:
         if not changed:
             return True
 
-        self._render_sop_panel()
+        self._refresh_tooling_sops_table()
         self._save_session()
         self._refresh_agent_summary()
 
@@ -715,7 +799,7 @@ class ContextSourcesMixin:
 
     def _set_context_add_mode(self, mode: str | None) -> None:
         from textual.containers import Horizontal
-        from textual.widgets import Input, Select
+        from textual.widgets import Input
 
         normalized = (mode or "").strip().lower() or None
         self._context_add_mode = normalized
@@ -930,9 +1014,7 @@ class ContextSourcesMixin:
                 }
             )
         elif source_type == "sop":
-            self._add_context_source(
-                {"type": "sop", "name": value, "id": _sanitize_context_source_id(f"sop-{value}")}
-            )
+            self._add_context_source({"type": "sop", "name": value, "id": _sanitize_context_source_id(f"sop-{value}")})
         elif source_type == "kb":
             self._add_context_source({"type": "kb", "id": value})
         else:
@@ -944,6 +1026,7 @@ class ContextSourcesMixin:
 
     def _request_context_compact(self) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         if self.state.daemon.query_active:
             self._write_transcript_line("[compact] unavailable while a run is active.")
             return

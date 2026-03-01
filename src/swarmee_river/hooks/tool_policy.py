@@ -97,8 +97,17 @@ def _matches_tool_set(tool_name: str, configured_tools: set[str]) -> bool:
 
 # Hardcoded fallback used when permission-based derivation is unavailable.
 _FALLBACK_PLAN_MODE_ALLOWED_TOOLS: set[str] = {
-    "retrieve", "sop", "project_context", "file_read", "file_list",
-    "file_search", "read", "grep", "list", "glob", "todoread",
+    "retrieve",
+    "sop",
+    "project_context",
+    "file_read",
+    "file_list",
+    "file_search",
+    "read",
+    "grep",
+    "list",
+    "glob",
+    "todoread",
 }
 
 
@@ -160,6 +169,7 @@ class ToolPolicyHooks(HookProvider):
             return self._plan_mode_allowed_tools_cached
         try:
             from swarmee_river.tools import get_tools
+
             tools_dict = get_tools()
             self._plan_mode_allowed_tools_cached = _build_plan_mode_allowlist(tools_dict)
         except Exception:

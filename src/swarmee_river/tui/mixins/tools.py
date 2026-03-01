@@ -273,8 +273,10 @@ class ToolsMixin:
 
     def _expand_tool_call(self, tool_use_id: str) -> None:
         import json as _json
-        from swarmee_river.tui.widgets import render_tool_details_panel
+
         from swarmee_river.tui.commands import _EXPAND_USAGE_TEXT
+        from swarmee_river.tui.widgets import render_tool_details_panel
+
         tid = tool_use_id.strip()
         if not tid:
             self._write_transcript_line(_EXPAND_USAGE_TEXT)

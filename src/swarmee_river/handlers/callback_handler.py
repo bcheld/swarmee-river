@@ -700,13 +700,15 @@ class TuiCallbackHandler:
         info = self.tool_histories.get(tool_use_id)
         duration = round(time.time() - info["start_time"], 2) if info is not None else 0.0
         label = tool_name or (info["name"] if info is not None else "unknown")
-        self._emit({
-            "event": "tool_result",
-            "tool_use_id": tool_use_id,
-            "tool": label,
-            "status": status,
-            "duration_s": duration,
-        })
+        self._emit(
+            {
+                "event": "tool_result",
+                "tool_use_id": tool_use_id,
+                "tool": label,
+                "status": status,
+                "duration_s": duration,
+            }
+        )
         self._emitted_tool_results.add(tool_use_id)
         if info is not None:
             del self.tool_histories[tool_use_id]
@@ -768,7 +770,7 @@ class TuiCallbackHandler:
         snapshot = self._assistant_text_snapshot
         if snapshot:
             if text.startswith(snapshot):
-                delta = text[len(snapshot):]
+                delta = text[len(snapshot) :]
                 self._assistant_text_snapshot = text
             elif snapshot.endswith(text):
                 delta = ""
@@ -953,11 +955,13 @@ class TuiCallbackHandler:
                             emit_start=(tid not in self.tool_histories),
                         )
                         if isinstance(tool_input, dict):
-                            self._emit({
-                                "event": "tool_input",
-                                "tool_use_id": tid,
-                                "input": tool_input,
-                            })
+                            self._emit(
+                                {
+                                    "event": "tool_input",
+                                    "tool_use_id": tid,
+                                    "input": tool_input,
+                                }
+                            )
 
         elif message.get("role") == "user":
             for content in _message_content_blocks(message):
@@ -974,10 +978,12 @@ class TuiCallbackHandler:
                         )
 
         if event_loop_throttled_delay:
-            self._emit({
-                "event": "warning",
-                "text": f"Throttled! Waiting {event_loop_throttled_delay}s before retrying...",
-            })
+            self._emit(
+                {
+                    "event": "warning",
+                    "text": f"Throttled! Waiting {event_loop_throttled_delay}s before retrying...",
+                }
+            )
 
         emitted_text_fallback = False
         if isinstance(result, dict):

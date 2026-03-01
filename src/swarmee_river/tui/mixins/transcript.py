@@ -150,6 +150,7 @@ class TranscriptMixin:
 
     def _call_from_thread_safe(self, callback: Any, *args: Any, **kwargs: Any) -> None:
         import contextlib as _ctx
+
         if self.state.daemon.is_shutting_down:
             return
         with _ctx.suppress(Exception):
@@ -157,12 +158,14 @@ class TranscriptMixin:
 
     def _write_user_input(self, text: str) -> None:
         from swarmee_river.tui.widgets import render_user_message
+
         timestamp = self._turn_timestamp()
         plain = f"YOU> {text}\n{timestamp}"
         self._mount_transcript_widget(render_user_message(text, timestamp=timestamp), plain_text=plain)
 
     def _write_user_message(self, text: str, *, timestamp: str | None = None) -> None:
         from swarmee_river.tui.widgets import render_user_message
+
         resolved_timestamp = (timestamp or "").strip() or self._turn_timestamp()
         plain = f"YOU> {text}\n{resolved_timestamp}"
         self._mount_transcript_widget(render_user_message(text, timestamp=resolved_timestamp), plain_text=plain)
@@ -175,6 +178,7 @@ class TranscriptMixin:
         timestamp: str | None = None,
     ) -> None:
         from swarmee_river.tui.widgets import render_assistant_message
+
         resolved_timestamp = (timestamp or "").strip() or self._turn_timestamp()
         self._last_assistant_text = text
         plain_lines = [text]
@@ -188,6 +192,7 @@ class TranscriptMixin:
 
     def _turn_timestamp(self) -> str:
         from datetime import datetime
+
         return datetime.now().strftime("%I:%M %p").lstrip("0")
 
     def _append_plain_text(self, text: str) -> None:
@@ -203,6 +208,7 @@ class TranscriptMixin:
 
     def _get_richlog_selection_text(self, transcript: Any) -> str:
         from textual.widgets import TextArea
+
         if isinstance(transcript, TextArea):
             selected = transcript.selected_text or ""
             return selected if isinstance(selected, str) else ""
@@ -210,6 +216,7 @@ class TranscriptMixin:
 
     def _get_all_text(self) -> str:
         from swarmee_river.tui.widgets import render_agent_profile_summary_text
+
         parts = [
             "# Transcript",
             self._get_transcript_text().rstrip(),
@@ -249,8 +256,9 @@ class TranscriptMixin:
             self._apply_split_ratio()
 
     def _apply_split_ratio(self) -> None:
-        from textual.containers import VerticalScroll, Vertical
+        from textual.containers import Vertical, VerticalScroll
         from textual.widgets import TextArea
+
         transcript = self.query_one("#transcript", VerticalScroll)
         transcript_text = self.query_one("#transcript_text", TextArea)
         side = self.query_one("#side", Vertical)
@@ -266,6 +274,7 @@ class TranscriptMixin:
 
     def action_search_transcript(self) -> None:
         from textual.widgets import TextArea
+
         prompt_widget = self.query_one("#prompt", TextArea)
         prompt_widget.clear()
         # Hide palette first to avoid rendering issues
@@ -284,6 +293,7 @@ class TranscriptMixin:
 
     def _search_transcript(self, term: str) -> None:
         from textual.containers import VerticalScroll
+
         if not term.strip():
             self._write_transcript_line("Usage: /search <term>")
             return
@@ -298,6 +308,7 @@ class TranscriptMixin:
 
     def _handle_copy_command(self, normalized: str) -> bool:
         from swarmee_river.tui.commands import classify_copy_command
+
         command = classify_copy_command(normalized)
         if command == "transcript":
             self.action_copy_transcript()

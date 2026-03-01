@@ -143,6 +143,41 @@ def build_activated_agent_sidebar_items(
     return items
 
 
+def build_activated_agent_table_rows(
+    items: list[dict[str, Any]] | None = None,
+) -> list[tuple[str, str, str, str, str]]:
+    """Build DataTable rows for activated agents.
+
+    Returns tuples of: (id, name, summary, model, activated).
+    """
+    rows: list[tuple[str, str, str, str, str]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id", "")).strip()
+        if not item_id:
+            continue
+        if item_id == "activated_agents_none":
+            rows.append((item_id, "No Activated Agents", "", "", "no"))
+            continue
+        agent = normalize_agent_definition(item.get("agent"))
+        if agent is None:
+            continue
+        provider = str(agent.get("provider", "")).strip()
+        tier = str(agent.get("tier", "")).strip()
+        model_label = "/".join(token for token in (provider, tier) if token) or "(inherit)"
+        rows.append(
+            (
+                item_id,
+                str(agent.get("name", "")).strip() or "Unnamed Agent",
+                str(agent.get("summary", "")).strip(),
+                model_label,
+                "yes" if bool(agent.get("activated")) else "no",
+            )
+        )
+    return rows
+
+
 def render_activated_agent_detail_text(item: dict[str, Any] | None) -> str:
     if not isinstance(item, dict):
         return "(no activated agent selected)"
@@ -179,6 +214,36 @@ def render_activated_agent_detail_text(item: dict[str, Any] | None) -> str:
         "Prompt:\n"
         f"{prompt}"
     )
+
+
+def build_builder_agent_table_rows(items: list[dict[str, Any]] | None = None) -> list[tuple[str, str, str, str, str]]:
+    """Build DataTable rows for builder roster entries.
+
+    Returns tuples of: (id, name, summary, model, state).
+    """
+    rows: list[tuple[str, str, str, str, str]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id", "")).strip()
+        if not item_id:
+            continue
+        agent = normalize_agent_definition(item.get("agent"))
+        if agent is None:
+            continue
+        provider = str(agent.get("provider", "")).strip()
+        tier = str(agent.get("tier", "")).strip()
+        model_label = "/".join(token for token in (provider, tier) if token) or "inherit"
+        rows.append(
+            (
+                item_id,
+                str(agent.get("name", "")).strip() or "Unnamed Agent",
+                str(agent.get("summary", "")).strip(),
+                model_label,
+                "active" if bool(agent.get("activated")) else "default",
+            )
+        )
+    return rows
 
 
 def build_swarm_agent_specs(
@@ -422,12 +487,7 @@ def render_agent_team_detail_text(item: dict[str, Any] | None) -> str:
     spec_json = _json.dumps(preset.get("spec", {}), ensure_ascii=False, indent=2, sort_keys=True)
     description = str(preset.get("description", "")).strip() or "(none)"
     return (
-        "Team Preset\n\n"
-        f"ID: {preset['id']}\n"
-        f"Name: {preset['name']}\n"
-        f"Description: {description}\n\n"
-        "Spec:\n"
-        f"{spec_json}"
+        f"Team Preset\n\nID: {preset['id']}\nName: {preset['name']}\nDescription: {description}\n\nSpec:\n{spec_json}"
     )
 
 
@@ -435,11 +495,13 @@ __all__ = [
     "_normalized_tool_name_list",
     "_policy_tier_profile",
     "build_activated_agent_sidebar_items",
+    "build_activated_agent_table_rows",
     "build_activated_agents_run_prompt",
     "build_agent_policy_lens",
     "build_agent_team_sidebar_items",
     "build_agent_tools_safety_sidebar_items",
     "build_swarm_agent_specs",
+    "build_builder_agent_table_rows",
     "build_team_preset_run_prompt",
     "normalize_agent_definition",
     "normalize_agent_definitions",

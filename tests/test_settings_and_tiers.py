@@ -121,3 +121,65 @@ def test_default_safety_rules_include_opencode_alias_entries(tmp_path: Path, mon
     assert rules["todowrite"] == "ask"
     assert rules["shell"] == "ask"
     assert rules["patch_apply"] == "ask"
+
+
+def test_load_settings_filters_hidden_tiers(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"models": {"hidden_tiers": ["openai|balanced"]}}),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(settings_path)
+
+    openai_tiers = settings.models.providers["openai"].tiers
+    assert "balanced" not in openai_tiers
+    assert "fast" in openai_tiers
+
+
+def test_load_settings_restores_hidden_tier_when_key_removed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"models": {"hidden_tiers": ["openai|balanced"]}}),
+        encoding="utf-8",
+    )
+    hidden_settings = load_settings(settings_path)
+    assert "balanced" not in hidden_settings.models.providers["openai"].tiers
+
+    settings_path.write_text(
+        json.dumps({"models": {"hidden_tiers": []}}),
+        encoding="utf-8",
+    )
+    restored_settings = load_settings(settings_path)
+    assert "balanced" in restored_settings.models.providers["openai"].tiers
+
+
+def test_load_settings_hidden_tier_overrides_are_ignored(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "hidden_tiers": ["openai|balanced"],
+                    "providers": {
+                        "openai": {
+                            "tiers": {
+                                "balanced": {
+                                    "provider": "openai",
+                                    "model_id": "gpt-override-hidden",
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(settings_path)
+
+    assert "balanced" not in settings.models.providers["openai"].tiers

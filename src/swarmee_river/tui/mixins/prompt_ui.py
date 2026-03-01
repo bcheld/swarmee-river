@@ -11,6 +11,7 @@ from typing import Any
 class PromptUIMixin:
     def _update_prompt_placeholder(self) -> None:
         from textual.widgets import TextArea
+
         input_widget = self.query_one("#prompt", TextArea)
         approval = "on" if self._default_auto_approve else "off"
         input_widget.placeholder = f"Auto-approve: {approval}. Enter submits. Shift+Enter/Ctrl+J adds newline."
@@ -26,6 +27,7 @@ class PromptUIMixin:
 
     def _switch_side_tab(self, tab_id: str) -> None:
         from textual.widgets import TabbedContent
+
         with contextlib.suppress(Exception):
             tabs = self.query_one("#side_tabs", TabbedContent)
             tabs.active = tab_id
@@ -33,6 +35,7 @@ class PromptUIMixin:
 
     def _seed_prompt_with_command(self, command: str) -> None:
         from textual.widgets import TextArea
+
         prompt_widget = self.query_one("#prompt", TextArea)
         existing = (prompt_widget.text or "").strip()
         prompt_widget.clear()
@@ -86,10 +89,12 @@ class PromptUIMixin:
 
     def action_focus_prompt(self) -> None:
         from textual.widgets import TextArea
+
         self.query_one("#prompt", TextArea).focus()
 
     def action_submit_prompt(self) -> None:
         from textual.widgets import TextArea
+
         prompt_widget = self.query_one("#prompt", TextArea)
         text = (prompt_widget.text or "").strip()
         prompt_widget.clear()
@@ -102,6 +107,7 @@ class PromptUIMixin:
 
     def action_interrupt_run(self) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         proc = self.state.daemon.proc
         if proc is None or proc.poll() is not None or not self.state.daemon.query_active:
             self._reset_consent_panel()
@@ -118,6 +124,7 @@ class PromptUIMixin:
     def action_copy_selection(self) -> None:
         from textual.containers import VerticalScroll
         from textual.widgets import TextArea
+
         focused = getattr(self, "focused", None)
         if isinstance(focused, TextArea):
             selected_text = focused.selected_text or ""
@@ -215,8 +222,6 @@ class PromptUIMixin:
         )
         if artifact_path:
             self._add_artifact_paths([artifact_path])
-            self._write_transcript_line(
-                f"[copy] {label}: clipboard unavailable. Saved to artifact: {artifact_path}"
-            )
+            self._write_transcript_line(f"[copy] {label}: clipboard unavailable. Saved to artifact: {artifact_path}")
         else:
             self._write_transcript_line(f"[copy] {label}: clipboard unavailable.")

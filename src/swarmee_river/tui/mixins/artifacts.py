@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json as _json
 from pathlib import Path
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.tui.sidebar_artifacts import (
     add_recent_artifacts,
-    build_artifact_sidebar_items,
+    build_artifact_table_rows,
     normalize_artifact_index_entry,
 )
 
@@ -164,19 +165,36 @@ class ArtifactsMixin:
         if self._artifacts_header is not None:
             badge_count = len(self.state.artifacts.entries)
             self._artifacts_header.set_badges([f"{badge_count} item{'s' if badge_count != 1 else ''}"])
-        list_widget = self._artifacts_list
-        if list_widget is None:
+        table = self._artifacts_table
+        if table is None:
             return
-        items = build_artifact_sidebar_items(self.state.artifacts.entries)
+        if not table.columns:
+            table.add_column("Name", key="name")
+            table.add_column("Kind", key="kind", width=14)
+            table.add_column("Created", key="created", width=20)
+            table.add_column("Path", key="path")
+        table.clear()
+        rows = build_artifact_table_rows(self.state.artifacts.entries)
+        for item_id, name, kind, created_at, path in rows:
+            table.add_row(name, kind, created_at, path, key=item_id)
         selected_id = self.state.artifacts.selected_item_id
         if not selected_id and self.state.artifacts.entries:
             selected_id = str(self.state.artifacts.entries[0].get("item_id", "")).strip()
-        list_widget.set_items(items, selected_id=selected_id, emit=False)
-        selected_item_id = list_widget.selected_id()
+        if selected_id and rows:
+            for idx, (item_id, _name, _kind, _created, _path) in enumerate(rows):
+                if item_id == selected_id:
+                    with contextlib.suppress(Exception):
+                        table.move_cursor(row=idx)
+                    break
+        elif rows:
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=0)
+        cursor_coordinate = getattr(table, "cursor_coordinate", None)
+        row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
+        selected_item_id = rows[row_index][0] if 0 <= row_index < len(rows) else selected_id
         selected_entry = self._artifact_entry_by_item_id(selected_item_id)
         if selected_entry is None and self.state.artifacts.entries:
             selected_entry = self.state.artifacts.entries[0]
-            list_widget.select_by_id(str(selected_entry.get("item_id", "")), emit=False)
         self._set_artifact_selection(selected_entry)
 
     def _get_artifacts_text(self) -> str:
@@ -215,6 +233,7 @@ class ArtifactsMixin:
         import shutil
         import subprocess
         import sys
+
         resolved = str(path or "").strip()
         if not resolved:
             self._write_transcript_line("[open] invalid artifact path.")
@@ -261,6 +280,7 @@ class ArtifactsMixin:
 
     def _add_selected_artifact_as_context(self) -> None:
         from swarmee_river.tui.mixins.context_sources import _sanitize_context_source_id
+
         selected = self._artifact_entry_by_item_id(self.state.artifacts.selected_item_id)
         if selected is None:
             self._notify("Select an artifact first.", severity="warning")

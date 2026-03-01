@@ -271,8 +271,14 @@ def _build_events_and_tools(log_paths: list[Path]) -> tuple[list[dict[str, Any]]
                         # Stash context composition metrics; merge into after_model_call later.
                         call_id = str(parsed.get("model_call_id", "")).strip()
                         before_data: dict[str, Any] = {}
-                        for key in ("messages", "system_prompt_chars", "tool_count", "tool_schema_chars",
-                                    "model_id", "message_breakdown"):
+                        for key in (
+                            "messages",
+                            "system_prompt_chars",
+                            "tool_count",
+                            "tool_schema_chars",
+                            "model_id",
+                            "message_breakdown",
+                        ):
                             val = parsed.get(key)
                             if val is not None:
                                 before_data[key] = val

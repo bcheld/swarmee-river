@@ -73,6 +73,7 @@ def summarize_error_for_toast(error_info: dict[str, Any]) -> tuple[str, str, flo
             return first[:140], "error", _FATAL_TOAST_TIMEOUT_S
     return "Fatal error", "error", _FATAL_TOAST_TIMEOUT_S
 
+
 def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype in {"ready", "attached"}:
         app.state.daemon.ready = True
@@ -589,9 +590,7 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
             )
             auth_hint = "Authentication failed. Verify credentials/permissions for the active provider."
             if is_aws_auth_error:
-                auth_hint = (
-                    "AWS authentication failed. Open Settings > Models, set AWS profile, then run Connect AWS."
-                )
+                auth_hint = "AWS authentication failed. Open Settings > Models, set AWS profile, then run Connect AWS."
             app._mount_transcript_widget(
                 app.render_system_message(  # type: ignore[attr-defined]
                     auth_hint

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Input, Static, TabPane, TextArea
 
-from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader, SidebarList
+from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader
 
 
 def compose_tooling_tab() -> Iterator[Any]:
@@ -36,8 +36,12 @@ def compose_tooling_tab() -> Iterator[Any]:
 
             # -- Prompts sub-view ----------------------------------------------
             with Vertical(id="tooling_prompts_view"):
-                yield SidebarHeader("Prompt Templates", id="tooling_prompts_header")
-                yield SidebarList(id="tooling_prompts_list")
+                yield SidebarHeader(
+                    "Prompt Templates",
+                    id="tooling_prompts_header",
+                    actions=[{"id": "tooling_prompts_s3_import", "label": "S3 Import", "variant": "default"}],
+                )
+                yield DataTable(id="tooling_prompts_table", cursor_type="row")
                 yield SidebarDetail(id="tooling_prompts_detail")
                 yield Input(placeholder="Template name", id="tooling_prompt_name_input")
                 yield TextArea(
@@ -49,26 +53,30 @@ def compose_tooling_tab() -> Iterator[Any]:
                     yield Button("New", id="tooling_prompt_new", compact=True, variant="default")
                     yield Button("Save", id="tooling_prompt_save", compact=True, variant="success")
                     yield Button("Delete", id="tooling_prompt_delete", compact=True, variant="warning")
-                    yield Button("S3 Import", id="tooling_prompts_s3_import", compact=True, variant="default")
 
             # -- SOPs sub-view -------------------------------------------------
             with Vertical(id="tooling_sops_view"):
-                yield SidebarHeader("SOPs", id="tooling_sops_header")
-                yield VerticalScroll(id="sop_list")
-                with Horizontal(id="tooling_sop_actions"):
-                    yield Button("S3 Import", id="tooling_sops_s3_import", compact=True, variant="default")
+                yield SidebarHeader(
+                    "SOPs",
+                    id="tooling_sops_header",
+                    actions=[{"id": "tooling_sops_s3_import", "label": "S3 Import", "variant": "default"}],
+                )
+                yield DataTable(id="tooling_sops_table", cursor_type="row")
+                yield SidebarDetail(id="tooling_sops_detail")
 
             # -- KBs sub-view --------------------------------------------------
             with Vertical(id="tooling_kbs_view"):
-                yield SidebarHeader("Knowledge Bases", id="tooling_kbs_header")
+                yield SidebarHeader(
+                    "Knowledge Bases",
+                    id="tooling_kbs_header",
+                    actions=[{"id": "tooling_kbs_s3_import", "label": "S3 Import", "variant": "default"}],
+                )
                 yield Static(
                     "No knowledge bases connected.\nUse /kb to connect one.",
                     id="kbs_empty_state",
                 )
-                yield SidebarList(id="kbs_list")
+                yield DataTable(id="tooling_kbs_table", cursor_type="row")
                 yield SidebarDetail(id="kbs_detail")
-                with Horizontal(id="tooling_kb_actions"):
-                    yield Button("S3 Import", id="tooling_kbs_s3_import", compact=True, variant="default")
 
 
 def wire_tooling_widgets(app: Any) -> None:
@@ -87,7 +95,7 @@ def wire_tooling_widgets(app: Any) -> None:
 
     # Prompts widgets
     app._tooling_prompts_header = app.query_one("#tooling_prompts_header", SidebarHeader)
-    app._tooling_prompts_list = app.query_one("#tooling_prompts_list", SidebarList)
+    app._tooling_prompts_table = app.query_one("#tooling_prompts_table", DataTable)
     app._tooling_prompts_detail = app.query_one("#tooling_prompts_detail", SidebarDetail)
     app._tooling_prompt_name_input = app.query_one("#tooling_prompt_name_input", Input)
     app._tooling_prompt_content_input = app.query_one("#tooling_prompt_content_input", TextArea)
@@ -99,11 +107,12 @@ def wire_tooling_widgets(app: Any) -> None:
 
     # SOPs widgets
     app._tooling_sops_header = app.query_one("#tooling_sops_header", SidebarHeader)
-    app._sop_list = app.query_one("#sop_list", VerticalScroll)
+    app._tooling_sops_table = app.query_one("#tooling_sops_table", DataTable)
+    app._tooling_sops_detail = app.query_one("#tooling_sops_detail", SidebarDetail)
 
     # KBs widgets
     app._tooling_kbs_header = app.query_one("#tooling_kbs_header", SidebarHeader)
-    app._kbs_list = app.query_one("#kbs_list", SidebarList)
+    app._tooling_kbs_table = app.query_one("#tooling_kbs_table", DataTable)
     app._kbs_detail = app.query_one("#kbs_detail", SidebarDetail)
 
     # Backward-compat: old scaffold widget names that app.py may still reference
@@ -117,7 +126,7 @@ def wire_tooling_widgets(app: Any) -> None:
     app._scaffold_kbs_view = app._tooling_kbs_view
     app._scaffold_artifacts_view = None
     app._artifacts_header = None
-    app._artifacts_list = None
+    app._artifacts_table = None
     app._artifacts_detail = None
     app._context_sources_list = None
     app._context_input = None

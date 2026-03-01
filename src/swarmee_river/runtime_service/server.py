@@ -470,6 +470,7 @@ class RuntimeServiceServer:
         line = json.dumps(payload, ensure_ascii=False) + "\n"
 
         async with session.stdin_lock:
+
             def _write() -> None:
                 stdin.write(line)
                 stdin.flush()

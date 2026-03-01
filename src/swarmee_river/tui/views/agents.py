@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any, Iterator
 
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Checkbox, Input, Select, Static, TabPane, TextArea
+from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TabPane, TextArea
 
-from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader, SidebarList
+from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader
 
 
 def compose_agents_tab() -> Iterator[Any]:
@@ -32,7 +32,7 @@ def compose_agents_tab() -> Iterator[Any]:
                     soft_wrap=True,
                 )
                 yield SidebarHeader("Activated Agents", id="agent_overview_header")
-                yield SidebarList(id="agent_overview_list")
+                yield DataTable(id="agent_overview_table", cursor_type="row")
                 yield SidebarDetail(id="agent_overview_detail")
                 yield Static("", id="agent_overview_status")
 
@@ -62,7 +62,7 @@ def compose_agents_tab() -> Iterator[Any]:
                 yield Static("", id="agent_profile_status")
 
                 yield Static("Agent Roster", id="agent_builder_agents_header")
-                yield SidebarList(id="agent_builder_agent_list")
+                yield DataTable(id="agent_builder_table", cursor_type="row")
                 yield SidebarDetail(id="agent_builder_agent_detail")
                 with Horizontal(id="agent_builder_agent_meta_row"):
                     yield Input(placeholder="Agent id", id="agent_builder_agent_id")
@@ -128,7 +128,7 @@ def wire_agents_widgets(app: Any) -> None:
     app._agent_builder_view = app.query_one("#agent_builder_view", Vertical)
     app._agent_summary = app.query_one("#agent_summary", TextArea)
     app._agent_overview_header = app.query_one("#agent_overview_header", SidebarHeader)
-    app._agent_overview_list = app.query_one("#agent_overview_list", SidebarList)
+    app._agent_overview_table = app.query_one("#agent_overview_table", DataTable)
     app._agent_overview_detail = app.query_one("#agent_overview_detail", SidebarDetail)
     app._agent_overview_status = app.query_one("#agent_overview_status", Static)
 
@@ -138,7 +138,7 @@ def wire_agents_widgets(app: Any) -> None:
     app._agent_profile_status = app.query_one("#agent_profile_status", Static)
     app._agent_builder_auto_delegate_checkbox = app.query_one("#agent_builder_auto_delegate", Checkbox)
 
-    app._agent_builder_list = app.query_one("#agent_builder_agent_list", SidebarList)
+    app._agent_builder_table = app.query_one("#agent_builder_table", DataTable)
     app._agent_builder_detail = app.query_one("#agent_builder_agent_detail", SidebarDetail)
     app._agent_builder_agent_id_input = app.query_one("#agent_builder_agent_id", Input)
     app._agent_builder_agent_name_input = app.query_one("#agent_builder_agent_name", Input)

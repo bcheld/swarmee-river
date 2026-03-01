@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.tui.commands import _MODEL_USAGE_TEXT
 from swarmee_river.tui.model_select import (
     choose_model_summary_parts,
     daemon_model_select_options,
@@ -14,9 +15,9 @@ from swarmee_river.tui.model_select import (
     parse_model_select_value,
     resolve_model_config_summary,
 )
-from swarmee_river.tui.commands import _MODEL_USAGE_TEXT
 from swarmee_river.tui.views.settings import (
-    build_env_sidebar_items,
+    build_env_table_rows,
+    build_models_table_rows,
     env_category_options,
     env_spec_by_key,
 )
@@ -80,6 +81,7 @@ class SettingsMixin:
     def _refresh_plan_actions_visibility(self) -> None:
         """Show plan action buttons only when a plan is pending approval."""
         import contextlib as _ctx
+
         with _ctx.suppress(Exception):
             pa = self.query_one("#plan_actions")
             if self.state.plan.pending_prompt:
@@ -89,10 +91,8 @@ class SettingsMixin:
 
     def _refresh_settings_env_list(self) -> None:
         """Populate the Settings env list from env.example catalog."""
-        from textual.widgets import Select
-
-        widget = self._settings_env_list
-        if widget is None:
+        table = self._settings_env_table
+        if table is None:
             return
         category_widget = self._settings_env_category_select
         category = str(getattr(category_widget, "value", "")).strip() if category_widget is not None else ""
@@ -103,21 +103,39 @@ class SettingsMixin:
                 with contextlib.suppress(Exception):
                     category_widget.set_options(options)
                     category_widget.value = category
-        items = build_env_sidebar_items(category=category or None)
-        selected = self._settings_env_selected_key if self._settings_env_selected_key else None
-        widget.set_items(items, selected_id=selected, emit=False)
-        current = widget.selected_item()
-        current_id = str((current or {}).get("id", "")).strip()
-        self._settings_env_selected_key = current_id if current_id and not current_id.startswith("__") else None
+        if not table.columns:
+            table.add_column("Key", key="key")
+            table.add_column("Current", key="current")
+            table.add_column("Default", key="default")
+            table.add_column("State", key="state", width=10)
+
+        rows = build_env_table_rows(category=category or None)
+        table.clear()
+        for key, current, default, state in rows:
+            table.add_row(key, current, default, state, key=key)
+
+        selected_id = str(self._settings_env_selected_key or "").strip()
+        if selected_id and rows:
+            for idx, (row_key, _current, _default, _state) in enumerate(rows):
+                if row_key == selected_id:
+                    with contextlib.suppress(Exception):
+                        table.move_cursor(row=idx)
+                    break
+        elif rows:
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=0)
+
+        cursor_coordinate = getattr(table, "cursor_coordinate", None)
+        row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
+        if 0 <= row_index < len(rows):
+            self._settings_env_selected_key = rows[row_index][0]
+        else:
+            self._settings_env_selected_key = None
 
     def _settings_auth_status_lines(self) -> list[str]:
         from swarmee_river.utils.provider_utils import has_aws_credentials, has_github_copilot_token
 
-        active_provider = (
-            self.state.daemon.model_provider_override
-            or self.state.daemon.provider
-            or "(auto)"
-        )
+        active_provider = self.state.daemon.model_provider_override or self.state.daemon.provider or "(auto)"
         aws_profile = (os.getenv("AWS_PROFILE") or "").strip() or "default"
         aws_ok = has_aws_credentials()
         copilot_ok = has_github_copilot_token()
@@ -139,8 +157,12 @@ class SettingsMixin:
                 options.extend((choice, choice) for choice in spec.choices)
             with contextlib.suppress(Exception):
                 select_widget.set_options(options)
-                selected_value = current_value or (default_value if default_value and default_value != "(unset)" else "")
-                select_widget.value = selected_value if selected_value in {value for _label, value in options} else "__none__"
+                selected_value = current_value or (
+                    default_value if default_value and default_value != "(unset)" else ""
+                )
+                select_widget.value = (
+                    selected_value if selected_value in {value for _label, value in options} else "__none__"
+                )
             with contextlib.suppress(Exception):
                 select_widget.styles.display = "block" if has_choices else "none"
         if input_widget is not None:
@@ -169,6 +191,7 @@ class SettingsMixin:
             "GITHUB_TOKEN",
             "GH_TOKEN",
         }
+
         def _mask(raw: str) -> str:
             if not sensitive or len(raw) <= 8:
                 return raw
@@ -191,11 +214,12 @@ class SettingsMixin:
         self._set_settings_env_value_controls(key=spec.key, current_value=current, default_value=spec.default)
 
     def _refresh_settings_models(self) -> None:
-        from swarmee_river.pricing import resolve_pricing
-        from swarmee_river.settings import load_settings
         from textual.widgets import Select
 
-        if self._settings_models_list is None:
+        from swarmee_river.settings import load_settings
+
+        table = self._settings_models_table
+        if table is None:
             return
 
         settings = load_settings()
@@ -213,35 +237,37 @@ class SettingsMixin:
         finally:
             self.state.daemon.model_select_syncing = False
 
-        rows: list[dict[str, str]] = []
-        for provider_name, provider in settings.models.providers.items():
-            for tier_name, tier in provider.tiers.items():
-                model_id = str(tier.model_id or "").strip() or "(unset)"
-                pricing = resolve_pricing(provider=provider_name, model_id=tier.model_id)
-                pricing_label = ""
-                if pricing is not None and pricing.input_per_1m is not None and pricing.output_per_1m is not None:
-                    cached = pricing.cached_input_per_1m if pricing.cached_input_per_1m is not None else pricing.input_per_1m
-                    pricing_label = f" | ${pricing.input_per_1m}/1M in, ${pricing.output_per_1m}/1M out, ${cached}/1M cached"
-                rows.append({
-                    "id": f"{provider_name}|{tier_name}",
-                    "title": f"{provider_name}/{tier_name}",
-                    "subtitle": f"{model_id}{pricing_label}",
-                    "state": "default",
-                })
-
-        rows = sorted(rows, key=lambda item: str(item.get("id", "")))
+        rows = build_models_table_rows(settings)
         if not rows:
-            rows = [{
-                "id": "__none__",
-                "title": "No model tiers configured",
-                "subtitle": "Use the form below to add a model tier.",
-                "state": "default",
-            }]
-        selected_id = self._settings_models_selected_id
-        self._settings_models_list.set_items(rows, selected_id=selected_id, emit=False)
-        selected = self._settings_models_list.selected_item()
-        selected_id = str((selected or {}).get("id", "")).strip()
-        self._settings_models_selected_id = selected_id if selected_id and not selected_id.startswith("__") else None
+            rows = [("__none__", "No model tiers configured", "Use the form below to add a model tier.", "")]
+
+        if not table.columns:
+            table.add_column("Provider/Tier", key="provider_tier")
+            table.add_column("Model ID", key="model_id")
+            table.add_column("Pricing", key="pricing")
+        table.clear()
+        for row_id, provider_tier, model_id, pricing_label in rows:
+            table.add_row(provider_tier, model_id, pricing_label, key=row_id)
+
+        selected_id = str(self._settings_models_selected_id or "").strip()
+        if selected_id and rows:
+            for idx, (row_id, _provider_tier, _model_id, _pricing_label) in enumerate(rows):
+                if row_id == selected_id:
+                    with contextlib.suppress(Exception):
+                        table.move_cursor(row=idx)
+                    break
+        elif rows:
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=0)
+        cursor_coordinate = getattr(table, "cursor_coordinate", None)
+        row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
+        if 0 <= row_index < len(rows):
+            selected_id = rows[row_index][0]
+            self._settings_models_selected_id = (
+                selected_id if selected_id and not selected_id.startswith("__") else None
+            )
+        else:
+            self._settings_models_selected_id = None
 
         summary_widget = self._settings_models_summary
         if summary_widget is not None:
@@ -264,9 +290,10 @@ class SettingsMixin:
         self._refresh_settings_model_detail()
 
     def _refresh_settings_model_detail(self) -> None:
+        from textual.widgets import Input, Select
+
         from swarmee_river.pricing import resolve_pricing
         from swarmee_river.settings import load_settings
-        from textual.widgets import Input, Select
 
         detail_widget = self._settings_models_detail
         if detail_widget is None:
@@ -327,7 +354,7 @@ class SettingsMixin:
             price_cached_widget.value = env_cached if env_cached is not None else ""
 
     def _load_project_settings_payload(self) -> tuple[dict[str, Any], Path]:
-        from swarmee_river.settings import default_settings_template, deep_merge_dict
+        from swarmee_river.settings import deep_merge_dict, default_settings_template
 
         path = Path.cwd() / ".swarmee" / "settings.json"
         raw: dict[str, Any] = {}
@@ -388,6 +415,76 @@ class SettingsMixin:
             payload.pop("env", None)
         self._save_project_settings_payload(payload, path)
 
+    def _model_tier_key(self, provider: str, tier: str) -> str:
+        return f"{str(provider or '').strip().lower()}|{str(tier or '').strip().lower()}"
+
+    def _normalized_hidden_tiers(self, models_payload: dict[str, Any]) -> list[str]:
+        raw_hidden = models_payload.get("hidden_tiers")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        if isinstance(raw_hidden, list):
+            for item in raw_hidden:
+                token = str(item or "").strip().lower()
+                if "|" not in token:
+                    continue
+                provider_name, tier_name = token.split("|", 1)
+                key = self._model_tier_key(provider_name, tier_name)
+                if "|" not in key or key in seen:
+                    continue
+                seen.add(key)
+                normalized.append(key)
+        models_payload["hidden_tiers"] = normalized
+        return normalized
+
+    def _set_model_hidden_tier(self, models_payload: dict[str, Any], provider: str, tier: str, *, hidden: bool) -> None:
+        key = self._model_tier_key(provider, tier)
+        if "|" not in key:
+            return
+        hidden_tiers = self._normalized_hidden_tiers(models_payload)
+        if hidden:
+            if key not in hidden_tiers:
+                hidden_tiers.append(key)
+        else:
+            hidden_tiers = [item for item in hidden_tiers if item != key]
+        models_payload["hidden_tiers"] = hidden_tiers
+
+    def _remove_model_tier_override(self, models_payload: dict[str, Any], provider: str, tier: str) -> None:
+        provider_name = str(provider or "").strip().lower()
+        tier_name = str(tier or "").strip().lower()
+        if not provider_name or not tier_name:
+            return
+        providers = models_payload.get("providers")
+        if not isinstance(providers, dict):
+            return
+        provider_dict = providers.get(provider_name)
+        if not isinstance(provider_dict, dict):
+            return
+        tiers = provider_dict.get("tiers")
+        if not isinstance(tiers, dict):
+            return
+        tiers.pop(tier_name, None)
+        if not tiers:
+            providers.pop(provider_name, None)
+
+    def _resolve_model_provider_tier_selection(self) -> tuple[str, str] | None:
+        selected = str(self._settings_models_selected_id or "").strip().lower()
+        if "|" in selected:
+            provider, tier = selected.split("|", 1)
+            provider = provider.strip().lower()
+            tier = tier.strip().lower()
+            if provider and tier:
+                return provider, tier
+        from textual.widgets import Select
+
+        with contextlib.suppress(Exception):
+            provider_widget = self.query_one("#settings_models_form_provider", Select)
+            tier_widget = self.query_one("#settings_models_form_tier", Select)
+            provider = str(getattr(provider_widget, "value", "")).strip().lower()
+            tier = str(getattr(tier_widget, "value", "")).strip().lower()
+            if provider and tier:
+                return provider, tier
+        return None
+
     def _save_models_default_selection(self) -> None:
         from textual.widgets import Select
 
@@ -432,6 +529,7 @@ class SettingsMixin:
         providers = models.setdefault("providers", {})
         provider_dict = providers.setdefault(provider, {})
         tiers = provider_dict.setdefault("tiers", {})
+        self._set_model_hidden_tier(models, provider, tier, hidden=False)
         tier_dict: dict[str, Any] = dict(tiers.get(tier, {})) if isinstance(tiers.get(tier), dict) else {}
         tier_dict["provider"] = provider
         tier_dict["model_id"] = model_id
@@ -480,30 +578,38 @@ class SettingsMixin:
         self._write_transcript_line(f"[settings] saved model {provider}/{tier} -> {model_id}")
 
     def _delete_model_form_selection(self) -> None:
-        selected = self._settings_models_selected_id or ""
-        if "|" not in selected:
+        selected = self._resolve_model_provider_tier_selection()
+        if selected is None:
             self._write_transcript_line("[settings] select a model tier to delete.")
             return
-        provider, tier = selected.split("|", 1)
+        provider, tier = selected
         payload, path = self._load_project_settings_payload()
-        providers = payload.setdefault("models", {}).setdefault("providers", {})
-        provider_dict = providers.get(provider)
-        if not isinstance(provider_dict, dict):
-            self._write_transcript_line("[settings] selected provider is missing.")
-            return
-        tiers = provider_dict.get("tiers")
-        if not isinstance(tiers, dict) or tier not in tiers:
-            self._write_transcript_line("[settings] selected tier is missing.")
-            return
-        tiers.pop(tier, None)
-        if not tiers:
-            providers.pop(provider, None)
+        models = payload.setdefault("models", {})
+        self._set_model_hidden_tier(models, provider, tier, hidden=True)
+        self._remove_model_tier_override(models, provider, tier)
         self._save_project_settings_payload(payload, path)
         self._settings_models_selected_id = None
         self._refresh_model_select()
         self._refresh_settings_models()
         self._refresh_agent_summary()
-        self._write_transcript_line(f"[settings] deleted model tier {provider}/{tier}")
+        self._write_transcript_line(f"[settings] hid model tier {provider}/{tier}")
+
+    def _restore_model_form_selection(self) -> None:
+        selected = self._resolve_model_provider_tier_selection()
+        if selected is None:
+            self._write_transcript_line("[settings] select a model tier to restore.")
+            return
+        provider, tier = selected
+        payload, path = self._load_project_settings_payload()
+        models = payload.setdefault("models", {})
+        self._set_model_hidden_tier(models, provider, tier, hidden=False)
+        self._remove_model_tier_override(models, provider, tier)
+        self._save_project_settings_payload(payload, path)
+        self._settings_models_selected_id = f"{provider}|{tier}"
+        self._refresh_model_select()
+        self._refresh_settings_models()
+        self._refresh_agent_summary()
+        self._write_transcript_line(f"[settings] restored defaults for {provider}/{tier}")
 
     def _clear_model_form(self) -> None:
         from textual.widgets import Input, Select
@@ -655,10 +761,12 @@ class SettingsMixin:
     def _refresh_settings_scope_display(self) -> None:
         """Update the current scope path display in Settings."""
         from swarmee_river.state_paths import state_dir
+
         widget = self._settings_scope_current
         if widget is None:
             return
         import contextlib as _ctx
+
         with _ctx.suppress(Exception):
             path = state_dir()
             widget.update(f"Current scope: {path}")
@@ -809,9 +917,7 @@ class SettingsMixin:
 
         self.state.daemon.provider = provider or None
         self.state.daemon.tier = tier or None
-        self.state.daemon.model_id = (
-            str(model_id).strip() if model_id is not None and str(model_id).strip() else None
-        )
+        self.state.daemon.model_id = str(model_id).strip() if model_id is not None and str(model_id).strip() else None
         self.state.daemon.tiers = tiers if isinstance(tiers, list) else []
         self.state.daemon.current_model = self.state.daemon.model_id or (
             f"{self.state.daemon.provider}/{self.state.daemon.tier}"
@@ -853,7 +959,9 @@ class SettingsMixin:
     def _sync_settings_sidebar_autosize(self, pane_id: str | None) -> None:
         """Auto-expand sidebar in Settings and restore prior ratio when leaving."""
         import contextlib as _ctx
+
         from textual.widgets import TabbedContent
+
         current_pane_id = str(pane_id or "").strip()
         if not current_pane_id:
             with _ctx.suppress(Exception):
@@ -875,6 +983,7 @@ class SettingsMixin:
 
     def _set_model_tier_from_value(self, value: str) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         parsed = parse_model_select_value(value)
         if parsed is None:
             return
@@ -900,7 +1009,9 @@ class SettingsMixin:
 
     def _sync_selected_model_before_run(self) -> None:
         import contextlib as _ctx
+
         from textual.widgets import Select
+
         selected_value: str | None = None
         with _ctx.suppress(Exception):
             selector = self.query_one("#model_select", Select)
@@ -928,6 +1039,7 @@ class SettingsMixin:
     def _handle_model_command(self, normalized: str) -> bool:
         from swarmee_river.tui.commands import classify_model_command
         from swarmee_river.tui.transport import send_daemon_command
+
         command = classify_model_command(normalized)
         if command is None:
             return False

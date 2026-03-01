@@ -62,9 +62,7 @@ def build_artifact_sidebar_items(entries: list[dict[str, Any]]) -> list[dict[str
         if normalized is None:
             continue
         kind = str(normalized.get("kind", "unknown")).strip() or "unknown"
-        artifact_id = str(normalized.get("id", "")).strip() or "(no-id)"
         name = str(normalized.get("name", normalized.get("id", ""))).strip() or "(unnamed)"
-        created_at = str(normalized.get("created_at", "")).strip() or ""
         path = str(normalized.get("path", "")).strip()
         items.append(
             {
@@ -75,6 +73,27 @@ def build_artifact_sidebar_items(entries: list[dict[str, Any]]) -> list[dict[str
             }
         )
     return items
+
+
+def build_artifact_table_rows(entries: list[dict[str, Any]]) -> list[tuple[str, str, str, str, str]]:
+    """Build DataTable rows for artifacts.
+
+    Returns tuples of: (item_id, name, kind, created_at, path).
+    """
+    rows: list[tuple[str, str, str, str, str]] = []
+    for entry in entries:
+        normalized = normalize_artifact_index_entry(entry)
+        if normalized is None:
+            continue
+        item_id = str(normalized.get("item_id", "")).strip()
+        name = str(normalized.get("name", "")).strip() or "(unnamed)"
+        kind = str(normalized.get("kind", "unknown")).strip() or "unknown"
+        created_at = str(normalized.get("created_at", "")).strip()
+        path = str(normalized.get("path", "")).strip()
+        if len(path) > 96:
+            path = "..." + path[-93:]
+        rows.append((item_id, name, kind, created_at, path))
+    return rows
 
 
 def artifact_context_source_payload(path: str, *, source_id: str) -> dict[str, str]:
@@ -89,6 +108,7 @@ def artifact_context_source_payload(path: str, *, source_id: str) -> dict[str, s
 __all__ = [
     "add_recent_artifacts",
     "artifact_context_source_payload",
+    "build_artifact_table_rows",
     "build_artifact_sidebar_items",
     "normalize_artifact_index_entry",
 ]

@@ -148,12 +148,12 @@ def test_session_graph_index_builds_and_persists_with_corruption_tolerance(
     assert [turn["assistant_text"] for turn in turns] == ["Scanning the repository now.", "Done."]
 
     assert [event["event"] for event in index["events"]] == [
-        "after_tool_call",   # ignored_tool from old_log
-        "after_tool_call",   # list_dir from new_log
-        "after_tool_call",   # calc from new_log
+        "after_tool_call",  # ignored_tool from old_log
+        "after_tool_call",  # list_dir from new_log
+        "after_tool_call",  # calc from new_log
         "after_model_call",
         "after_invocation",
-        "after_tool_call",   # failing_tool
+        "after_tool_call",  # failing_tool
     ]
     calc_event = next(event for event in index["events"] if event.get("tool") == "calc")
     assert "success" not in calc_event

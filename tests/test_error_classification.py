@@ -45,4 +45,3 @@ def test_classify_unmatched_as_fatal() -> None:
     result = classify_error_message("unexpected fatal parser panic")
     assert result["category"] == ERROR_CATEGORY_FATAL
     assert result["retryable"] is False
-

@@ -29,10 +29,10 @@ from typing import Any
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # MockTransport
 # ---------------------------------------------------------------------------
+
 
 class MockTransport:
     """
@@ -104,6 +104,7 @@ class MockTransport:
 # App factory fixture
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def tui_app_factory(tmp_path: Any, monkeypatch: Any):
     """
@@ -127,6 +128,7 @@ def tui_app_factory(tmp_path: Any, monkeypatch: Any):
     async def _factory(*, size: tuple[int, int] = (200, 50)):
         # Import here so test collection doesn't fail if textual is missing.
         from swarmee_river.tui.app import get_swarmee_tui_class
+
         SwarmeeTUI = get_swarmee_tui_class()
 
         transport = MockTransport()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json as _json
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 
@@ -297,6 +297,24 @@ def build_session_timeline_sidebar_items(events: list[dict[str, Any]]) -> list[d
     return items
 
 
+def build_session_timeline_table_rows(events: list[dict[str, Any]]) -> list[tuple[str, str, str, str]]:
+    """Build DataTable rows for session timeline events.
+
+    Returns tuples of: (event_id, summary, kind, relative_time).
+    """
+    rows: list[tuple[str, str, str, str]] = []
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            continue
+        event_id = str(event.get("id", "")).strip() or f"timeline-{index + 1}"
+        summary = summarize_session_timeline_event(event)
+        kind = classify_session_timeline_event_kind(event)
+        ts = str(event.get("ts", "")).strip()
+        relative = _relative_time(ts) if ts else ""
+        rows.append((event_id, summary, kind, relative))
+    return rows
+
+
 def render_session_timeline_detail_text(event: dict[str, Any] | None) -> str:
     """Render detail body for selected timeline event."""
     if not isinstance(event, dict):
@@ -326,6 +344,7 @@ def session_timeline_actions(event: dict[str, Any] | None) -> list[dict[str, str
 
 __all__ = [
     "build_session_issue_sidebar_items",
+    "build_session_timeline_table_rows",
     "build_session_timeline_sidebar_items",
     "classify_session_timeline_event_kind",
     "normalize_session_view_mode",

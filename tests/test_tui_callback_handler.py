@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import io
+import json
 import sys
 from threading import Event
 
@@ -19,8 +19,8 @@ def _capture_events(handler: TuiCallbackHandler, fn) -> list[dict]:
         fn()
     finally:
         sys.stdout = old
-    lines = [l for l in buf.getvalue().strip().split("\n") if l.strip()]
-    return [json.loads(l) for l in lines]
+    lines = [line for line in buf.getvalue().strip().split("\n") if line.strip()]
+    return [json.loads(line) for line in lines]
 
 
 def test_text_delta_emitted():
@@ -52,10 +52,12 @@ def test_tool_start_and_result():
         # Simulate tool input streaming
         h.callback_handler(current_tool_use={"toolUseId": "t1", "name": "shell", "input": {"command": "ls"}})
         # Simulate tool result
-        h.callback_handler(message={
-            "role": "user",
-            "content": [{"toolResult": {"toolUseId": "t1", "status": "success"}}],
-        })
+        h.callback_handler(
+            message={
+                "role": "user",
+                "content": [{"toolResult": {"toolUseId": "t1", "status": "success"}}],
+            }
+        )
 
     events = _capture_events(h, run)
     types = [e["event"] for e in events]
@@ -72,10 +74,12 @@ def test_tool_start_and_result_for_empty_input_tool():
 
     def run():
         h.callback_handler(current_tool_use={"toolUseId": "t-empty", "name": "noop", "input": {}})
-        h.callback_handler(message={
-            "role": "user",
-            "content": [{"toolResult": {"toolUseId": "t-empty", "status": "success"}}],
-        })
+        h.callback_handler(
+            message={
+                "role": "user",
+                "content": [{"toolResult": {"toolUseId": "t-empty", "status": "success"}}],
+            }
+        )
 
     events = _capture_events(h, run)
     assert any(event.get("event") == "tool_start" and event.get("tool_use_id") == "t-empty" for event in events)
@@ -86,10 +90,12 @@ def test_tool_result_emitted_even_without_tool_history():
     h = TuiCallbackHandler()
     events = _capture_events(
         h,
-        lambda: h.callback_handler(message={
-            "role": "user",
-            "content": [{"toolResult": {"toolUseId": "unknown", "status": "error"}}],
-        }),
+        lambda: h.callback_handler(
+            message={
+                "role": "user",
+                "content": [{"toolResult": {"toolUseId": "unknown", "status": "error"}}],
+            }
+        ),
     )
     assert events == [
         {
@@ -133,7 +139,9 @@ def test_tool_progress_content_rate_limited_and_flushed_before_result(monkeypatc
         now["value"] = 100.05
         h.callback_handler(current_tool_use={"toolUseId": "t1", "stdout": "second\n"})
         now["value"] = 100.06
-        h.callback_handler(message={"role": "user", "content": [{"toolResult": {"toolUseId": "t1", "status": "success"}}]})
+        h.callback_handler(
+            message={"role": "user", "content": [{"toolResult": {"toolUseId": "t1", "status": "success"}}]}
+        )
 
     events = _capture_events(h, run)
     progress_events = [event for event in events if event.get("event") == "tool_progress" and event.get("content")]
@@ -157,7 +165,9 @@ def test_tool_progress_heartbeat_emitted_for_long_running_tool(monkeypatch):
     monkeypatch.setattr("swarmee_river.handlers.callback_handler.time.time", _wall)
 
     def run():
-        h.callback_handler(current_tool_use={"toolUseId": "t-heartbeat", "name": "shell", "input": {"command": "sleep 5"}})
+        h.callback_handler(
+            current_tool_use={"toolUseId": "t-heartbeat", "name": "shell", "input": {"command": "sleep 5"}}
+        )
         now["value"] = 7.3
         h.callback_handler(current_tool_use={"toolUseId": "t-heartbeat", "input": {"command": "sleep 5"}})
 
@@ -165,7 +175,9 @@ def test_tool_progress_heartbeat_emitted_for_long_running_tool(monkeypatch):
     heartbeat_events = [
         event
         for event in events
-        if event.get("event") == "tool_progress" and "content" not in event and event.get("tool_use_id") == "t-heartbeat"
+        if event.get("event") == "tool_progress"
+        and "content" not in event
+        and event.get("tool_use_id") == "t-heartbeat"
     ]
     assert len(heartbeat_events) == 1
     assert float(heartbeat_events[0].get("elapsed_s", 0.0)) >= 2.0
@@ -263,10 +275,14 @@ def test_tool_input_emitted_from_assistant_message():
         # First trigger tool_start via current_tool_use
         h.callback_handler(current_tool_use={"toolUseId": "t1", "name": "shell", "input": {"command": "ls"}})
         # Then simulate assistant message with finalized toolUse
-        h.callback_handler(message={
-            "role": "assistant",
-            "content": [{"toolUse": {"toolUseId": "t1", "name": "shell", "input": {"command": "ls -la", "cwd": "/tmp"}}}],
-        })
+        h.callback_handler(
+            message={
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "t1", "name": "shell", "input": {"command": "ls -la", "cwd": "/tmp"}}}
+                ],
+            }
+        )
 
     events = _capture_events(h, run)
     tool_input_events = [e for e in events if e["event"] == "tool_input"]
@@ -279,10 +295,12 @@ def test_tool_start_emitted_from_assistant_tool_use_without_current_tool_use():
     h = TuiCallbackHandler()
     events = _capture_events(
         h,
-        lambda: h.callback_handler(message={
-            "role": "assistant",
-            "content": [{"toolUse": {"toolUseId": "t-direct", "name": "shell", "input": {"command": "pwd"}}}],
-        }),
+        lambda: h.callback_handler(
+            message={
+                "role": "assistant",
+                "content": [{"toolUse": {"toolUseId": "t-direct", "name": "shell", "input": {"command": "pwd"}}}],
+            }
+        ),
     )
     assert events == [
         {
@@ -352,10 +370,12 @@ def test_tool_input_not_emitted_for_non_dict_input():
     h = TuiCallbackHandler()
 
     def run():
-        h.callback_handler(message={
-            "role": "assistant",
-            "content": [{"toolUse": {"toolUseId": "t2", "name": "shell", "input": "partial string"}}],
-        })
+        h.callback_handler(
+            message={
+                "role": "assistant",
+                "content": [{"toolUse": {"toolUseId": "t2", "name": "shell", "input": "partial string"}}],
+            }
+        )
 
     events = _capture_events(h, run)
     tool_input_events = [e for e in events if e["event"] == "tool_input"]
@@ -435,9 +455,7 @@ def test_plan_step_updates_emitted_from_plan_progress_tool():
         for event in events
     )
     assert any(
-        event.get("event") == "plan_step_update"
-        and event.get("step_index") == 0
-        and event.get("status") == "completed"
+        event.get("event") == "plan_step_update" and event.get("step_index") == 0 and event.get("status") == "completed"
         for event in events
     )
     assert any(event.get("event") == "plan_complete" and event.get("total_steps") == 1 for event in events)

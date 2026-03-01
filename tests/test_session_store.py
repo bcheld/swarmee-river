@@ -57,7 +57,9 @@ def test_session_store_load_messages_ignores_corrupt_lines(tmp_path: Path) -> No
     session_dir = tmp_path / "sessions" / sid
     log_path = session_dir / "messages.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text("not-json\n" + json.dumps({"version": 1, "messages": [{"role": "user", "content": [{"text": "ok"}]}]}) + "\n")
+    log_path.write_text(
+        "not-json\n" + json.dumps({"version": 1, "messages": [{"role": "user", "content": [{"text": "ok"}]}]}) + "\n"
+    )
 
     loaded = store.load_messages(sid)
     assert loaded == [{"role": "user", "content": [{"text": "ok"}]}]
@@ -69,7 +71,9 @@ def test_session_store_load_messages_handles_version_mismatch(tmp_path: Path) ->
     session_dir = tmp_path / "sessions" / sid
     log_path = session_dir / "messages.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(json.dumps({"version": 99, "messages": [{"role": "user", "content": [{"text": "nope"}]}]}) + "\n")
+    log_path.write_text(
+        json.dumps({"version": 99, "messages": [{"role": "user", "content": [{"text": "nope"}]}]}) + "\n"
+    )
 
     loaded = store.load_messages(sid)
     assert loaded == []

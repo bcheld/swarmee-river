@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any, Iterator
 
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, TabPane, TextArea, Static
+from textual.widgets import Button, DataTable, Static, TabPane, TextArea
 
-from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader, SidebarList
+from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader
 
 
 def compose_engage_tab() -> Iterator[Any]:
@@ -57,11 +57,11 @@ def compose_engage_tab() -> Iterator[Any]:
                         yield Button("Artifacts", id="session_view_artifacts", compact=True, variant="default")
                     with Vertical(id="session_timeline_view"):
                         yield SidebarHeader("Timeline", id="session_timeline_header")
-                        yield SidebarList(id="session_timeline_list")
+                        yield DataTable(id="session_timeline_table", cursor_type="row")
                         yield SidebarDetail(id="session_timeline_detail")
                     with Vertical(id="session_artifacts_view"):
                         yield SidebarHeader("Artifacts", id="session_artifacts_header")
-                        yield SidebarList(id="session_artifacts_list")
+                        yield DataTable(id="session_artifacts_table", cursor_type="row")
                         yield SidebarDetail(id="session_artifacts_detail")
 
 
@@ -85,16 +85,16 @@ def wire_engage_widgets(app: Any) -> None:
     app._session_timeline_view = app.query_one("#session_timeline_view", Vertical)
     app._session_artifacts_view = app.query_one("#session_artifacts_view", Vertical)
     app._session_timeline_header = app.query_one("#session_timeline_header", SidebarHeader)
-    app._session_timeline_list = app.query_one("#session_timeline_list", SidebarList)
+    app._session_timeline_table = app.query_one("#session_timeline_table", DataTable)
     app._session_timeline_detail = app.query_one("#session_timeline_detail", SidebarDetail)
     app._session_artifacts_header = app.query_one("#session_artifacts_header", SidebarHeader)
-    app._session_artifacts_list = app.query_one("#session_artifacts_list", SidebarList)
+    app._session_artifacts_table = app.query_one("#session_artifacts_table", DataTable)
     app._session_artifacts_detail = app.query_one("#session_artifacts_detail", SidebarDetail)
 
     # Backward-compat aliases for app.py code that still references old names.
     # Artifact widgets now live in session; these map to the new locations.
     app._artifacts_header = app._session_artifacts_header
-    app._artifacts_list = app._session_artifacts_list
+    app._artifacts_table = app._session_artifacts_table
     app._artifacts_detail = app._session_artifacts_detail
     # Issues widgets are removed; set to None so guarded accesses pass.
     app._session_header = app._session_timeline_header
@@ -102,5 +102,6 @@ def wire_engage_widgets(app: Any) -> None:
     app._session_issues_view = None
     app._session_issue_list = None
     app._session_issue_detail = None
+
 
 __all__ = ["compose_engage_tab", "wire_engage_widgets"]

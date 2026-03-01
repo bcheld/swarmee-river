@@ -583,16 +583,16 @@ def test_runtime_service_proxies_auth_and_connect_commands(monkeypatch, tmp_path
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", service.port)
             writer.write(
-                json.dumps({"cmd": "hello", "token": token, "client_name": "tests", "surface": "tests"}).encode(
-                    "utf-8"
-                )
+                json.dumps({"cmd": "hello", "token": token, "client_name": "tests", "surface": "tests"}).encode("utf-8")
                 + b"\n"
             )
             await writer.drain()
             hello_event = await _read_event(reader)
             assert hello_event["event"] == "hello_ack"
 
-            writer.write(json.dumps({"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)}).encode("utf-8") + b"\n")
+            writer.write(
+                json.dumps({"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)}).encode("utf-8") + b"\n"
+            )
             await writer.drain()
             attached_event = await _read_event(reader)
             assert attached_event["event"] == "attached"
@@ -610,9 +610,7 @@ def test_runtime_service_proxies_auth_and_connect_commands(monkeypatch, tmp_path
 
             writes_before = len(proc.stdin.writes)
             writer.write(
-                json.dumps({"cmd": "connect", "provider": "bedrock", "method": "sso", "profile": "dev"}).encode(
-                    "utf-8"
-                )
+                json.dumps({"cmd": "connect", "provider": "bedrock", "method": "sso", "profile": "dev"}).encode("utf-8")
                 + b"\n"
             )
             await writer.drain()

@@ -59,4 +59,3 @@ def resolve_pricing(*, provider: str | None, model_id: str | None) -> TokenPrici
         return pricing
 
     return None
-

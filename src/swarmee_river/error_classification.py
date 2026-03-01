@@ -138,4 +138,3 @@ def classify_error_message(
     if resolved_tool_id:
         result["tool_use_id"] = resolved_tool_id
     return result
-

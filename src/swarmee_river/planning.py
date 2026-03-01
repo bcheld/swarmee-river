@@ -15,8 +15,11 @@ class PlanStep(BaseModel):
     risks: list[str] = Field(default_factory=list, description="Risks and mitigations.")
 
     @field_validator(
-        "files_to_read", "files_to_edit", "tools_expected",
-        "commands_expected", "risks",
+        "files_to_read",
+        "files_to_edit",
+        "tools_expected",
+        "commands_expected",
+        "risks",
         mode="before",
     )
     @classmethod

@@ -5,12 +5,16 @@ Tests for TUI subprocess helpers.
 
 from __future__ import annotations
 
+import re
 import sys
+from types import SimpleNamespace
 
 from swarmee_river.tui import app as tui_app
 from swarmee_river.tui.mixins.artifacts import ArtifactsMixin
 from swarmee_river.tui.mixins.context_sources import ContextSourcesMixin
+from swarmee_river.tui.mixins.daemon import DaemonMixin
 from swarmee_river.tui.mixins.plan import PlanMixin
+from swarmee_river.tui.mixins.session import SessionMixin
 from swarmee_river.tui.state import AppState
 
 
@@ -196,6 +200,115 @@ def test_classify_post_run_command_matrix():
     }
     for command, expected in cases.items():
         assert tui_app.classify_post_run_command(command) == expected
+
+
+def test_plain_prompt_submit_forces_execute_mode():
+    class _Harness:
+        def __init__(self) -> None:
+            self._default_auto_approve = True
+            self.state = SimpleNamespace(daemon=SimpleNamespace(query_active=False))
+            self.run_calls: list[tuple[str, bool, str | None]] = []
+            self.transcript: list[str] = []
+            self.user_inputs: list[str] = []
+
+        def _write_user_input(self, text: str) -> None:
+            self.user_inputs.append(text)
+
+        def _handle_copy_command(self, _normalized: str) -> bool:
+            return False
+
+        def _handle_pre_run_command(self, _text: str) -> bool:
+            return False
+
+        def _handle_post_run_command(self, _text: str) -> bool:
+            return False
+
+        def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
+            self.run_calls.append((prompt, auto_approve, mode))
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.transcript.append(text)
+
+    harness = _Harness()
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+    SwarmeeTUI._handle_user_input(harness, "ping")
+
+    assert harness.user_inputs == ["ping"]
+    assert harness.run_calls == [("ping", True, "execute")]
+    assert harness.transcript == []
+
+
+def test_plan_prompt_command_still_starts_plan_mode():
+    class _Harness:
+        def __init__(self) -> None:
+            self._default_auto_approve = True
+            self.run_calls: list[tuple[str, bool, str | None]] = []
+
+        def _dispatch_plan_action(self, _action: str) -> None:
+            raise AssertionError("plan action dispatch should not be called for /plan <prompt>")
+
+        def _update_prompt_placeholder(self) -> None:
+            return None
+
+        def _write_transcript_line(self, _text: str) -> None:
+            return None
+
+        def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
+            self.run_calls.append((prompt, auto_approve, mode))
+
+    harness = _Harness()
+    handled = DaemonMixin._handle_post_run_command(harness, "/plan draft ping check")
+
+    assert handled is True
+    assert harness.run_calls == [("draft ping check", False, "plan")]
+
+
+def test_start_fresh_session_rotates_session_id_and_restarts_daemon():
+    class _Harness(SessionMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    query_active=False,
+                    session_id="old-session-id",
+                    available_restore_session_id="old-session-id",
+                    available_restore_turn_count=12,
+                    last_restored_turn_count=4,
+                )
+            )
+            self.session_changes: list[tuple[str | None, str | None]] = []
+            self.spawn_calls: list[bool] = []
+            self.transcript: list[str] = []
+            self.saved = False
+
+        def _on_active_session_changed(self, old_session_id: str | None, new_session_id: str | None) -> None:
+            self.session_changes.append((old_session_id, new_session_id))
+            self.state.daemon.session_id = new_session_id
+
+        def _spawn_daemon(self, *, restart: bool = False) -> None:
+            self.spawn_calls.append(restart)
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.transcript.append(text)
+
+        def _save_session(self) -> None:
+            self.saved = True
+
+    harness = _Harness()
+    harness._start_fresh_session()
+
+    assert len(harness.session_changes) == 1
+    old_sid, new_sid = harness.session_changes[0]
+    assert old_sid == "old-session-id"
+    assert isinstance(new_sid, str)
+    assert re.fullmatch(r"[0-9a-f]{32}", new_sid or "")
+    assert new_sid != "old-session-id"
+    assert harness.state.daemon.session_id == new_sid
+    assert harness.state.daemon.available_restore_session_id is None
+    assert harness.state.daemon.available_restore_turn_count == 0
+    assert harness.state.daemon.last_restored_turn_count == 0
+    assert harness.spawn_calls == [True]
+    assert harness.saved is True
+    assert harness.transcript[-1] == "[session] starting fresh."
 
 
 def test_classify_tui_error_event_prefers_daemon_metadata() -> None:
@@ -1620,7 +1733,7 @@ def test_parse_tui_event_non_json_returns_none():
 
 
 def test_parse_tui_event_ignores_osc_prefix():
-    line = "\x1b]0;Python/git/rg\x07{\"event\":\"text_delta\",\"data\":\"hello\"}"
+    line = '\x1b]0;Python/git/rg\x07{"event":"text_delta","data":"hello"}'
     result = tui_app.parse_tui_event(line)
     assert result == {"event": "text_delta", "data": "hello"}
 
@@ -1759,10 +1872,12 @@ def test_render_tool_result_line_includes_input_summary():
 def test_plan_card_renders_steps():
     from swarmee_river.tui.widgets import PlanCard
 
-    card = PlanCard(plan_json={
-        "summary": "Fix login",
-        "steps": ["Read auth module", "Add validation", "Update tests"],
-    })
+    card = PlanCard(
+        plan_json={
+            "summary": "Fix login",
+            "steps": ["Read auth module", "Add validation", "Update tests"],
+        }
+    )
     rendered = card._render_from_status()
     assert "Fix login" in rendered
     assert "1." in rendered
@@ -1772,10 +1887,12 @@ def test_plan_card_renders_steps():
 def test_plan_card_mark_step_complete():
     from swarmee_river.tui.widgets import PlanCard
 
-    card = PlanCard(plan_json={
-        "summary": "Test",
-        "steps": ["Step A", "Step B"],
-    })
+    card = PlanCard(
+        plan_json={
+            "summary": "Test",
+            "steps": ["Step A", "Step B"],
+        }
+    )
     assert card._step_status == [False, False]
     card.mark_step_complete(0)
     assert card._step_status == [True, False]
@@ -1949,6 +2066,7 @@ def test_status_bar_refresh_display():
     from swarmee_river.tui.widgets import StatusBar
 
     bar = StatusBar()
+
     # Access internal content set by update()
     def _get_text(widget):
         return widget._Static__content  # type: ignore[attr-defined]

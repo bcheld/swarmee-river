@@ -17,7 +17,7 @@ from swarmee_river.state_paths import sessions_dir
 from swarmee_river.tui.agent_studio import normalize_agent_studio_view_mode
 from swarmee_river.tui.sidebar_session import (
     build_session_issue_sidebar_items,
-    build_session_timeline_sidebar_items,
+    build_session_timeline_table_rows,
     classify_session_timeline_event_kind,
     normalize_session_view_mode,
     render_session_issue_detail_text,
@@ -204,19 +204,34 @@ class SessionMixin:
 
     def _render_session_timeline_panel(self) -> None:
         events = [item for item in self.state.session.timeline_events if isinstance(item, dict)]
-        items = build_session_timeline_sidebar_items(events)
-        list_widget = self._session_timeline_list
-        if list_widget is not None:
+        rows = build_session_timeline_table_rows(events)
+        table = self._session_timeline_table
+        if table is not None:
+            if not table.columns:
+                table.add_column("Event", key="event")
+                table.add_column("Kind", key="kind", width=10)
+                table.add_column("When", key="when", width=12)
+            table.clear()
+            for event_id, summary, kind, when in rows:
+                table.add_row(summary, kind, when, key=event_id)
             selected_id = self.state.session.timeline_selected_event_id
             if not selected_id and events:
                 selected_id = str(events[-1].get("id", "")).strip()
-            list_widget.set_items(items, selected_id=selected_id, emit=False)
-            selected_id = list_widget.selected_id()
+            if selected_id and rows:
+                for idx, (event_id, _summary, _kind, _when) in enumerate(rows):
+                    if event_id == selected_id:
+                        with contextlib.suppress(Exception):
+                            table.move_cursor(row=idx)
+                        break
+            elif rows:
+                with contextlib.suppress(Exception):
+                    table.move_cursor(row=len(rows) - 1)
+            cursor_coordinate = getattr(table, "cursor_coordinate", None)
+            row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
+            selected_id = rows[row_index][0] if 0 <= row_index < len(rows) else selected_id
             selected_event = self._session_timeline_event_by_id(selected_id)
             if selected_event is None and events:
                 selected_event = events[-1]
-                with contextlib.suppress(Exception):
-                    list_widget.select_by_id(str(selected_event.get("id", "")), emit=False)
             self._set_session_timeline_selection(selected_event)
         else:
             self._set_session_timeline_selection(events[-1] if events else None)
@@ -384,8 +399,7 @@ class SessionMixin:
             self.state.session.issues_repeat_count = 0
             return
         repeated = (
-            f"… repeated {self.state.session.issues_repeat_count} more time(s): "
-            f"{self.state.session.issues_repeat_line}"
+            f"… repeated {self.state.session.issues_repeat_count} more time(s): {self.state.session.issues_repeat_line}"
         )
         self.state.session.issue_lines.append(repeated)
         self.state.session.issues_repeat_line = None
@@ -399,13 +413,12 @@ class SessionMixin:
 
     def action_copy_issues(self) -> None:
         self._flush_issue_repeats()
-        payload = (
-            ("\n".join(self.state.session.issue_lines).rstrip() + "\n") if self.state.session.issue_lines else ""
-        )
+        payload = ("\n".join(self.state.session.issue_lines).rstrip() + "\n") if self.state.session.issue_lines else ""
         self._copy_text(payload, label="issues")
 
     def _session_retry_tool(self, tool_use_id: str) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         tool_id = str(tool_use_id or "").strip()
         if not tool_id:
             self._notify("Issue has no tool_use_id.", severity="warning")
@@ -421,6 +434,7 @@ class SessionMixin:
 
     def _session_skip_tool(self, tool_use_id: str) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         tool_id = str(tool_use_id or "").strip()
         if not tool_id:
             self._notify("Issue has no tool_use_id.", severity="warning")
@@ -436,6 +450,7 @@ class SessionMixin:
 
     def _session_escalate_tier(self, tier_name: str | None = None) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         next_tier = str(tier_name or "").strip().lower() or (self._next_available_tier_name() or "")
         if not next_tier:
             self._write_transcript_line("[session] no higher tier available.")
@@ -451,6 +466,7 @@ class SessionMixin:
 
     def _session_interrupt(self) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         proc = self.state.daemon.proc
         if not self.state.daemon.ready or proc is None or proc.poll() is not None:
             self._write_transcript_line("[session] daemon is not ready.")
@@ -462,6 +478,7 @@ class SessionMixin:
 
     def _save_session(self) -> None:
         import json as _json
+
         try:
             session_path = sessions_dir() / "tui_session.json"
             session_path.parent.mkdir(parents=True, exist_ok=True)
@@ -495,7 +512,9 @@ class SessionMixin:
     def _load_session(self) -> None:
         import json as _json
         import os
+
         from swarmee_river.tui.mixins.context_sources import _normalize_context_sources
+
         try:
             session_path = sessions_dir() / "tui_session.json"
             if not session_path.exists():
@@ -529,12 +548,10 @@ class SessionMixin:
             if isinstance(loaded_active_sops, list):
                 self._active_sop_names = {str(item).strip() for item in loaded_active_sops if str(item).strip()}
             self._refresh_sop_catalog()
-            self._render_sop_panel()
+            self._refresh_tooling_sops_table()
             self._sops_ready_for_sync = bool(self._active_sop_names)
             self.state.daemon.session_id = _load_session_id(data.get("daemon_session_id"))
-            self.state.daemon.available_restore_session_id = _load_session_id(
-                data.get("available_restore_session_id")
-            )
+            self.state.daemon.available_restore_session_id = _load_session_id(data.get("available_restore_session_id"))
             restore_turn_count_raw = data.get("available_restore_turn_count", 0)
             try:
                 self.state.daemon.available_restore_turn_count = max(0, int(restore_turn_count_raw or 0))
@@ -574,6 +591,7 @@ class SessionMixin:
 
     def _restore_available_session(self) -> None:
         from swarmee_river.tui.transport import send_daemon_command
+
         if self.state.daemon.query_active:
             self._write_transcript_line("[restore] cannot restore while a run is active.")
             return
@@ -591,10 +609,16 @@ class SessionMixin:
             self._write_transcript_line("[restore] failed to send restore command.")
 
     def _start_fresh_session(self) -> None:
+        if self.state.daemon.query_active:
+            self._write_transcript_line("[session] cannot start fresh while a run is active. Use /stop first.")
+            return
+        old_session_id = str(self.state.daemon.session_id or "").strip() or None
+        new_session_id = uuid.uuid4().hex
         self.state.daemon.available_restore_session_id = None
         self.state.daemon.available_restore_turn_count = 0
         self.state.daemon.last_restored_turn_count = 0
-        self._reset_session_timeline_panel()
+        self._on_active_session_changed(old_session_id, new_session_id)
+        self._spawn_daemon(restart=True)
         self._write_transcript_line("[session] starting fresh.")
         self._save_session()
 

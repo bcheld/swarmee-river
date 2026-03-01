@@ -249,9 +249,7 @@ def render_plan_panel_with_status(
                 desc = str(step)
             marker = "☐"
             status = (
-                step_statuses[index - 1]
-                if isinstance(step_statuses, list) and index - 1 < len(step_statuses)
-                else ""
+                step_statuses[index - 1] if isinstance(step_statuses, list) and index - 1 < len(step_statuses) else ""
             )
             if status == "in_progress":
                 marker = "▶"
@@ -285,9 +283,7 @@ def render_agent_profile_summary_text(profile: dict[str, Any] | None) -> str:
     activated_agents = [
         item
         for item in agents
-        if isinstance(item, dict)
-        and bool(item.get("activated"))
-        and str(item.get("name", "")).strip()
+        if isinstance(item, dict) and bool(item.get("activated")) and str(item.get("name", "")).strip()
     ]
     auto_delegate = bool(profile.get("auto_delegate_assistive", True))
 
@@ -1789,9 +1785,7 @@ class PlanStepRow(Vertical):
 
     def toggle_comment_visibility(self) -> None:
         with contextlib.suppress(Exception):
-            comment_input = self.query_one(
-                f"#plan_step_comment_{self._step_index}", Input
-            )
+            comment_input = self.query_one(f"#plan_step_comment_{self._step_index}", Input)
             if self.is_included:
                 comment_input.styles.display = "none"
             else:
@@ -2060,10 +2054,10 @@ class ContextBudgetBar(Static):
         if not isinstance(value, int):
             return "--"
         if value >= 1_000_000:
-            rendered = f"{value/1_000_000:.1f}m"
+            rendered = f"{value / 1_000_000:.1f}m"
             return rendered.replace(".0m", "m")
         if value >= 1_000:
-            rendered = f"{value/1_000:.1f}k"
+            rendered = f"{value / 1_000:.1f}k"
             return rendered.replace(".0k", "k")
         return str(value)
 
@@ -2178,9 +2172,7 @@ class CommandPalette(Static):
     def filter(self, prefix: str) -> None:
         """Filter commands by prefix and update display. Empty prefix shows all."""
         prefix_lower = prefix.lower()
-        self._filtered = [
-            (cmd, desc) for cmd, desc in self.TUI_COMMANDS if cmd.startswith(prefix_lower)
-        ]
+        self._filtered = [(cmd, desc) for cmd, desc in self.TUI_COMMANDS if cmd.startswith(prefix_lower)]
         self._selected_index = 0
         if self._filtered:
             self._render_items()
@@ -2442,11 +2434,11 @@ class StatusBar(Static):
 
     def _format_k(self, n: int) -> str:
         if n >= 100_000:
-            return f"{n/1000.0:.0f}k"
+            return f"{n / 1000.0:.0f}k"
         if n >= 10_000:
-            return f"{n/1000.0:.1f}k"
+            return f"{n / 1000.0:.1f}k"
         if n >= 1000:
-            return f"{n/1000.0:.2f}k"
+            return f"{n / 1000.0:.2f}k"
         return str(n)
 
     def _extract_usage_tokens(self) -> tuple[int | None, int | None, int | None]:
@@ -2517,7 +2509,10 @@ class StatusBar(Static):
         width = getattr(getattr(self, "size", None), "width", None)
         if isinstance(width, int) and width > 0 and len(rendered) > width:
             # Drop least important segments until it fits.
-            drop_prefixes = ("warn=", "err=",)
+            drop_prefixes = (
+                "warn=",
+                "err=",
+            )
             prunable: list[int] = []
             for i, part in enumerate(parts):
                 if part.startswith(drop_prefixes) or part.endswith("s") or part.startswith("tools "):

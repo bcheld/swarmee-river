@@ -50,7 +50,7 @@ def _strip_prompt_frontmatter(markdown: str) -> tuple[dict[str, str], str]:
     if end < 0:
         return {}, text.strip()
     header = text[4:end].strip()
-    body = text[end + len("\n---\n"):].strip()
+    body = text[end + len("\n---\n") :].strip()
     meta: dict[str, str] = {}
     for line in header.splitlines():
         if ":" not in line:
@@ -114,7 +114,11 @@ def discover_prompt_templates() -> list[PromptTemplate]:
                 raw_text = file_path.read_text(encoding="utf-8", errors="replace")
                 meta, body = _strip_prompt_frontmatter(raw_text)
                 file_name = file_path.name
-                derived = file_name[:-len(_PROMPT_FILE_SUFFIX)] if file_name.endswith(_PROMPT_FILE_SUFFIX) else file_path.stem
+                derived = (
+                    file_name[: -len(_PROMPT_FILE_SUFFIX)]
+                    if file_name.endswith(_PROMPT_FILE_SUFFIX)
+                    else file_path.stem
+                )
                 name = str(meta.get("name", derived)).strip() or derived
                 template_id = str(meta.get("id", derived)).strip() or derived
                 tags_raw = str(meta.get("tags", "")).strip()

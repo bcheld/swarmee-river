@@ -11,10 +11,12 @@ from swarmee_river.tools import get_tools
 from swarmee_river.tui.agent_studio import (
     _normalized_tool_name_list,
     build_activated_agent_sidebar_items,
+    build_activated_agent_table_rows,
     build_activated_agents_run_prompt,
     build_agent_policy_lens,
     build_agent_team_sidebar_items,
     build_agent_tools_safety_sidebar_items,
+    build_builder_agent_table_rows,
     build_team_preset_run_prompt,
     normalize_agent_definition,
     normalize_agent_studio_view_mode,
@@ -34,30 +36,35 @@ _AGENT_TOOL_CONSENT_VALUES = {"ask", "allow", "deny"}
 
 def _sanitize_profile_token(value: str) -> str:
     import re
+
     token = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (value or "").strip())
     return token.strip("-") or uuid.uuid4().hex[:12]
 
 
 def _default_profile_id() -> str:
     from datetime import datetime
+
     ts = datetime.now()
     return f"profile-{ts.strftime('%Y%m%d-%H%M%S')}"
 
 
 def _default_profile_name() -> str:
     from datetime import datetime
+
     ts = datetime.now()
     return f"Profile {ts.strftime('%Y-%m-%d %H:%M')}"
 
 
 def _default_team_preset_id() -> str:
     from datetime import datetime
+
     ts = datetime.now()
     return f"team-{ts.strftime('%Y%m%d-%H%M%S')}"
 
 
 def _default_team_preset_name() -> str:
     from datetime import datetime
+
     ts = datetime.now()
     return f"Team Preset {ts.strftime('%Y-%m-%d %H:%M')}"
 
@@ -525,7 +532,9 @@ class AgentStudioMixin:
                     str(normalized.get("knowledge_base_id", "")).strip() if normalized else ""
                 )
             if self._agent_builder_agent_activated_checkbox is not None:
-                self._agent_builder_agent_activated_checkbox.value = bool(normalized.get("activated")) if normalized else False
+                self._agent_builder_agent_activated_checkbox.value = (
+                    bool(normalized.get("activated")) if normalized else False
+                )
         finally:
             self.state.agent_studio.builder_form_syncing = False
 
@@ -576,13 +585,32 @@ class AgentStudioMixin:
     def _render_agent_overview_panel(self) -> None:
         items = build_activated_agent_sidebar_items(self.state.agent_studio.agents)
         self.state.agent_studio.activated_items = [dict(item) for item in items]
-        list_widget = self._agent_overview_list
+        table = self._agent_overview_table
         selected_id = self.state.agent_studio.activated_selected_item_id
-        if list_widget is not None:
-            if not selected_id and items:
-                selected_id = str(items[0].get("id", "")).strip()
-            list_widget.set_items(items, selected_id=selected_id, emit=False)
-            selected_overview_id = list_widget.selected_id()
+        if table is not None:
+            if not table.columns:
+                table.add_column("Name", key="name")
+                table.add_column("Summary", key="summary")
+                table.add_column("Model", key="model", width=18)
+                table.add_column("Activated", key="activated", width=10)
+            rows = build_activated_agent_table_rows(items)
+            table.clear()
+            for item_id, name, summary, model, activated in rows:
+                table.add_row(name, summary, model, activated, key=item_id)
+            if not selected_id and rows:
+                selected_id = rows[0][0]
+            if selected_id and rows:
+                for idx, (item_id, _name, _summary, _model, _activated) in enumerate(rows):
+                    if item_id == selected_id:
+                        with contextlib.suppress(Exception):
+                            table.move_cursor(row=idx)
+                        break
+            elif rows:
+                with contextlib.suppress(Exception):
+                    table.move_cursor(row=0)
+            cursor_coordinate = getattr(table, "cursor_coordinate", None)
+            row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
+            selected_overview_id = rows[row_index][0] if 0 <= row_index < len(rows) else selected_id
             selected_item = next(
                 (
                     item
@@ -622,13 +650,33 @@ class AgentStudioMixin:
                 }
             )
         self.state.agent_studio.builder_items = items
-        list_widget = self._agent_builder_list
+        table = self._agent_builder_table
         selected_id = self.state.agent_studio.builder_selected_item_id
-        if list_widget is not None:
-            if not selected_id and items:
-                selected_id = str(items[0].get("id", "")).strip()
-            list_widget.set_items(items, selected_id=selected_id, emit=False)
-            selected_item = self._agent_builder_item_by_id(list_widget.selected_id())
+        if table is not None:
+            if not table.columns:
+                table.add_column("Name", key="name")
+                table.add_column("Summary", key="summary")
+                table.add_column("Model", key="model", width=18)
+                table.add_column("State", key="state", width=10)
+            rows = build_builder_agent_table_rows(items)
+            table.clear()
+            for item_id, name, summary, model, state in rows:
+                table.add_row(name, summary, model, state, key=item_id)
+            if not selected_id and rows:
+                selected_id = rows[0][0]
+            if selected_id and rows:
+                for idx, (item_id, _name, _summary, _model, _state) in enumerate(rows):
+                    if item_id == selected_id:
+                        with contextlib.suppress(Exception):
+                            table.move_cursor(row=idx)
+                        break
+            elif rows:
+                with contextlib.suppress(Exception):
+                    table.move_cursor(row=0)
+            cursor_coordinate = getattr(table, "cursor_coordinate", None)
+            row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
+            selected_row_id = rows[row_index][0] if 0 <= row_index < len(rows) else selected_id
+            selected_item = self._agent_builder_item_by_id(selected_row_id)
             if selected_item is None and items:
                 selected_item = items[0]
             self._set_agent_builder_selection(selected_item)
@@ -752,13 +800,9 @@ class AgentStudioMixin:
             system_prompt_snippets=(list(current.system_prompt_snippets) if current is not None else []),
             context_sources=self._context_sources_payload(),
             active_sops=sorted(self._active_sop_names),
-            knowledge_base_id=(
-                self._kb_id_from_context_sources() or (current.knowledge_base_id if current else None)
-            ),
+            knowledge_base_id=(self._kb_id_from_context_sources() or (current.knowledge_base_id if current else None)),
             agents=(normalize_agent_definitions(current.agents) if current is not None else []),
-            auto_delegate_assistive=(
-                bool(current.auto_delegate_assistive) if current is not None else True
-            ),
+            auto_delegate_assistive=(bool(current.auto_delegate_assistive) if current is not None else True),
             team_presets=(normalize_team_presets(current.team_presets) if current is not None else []),
         )
 

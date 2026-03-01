@@ -28,9 +28,7 @@ def _resolve_bucket() -> str:
     """Resolve S3 bucket from environment."""
     raw = os.getenv("SWARMEE_SESSION_S3_BUCKET", "").strip()
     if not raw:
-        raise RuntimeError(
-            "SWARMEE_SESSION_S3_BUCKET environment variable is required for S3 import."
-        )
+        raise RuntimeError("SWARMEE_SESSION_S3_BUCKET environment variable is required for S3 import.")
     return raw
 
 
@@ -47,11 +45,13 @@ def _list_objects(bucket: str, prefix: str) -> list[dict[str, Any]]:
     paginator = client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
-            results.append({
-                "key": obj["Key"],
-                "size": obj.get("Size", 0),
-                "last_modified": str(obj.get("LastModified", "")),
-            })
+            results.append(
+                {
+                    "key": obj["Key"],
+                    "size": obj.get("Size", 0),
+                    "last_modified": str(obj.get("LastModified", "")),
+                }
+            )
     return results
 
 
@@ -69,6 +69,7 @@ def _get_object_json(bucket: str, key: str) -> Any:
 
 
 # ── Asset-type specific imports ────────────────────────────────────────────
+
 
 def import_prompts_from_s3(
     bucket: str | None = None,

@@ -180,11 +180,7 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
             return CommandDispatchResult(handled=True)
 
         if subcmd in {"list", "ls", "rm", "delete", "info"}:
-            if (
-                subcmd in {"rm", "delete"}
-                and deleted_session_id
-                and ctx.current_session_id == deleted_session_id
-            ):
+            if subcmd in {"rm", "delete"} and deleted_session_id and ctx.current_session_id == deleted_session_id:
                 ctx.current_session_id = None
             if output_text:
                 ctx.output(output_text)

@@ -480,7 +480,7 @@ def render_config_command_for_surface(
     auto_approve: bool,
     surface: str = "raw",
 ) -> str:
-    subcmd = (args[0].strip().lower() if args else "show")
+    subcmd = args[0].strip().lower() if args else "show"
     if subcmd != "show":
         return {
             "repl": "Usage: :config show",
