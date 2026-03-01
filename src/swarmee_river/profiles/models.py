@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 _ALLOWED_CONTEXT_SOURCE_TYPES = {"file", "note", "sop", "kb", "url"}
+ORCHESTRATOR_AGENT_ID = "orchestrator"
+ORCHESTRATOR_AGENT_NAME = "Orchestrator"
+_ORCHESTRATOR_DEFAULT_PROMPT_REFS = ["orchestrator_base"]
 
 
 def _normalize_text(value: object | None, *, lower: bool = False) -> str | None:
@@ -33,6 +36,27 @@ def _normalize_text_list(raw: Any) -> list[str]:
 def _sanitize_context_source_token(value: str) -> str:
     token = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (value or "").strip())
     return token.strip("-") or uuid.uuid4().hex[:12]
+
+
+def _normalize_prompt_ref_list(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        token = str(item or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        output.append(token)
+    return output
+
+
+def is_orchestrator_agent_definition(raw: Any) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    agent_id = str(raw.get("id", "")).strip().lower()
+    return agent_id == ORCHESTRATOR_AGENT_ID
 
 
 def normalize_context_source(source: Any) -> dict[str, str] | None:
@@ -189,6 +213,7 @@ def normalize_agent_definition(raw: Any) -> dict[str, Any] | None:
         "name": name,
         "summary": summary,
         "prompt": prompt,
+        "prompt_refs": _normalize_prompt_ref_list(raw.get("prompt_refs")),
         "provider": _normalize_text(raw.get("provider"), lower=True),
         "tier": _normalize_text(raw.get("tier"), lower=True),
         "tool_names": _normalize_text_list(raw.get("tool_names")),
@@ -198,22 +223,57 @@ def normalize_agent_definition(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def _normalized_orchestrator_agent(raw: Any | None) -> dict[str, Any]:
+    candidate = normalize_agent_definition(raw if isinstance(raw, dict) else {})
+    if candidate is None:
+        candidate = {
+            "id": ORCHESTRATOR_AGENT_ID,
+            "name": ORCHESTRATOR_AGENT_NAME,
+            "summary": "",
+            "prompt": "",
+            "prompt_refs": list(_ORCHESTRATOR_DEFAULT_PROMPT_REFS),
+            "provider": None,
+            "tier": None,
+            "tool_names": [],
+            "sop_names": [],
+            "knowledge_base_id": None,
+            "activated": False,
+        }
+    candidate["id"] = ORCHESTRATOR_AGENT_ID
+    name = str(candidate.get("name", "")).strip()
+    candidate["name"] = name or ORCHESTRATOR_AGENT_NAME
+    candidate["prompt_refs"] = _normalize_prompt_ref_list(candidate.get("prompt_refs")) or list(
+        _ORCHESTRATOR_DEFAULT_PROMPT_REFS
+    )
+    candidate["prompt"] = str(candidate.get("prompt", "")).strip()
+    candidate["activated"] = False
+    return candidate
+
+
 def normalize_agent_definitions(raw_agents: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_agents, list):
         return []
 
     normalized: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    orchestrator_candidate: dict[str, Any] | None = None
     for item in raw_agents:
         definition = normalize_agent_definition(item)
         if definition is None:
             continue
         item_id = str(definition.get("id", "")).strip()
-        if not item_id or item_id in seen_ids:
+        if not item_id:
+            continue
+        if item_id == ORCHESTRATOR_AGENT_ID:
+            if orchestrator_candidate is None:
+                orchestrator_candidate = definition
+            continue
+        if item_id in seen_ids:
             continue
         seen_ids.add(item_id)
         normalized.append(definition)
-    return normalized
+    orchestrator = _normalized_orchestrator_agent(orchestrator_candidate)
+    return [orchestrator, *normalized]
 
 
 @dataclass

@@ -141,24 +141,36 @@ def render_prompt_list_items(templates: list[Any]) -> list[dict[str, str]]:
 
 
 def render_prompt_detail(tmpl: Any) -> str:
-    """Format full detail text for a single PromptTemplate."""
+    """Format full detail text for a single prompt asset."""
     if isinstance(tmpl, dict):
+        prompt_id = str(tmpl.get("id", ""))
         name = str(tmpl.get("name", ""))
         content = str(tmpl.get("content", ""))
         tags = tmpl.get("tags", [])
         source = str(tmpl.get("source", ""))
+        used_by = tmpl.get("used_by", [])
+        is_orchestrator = bool(tmpl.get("is_orchestrator", False))
     else:
+        prompt_id = str(getattr(tmpl, "id", ""))
         name = getattr(tmpl, "name", "")
         content = getattr(tmpl, "content", "")
         tags = getattr(tmpl, "tags", [])
         source = getattr(tmpl, "source", "")
+        used_by = getattr(tmpl, "used_by", [])
+        is_orchestrator = bool(getattr(tmpl, "is_orchestrator", False))
 
-    lines = [f"# {name}"]
+    lines = [f"# {name or prompt_id}"]
+    if prompt_id:
+        lines.append(f"ID: {prompt_id}")
     tag_str = ", ".join(str(t) for t in tags if str(t).strip())
     if tag_str:
         lines.append(f"Tags: {tag_str}")
     if source:
         lines.append(f"Source: {source}")
+    if is_orchestrator:
+        lines.append("Role: Orchestrator base prompt")
+    if isinstance(used_by, list) and used_by:
+        lines.append(f"Used by: {', '.join(str(item).strip() for item in used_by if str(item).strip())}")
     if content:
         lines.append(f"\n{content}")
     return "\n".join(lines)
@@ -250,27 +262,28 @@ def build_tool_table_rows(catalog: list[Any]) -> list[tuple[str, str, str, str]]
     return rows
 
 
-def build_prompt_table_rows(templates: list[Any]) -> list[tuple[str, str, str, str, str]]:
-    """Build DataTable row tuples from prompt templates."""
-    rows: list[tuple[str, str, str, str, str]] = []
-    for tmpl in templates:
-        if isinstance(tmpl, dict):
-            template_id = str(tmpl.get("id", ""))
-            name = str(tmpl.get("name", ""))
-            content = str(tmpl.get("content", ""))
-            tags = tmpl.get("tags", [])
-            source = str(tmpl.get("source", ""))
+def build_prompt_table_rows(assets: list[Any]) -> list[tuple[str, str, str, str, str, str]]:
+    """Build DataTable row tuples from prompt assets."""
+    rows: list[tuple[str, str, str, str, str, str]] = []
+    for asset in assets:
+        if isinstance(asset, dict):
+            prompt_id = str(asset.get("id", ""))
+            name = str(asset.get("name", ""))
+            content = str(asset.get("content", ""))
+            tags = asset.get("tags", [])
+            used_by = asset.get("used_by", [])
         else:
-            template_id = str(getattr(tmpl, "id", ""))
-            name = str(getattr(tmpl, "name", ""))
-            content = str(getattr(tmpl, "content", ""))
-            tags = getattr(tmpl, "tags", [])
-            source = str(getattr(tmpl, "source", ""))
+            prompt_id = str(getattr(asset, "id", ""))
+            name = str(getattr(asset, "name", ""))
+            content = str(getattr(asset, "content", ""))
+            tags = getattr(asset, "tags", [])
+            used_by = getattr(asset, "used_by", [])
         tag_str = ", ".join(str(tag).strip() for tag in tags if str(tag).strip())
+        used_by_text = ", ".join(str(item).strip() for item in (used_by or []) if str(item).strip()) or "-"
         preview = content.replace("\n", " ").strip()
         if len(preview) > 80:
             preview = preview[:79].rstrip() + "…"
-        rows.append((template_id, name or template_id, tag_str, source, preview))
+        rows.append((prompt_id, name or prompt_id, prompt_id, tag_str, used_by_text, preview))
     return rows
 
 

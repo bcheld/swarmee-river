@@ -702,6 +702,20 @@ class RuntimeServiceServer:
                 await self._send_error(client, "invalid_restore_session", "restore_session.session_id is required")
                 return
             forwarded = {"cmd": "restore_session", "session_id": restore_session_id.strip()}
+        elif cmd == "get_prompt_assets":
+            forwarded = {"cmd": "get_prompt_assets"}
+        elif cmd == "set_prompt_asset":
+            asset = payload.get("asset")
+            if not isinstance(asset, dict):
+                await self._send_error(client, "invalid_prompt_asset", "set_prompt_asset.asset must be an object")
+                return
+            forwarded = {"cmd": "set_prompt_asset", "asset": asset}
+        elif cmd == "delete_prompt_asset":
+            prompt_id = payload.get("id")
+            if not isinstance(prompt_id, str) or not prompt_id.strip():
+                await self._send_error(client, "invalid_prompt_asset_id", "delete_prompt_asset.id is required")
+                return
+            forwarded = {"cmd": "delete_prompt_asset", "id": prompt_id.strip()}
         else:
             await self._send_error(client, "unknown_cmd", f"Unknown command: {cmd}")
             return
@@ -758,6 +772,9 @@ class RuntimeServiceServer:
             "auth",
             "interrupt",
             "restore_session",
+            "get_prompt_assets",
+            "set_prompt_asset",
+            "delete_prompt_asset",
         }:
             await self._handle_session_proxy_command(client, payload, cmd=cmd)
             return

@@ -8,6 +8,7 @@ import re
 import uuid
 from typing import Any
 
+from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID
 from swarmee_river.profiles.models import normalize_agent_definition as normalize_profile_agent_definition
 from swarmee_river.profiles.models import normalize_agent_definitions as normalize_profile_agent_definitions
 from swarmee_river.settings import load_settings
@@ -111,7 +112,11 @@ def build_activated_agent_sidebar_items(
     agents: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     normalized = normalize_agent_definitions(agents or [])
-    activated = [agent for agent in normalized if bool(agent.get("activated"))]
+    activated = [
+        agent
+        for agent in normalized
+        if str(agent.get("id", "")).strip().lower() != ORCHESTRATOR_AGENT_ID and bool(agent.get("activated"))
+    ]
     if not activated:
         return [
             {
@@ -199,6 +204,7 @@ def render_activated_agent_detail_text(item: dict[str, Any] | None) -> str:
     model_label = "/".join(token for token in (provider, tier) if token) or "(inherit)"
     tools = _normalized_tool_name_list(agent.get("tool_names"))
     sops = _normalized_tool_name_list(agent.get("sop_names"))
+    prompt_refs = _normalized_tool_name_list(agent.get("prompt_refs"))
     kb_id = str(agent.get("knowledge_base_id", "")).strip() or "(none)"
     summary = str(agent.get("summary", "")).strip() or "(none)"
     prompt = str(agent.get("prompt", "")).strip() or "(none)"
@@ -211,6 +217,7 @@ def render_activated_agent_detail_text(item: dict[str, Any] | None) -> str:
         f"KB: {kb_id}\n"
         f"Tools: {', '.join(tools) if tools else '(inherit/default)'}\n"
         f"SOPs: {', '.join(sops) if sops else '(none)'}\n\n"
+        f"Prompt refs: {', '.join(prompt_refs) if prompt_refs else '(none)'}\n\n"
         "Prompt:\n"
         f"{prompt}"
     )
@@ -240,7 +247,11 @@ def build_builder_agent_table_rows(items: list[dict[str, Any]] | None = None) ->
                 str(agent.get("name", "")).strip() or "Unnamed Agent",
                 str(agent.get("summary", "")).strip(),
                 model_label,
-                "active" if bool(agent.get("activated")) else "default",
+                (
+                    "base"
+                    if str(agent.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID
+                    else ("active" if bool(agent.get("activated")) else "default")
+                ),
             )
         )
     return rows
@@ -248,13 +259,20 @@ def build_builder_agent_table_rows(items: list[dict[str, Any]] | None = None) ->
 
 def build_swarm_agent_specs(
     agents: list[dict[str, Any]] | None = None,
+    *,
+    prompt_assets_by_id: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    from swarmee_river.prompt_assets import resolve_agent_prompt_text
+
     normalized = normalize_agent_definitions(agents or [])
     specs: list[dict[str, Any]] = []
     for agent in normalized:
+        if str(agent.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID:
+            continue
         if not bool(agent.get("activated")):
             continue
-        prompt = str(agent.get("prompt", "")).strip()
+        assets = prompt_assets_by_id if isinstance(prompt_assets_by_id, dict) else {}
+        prompt = resolve_agent_prompt_text(agent, assets).strip()
         spec: dict[str, Any] = {
             "name": str(agent.get("name", "")).strip() or str(agent.get("id", "")).strip() or "agent",
             "system_prompt": prompt or "You are a helpful specialist agent.",
@@ -276,8 +294,9 @@ def build_activated_agents_run_prompt(
     agents: list[dict[str, Any]] | None = None,
     *,
     task: str | None = None,
+    prompt_assets_by_id: dict[str, Any] | None = None,
 ) -> str:
-    specs = build_swarm_agent_specs(agents)
+    specs = build_swarm_agent_specs(agents, prompt_assets_by_id=prompt_assets_by_id)
     if not specs:
         return ""
     spec_json = _json.dumps(specs, ensure_ascii=False, indent=2, sort_keys=True)

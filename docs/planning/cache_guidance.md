@@ -69,7 +69,7 @@ Swarmee River now applies these ideas in the harness by keeping the **API-level 
 
 ### What this project does
 
-- **Stable prefix:** `load_system_prompt()` + tool usage rules + `<system-reminder>` handling rules + runtime environment + enabled pack prompt sections are set once on agent creation.
+- **Stable prefix:** orchestrator prompt asset + tool usage rules + `<system-reminder>` handling rules + runtime environment + enabled pack prompt sections are set once on agent creation.
 - **Dynamic context via reminders (sent only on change):** preflight snapshot, project map summary, active SOP text, and (when executing) the approved plan are queued as `<system-reminder>` blocks.
 - **Deterministic tool ordering:** tools are sorted by tool name before being passed into the agent so tool schema order does not fluctuate between runs.
 

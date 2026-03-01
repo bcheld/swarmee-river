@@ -5,6 +5,7 @@ import re
 import uuid
 from typing import Any
 
+from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID, normalize_agent_definitions
 from swarmee_river.tui.commands import _CONTEXT_USAGE_TEXT, _SOP_USAGE_TEXT
 from swarmee_river.tui.sops import discover_available_sop_names, discover_available_sops
 from swarmee_river.tui.transport import send_daemon_command as _transport_send_daemon_command
@@ -126,11 +127,31 @@ class ContextSourcesMixin:
             self._tooling_view_kbs_button.variant = "primary" if normalized == "kbs" else "default"
 
     def _refresh_tooling_prompts_list(self) -> None:
-        from swarmee_river.tui.prompt_templates import discover_prompt_templates
+        from swarmee_river.prompt_assets import ensure_prompt_assets_bootstrapped, load_prompt_assets
         from swarmee_river.tui.tooling_handlers import build_prompt_table_rows
 
-        templates = [item.to_dict() for item in discover_prompt_templates()]
-        self.state.tooling.prompt_templates = templates
+        bootstrap_result = ensure_prompt_assets_bootstrapped()
+        assets = [item.to_dict() for item in load_prompt_assets()]
+        used_by_map = self._tooling_prompt_used_by_map()
+
+        rows_payload: list[dict[str, Any]] = []
+        for asset in assets:
+            prompt_id = str(asset.get("id", "")).strip().lower()
+            used_by = sorted(used_by_map.get(prompt_id, set()))
+            row = dict(asset)
+            row["id"] = prompt_id
+            row["used_by"] = used_by
+            rows_payload.append(row)
+
+        self.state.tooling.prompt_assets = rows_payload
+        if bootstrap_result.migrated and not getattr(self, "_prompt_assets_migration_notice_shown", False):
+            legacy_paths = ", ".join(bootstrap_result.prompt_paths) if bootstrap_result.prompt_paths else "(none)"
+            self._write_transcript_line(
+                "[tooling] migrated legacy prompt templates to prompt assets; legacy files remain archived at "
+                f"{legacy_paths}."
+            )
+            self._prompt_assets_migration_notice_shown = True
+
         table = self._tooling_prompts_table
         if table is None:
             return
@@ -138,18 +159,19 @@ class ContextSourcesMixin:
         prev_selected = str(self.state.tooling.prompt_selected_id or "").strip() or None
         if not table.columns:
             table.add_column("Name", key="name")
-            table.add_column("Tags", key="tags")
-            table.add_column("Source", key="source", width=10)
+            table.add_column("ID", key="id", width=24)
+            table.add_column("Tags", key="tags", width=16)
+            table.add_column("Used By", key="used_by", width=24)
             table.add_column("Preview", key="preview")
 
         table.clear()
-        rows = build_prompt_table_rows(templates)
-        for template_id, name, tags, source, preview in rows:
-            table.add_row(name, tags, source, preview, key=template_id)
+        rows = build_prompt_table_rows(rows_payload)
+        for prompt_id, name, id_text, tags, used_by_text, preview in rows:
+            table.add_row(name, id_text, tags, used_by_text, preview, key=prompt_id)
 
         if prev_selected and rows:
-            for idx, (template_id, _, _, _, _) in enumerate(rows):
-                if template_id == prev_selected:
+            for idx, (prompt_id, _, _, _, _, _) in enumerate(rows):
+                if prompt_id == prev_selected:
                     with contextlib.suppress(Exception):
                         table.move_cursor(row=idx)
                     self._tooling_select_prompt(prev_selected)
@@ -162,43 +184,288 @@ class ContextSourcesMixin:
         self._tooling_select_prompt(None)
 
     def _tooling_select_prompt(self, selected_id: str | None) -> None:
-        from swarmee_river.tui.tooling_handlers import render_prompt_detail
-
         target_id = str(selected_id or "").strip()
         selected: dict[str, Any] | None = None
         if target_id:
             selected = next(
-                (item for item in self.state.tooling.prompt_templates if str(item.get("id", "")).strip() == target_id),
+                (item for item in self.state.tooling.prompt_assets if str(item.get("id", "")).strip() == target_id),
                 None,
             )
         self.state.tooling.prompt_selected_id = str(selected.get("id", "")).strip() if selected else None
 
-        if self._tooling_prompts_detail is not None:
-            with contextlib.suppress(Exception):
-                if selected is None:
-                    self._tooling_prompts_detail.set_preview("Select a prompt template to view and edit.")
-                else:
-                    self._tooling_prompts_detail.set_preview(render_prompt_detail(selected))
-
-        if self._tooling_prompt_name_input is not None:
-            with contextlib.suppress(Exception):
-                self._tooling_prompt_name_input.value = str((selected or {}).get("name", "")).strip()
         if self._tooling_prompt_content_input is not None:
             with contextlib.suppress(Exception):
                 self._tooling_prompt_content_input.text = str((selected or {}).get("content", "")).strip()
 
     def _tooling_prompt_new(self) -> None:
-        self.state.tooling.prompt_selected_id = None
-        if self._tooling_prompt_name_input is not None:
-            with contextlib.suppress(Exception):
-                self._tooling_prompt_name_input.value = ""
-                self._tooling_prompt_name_input.focus()
+        from swarmee_river.prompt_assets import PromptAsset, load_prompt_assets, save_prompt_assets
+
+        assets = load_prompt_assets()
+        existing_ids = {str(item.id).strip().lower() for item in assets}
+        new_id = f"new_prompt_{uuid.uuid4().hex[:8]}".lower()
+        while new_id in existing_ids:
+            new_id = f"new_prompt_{uuid.uuid4().hex[:8]}".lower()
+        new_asset = PromptAsset(
+            id=new_id,
+            name="New Prompt",
+            content="",
+            tags=[],
+            source="project",
+        )
+        assets.append(new_asset)
+        save_prompt_assets(assets)
+        proc = self.state.daemon.proc
+        if self.state.daemon.ready and proc is not None and proc.poll() is None and not self.state.daemon.query_active:
+            _transport_send_daemon_command(proc, {"cmd": "set_prompt_asset", "asset": new_asset.to_dict()})
+        self.state.tooling.prompt_selected_id = new_id
+        self._refresh_tooling_prompts_list()
         if self._tooling_prompt_content_input is not None:
             with contextlib.suppress(Exception):
-                self._tooling_prompt_content_input.text = ""
-        if self._tooling_prompts_detail is not None:
-            with contextlib.suppress(Exception):
-                self._tooling_prompts_detail.set_preview("New template. Enter a name and content, then Save.")
+                self._tooling_prompt_content_input.focus()
+
+    def _tooling_prompt_open_table_cell_editor(self, row_id: str, column_key: str) -> None:
+        from swarmee_river.tui.widgets import TableCellEditScreen
+
+        selected = next(
+            (
+                item
+                for item in self.state.tooling.prompt_assets
+                if str(item.get("id", "")).strip().lower() == str(row_id or "").strip().lower()
+            ),
+            None,
+        )
+        if selected is None:
+            self._notify("Prompt row not found.", severity="warning")
+            return
+        key = str(column_key or "").strip().lower()
+        if key not in {"name", "id", "tags"}:
+            return
+        initial_value = ""
+        help_text = ""
+        title = "Edit prompt metadata"
+        if key == "name":
+            initial_value = str(selected.get("name", "")).strip()
+            help_text = "Prompt display name (required)."
+            title = "Edit Prompt Name"
+        elif key == "id":
+            initial_value = str(selected.get("id", "")).strip()
+            help_text = "Prompt ID (sanitized to lowercase and must be unique)."
+            title = "Edit Prompt ID"
+        elif key == "tags":
+            tags = selected.get("tags") or []
+            initial_value = ", ".join(str(tag).strip() for tag in tags if str(tag).strip())
+            help_text = "Comma-separated tags."
+            title = "Edit Prompt Tags"
+
+        self.push_screen(
+            TableCellEditScreen(title, initial_value, help_text=help_text),
+            callback=lambda result: self._tooling_prompt_apply_metadata_edit(
+                str(row_id or "").strip().lower(),
+                key,
+                result,
+            ),
+        )
+
+    def _tooling_prompt_apply_metadata_edit(self, row_id: str, column_key: str, new_value: str | None) -> None:
+        from swarmee_river.prompt_assets import load_prompt_assets, save_prompt_assets
+
+        if new_value is None:
+            return
+        target_id = str(row_id or "").strip().lower()
+        if not target_id:
+            return
+        key = str(column_key or "").strip().lower()
+        if key not in {"name", "id", "tags"}:
+            return
+
+        assets = load_prompt_assets()
+        target = next((item for item in assets if str(item.id).strip().lower() == target_id), None)
+        if target is None:
+            self._notify("Prompt asset not found.", severity="warning")
+            return
+
+        raw_value = str(new_value).strip()
+        new_selected_id = target_id
+        if key == "name":
+            if not raw_value:
+                self._notify("Prompt name is required.", severity="warning")
+                return
+            target.name = raw_value
+        elif key == "id":
+            proposed_id = _sanitize_context_source_id(raw_value or target.id).lower()
+            if not proposed_id:
+                self._notify("Prompt ID is required.", severity="warning")
+                return
+            if proposed_id != target_id and any(str(item.id).strip().lower() == proposed_id for item in assets):
+                self._notify(f"Prompt ID '{proposed_id}' already exists.", severity="warning")
+                return
+            old_id = str(target.id).strip().lower()
+            target.id = proposed_id
+            new_selected_id = proposed_id
+            if old_id != proposed_id:
+                self._tooling_prompt_rewrite_prompt_refs(old_id, proposed_id)
+        elif key == "tags":
+            tags: list[str] = []
+            seen: set[str] = set()
+            for token in raw_value.split(","):
+                value = str(token).strip()
+                lowered = value.lower()
+                if not value or lowered in seen:
+                    continue
+                seen.add(lowered)
+                tags.append(value)
+            target.tags = tags
+
+        save_prompt_assets(assets)
+        proc = self.state.daemon.proc
+        if self.state.daemon.ready and proc is not None and proc.poll() is None and not self.state.daemon.query_active:
+            _transport_send_daemon_command(proc, {"cmd": "set_prompt_asset", "asset": target.to_dict()})
+        self.state.tooling.prompt_selected_id = new_selected_id
+        self._refresh_tooling_prompts_list()
+
+    def _tooling_prompt_used_by_map(self) -> dict[str, set[str]]:
+        usage: dict[str, set[str]] = {}
+        normalized_agents = normalize_agent_definitions(self.state.agent_studio.agents)
+        name_counts: dict[str, int] = {}
+        for agent in normalized_agents:
+            if not isinstance(agent, dict):
+                continue
+            name = str(agent.get("name", "")).strip() or str(agent.get("id", "")).strip() or "agent"
+            key = name.casefold()
+            name_counts[key] = name_counts.get(key, 0) + 1
+        for agent in normalized_agents:
+            if not isinstance(agent, dict):
+                continue
+            agent_id = str(agent.get("id", "")).strip()
+            if not agent_id:
+                continue
+            name = str(agent.get("name", "")).strip() or agent_id
+            display = name if name_counts.get(name.casefold(), 0) <= 1 else f"{name} ({agent_id})"
+            refs = agent.get("prompt_refs") or []
+            if not isinstance(refs, list):
+                continue
+            for prompt_ref in refs:
+                prompt_id = str(prompt_ref or "").strip().lower()
+                if not prompt_id:
+                    continue
+                usage.setdefault(prompt_id, set()).add(display)
+        return usage
+
+    def _tooling_prompt_used_by_choices(self) -> list[tuple[str, str]]:
+        normalized_agents = normalize_agent_definitions(self.state.agent_studio.agents)
+        name_counts: dict[str, int] = {}
+        for agent in normalized_agents:
+            name = str(agent.get("name", "")).strip() or str(agent.get("id", "")).strip() or "agent"
+            key = name.casefold()
+            name_counts[key] = name_counts.get(key, 0) + 1
+
+        choices: list[tuple[str, str]] = []
+        for agent in normalized_agents:
+            agent_id = str(agent.get("id", "")).strip()
+            if not agent_id:
+                continue
+            name = str(agent.get("name", "")).strip() or agent_id
+            label_name = name if name_counts.get(name.casefold(), 0) <= 1 else f"{name} ({agent_id})"
+            choices.append((agent_id, f"{label_name} ({agent_id})"))
+
+        choices.sort(
+            key=lambda item: (
+                0 if str(item[0]).strip().lower() == ORCHESTRATOR_AGENT_ID else 1,
+                str(item[1]).strip().lower(),
+            )
+        )
+        return choices
+
+    def _tooling_prompt_open_used_by_editor(self, prompt_id: str) -> None:
+        from swarmee_river.tui.widgets import PromptUsedByEditScreen
+
+        token = str(prompt_id or "").strip().lower()
+        if not token:
+            return
+        normalized_agents = normalize_agent_definitions(self.state.agent_studio.agents)
+        selected_agent_ids: list[str] = []
+        for agent in normalized_agents:
+            agent_id = str(agent.get("id", "")).strip()
+            if not agent_id:
+                continue
+            refs = [str(item).strip().lower() for item in (agent.get("prompt_refs") or []) if str(item).strip()]
+            if token in refs:
+                selected_agent_ids.append(agent_id)
+        self.push_screen(
+            PromptUsedByEditScreen(self._tooling_prompt_used_by_choices(), selected_agent_ids),
+            callback=lambda selected_ids: self._tooling_prompt_apply_used_by_edit(token, selected_ids),
+        )
+
+    def _tooling_prompt_rewrite_prompt_refs(self, old_prompt_id: str, new_prompt_id: str) -> None:
+        old_token = str(old_prompt_id or "").strip().lower()
+        new_token = str(new_prompt_id or "").strip().lower()
+        if not old_token or not new_token or old_token == new_token:
+            return
+        changed = False
+        updated_agents: list[dict[str, Any]] = []
+        for agent in normalize_agent_definitions(self.state.agent_studio.agents):
+            next_agent = dict(agent)
+            refs = [str(item).strip().lower() for item in (next_agent.get("prompt_refs") or []) if str(item).strip()]
+            rewritten: list[str] = []
+            seen: set[str] = set()
+            local_changed = False
+            for ref in refs:
+                token = new_token if ref == old_token else ref
+                local_changed = local_changed or (token != ref)
+                if token in seen:
+                    continue
+                seen.add(token)
+                rewritten.append(token)
+            if local_changed:
+                changed = True
+            next_agent["prompt_refs"] = rewritten
+            updated_agents.append(next_agent)
+        if not changed:
+            return
+        self.state.agent_studio.agents = normalize_agent_definitions(updated_agents)
+        self._set_agent_draft_dirty(True, note=f"Updated prompt references: {old_token} -> {new_token}.")
+        with contextlib.suppress(Exception):
+            self._render_agent_builder_panel()
+        with contextlib.suppress(Exception):
+            self._render_agent_overview_panel()
+
+    def _tooling_prompt_apply_used_by_edit(self, prompt_id: str, selected_agent_ids: list[str] | None) -> None:
+        if selected_agent_ids is None:
+            return
+        token = str(prompt_id or "").strip().lower()
+        if not token:
+            return
+        selected_ids = {str(agent_id).strip().lower() for agent_id in selected_agent_ids if str(agent_id).strip()}
+        updated_agents: list[dict[str, Any]] = []
+        changed = False
+        for agent in normalize_agent_definitions(self.state.agent_studio.agents):
+            next_agent = dict(agent)
+            agent_id = str(next_agent.get("id", "")).strip().lower()
+            refs = [str(item).strip().lower() for item in (next_agent.get("prompt_refs") or []) if str(item).strip()]
+            rewritten: list[str] = []
+            seen: set[str] = set()
+            for ref in refs:
+                if ref == token and agent_id not in selected_ids:
+                    changed = True
+                    continue
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                rewritten.append(ref)
+            if agent_id in selected_ids and token not in seen:
+                rewritten.append(token)
+                changed = True
+            next_agent["prompt_refs"] = rewritten
+            updated_agents.append(next_agent)
+        if not changed:
+            return
+        self.state.agent_studio.agents = normalize_agent_definitions(updated_agents)
+        self._set_agent_draft_dirty(True, note=f"Updated prompt assignments for '{token}'.")
+        with contextlib.suppress(Exception):
+            self._render_agent_builder_panel()
+        with contextlib.suppress(Exception):
+            self._render_agent_overview_panel()
+        self._refresh_tooling_prompts_list()
 
     def _refresh_tooling_sops_table(self) -> None:
         from swarmee_river.tui.tooling_handlers import build_sop_table_rows
@@ -316,75 +583,64 @@ class ContextSourcesMixin:
                     self._kbs_detail.set_preview(render_kb_detail(selected))
 
     def _tooling_prompt_save(self) -> None:
-        from swarmee_river.tui.prompt_templates import PromptTemplate, load_prompt_templates, save_prompt_templates
+        from swarmee_river.prompt_assets import load_prompt_assets, save_prompt_assets
 
-        name = (
-            str(getattr(self._tooling_prompt_name_input, "value", "")).strip()
-            if self._tooling_prompt_name_input
-            else ""
-        )
         content = (
             str(getattr(self._tooling_prompt_content_input, "text", "")).strip()
             if self._tooling_prompt_content_input
             else ""
         )
-        if not name:
-            self._notify("Template name is required.", severity="warning")
+        assets = load_prompt_assets()
+        selected_id = str(self.state.tooling.prompt_selected_id or "").strip().lower()
+        if not selected_id:
+            self._notify("Select a prompt asset first.", severity="warning")
             return
-
-        templates = load_prompt_templates()
-        selected_id = str(self.state.tooling.prompt_selected_id or "").strip()
-        existing = (
-            next((item for item in templates if str(item.id).strip() == selected_id), None) if selected_id else None
-        )
-        if existing is None:
-            selected_from_catalog = next(
-                (
-                    item
-                    for item in self.state.tooling.prompt_templates
-                    if str(item.get("id", "")).strip() == selected_id
-                ),
-                None,
-            )
-            tags = [str(tag).strip() for tag in ((selected_from_catalog or {}).get("tags") or []) if str(tag).strip()]
-            target_id = selected_id or _sanitize_context_source_id(name)
-            templates = [item for item in templates if str(item.id).strip() != target_id]
-            templates.append(
-                PromptTemplate(
-                    id=target_id,
-                    name=name,
-                    content=content,
-                    tags=tags,
-                    source="local",
-                )
-            )
-            self.state.tooling.prompt_selected_id = target_id
-        else:
-            existing.name = name
-            existing.content = content
-            existing.source = "local"
-            self.state.tooling.prompt_selected_id = existing.id
-        save_prompt_templates(templates)
+        saved_asset = next((item for item in assets if str(item.id).strip().lower() == selected_id), None)
+        if saved_asset is None:
+            self._notify("Prompt asset not found.", severity="warning")
+            return
+        saved_asset.content = content
+        save_prompt_assets(assets)
+        proc = self.state.daemon.proc
+        if self.state.daemon.ready and proc is not None and proc.poll() is None and not self.state.daemon.query_active:
+            _transport_send_daemon_command(proc, {"cmd": "set_prompt_asset", "asset": saved_asset.to_dict()})
         self._refresh_tooling_prompts_list()
-        self._write_transcript_line(f"[tooling] saved prompt template: {name}")
+        self._write_transcript_line(f"[tooling] saved prompt asset: {saved_asset.name}")
 
     def _tooling_prompt_delete(self) -> None:
-        from swarmee_river.tui.prompt_templates import load_prompt_templates, save_prompt_templates
+        from swarmee_river.prompt_assets import load_prompt_assets, save_prompt_assets
 
-        selected_id = str(self.state.tooling.prompt_selected_id or "").strip()
+        selected_id = str(self.state.tooling.prompt_selected_id or "").strip().lower()
         if not selected_id:
-            self._notify("Select a template to delete.", severity="warning")
+            self._notify("Select a prompt asset to delete.", severity="warning")
             return
-        templates = load_prompt_templates()
-        filtered = [item for item in templates if str(item.id).strip() != selected_id]
-        if len(filtered) == len(templates):
-            self._notify("Only saved local templates can be deleted.", severity="warning")
+        orchestrator = next(
+            (
+                agent
+                for agent in normalize_agent_definitions(self.state.agent_studio.agents)
+                if str(agent.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID
+            ),
+            None,
+        )
+        orchestrator_refs = {
+            str(item).strip().lower() for item in ((orchestrator or {}).get("prompt_refs") or []) if str(item).strip()
+        }
+        if selected_id in orchestrator_refs:
+            self._notify("Cannot delete a prompt assigned to the orchestrator agent.", severity="warning")
             return
-        save_prompt_templates(filtered)
+        assets = load_prompt_assets()
+        filtered = [item for item in assets if str(item.id).strip().lower() != selected_id]
+        if len(filtered) == len(assets):
+            self._notify("Prompt asset not found.", severity="warning")
+            return
+        save_prompt_assets(filtered)
+        proc = self.state.daemon.proc
+        if self.state.daemon.ready and proc is not None and proc.poll() is None and not self.state.daemon.query_active:
+            _transport_send_daemon_command(proc, {"cmd": "delete_prompt_asset", "id": selected_id})
         self.state.tooling.prompt_selected_id = None
         self._refresh_tooling_prompts_list()
         self._tooling_prompt_new()
-        self._write_transcript_line(f"[tooling] deleted prompt template: {selected_id}")
+        self._write_transcript_line(f"[tooling] deleted prompt asset: {selected_id}")
 
     def _refresh_tooling_tools_list(self) -> None:
         from swarmee_river.tui.tool_metadata import discover_tools_with_metadata
@@ -480,10 +736,8 @@ class ContextSourcesMixin:
         self._write_transcript_line(f"[tooling] updated tags for: {selected_name}")
 
     def _tooling_s3_import(self, target: str) -> None:
-        from swarmee_river.tui.prompt_templates import PromptTemplate, load_prompt_templates, save_prompt_templates
         from swarmee_river.tui.s3_assets import (
             import_kbs_from_s3,
-            import_prompts_from_s3,
             import_sops_from_s3,
             import_tools_config_from_s3,
         )
@@ -491,27 +745,6 @@ class ContextSourcesMixin:
 
         normalized = (target or "").strip().lower()
         try:
-            if normalized == "prompts":
-                existing = {str(item.id).strip(): item for item in load_prompt_templates()}
-                imported = import_prompts_from_s3()
-                for item in imported:
-                    if not isinstance(item, dict):
-                        continue
-                    prompt_id = str(item.get("id", "")).strip() or _sanitize_context_source_id(
-                        str(item.get("name", "")).strip()
-                    )
-                    existing[prompt_id] = PromptTemplate(
-                        id=prompt_id,
-                        name=str(item.get("name", "")).strip() or prompt_id,
-                        content=str(item.get("content", "")).strip(),
-                        tags=[str(tag).strip() for tag in (item.get("tags") or []) if str(tag).strip()],
-                        source="s3",
-                    )
-                save_prompt_templates(list(existing.values()))
-                self._refresh_tooling_prompts_list()
-                self._write_transcript_line(f"[tooling] imported {len(imported)} prompts from S3.")
-                return
-
             if normalized == "tools":
                 imported = import_tools_config_from_s3()
                 overrides = load_tool_metadata_overrides()

@@ -2614,6 +2614,182 @@ class TagEditScreen(ModalScreen[str | None]):
             self.dismiss(None)
 
 
+class TableCellEditScreen(ModalScreen[str | None]):
+    """Lightweight modal editor for table cell text values."""
+
+    DEFAULT_CSS = """
+    TableCellEditScreen {
+        align: center middle;
+    }
+    TableCellEditScreen #table_cell_edit_container {
+        width: 68;
+        max-width: 92%;
+        height: auto;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    TableCellEditScreen #table_cell_edit_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    TableCellEditScreen #table_cell_edit_help {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text-muted;
+    }
+    TableCellEditScreen #table_cell_edit_input {
+        margin: 0 0 1 0;
+    }
+    TableCellEditScreen #table_cell_edit_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    TableCellEditScreen #table_cell_edit_buttons Button {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    """
+
+    def __init__(self, title: str, initial_value: str, *, help_text: str = "", **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._title = str(title).strip() or "Edit value"
+        self._initial_value = str(initial_value or "")
+        self._help_text = str(help_text or "").strip()
+
+    def compose(self):  # type: ignore[override]
+        with Vertical(id="table_cell_edit_container"):
+            yield Static(self._title, id="table_cell_edit_title")
+            if self._help_text:
+                yield Static(self._help_text, id="table_cell_edit_help")
+            yield Input(
+                value=self._initial_value,
+                id="table_cell_edit_input",
+            )
+            with Horizontal(id="table_cell_edit_buttons"):
+                yield Button("Save", id="table_cell_edit_save", variant="success")
+                yield Button("Cancel", id="table_cell_edit_cancel", variant="default")
+
+    def on_mount(self) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#table_cell_edit_input", Input).focus()
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "table_cell_edit_save":
+            value = str(self.query_one("#table_cell_edit_input", Input).value or "")
+            self.dismiss(value)
+        elif button_id == "table_cell_edit_cancel":
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Any) -> None:
+        input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
+        if input_id == "table_cell_edit_input":
+            value = str(self.query_one("#table_cell_edit_input", Input).value or "")
+            self.dismiss(value)
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
+class PromptUsedByEditScreen(ModalScreen[list[str] | None]):
+    """Modal editor for assigning a prompt asset to agent roster entries."""
+
+    DEFAULT_CSS = """
+    PromptUsedByEditScreen {
+        align: center middle;
+    }
+    PromptUsedByEditScreen #prompt_used_by_container {
+        width: 74;
+        max-width: 94%;
+        max-height: 90%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    PromptUsedByEditScreen #prompt_used_by_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    PromptUsedByEditScreen #prompt_used_by_options {
+        height: 1fr;
+        min-height: 8;
+        border: round $panel;
+        padding: 0 1;
+        margin: 0 0 1 0;
+    }
+    PromptUsedByEditScreen #prompt_used_by_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    PromptUsedByEditScreen #prompt_used_by_buttons Button {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    """
+
+    def __init__(self, choices: list[tuple[str, str]], selected_ids: list[str], **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._choices = [
+            (str(agent_id).strip(), str(label).strip()) for agent_id, label in choices if str(agent_id).strip()
+        ]
+        self._selected_ids = {str(item).strip() for item in selected_ids if str(item).strip()}
+        self._checkbox_to_agent_id: dict[str, str] = {}
+
+    def compose(self):  # type: ignore[override]
+        with Vertical(id="prompt_used_by_container"):
+            yield Static("Assign prompt to agents", id="prompt_used_by_title")
+            with VerticalScroll(id="prompt_used_by_options"):
+                for index, (agent_id, label) in enumerate(self._choices):
+                    safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", agent_id) or f"agent_{index}"
+                    checkbox_id = f"prompt_used_by_cb_{index}_{safe_id}"
+                    self._checkbox_to_agent_id[checkbox_id] = agent_id
+                    yield Checkbox(
+                        label=label or agent_id,
+                        value=agent_id in self._selected_ids,
+                        id=checkbox_id,
+                    )
+            with Horizontal(id="prompt_used_by_buttons"):
+                yield Button("Save", id="prompt_used_by_save", variant="success")
+                yield Button("Cancel", id="prompt_used_by_cancel", variant="default")
+
+    def _selected_agent_ids(self) -> list[str]:
+        selected: list[str] = []
+        for checkbox_id, agent_id in self._checkbox_to_agent_id.items():
+            with contextlib.suppress(Exception):
+                checkbox = self.query_one(f"#{checkbox_id}", Checkbox)
+                if bool(getattr(checkbox, "value", False)):
+                    selected.append(agent_id)
+        return selected
+
+    def on_mount(self) -> None:
+        first_id = next(iter(self._checkbox_to_agent_id), "")
+        if first_id:
+            with contextlib.suppress(Exception):
+                self.query_one(f"#{first_id}", Checkbox).focus()
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "prompt_used_by_save":
+            self.dismiss(self._selected_agent_ids())
+            return
+        if button_id == "prompt_used_by_cancel":
+            self.dismiss(None)
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
 class SystemMessage(Static):
     """TUI-internal messages (welcome, hints, status)."""
 

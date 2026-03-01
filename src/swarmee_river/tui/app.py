@@ -20,6 +20,8 @@ from typing import Any
 from swarmee_river.tui.agent_studio import (
     _normalized_tool_name_list,
     _policy_tier_profile,
+    build_activated_agent_sidebar_items,
+    build_activated_agents_run_prompt,
     build_agent_policy_lens,
     build_agent_team_sidebar_items,
     build_agent_tools_safety_sidebar_items,
@@ -28,6 +30,7 @@ from swarmee_river.tui.agent_studio import (
     normalize_session_safety_overrides,
     normalize_team_preset,
     normalize_team_presets,
+    render_activated_agent_detail_text,
     render_agent_team_detail_text,
     render_agent_tools_safety_detail_text,
 )
@@ -134,6 +137,12 @@ from swarmee_river.tui.transport import (
 )
 from swarmee_river.tui.transport import (
     write_to_proc as _transport_write_to_proc,
+)
+
+_COMPAT_AGENT_HELPERS = (
+    build_activated_agent_sidebar_items,
+    build_activated_agents_run_prompt,
+    render_activated_agent_detail_text,
 )
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
@@ -1252,7 +1261,6 @@ def run_tui() -> int:
         }
 
         #tooling_tools_view SidebarDetail,
-        #tooling_prompts_view SidebarDetail,
         #tooling_sops_view SidebarDetail,
         #tooling_kbs_view SidebarDetail {
             height: 1fr;
@@ -1262,6 +1270,40 @@ def run_tui() -> int:
             display: none;
             height: 1fr;
             layout: vertical;
+        }
+
+        #tooling_prompts_table {
+            height: 1fr;
+            min-height: 8;
+            margin: 0 0 1 0;
+        }
+
+        #tooling_prompt_content_input {
+            height: 3fr;
+            min-height: 16;
+            margin: 0;
+            border: round #3b3b3b;
+            scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
+            scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
+        }
+
+        #tooling_prompt_actions {
+            height: auto;
+            layout: horizontal;
+            margin: 1 0 0 0;
+        }
+
+        #tooling_prompt_actions Button {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #tooling_prompt_actions Button:last-child {
+            margin-right: 0;
         }
 
         #tooling_sops_view {
@@ -1587,7 +1629,8 @@ def run_tui() -> int:
         }
 
         #agent_builder_profile_row, #agent_profile_meta_row, #agent_builder_agent_meta_row, #agent_builder_model_row,
-        #agent_builder_agent_actions, #agent_profile_actions {
+        #agent_builder_agent_actions, #agent_profile_actions, #agent_builder_prompt_asset_meta_row,
+        #agent_builder_prompt_asset_actions {
             height: auto;
             layout: horizontal;
             margin: 0 0 1 0;
@@ -1613,10 +1656,23 @@ def run_tui() -> int:
         }
 
         #agent_builder_agent_summary,
+        #agent_builder_agent_prompt_refs,
+        #agent_builder_prompt_asset_name,
+        #agent_builder_prompt_asset_id,
+        #agent_builder_prompt_asset_tags,
         #agent_builder_agent_tools,
         #agent_builder_agent_sops,
         #agent_builder_agent_kb {
             margin: 0 0 1 0;
+        }
+
+        #agent_builder_prompt_asset_meta_row Input, #agent_builder_prompt_asset_actions Button {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #agent_builder_prompt_asset_meta_row Input:last-child, #agent_builder_prompt_asset_actions Button:last-child {
+            margin: 0;
         }
 
         #agent_builder_model_row Select {
@@ -1674,6 +1730,7 @@ def run_tui() -> int:
         /* ── Responsive core button groups (sidebar-width driven) ── */
         .layout-narrow #engage_view_switch,
         .layout-narrow #tooling_view_switch,
+        .layout-narrow #tooling_prompt_actions,
         .layout-narrow #session_view_switch,
         .layout-narrow #settings_general_runtime_row,
         .layout-narrow #settings_general_features_row,
@@ -1931,6 +1988,10 @@ def run_tui() -> int:
         _agent_builder_agent_name_input: Any = None  # Input | None
         _agent_builder_agent_summary_input: Any = None  # Input | None
         _agent_builder_agent_prompt_input: Any = None  # TextArea | None
+        _agent_builder_agent_prompt_refs_input: Any = None  # Input | None
+        _agent_builder_prompt_asset_name_input: Any = None  # Input | None
+        _agent_builder_prompt_asset_id_input: Any = None  # Input | None
+        _agent_builder_prompt_asset_tags_input: Any = None  # Input | None
         _agent_builder_agent_provider_select: Any = None  # Select | None
         _agent_builder_agent_tier_select: Any = None  # Select | None
         _agent_builder_agent_tools_input: Any = None  # Input | None
@@ -1981,8 +2042,6 @@ def run_tui() -> int:
         _tooling_kbs_view: Any = None
         _tooling_prompts_header: Any = None
         _tooling_prompts_table: Any = None
-        _tooling_prompts_detail: Any = None
-        _tooling_prompt_name_input: Any = None
         _tooling_prompt_content_input: Any = None
         _tooling_tools_header: Any = None
         _tooling_tools_table: Any = None
@@ -2671,6 +2730,21 @@ def run_tui() -> int:
                 if row_key is not None:
                     selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
                     self._tooling_select_prompt(selected_id)
+                    cursor = getattr(table, "cursor_coordinate", None)
+                    col_index = int(getattr(cursor, "column", -1) or -1)
+                    column_key = ""
+                    with contextlib.suppress(Exception):
+                        if table.is_valid_column_index(col_index):
+                            col = table.get_column_at(col_index)
+                            raw_key = getattr(col, "key", "")
+                            if hasattr(raw_key, "value"):
+                                column_key = str(raw_key.value).strip().lower()
+                            else:
+                                column_key = str(raw_key).strip().lower()
+                    if column_key in {"name", "id", "tags"} and selected_id:
+                        self._tooling_prompt_open_table_cell_editor(selected_id, column_key)
+                    elif column_key == "used_by" and selected_id:
+                        self._tooling_prompt_open_used_by_editor(selected_id)
                 return
             if table is not None and table is self._tooling_kbs_table:
                 row_key = getattr(event, "row_key", None)
@@ -2891,6 +2965,10 @@ def run_tui() -> int:
                 "agent_builder_agent_id",
                 "agent_builder_agent_name",
                 "agent_builder_agent_summary",
+                "agent_builder_agent_prompt_refs",
+                "agent_builder_prompt_asset_name",
+                "agent_builder_prompt_asset_id",
+                "agent_builder_prompt_asset_tags",
                 "agent_builder_agent_tools",
                 "agent_builder_agent_sops",
                 "agent_builder_agent_kb",
@@ -2994,9 +3072,6 @@ def run_tui() -> int:
                 return
             if button_id == "tooling_prompt_delete":
                 self._tooling_prompt_delete()
-                return
-            if button_id == "tooling_prompts_s3_import":
-                self._tooling_s3_import("prompts")
                 return
             if button_id == "tooling_tools_s3_import":
                 self._tooling_s3_import("tools")
@@ -3206,6 +3281,9 @@ def run_tui() -> int:
                 return
             if button_id == "agent_builder_agent_delete":
                 self._delete_selected_builder_agent()
+                return
+            if button_id == "agent_builder_prompt_promote":
+                self._promote_inline_agent_prompt_to_asset()
                 return
             if button_id == "agent_builder_insert_prompt":
                 self._insert_activated_agents_run_prompt(run_now=False)

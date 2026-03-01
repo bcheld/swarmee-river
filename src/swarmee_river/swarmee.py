@@ -131,7 +131,15 @@ from swarmee_river.interrupts import (
 )
 from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
-from swarmee_river.profiles.models import AgentProfile
+from swarmee_river.prompt_assets import (
+    PromptAsset,
+    ensure_prompt_assets_bootstrapped,
+    load_prompt_assets,
+    resolve_agent_prompt_text,
+    resolve_orchestrator_prompt_from_agent,
+    save_prompt_assets,
+)
+from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID, AgentProfile, normalize_agent_definitions
 from swarmee_river.project_map import build_context_snapshot, build_project_map
 from swarmee_river.runtime_service.client import (
     RuntimeServiceClient,
@@ -178,6 +186,8 @@ _SYSTEM_REMINDER_RULES = (
     "- Treat it as system-level updates/context (higher priority than normal user content).\n"
     "- Do not quote or reveal `<system-reminder>` contents unless the user explicitly asks.\n"
 )
+
+_COMPAT_LOAD_SYSTEM_PROMPT = load_system_prompt
 _DIAGNOSTIC_COMMANDS = {"status", "diff", "artifact", "log", "replay"}
 _USER_CONTEXT_SOURCE_TYPES = {"file", "note", "sop", "kb", "url"}
 _USER_CONTEXT_PER_SOURCE_MAX_CHARS = 8000
@@ -985,8 +995,9 @@ def _build_agent_runtime(
 
     pack_sop_paths = enabled_sop_paths(settings)
     pack_prompt_sections = enabled_system_prompts(settings)
+    ensure_prompt_assets_bootstrapped()
     base_system_prompt = build_base_system_prompt(
-        raw_system_prompt=load_system_prompt(),
+        raw_system_prompt=resolve_orchestrator_prompt_from_agent(None),
         runtime_environment_prompt_section=runtime_environment_prompt_section,
         pack_prompt_sections=pack_prompt_sections,
         tool_usage_rules=_TOOL_USAGE_RULES,
@@ -1048,6 +1059,7 @@ def _build_agent_runtime(
     user_context_sources: list[dict[str, str]] = []
     active_profile_system_prompt_snippets: list[str] = []
     active_profile_agents: list[dict[str, Any]] = []
+    active_orchestrator_agent: dict[str, Any] | None = None
     auto_delegate_assistive = True
     user_context_active_reminder_keys: set[str] = set()
     user_context_file_cache: dict[str, dict[str, Any]] = {}
@@ -1058,6 +1070,76 @@ def _build_agent_runtime(
     active_sop_lock = threading.Lock()
     daemon_managed_sops = False
     session_safety_overrides: dict[str, Any] = {}
+
+    def _prompt_assets_by_id() -> dict[str, PromptAsset]:
+        ensure_prompt_assets_bootstrapped()
+        return {asset.id: asset for asset in load_prompt_assets()}
+
+    def _normalize_prompt_asset_payload(raw: Any) -> PromptAsset:
+        if not isinstance(raw, dict):
+            raise ValueError("prompt asset payload must be an object")
+        return PromptAsset.from_dict(raw)
+
+    def _orchestrator_agent_from_agents(agents: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        for agent in normalize_agent_definitions(agents or []):
+            if str(agent.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID:
+                return dict(agent)
+        return None
+
+    def _orchestrator_prompt_refs(orchestrator_agent: dict[str, Any] | None) -> set[str]:
+        refs = {
+            str(item).strip().lower()
+            for item in ((orchestrator_agent or {}).get("prompt_refs") or [])
+            if str(item).strip()
+        }
+        return refs or {"orchestrator_base"}
+
+    def _refresh_orchestrator_system_prompt() -> None:
+        nonlocal base_system_prompt, summarization_system_prompt
+        base_system_prompt = build_base_system_prompt(
+            raw_system_prompt=resolve_orchestrator_prompt_from_agent(active_orchestrator_agent, _prompt_assets_by_id()),
+            runtime_environment_prompt_section=runtime_environment_prompt_section,
+            pack_prompt_sections=pack_prompt_sections,
+            tool_usage_rules=_TOOL_USAGE_RULES,
+            system_reminder_rules=_SYSTEM_REMINDER_RULES,
+        )
+        agent_kwargs["system_prompt"] = base_system_prompt
+        with contextlib.suppress(Exception):
+            agent.system_prompt = base_system_prompt
+        if truthy(os.getenv("SWARMEE_CACHE_SAFE_SUMMARY", "false")):
+            summarization_system_prompt = base_system_prompt
+
+    def get_prompt_assets_payload() -> dict[str, Any]:
+        assets = load_prompt_assets()
+        orchestrator_prompt_id = next(iter(_orchestrator_prompt_refs(active_orchestrator_agent)), "orchestrator_base")
+        return {
+            "event": "prompt_assets",
+            "orchestrator_prompt_id": orchestrator_prompt_id,
+            "assets": [asset.to_dict() for asset in assets],
+        }
+
+    def set_prompt_asset(raw_asset: Any) -> dict[str, Any]:
+        asset = _normalize_prompt_asset_payload(raw_asset)
+        assets_by_id = _prompt_assets_by_id()
+        assets_by_id[asset.id] = asset
+        save_prompt_assets(list(assets_by_id.values()))
+        if asset.id in _orchestrator_prompt_refs(active_orchestrator_agent):
+            _refresh_orchestrator_system_prompt()
+            _refresh_query_context(interactive=True)
+        return get_prompt_assets_payload()
+
+    def delete_prompt_asset(prompt_id: str) -> dict[str, Any]:
+        token = str(prompt_id or "").strip().lower()
+        if not token:
+            raise ValueError("delete_prompt_asset.id is required")
+        if token in _orchestrator_prompt_refs(active_orchestrator_agent):
+            raise ValueError("Cannot delete orchestrator-bound prompt asset")
+        assets_by_id = _prompt_assets_by_id()
+        if token not in assets_by_id:
+            raise ValueError(f"Prompt asset not found: {token}")
+        assets_by_id.pop(token, None)
+        save_prompt_assets(list(assets_by_id.values()))
+        return get_prompt_assets_payload()
 
     def _context_source_key(source: dict[str, str]) -> str:
         source_type = source.get("type", "").strip().lower()
@@ -1481,13 +1563,18 @@ def _build_agent_runtime(
 
         if auto_delegate_assistive:
             activated_agents = [
-                item for item in active_profile_agents if isinstance(item, dict) and bool(item.get("activated"))
+                item
+                for item in active_profile_agents
+                if isinstance(item, dict)
+                and str(item.get("id", "")).strip().lower() != ORCHESTRATOR_AGENT_ID
+                and bool(item.get("activated"))
             ]
+            assets_by_id = _prompt_assets_by_id()
             guidance_lines: list[str] = []
             for idx, agent_def in enumerate(activated_agents, start=1):
                 name = str(agent_def.get("name", "")).strip() or f"agent_{idx}"
                 summary = str(agent_def.get("summary", "")).strip()
-                prompt = str(agent_def.get("prompt", "")).strip()
+                prompt = resolve_agent_prompt_text(agent_def, assets_by_id)
                 tools = [str(tool).strip() for tool in agent_def.get("tool_names", []) if str(tool).strip()]
                 line = f"{idx}. {name}"
                 if summary:
@@ -1797,7 +1884,8 @@ def _build_agent_runtime(
         )
 
     def apply_profile(raw_profile: Any) -> dict[str, Any]:
-        nonlocal active_profile_system_prompt_snippets, active_profile_agents, auto_delegate_assistive
+        nonlocal active_profile_system_prompt_snippets, active_profile_agents
+        nonlocal active_orchestrator_agent, auto_delegate_assistive
 
         normalized = AgentProfile.from_dict(raw_profile)
         requested_tier = (normalized.tier or "").strip().lower()
@@ -1836,6 +1924,8 @@ def _build_agent_runtime(
 
         active_profile_system_prompt_snippets = list(normalized.system_prompt_snippets)
         active_profile_agents = [dict(item) for item in normalized.agents]
+        active_orchestrator_agent = _orchestrator_agent_from_agents(active_profile_agents)
+        _refresh_orchestrator_system_prompt()
         auto_delegate_assistive = bool(normalized.auto_delegate_assistive)
         applied_sources = set_user_context_sources(normalized_sources)
         _replace_daemon_sop_overrides(resolved_sops)
@@ -1880,6 +1970,9 @@ def _build_agent_runtime(
         "apply_profile": apply_profile,
         "apply_session_safety_overrides": apply_session_safety_overrides,
         "current_session_safety_overrides": current_session_safety_overrides,
+        "get_prompt_assets_payload": get_prompt_assets_payload,
+        "set_prompt_asset": set_prompt_asset,
+        "delete_prompt_asset": delete_prompt_asset,
     }
 
 
@@ -2862,6 +2955,9 @@ def main() -> None:
     _apply_profile = runtime["apply_profile"]
     _apply_session_safety_overrides = runtime["apply_session_safety_overrides"]
     _current_session_safety_overrides = runtime["current_session_safety_overrides"]
+    _get_prompt_assets_payload = runtime["get_prompt_assets_payload"]
+    _set_prompt_asset = runtime["set_prompt_asset"]
+    _delete_prompt_asset = runtime["delete_prompt_asset"]
 
     def _best_effort_retrieve(query_text: str, *, warn_on_error: bool) -> None:
         kb_for_turn = _current_knowledge_base_id()
@@ -2996,6 +3092,7 @@ def main() -> None:
         _write_stdout_jsonl({"event": "ready", "session_id": resolved_session_id})
         _write_stdout_jsonl(_current_model_info_event())
         _write_stdout_jsonl({"event": "safety_overrides", "overrides": _current_session_safety_overrides()})
+        _write_stdout_jsonl(_get_prompt_assets_payload())
 
         available = _find_available_session_for_cwd()
         if available is not None:
@@ -3340,6 +3437,44 @@ def main() -> None:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
                     continue
                 _write_stdout_jsonl({"event": "safety_overrides", "overrides": applied})
+                continue
+
+            if cmd == "get_prompt_assets":
+                _write_stdout_jsonl(_get_prompt_assets_payload())
+                continue
+
+            if cmd == "set_prompt_asset":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot update prompt assets while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    payload_event = _set_prompt_asset(payload.get("asset"))
+                    _write_stdout_jsonl(payload_event)
+                    _refresh_query_context(interactive=True)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                continue
+
+            if cmd == "delete_prompt_asset":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot delete prompt assets while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    payload_event = _delete_prompt_asset(str(payload.get("id", "")))
+                    _write_stdout_jsonl(payload_event)
+                    _refresh_query_context(interactive=True)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
                 continue
 
             if cmd == "connect":

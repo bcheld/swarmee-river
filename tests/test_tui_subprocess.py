@@ -1610,6 +1610,293 @@ def test_set_engage_view_mode_maps_legacy_values_to_plan():
     assert app._engage_session_view.styles.display == "none"
 
 
+def test_tooling_prompt_new_creates_selected_stub_asset(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
+
+    class _Editor:
+        def __init__(self) -> None:
+            self.text = ""
+            self.focused = False
+
+        def focus(self) -> None:
+            self.focused = True
+
+    class _Dummy(ContextSourcesMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self._tooling_prompt_content_input = _Editor()
+            self._tooling_prompts_table = None
+            self._notify_messages: list[str] = []
+            self._transcript_lines: list[str] = []
+
+        def _notify(self, text: str, **_kwargs) -> None:
+            self._notify_messages.append(text)
+
+        def _write_transcript_line(self, text: str) -> None:
+            self._transcript_lines.append(text)
+
+    from swarmee_river.prompt_assets import load_prompt_assets
+
+    app = _Dummy()
+    app._tooling_prompt_new()
+
+    assets = load_prompt_assets()
+    created = [item for item in assets if item.id.startswith("new_prompt_")]
+    assert len(created) == 1
+    assert created[0].name == "New Prompt"
+    assert created[0].content == ""
+    assert app.state.tooling.prompt_selected_id == created[0].id
+    assert app._tooling_prompt_content_input.focused is True
+
+
+def test_tooling_prompt_save_updates_selected_content_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
+
+    class _Editor:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _Dummy(ContextSourcesMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.tooling.prompt_selected_id = "existing_prompt"
+            self._tooling_prompt_content_input = _Editor("Updated content")
+            self._tooling_prompts_table = None
+            self._notify_messages: list[str] = []
+            self._transcript_lines: list[str] = []
+            self._refresh_count = 0
+
+        def _notify(self, text: str, **_kwargs) -> None:
+            self._notify_messages.append(text)
+
+        def _write_transcript_line(self, text: str) -> None:
+            self._transcript_lines.append(text)
+
+        def _refresh_tooling_prompts_list(self) -> None:
+            self._refresh_count += 1
+
+    from swarmee_river.prompt_assets import PromptAsset, load_prompt_assets, save_prompt_assets
+
+    save_prompt_assets(
+        [
+            PromptAsset(
+                id="existing_prompt",
+                name="Existing Prompt",
+                content="Initial",
+                tags=["a"],
+                source="project",
+            )
+        ]
+    )
+    app = _Dummy()
+    app._tooling_prompt_save()
+
+    assets = {item.id: item for item in load_prompt_assets()}
+    assert assets["existing_prompt"].content == "Updated content"
+    assert assets["existing_prompt"].name == "Existing Prompt"
+    assert assets["existing_prompt"].tags == ["a"]
+    assert app._refresh_count == 1
+
+
+def test_tooling_prompt_metadata_edit_updates_id_tags_and_agent_refs(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
+
+    class _Dummy(ContextSourcesMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.agent_studio.agents = [
+                {
+                    "id": "orchestrator",
+                    "name": "Orchestrator",
+                    "prompt_refs": ["legacy_prompt"],
+                    "activated": False,
+                }
+            ]
+            self._tooling_prompts_table = None
+            self._notify_messages: list[str] = []
+            self._refresh_count = 0
+            self._draft_notes: list[str] = []
+            self._builder_refresh_count = 0
+            self._overview_refresh_count = 0
+
+        def _notify(self, text: str, **_kwargs) -> None:
+            self._notify_messages.append(text)
+
+        def _refresh_tooling_prompts_list(self) -> None:
+            self._refresh_count += 1
+
+        def _set_agent_draft_dirty(self, _dirty: bool, *, note: str | None = None) -> None:
+            if note:
+                self._draft_notes.append(note)
+
+        def _render_agent_builder_panel(self) -> None:
+            self._builder_refresh_count += 1
+
+        def _render_agent_overview_panel(self) -> None:
+            self._overview_refresh_count += 1
+
+    from swarmee_river.prompt_assets import PromptAsset, load_prompt_assets, save_prompt_assets
+
+    save_prompt_assets(
+        [
+            PromptAsset(
+                id="legacy_prompt",
+                name="Legacy Prompt",
+                content="Body",
+                tags=[],
+                source="project",
+            )
+        ]
+    )
+    app = _Dummy()
+    app._tooling_prompt_apply_metadata_edit("legacy_prompt", "id", "Renamed Prompt")
+    app._tooling_prompt_apply_metadata_edit("renamed-prompt", "tags", "alpha, beta, alpha")
+
+    assets = {item.id: item for item in load_prompt_assets()}
+    assert "renamed-prompt" in assets
+    assert assets["renamed-prompt"].tags == ["alpha", "beta"]
+    assert app.state.agent_studio.agents[0]["prompt_refs"] == ["renamed-prompt"]
+    assert app.state.tooling.prompt_selected_id == "renamed-prompt"
+    assert app._refresh_count == 2
+
+
+def test_tooling_prompt_used_by_edit_toggles_prompt_refs():
+    class _Dummy(ContextSourcesMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.agent_studio.agents = [
+                {
+                    "id": "orchestrator",
+                    "name": "Orchestrator",
+                    "prompt_refs": ["orchestrator_base"],
+                    "activated": False,
+                },
+                {"id": "writer", "name": "Writer", "prompt_refs": [], "activated": True},
+            ]
+            self._refresh_count = 0
+            self._dirty_notes: list[str] = []
+
+        def _set_agent_draft_dirty(self, _dirty: bool, *, note: str | None = None) -> None:
+            if note:
+                self._dirty_notes.append(note)
+
+        def _render_agent_builder_panel(self) -> None:
+            return
+
+        def _render_agent_overview_panel(self) -> None:
+            return
+
+        def _refresh_tooling_prompts_list(self) -> None:
+            self._refresh_count += 1
+
+    app = _Dummy()
+    app._tooling_prompt_apply_used_by_edit("shared_prompt", ["writer", "orchestrator"])
+    agents = {str(agent.get("id")): agent for agent in app.state.agent_studio.agents}
+    assert "shared_prompt" in agents["orchestrator"]["prompt_refs"]
+    assert "shared_prompt" in agents["writer"]["prompt_refs"]
+    assert app._refresh_count == 1
+
+
+def test_prompt_row_selected_opens_metadata_editor_for_editable_columns():
+    class _Column:
+        def __init__(self, key: str) -> None:
+            self.key = key
+
+    class _Table:
+        def __init__(self) -> None:
+            self.columns = [_Column("name"), _Column("id"), _Column("tags"), _Column("used_by")]
+            self.cursor_coordinate = SimpleNamespace(column=1)
+
+        def is_valid_column_index(self, index: int) -> bool:
+            return 0 <= index < len(self.columns)
+
+        def get_column_at(self, index: int) -> _Column:
+            return self.columns[index]
+
+    class _Harness:
+        def __init__(self) -> None:
+            self._tooling_tools_table = None
+            self._tooling_sops_table = None
+            self._tooling_prompts_table = _Table()
+            self._tooling_kbs_table = None
+            self._session_timeline_table = None
+            self._session_artifacts_table = None
+            self._agent_overview_table = None
+            self._agent_builder_table = None
+            self._settings_models_table = None
+            self._settings_env_table = None
+            self.selected: list[str] = []
+            self.opened: list[tuple[str, str]] = []
+
+        def _tooling_select_prompt(self, selected_id: str) -> None:
+            self.selected.append(selected_id)
+
+        def _tooling_prompt_open_table_cell_editor(self, row_id: str, column_key: str) -> None:
+            self.opened.append((row_id, column_key))
+
+    harness = _Harness()
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+    event = SimpleNamespace(
+        data_table=harness._tooling_prompts_table,
+        row_key=SimpleNamespace(value="prompt_1"),
+    )
+    SwarmeeTUI.on_data_table_row_selected(harness, event)
+    assert harness.selected == ["prompt_1"]
+    assert harness.opened == [("prompt_1", "id")]
+
+
+def test_prompt_row_selected_opens_used_by_editor_for_used_by_column():
+    class _Column:
+        def __init__(self, key: str) -> None:
+            self.key = key
+
+    class _Table:
+        def __init__(self) -> None:
+            self.columns = [_Column("name"), _Column("id"), _Column("tags"), _Column("used_by")]
+            self.cursor_coordinate = SimpleNamespace(column=3)
+
+        def is_valid_column_index(self, index: int) -> bool:
+            return 0 <= index < len(self.columns)
+
+        def get_column_at(self, index: int) -> _Column:
+            return self.columns[index]
+
+    class _Harness:
+        def __init__(self) -> None:
+            self._tooling_tools_table = None
+            self._tooling_sops_table = None
+            self._tooling_prompts_table = _Table()
+            self._tooling_kbs_table = None
+            self._session_timeline_table = None
+            self._session_artifacts_table = None
+            self._agent_overview_table = None
+            self._agent_builder_table = None
+            self._settings_models_table = None
+            self._settings_env_table = None
+            self.selected: list[str] = []
+            self.opened_used_by: list[str] = []
+
+        def _tooling_select_prompt(self, selected_id: str) -> None:
+            self.selected.append(selected_id)
+
+        def _tooling_prompt_open_table_cell_editor(self, row_id: str, column_key: str) -> None:
+            raise AssertionError(f"Unexpected metadata editor open: {row_id}/{column_key}")
+
+        def _tooling_prompt_open_used_by_editor(self, row_id: str) -> None:
+            self.opened_used_by.append(row_id)
+
+    harness = _Harness()
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+    event = SimpleNamespace(
+        data_table=harness._tooling_prompts_table,
+        row_key=SimpleNamespace(value="prompt_1"),
+    )
+    SwarmeeTUI.on_data_table_row_selected(harness, event)
+
+    assert harness.selected == ["prompt_1"]
+    assert harness.opened_used_by == ["prompt_1"]
+
+
 def test_set_planning_ui_mode_toggles_actions_row_visibility():
     class _Styles:
         def __init__(self) -> None:

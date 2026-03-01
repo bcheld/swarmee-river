@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Iterator
 
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Input, Static, TabPane, TextArea
+from textual.widgets import Button, DataTable, Static, TabPane, TextArea
 
 from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader
 
@@ -37,13 +37,10 @@ def compose_tooling_tab() -> Iterator[Any]:
             # -- Prompts sub-view ----------------------------------------------
             with Vertical(id="tooling_prompts_view"):
                 yield SidebarHeader(
-                    "Prompt Templates",
+                    "Prompt Assets",
                     id="tooling_prompts_header",
-                    actions=[{"id": "tooling_prompts_s3_import", "label": "S3 Import", "variant": "default"}],
                 )
                 yield DataTable(id="tooling_prompts_table", cursor_type="row")
-                yield SidebarDetail(id="tooling_prompts_detail")
-                yield Input(placeholder="Template name", id="tooling_prompt_name_input")
                 yield TextArea(
                     text="",
                     id="tooling_prompt_content_input",
@@ -96,8 +93,6 @@ def wire_tooling_widgets(app: Any) -> None:
     # Prompts widgets
     app._tooling_prompts_header = app.query_one("#tooling_prompts_header", SidebarHeader)
     app._tooling_prompts_table = app.query_one("#tooling_prompts_table", DataTable)
-    app._tooling_prompts_detail = app.query_one("#tooling_prompts_detail", SidebarDetail)
-    app._tooling_prompt_name_input = app.query_one("#tooling_prompt_name_input", Input)
     app._tooling_prompt_content_input = app.query_one("#tooling_prompt_content_input", TextArea)
 
     # Tools widgets

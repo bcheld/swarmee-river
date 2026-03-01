@@ -73,6 +73,21 @@ def compose_agents_tab() -> Iterator[Any]:
                     id="agent_builder_agent_prompt",
                     soft_wrap=True,
                 )
+                yield Input(
+                    placeholder="Prompt refs (asset IDs, comma-separated)",
+                    id="agent_builder_agent_prompt_refs",
+                )
+                with Horizontal(id="agent_builder_prompt_asset_meta_row"):
+                    yield Input(placeholder="Prompt asset name", id="agent_builder_prompt_asset_name")
+                    yield Input(placeholder="Prompt asset id (optional)", id="agent_builder_prompt_asset_id")
+                    yield Input(placeholder="Prompt asset tags (optional)", id="agent_builder_prompt_asset_tags")
+                with Horizontal(id="agent_builder_prompt_asset_actions"):
+                    yield Button(
+                        "Add Inline Prompt to Tooling",
+                        id="agent_builder_prompt_promote",
+                        compact=True,
+                        variant="primary",
+                    )
                 with Horizontal(id="agent_builder_model_row"):
                     yield Select(
                         options=[
@@ -144,6 +159,10 @@ def wire_agents_widgets(app: Any) -> None:
     app._agent_builder_agent_name_input = app.query_one("#agent_builder_agent_name", Input)
     app._agent_builder_agent_summary_input = app.query_one("#agent_builder_agent_summary", Input)
     app._agent_builder_agent_prompt_input = app.query_one("#agent_builder_agent_prompt", TextArea)
+    app._agent_builder_agent_prompt_refs_input = app.query_one("#agent_builder_agent_prompt_refs", Input)
+    app._agent_builder_prompt_asset_name_input = app.query_one("#agent_builder_prompt_asset_name", Input)
+    app._agent_builder_prompt_asset_id_input = app.query_one("#agent_builder_prompt_asset_id", Input)
+    app._agent_builder_prompt_asset_tags_input = app.query_one("#agent_builder_prompt_asset_tags", Input)
     app._agent_builder_agent_provider_select = app.query_one("#agent_builder_agent_provider", Select)
     app._agent_builder_agent_tier_select = app.query_one("#agent_builder_agent_tier", Select)
     app._agent_builder_agent_tools_input = app.query_one("#agent_builder_agent_tools", Input)

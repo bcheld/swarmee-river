@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Unit tests for the strand tool
-"""
+"""Unit tests for the strand tool."""
 
 import os
 from io import StringIO
@@ -80,10 +78,10 @@ class TestStrandTool:
             assert "tools" in called_args
             # Specific test frameworks may need to be updated for exact tool count
 
-    def test_strand_env_system_prompt(self):
-        """Test loading system prompt from environment variable"""
+    def test_strand_resolved_system_prompt(self):
+        """Test loading system prompt from prompt asset resolver."""
         with (
-            mock.patch.dict(os.environ, {"STRANDS_SYSTEM_PROMPT": "Prompt from env"}),
+            mock.patch("tools.strand.load_system_prompt", return_value="Prompt from assets"),
             mock.patch("tools.strand.Agent") as mock_agent_class,
         ):
             # Setup mock agent
@@ -97,34 +95,10 @@ class TestStrandTool:
             result = strand(tool_use)
             assert result["status"] == "success"
 
-            # Verify agent was created with env prompt
+            # Verify agent was created with resolved prompt
             mock_agent_class.assert_called_once()
             kwargs = mock_agent_class.call_args.kwargs
-            assert kwargs["system_prompt"] == "Prompt from env"
-
-    def test_strand_file_system_prompt(self):
-        """Test loading system prompt from file"""
-        with (
-            mock.patch("pathlib.Path.exists", return_value=True),
-            mock.patch("pathlib.Path.is_file", return_value=True),
-            mock.patch("pathlib.Path.read_text", return_value="Prompt from file\n"),
-            mock.patch("tools.strand.Agent") as mock_agent_class,
-        ):
-            # Setup mock agent
-            mock_agent_instance = mock.MagicMock()
-            mock_agent_class.return_value = mock_agent_instance
-            mock_agent_instance.return_value = {"status": "success", "content": [{"text": "Agent response"}]}
-
-            # Call the strand tool
-            tool_use = {"toolUseId": "test_id", "input": {"query": "test query"}}
-            # Store result to validate return value
-            result = strand(tool_use)
-            assert result["status"] == "success"
-
-            # Verify agent was created with file prompt
-            mock_agent_class.assert_called_once()
-            kwargs = mock_agent_class.call_args.kwargs
-            assert kwargs["system_prompt"] == "Prompt from file"
+            assert kwargs["system_prompt"] == "Prompt from assets"
 
     def test_strand_default_system_prompt(self):
         """Test using default system prompt when no others available"""
@@ -164,14 +138,10 @@ class TestStrandTool:
             assert result["status"] == "error"
             assert "Error" in result["content"][0]["text"]
 
-    def test_strand_tool_with_file_prompt(self):
-        """Test strand tool using .prompt file"""
-
-        # Create a temporary prompt file
+    def test_strand_tool_with_resolved_prompt(self):
+        """Test strand tool using resolved orchestrator prompt asset."""
         with (
-            mock.patch("pathlib.Path.exists", return_value=True),
-            mock.patch("pathlib.Path.is_file", return_value=True),
-            mock.patch("pathlib.Path.read_text", return_value="Test prompt from file"),
+            mock.patch("tools.strand.load_system_prompt", return_value="Test prompt from assets"),
             mock.patch("sys.stdout", new_callable=StringIO),
             mock.patch("tools.strand.Agent") as mock_agent_class,
         ):
@@ -186,10 +156,10 @@ class TestStrandTool:
             result = strand(tool_use)
             assert result["status"] == "success"
 
-            # Verify the system prompt was loaded from file
+            # Verify the system prompt was loaded from resolver
             mock_agent_class.assert_called_once()
             called_kwargs = mock_agent_class.call_args.kwargs
-            assert called_kwargs["system_prompt"] == "Test prompt from file"
+            assert called_kwargs["system_prompt"] == "Test prompt from assets"
 
     def test_strand_tool_with_specific_tools(self):
         """Test strand tool with specific tool selection"""

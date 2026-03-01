@@ -1,7 +1,5 @@
 """Knowledge base utility functions for Swarmee River."""
 
-import os
-from pathlib import Path
 from typing import Any
 
 
@@ -92,24 +90,18 @@ def store_conversation_in_kb(
 
 def load_system_prompt() -> str:
     """
-    Load system prompt with the following priority:
-    1. SWARMEE_SYSTEM_PROMPT environment variable
-    2. STRANDS_SYSTEM_PROMPT environment variable (backwards compatibility)
-    2. .prompt file in current working directory
-    3. Default prompt
-    """
-    # Try to get from environment variable
-    system_prompt = os.getenv("SWARMEE_SYSTEM_PROMPT") or os.getenv("STRANDS_SYSTEM_PROMPT")
-    if system_prompt:
-        return system_prompt
+    Load orchestrator system prompt from prompt assets.
 
-    # Try to get from .prompt file in current working directory
-    prompt_file = Path(os.getcwd()) / ".prompt"
-    if prompt_file.exists() and prompt_file.is_file():
-        try:
-            return prompt_file.read_text(encoding="utf-8", errors="replace").strip()
-        except Exception:
-            pass
+    Priority:
+    1. ``orchestrator_base`` prompt asset
+    2. Default prompt
+    """
+    try:
+        from swarmee_river.prompt_assets import resolve_orchestrator_prompt_from_agent
+
+        return resolve_orchestrator_prompt_from_agent(None)
+    except Exception:
+        pass
 
     # Return default prompt
     return "You are a helpful assistant."

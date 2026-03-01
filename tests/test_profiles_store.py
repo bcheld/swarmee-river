@@ -55,17 +55,31 @@ def test_profiles_store_roundtrip(tmp_path: Path) -> None:
     assert saved.tier == "deep"
     assert saved.agents == [
         {
+            "id": "orchestrator",
+            "name": "Orchestrator",
+            "summary": "",
+            "prompt": "",
+            "prompt_refs": ["orchestrator_base"],
+            "provider": None,
+            "tier": None,
+            "tool_names": [],
+            "sop_names": [],
+            "knowledge_base_id": None,
+            "activated": False,
+        },
+        {
             "id": "triage-research",
             "name": "Triage Research",
             "summary": "Investigates incoming issues",
             "prompt": "You triage and categorize incidents.",
+            "prompt_refs": [],
             "provider": "openai",
             "tier": "balanced",
             "tool_names": ["file_read", "shell"],
             "sop_names": ["incident-triage"],
             "knowledge_base_id": "kb-123",
             "activated": True,
-        }
+        },
     ]
     assert saved.auto_delegate_assistive is True
     assert saved.team_presets[0]["id"] == "triage-team"
@@ -194,10 +208,24 @@ def test_profile_schema_normalizes_agents_and_auto_delegate_assistive() -> None:
     assert profile.auto_delegate_assistive is False
     assert profile.agents == [
         {
+            "id": "orchestrator",
+            "name": "Orchestrator",
+            "summary": "",
+            "prompt": "",
+            "prompt_refs": ["orchestrator_base"],
+            "provider": None,
+            "tier": None,
+            "tool_names": [],
+            "sop_names": [],
+            "knowledge_base_id": None,
+            "activated": False,
+        },
+        {
             "id": "triage-research",
             "name": "Triage Research",
             "summary": "Investigates incoming issues",
             "prompt": "You triage and categorize incidents.",
+            "prompt_refs": [],
             "provider": "openai",
             "tier": "balanced",
             "tool_names": ["file_read", "shell", "SHELL"],
@@ -210,6 +238,7 @@ def test_profile_schema_normalizes_agents_and_auto_delegate_assistive() -> None:
             "name": "No Spec Fields",
             "summary": "",
             "prompt": "",
+            "prompt_refs": [],
             "provider": None,
             "tier": None,
             "tool_names": [],

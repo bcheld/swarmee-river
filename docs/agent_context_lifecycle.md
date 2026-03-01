@@ -117,7 +117,7 @@ Source: `src/swarmee_river/tui/event_router.py`. Handler: `handle_daemon_event()
 
 When running via the TUI, the **daemon's** orchestrator is a single Strands `Agent` whose *effective context* is the combination of:
 
-- **System prompt** (env / `.prompt` / default + profile snippets + SOP content)
+- **System prompt** (orchestrator prompt asset + profile snippets + SOP content)
 - **Injected prompt sections** (runtime environment, packs, project map, preflight snapshot, active plan)
 - **Conversation history** (managed by a conversation manager: summarize/sliding/none)
 - **Tool results** (optionally truncated + persisted to artifacts)
@@ -176,9 +176,9 @@ On startup, Swarmee builds the following "context sources", some of which are di
 
 3) **System prompt**
 - Loaded via `load_system_prompt()` in `src/swarmee_river/utils/kb_utils.py`.
-- Priority:
-  1. `SWARMEE_SYSTEM_PROMPT` (or `STRANDS_SYSTEM_PROMPT`)
-  2. `.prompt` in the current working directory
+- Source:
+  1. Prompt assets referenced by the reserved `orchestrator` agent row (`prompt_refs`, then inline `prompt`)
+  2. fallback prompt asset `orchestrator_base`
   3. fallback `"You are a helpful assistant."`
 
 4) **Runtime environment prompt section**
@@ -237,7 +237,7 @@ The orchestrator is created in `src/swarmee_river/swarmee.py` via Strands `Agent
 
 `refresh_system_prompt(...)` in `src/swarmee_river/swarmee.py` composes the final system prompt in this order:
 
-1) Base system prompt (`load_system_prompt()`)
+1) Base system prompt (resolved from prompt assets via `load_system_prompt()`)
 2) Built-in tool usage rules (the `_TOOL_USAGE_RULES` string)
 3) Runtime environment section
 4) Pack system prompts (enabled packs)
@@ -274,7 +274,7 @@ Notes:
 
 There are multiple "override surfaces", depending on what you're trying to change:
 
-- **System prompt**: set `SWARMEE_SYSTEM_PROMPT` or edit `.prompt` (loaded by `load_system_prompt()`).
+- **System prompt**: manage prompt assets in `Tooling > Prompts`; assign orchestrator prompt refs from the reserved Orchestrator row in `Agents > Builder`.
 - **Add tools/prompts/SOPs**: install/enable packs via `.swarmee/settings.json` (`packs.installed`) and `src/swarmee_river/packs.py`.
 - **Tool consent defaults**: edit `.swarmee/settings.json` under `safety`.
   `tool_rules` + `tool_consent` provide legacy defaults and prompting behavior (enforced by `src/swarmee_river/hooks/tool_consent.py`).
@@ -568,7 +568,7 @@ Resolver:
 If you're improving "context performance", these are the highest-leverage areas:
 
 1) **Prompt size / startup injections**
-- Keep `.prompt` small (it is injected verbatim).
+- Keep the orchestrator prompt asset concise.
 - Reduce/disable preflight (`SWARMEE_PREFLIGHT_*`) and project map (`SWARMEE_PROJECT_MAP`) if they're too noisy.
 - Keep profile `system_prompt_snippets` concise.
 

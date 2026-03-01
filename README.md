@@ -225,14 +225,11 @@ swarmee --model-provider custom_model --model-config '{"key": "value"}'
 
 See the [Strands custom provider guide](https://strandsagents.com/latest/user-guide/concepts/model-providers/custom_model_provider/) for the interface.
 
-### Custom System Prompt
+### Orchestrator Prompt Asset
 
 ```bash
-# Via environment variable
-export SWARMEE_SYSTEM_PROMPT="You are a Python expert."
-
-# Or local file (takes precedence over SWARMEE_SYSTEM_PROMPT)
-echo "You are a security expert." > .prompt
+# Manage orchestrator prompt refs from the fixed Orchestrator row in Agents > Builder.
+# Prompts are stored in .swarmee/prompts.json.
 ```
 
 ## Integrated Tools

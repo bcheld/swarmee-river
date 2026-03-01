@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, save_profile
-from swarmee_river.profiles.models import normalize_agent_definitions
+from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID, normalize_agent_definitions
 from swarmee_river.tools import get_tools
 from swarmee_river.tui.agent_studio import (
     _normalized_tool_name_list,
@@ -70,6 +70,23 @@ def _default_team_preset_name() -> str:
 
 
 class AgentStudioMixin:
+    def _is_orchestrator_agent_id(self, agent_id: str | None) -> bool:
+        return str(agent_id or "").strip().lower() == ORCHESTRATOR_AGENT_ID
+
+    def _set_agent_builder_row_controls(self, agent_def: dict[str, Any] | None) -> None:
+        is_orchestrator = self._is_orchestrator_agent_id(str((agent_def or {}).get("id", "")).strip())
+        if self._agent_builder_agent_id_input is not None:
+            with contextlib.suppress(Exception):
+                self._agent_builder_agent_id_input.disabled = is_orchestrator
+        if self._agent_builder_agent_activated_checkbox is not None:
+            with contextlib.suppress(Exception):
+                self._agent_builder_agent_activated_checkbox.disabled = is_orchestrator
+                if is_orchestrator:
+                    self._agent_builder_agent_activated_checkbox.value = False
+        with contextlib.suppress(Exception):
+            delete_button = self.query_one("#agent_builder_agent_delete")
+            delete_button.disabled = is_orchestrator
+
     def _selected_agent_profile_id(self) -> str | None:
         selector = self._agent_profile_select
         if selector is None:
@@ -135,6 +152,17 @@ class AgentStudioMixin:
             return []
         tokens = [token.strip() for token in value.split(",")]
         return _normalized_tool_name_list(tokens)
+
+    def _parse_prompt_refs_csv_list(self, value: str) -> list[str]:
+        refs: list[str] = []
+        seen: set[str] = set()
+        for token in str(value or "").split(","):
+            normalized = str(token).strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            refs.append(normalized)
+        return refs
 
     def _agent_tools_form_update_payload(self) -> dict[str, Any] | None:
         raw_consent = str(getattr(self._agent_tools_override_consent_input, "value", "")).strip().lower()
@@ -513,6 +541,21 @@ class AgentStudioMixin:
                 self._agent_builder_agent_prompt_input.load_text(
                     str(normalized.get("prompt", "")).strip() if normalized else ""
                 )
+            if self._agent_builder_agent_prompt_refs_input is not None:
+                refs = normalized.get("prompt_refs") if normalized else []
+                if not isinstance(refs, list):
+                    refs = []
+                self._agent_builder_agent_prompt_refs_input.value = ", ".join(
+                    str(item).strip().lower() for item in refs if str(item).strip()
+                )
+            if self._agent_builder_prompt_asset_name_input is not None:
+                self._agent_builder_prompt_asset_name_input.value = (
+                    f"{str(normalized.get('name', '')).strip()} Prompt" if normalized else ""
+                )
+            if self._agent_builder_prompt_asset_id_input is not None:
+                self._agent_builder_prompt_asset_id_input.value = ""
+            if self._agent_builder_prompt_asset_tags_input is not None:
+                self._agent_builder_prompt_asset_tags_input.value = ""
             if self._agent_builder_agent_provider_select is not None:
                 provider = str(normalized.get("provider", "")).strip().lower() if normalized else ""
                 with contextlib.suppress(Exception):
@@ -537,35 +580,90 @@ class AgentStudioMixin:
                 )
         finally:
             self.state.agent_studio.builder_form_syncing = False
+        self._set_agent_builder_row_controls(normalized)
 
     def _agent_builder_form_payload(self) -> dict[str, Any] | None:
         raw_name = str(getattr(self._agent_builder_agent_name_input, "value", "")).strip()
         if not raw_name:
             self._notify("Agent name is required.", severity="warning")
             return None
+        selected_id = str(self.state.agent_studio.builder_selected_item_id or "").strip().lower()
+        is_orchestrator = self._is_orchestrator_agent_id(selected_id)
         raw_id = str(getattr(self._agent_builder_agent_id_input, "value", "")).strip()
         tools = self._parse_agent_tools_csv_list(str(getattr(self._agent_builder_agent_tools_input, "value", "")))
         sops = self._parse_agent_tools_csv_list(str(getattr(self._agent_builder_agent_sops_input, "value", "")))
+        prompt_refs = self._parse_prompt_refs_csv_list(
+            str(getattr(self._agent_builder_agent_prompt_refs_input, "value", ""))
+        )
         provider = str(getattr(self._agent_builder_agent_provider_select, "value", "")).strip().lower()
         tier = str(getattr(self._agent_builder_agent_tier_select, "value", "")).strip().lower()
         payload = normalize_agent_definition(
             {
-                "id": raw_id or raw_name,
+                "id": ORCHESTRATOR_AGENT_ID if is_orchestrator else (raw_id or raw_name),
                 "name": raw_name,
                 "summary": str(getattr(self._agent_builder_agent_summary_input, "value", "")).strip(),
                 "prompt": str(getattr(self._agent_builder_agent_prompt_input, "text", "")).strip(),
+                "prompt_refs": prompt_refs,
                 "provider": None if provider == "__inherit__" else provider,
                 "tier": None if tier == "__inherit__" else tier,
                 "tool_names": tools,
                 "sop_names": sops,
                 "knowledge_base_id": str(getattr(self._agent_builder_agent_kb_input, "value", "")).strip() or None,
-                "activated": bool(getattr(self._agent_builder_agent_activated_checkbox, "value", False)),
+                "activated": False
+                if is_orchestrator
+                else bool(getattr(self._agent_builder_agent_activated_checkbox, "value", False)),
             }
         )
         if payload is None:
             self._notify("Agent draft is invalid.", severity="warning")
             return None
         return payload
+
+    def _promote_inline_agent_prompt_to_asset(self) -> None:
+        from swarmee_river.prompt_assets import PromptAsset, load_prompt_assets, save_prompt_assets
+
+        inline_prompt = str(getattr(self._agent_builder_agent_prompt_input, "text", "")).strip()
+        if not inline_prompt:
+            self._notify("Inline prompt is empty; nothing to promote.", severity="warning")
+            return
+        prompt_name = str(getattr(self._agent_builder_prompt_asset_name_input, "value", "")).strip()
+        if not prompt_name:
+            self._notify("Prompt asset name is required to promote inline prompt.", severity="warning")
+            return
+        prompt_id_input = str(getattr(self._agent_builder_prompt_asset_id_input, "value", "")).strip()
+        prompt_id = _sanitize_profile_token(prompt_id_input or prompt_name).lower()
+        tags_csv = str(getattr(self._agent_builder_prompt_asset_tags_input, "value", "")).strip()
+        tags = [token.strip() for token in tags_csv.split(",") if token.strip()]
+
+        assets = load_prompt_assets()
+        by_id = {str(item.id).strip().lower(): item for item in assets}
+        by_id[prompt_id] = PromptAsset(
+            id=prompt_id,
+            name=prompt_name,
+            content=inline_prompt,
+            tags=tags,
+            source="project",
+        )
+        save_prompt_assets(list(by_id.values()))
+
+        existing_refs = self._parse_prompt_refs_csv_list(
+            str(getattr(self._agent_builder_agent_prompt_refs_input, "value", ""))
+        )
+        if prompt_id not in existing_refs:
+            existing_refs.append(prompt_id)
+        if self._agent_builder_agent_prompt_refs_input is not None:
+            self._agent_builder_agent_prompt_refs_input.value = ", ".join(existing_refs)
+        if self._agent_builder_agent_prompt_input is not None:
+            self._agent_builder_agent_prompt_input.load_text("")
+        if self._agent_builder_prompt_asset_id_input is not None:
+            self._agent_builder_prompt_asset_id_input.value = ""
+        if self._agent_builder_prompt_asset_tags_input is not None:
+            self._agent_builder_prompt_asset_tags_input.value = ""
+
+        self._set_agent_builder_status(f"Promoted inline prompt to tooling asset '{prompt_id}'.")
+        self._set_agent_draft_dirty(True, note=f"Inline prompt promoted to '{prompt_id}'.")
+        with contextlib.suppress(Exception):
+            self._refresh_tooling_prompts_list()
 
     def _set_agent_builder_selection(self, item: dict[str, Any] | None) -> None:
         detail = self._agent_builder_detail
@@ -624,7 +722,11 @@ class AgentStudioMixin:
             self._set_agent_overview_selection(self.state.agent_studio.activated_items[0] if items else None)
         if self._agent_overview_header is not None:
             activated_count = sum(
-                1 for item in self.state.agent_studio.agents if isinstance(item, dict) and bool(item.get("activated"))
+                1
+                for item in self.state.agent_studio.agents
+                if isinstance(item, dict)
+                and not self._is_orchestrator_agent_id(str(item.get("id", "")).strip())
+                and bool(item.get("activated"))
             )
             self._agent_overview_header.set_badges([f"activated {activated_count}"])
 
@@ -645,7 +747,11 @@ class AgentStudioMixin:
                     "id": str(agent_def.get("id", "")).strip(),
                     "title": title,
                     "subtitle": subtitle,
-                    "state": "active" if bool(agent_def.get("activated")) else "default",
+                    "state": (
+                        "base"
+                        if self._is_orchestrator_agent_id(str(agent_def.get("id", "")).strip())
+                        else ("active" if bool(agent_def.get("activated")) else "default")
+                    ),
                     "agent": dict(agent_def),
                 }
             )
@@ -704,6 +810,16 @@ class AgentStudioMixin:
         self._set_agent_draft_dirty(True)
 
     def _save_agent_builder_draft(self) -> None:
+        inline_prompt = str(getattr(self._agent_builder_agent_prompt_input, "text", "")).strip()
+        if inline_prompt:
+            self._notify(
+                "Promote the inline prompt to Tooling > Prompts before saving this agent.",
+                severity="warning",
+            )
+            self._set_agent_builder_status(
+                "Inline prompt must be promoted to a prompt asset first (use Add Inline Prompt to Tooling)."
+            )
+            return
         payload = self._agent_builder_form_payload()
         if payload is None:
             return
@@ -732,6 +848,9 @@ class AgentStudioMixin:
             self._notify("Select a draft agent first.", severity="warning")
             return
         selected_id = str(selected.get("id", "")).strip()
+        if self._is_orchestrator_agent_id(selected_id):
+            self._notify("Cannot delete the reserved orchestrator agent.", severity="warning")
+            return
         next_agents = [
             item for item in self.state.agent_studio.agents if str(item.get("id", "")).strip() != selected_id
         ]
@@ -742,7 +861,15 @@ class AgentStudioMixin:
         self._set_agent_draft_dirty(True, note=f"Agent '{selected_id}' removed from draft.")
 
     def _insert_activated_agents_run_prompt(self, *, run_now: bool = False) -> None:
-        prompt = build_activated_agents_run_prompt(self.state.agent_studio.agents)
+        prompt_assets_by_id: dict[str, Any] = {}
+        with contextlib.suppress(Exception):
+            from swarmee_river.prompt_assets import load_prompt_assets
+
+            prompt_assets_by_id = {str(item.id).strip().lower(): item for item in load_prompt_assets()}
+        prompt = build_activated_agents_run_prompt(
+            self.state.agent_studio.agents,
+            prompt_assets_by_id=prompt_assets_by_id,
+        )
         if not prompt:
             self._notify("No activated agents available.", severity="warning")
             return

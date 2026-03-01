@@ -597,17 +597,31 @@ class TestTuiDaemonMode:
         assert applied["auto_delegate_assistive"] is False
         assert applied["agents"] == [
             {
+                "id": "orchestrator",
+                "name": "Orchestrator",
+                "summary": "",
+                "prompt": "",
+                "prompt_refs": ["orchestrator_base"],
+                "provider": None,
+                "tier": None,
+                "tool_names": [],
+                "sop_names": [],
+                "knowledge_base_id": None,
+                "activated": False,
+            },
+            {
                 "id": "triage-research",
                 "name": "Triage Research",
                 "summary": "Investigates incoming issues",
                 "prompt": "You triage incidents.",
+                "prompt_refs": [],
                 "provider": "openai",
                 "tier": "balanced",
                 "tool_names": ["file_read", "shell"],
                 "sop_names": ["incident-triage"],
                 "knowledge_base_id": "kb-123",
                 "activated": True,
-            }
+            },
         ]
 
     def test_tui_daemon_set_profile_replaces_stale_sop_overrides(
@@ -1005,19 +1019,13 @@ class TestCommandLine:
 class TestConfiguration:
     """Test cases for configuration handling"""
 
-    def test_environment_variables(self, mock_agent, mock_bedrock, mock_load_prompt, monkeypatch):
+    def test_environment_variables(self, mock_agent, mock_bedrock, monkeypatch):
         """Test handling of environment variables"""
-        # Set environment variables
-        monkeypatch.setenv("STRANDS_SYSTEM_PROMPT", "Custom prompt from env")
-
         # Mock sys.argv with a test query
         monkeypatch.setattr(sys, "argv", ["swarmee", "test", "query"])
 
         # Call the main function
         swarmee.main()
-
-        # Verify load_system_prompt was called
-        mock_load_prompt.assert_called_once()
 
         # Verify agent was called with the correct prompt
         call = mock_agent.invoke_async.call_args

@@ -1,82 +1,25 @@
-import os
 from unittest import mock
 
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
 
 
-def test_load_system_prompt_from_env(temp_env):
-    """Test loading system prompt from environment variable"""
-    # Set environment variable
-    temp_env["STRANDS_SYSTEM_PROMPT"] = "Test prompt from env"
-
-    # Load prompt
-    prompt = load_system_prompt()
-
-    # Verify prompt was loaded from environment
-    assert prompt == "Test prompt from env"
-
-
-def test_load_system_prompt_from_file():
-    """Test loading system prompt from .prompt file"""
+def test_load_system_prompt_from_prompt_assets():
+    """load_system_prompt should resolve prompt via default prompt asset."""
     with (
-        mock.patch("pathlib.Path.exists") as mock_exists,
-        mock.patch("pathlib.Path.is_file") as mock_is_file,
-        mock.patch("pathlib.Path.read_text") as mock_read_text,
+        mock.patch("swarmee_river.prompt_assets.resolve_orchestrator_prompt_from_agent") as mock_resolve,
     ):
-        # Setup mocks
-        mock_exists.return_value = True
-        mock_is_file.return_value = True
-        mock_read_text.return_value = "Test prompt from file\n"
-
-        # Load prompt
+        mock_resolve.return_value = "Prompt from asset"
         prompt = load_system_prompt()
-
-        # Verify prompt was loaded from file and stripped
-        assert prompt == "Test prompt from file"
-
-
-def test_load_default_system_prompt():
-    """Test loading default system prompt when env and file are not available"""
-    with mock.patch("pathlib.Path.exists") as mock_exists:
-        # Setup mock
-        mock_exists.return_value = False
-
-        # Load prompt
-        prompt = load_system_prompt()
-
-        # Verify default prompt was returned
-        assert prompt == "You are a helpful assistant."
+        assert prompt == "Prompt from asset"
+        mock_resolve.assert_called_once_with(None)
 
 
-def test_load_system_prompt_from_file_exception():
-    """Test load_system_prompt when file reading causes an exception"""
-
-    # Environment variable not set
-    with (
-        mock.patch.dict(os.environ, {}, clear=True),
-        mock.patch("pathlib.Path.exists", return_value=True),
-        mock.patch("pathlib.Path.is_file", return_value=True),
-        mock.patch("pathlib.Path.read_text", side_effect=Exception("File reading error")),
+def test_load_system_prompt_defaults_when_resolver_fails():
+    """load_system_prompt should fall back to static default on resolver failures."""
+    with mock.patch(
+        "swarmee_river.prompt_assets.resolve_orchestrator_prompt_from_agent",
+        side_effect=RuntimeError("boom"),
     ):
-        # Should fall back to default prompt
-        prompt = load_system_prompt()
-        assert prompt == "You are a helpful assistant."
-
-
-def test_load_system_prompt_complex_scenarios():
-    """Test load_system_prompt with various path conditions"""
-
-    # Test case 1: No env var, file exists but is not a file
-    with (
-        mock.patch.dict(os.environ, {}, clear=True),
-        mock.patch("pathlib.Path.exists", return_value=True),
-        mock.patch("pathlib.Path.is_file", return_value=False),
-    ):
-        prompt = load_system_prompt()
-        assert prompt == "You are a helpful assistant."
-
-    # Test case 2: No env var, file doesn't exist
-    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("pathlib.Path.exists", return_value=False):
         prompt = load_system_prompt()
         assert prompt == "You are a helpful assistant."
 

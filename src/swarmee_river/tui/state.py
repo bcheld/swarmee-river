@@ -85,7 +85,7 @@ class ToolingState:
     view_mode: str = "tools"  # "tools", "prompts", "sops", "kbs"
     tool_catalog: list[dict[str, Any]] = field(default_factory=list)
     tool_selected_id: str | None = None
-    prompt_templates: list[dict[str, Any]] = field(default_factory=list)
+    prompt_assets: list[dict[str, Any]] = field(default_factory=list)
     prompt_selected_id: str | None = None
     sop_catalog: list[dict[str, Any]] = field(default_factory=list)
     sop_selected_id: str | None = None

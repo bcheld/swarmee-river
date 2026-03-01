@@ -390,7 +390,9 @@ class HarnessConfig:
         return cls(tier_profiles=tier_profiles)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tier_profiles": {k: v.to_dict() for k, v in self.tier_profiles.items()}}
+        return {
+            "tier_profiles": {k: v.to_dict() for k, v in self.tier_profiles.items()},
+        }
 
 
 @dataclass(frozen=True)
