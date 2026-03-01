@@ -28,6 +28,7 @@ def compose_engage_tab() -> Iterator[Any]:
                 yield Static("Orchestrator", id="engage_orchestrator_status")
                 yield TextArea(
                     text="",
+                    placeholder="Type your initial planning query here, then press Start Plan.",
                     read_only=False,
                     show_cursor=True,
                     id="plan",
@@ -43,9 +44,10 @@ def compose_engage_tab() -> Iterator[Any]:
                     pass
                 with VerticalScroll(id="engage_plan_questions"):
                     pass
-                yield Button("Continue", id="engage_continue_plan", variant="primary", compact=True)
-                yield Button("Clear", id="engage_clear_plan", variant="default", compact=True)
-                yield Button("Cancel", id="engage_cancel_plan", variant="warning", compact=True)
+                with Horizontal(id="engage_plan_actions_row"):
+                    yield Button("Continue", id="engage_continue_plan", variant="primary", compact=True)
+                    yield Button("Clear", id="engage_clear_plan", variant="default", compact=True)
+                    yield Button("Cancel", id="engage_cancel_plan", variant="warning", compact=True)
 
             # -- Session sub-view --------------------------------------------
             with Vertical(id="engage_session_view"):

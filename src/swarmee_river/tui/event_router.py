@@ -162,7 +162,10 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
 
     if etype == "turn_complete":
         exit_status = str(event.get("exit_status", "ok"))
-        app._finalize_turn(exit_status=exit_status)
+        try:
+            app._finalize_turn(exit_status=exit_status)
+        except Exception:
+            pass
         with contextlib.suppress(Exception):
             app._set_planning_controls_enabled(enabled=True)
         if exit_status in {"ok", "interrupted"}:

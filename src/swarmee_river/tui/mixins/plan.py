@@ -29,25 +29,21 @@ class PlanMixin:
                 self.query_one(f"#{button_id}", Button).disabled = not enabled
 
     def _set_planning_ui_mode(self, *, pre_plan: bool) -> None:
-        from textual.containers import VerticalScroll
+        from textual.containers import Horizontal, VerticalScroll
         from textual.widgets import Button, Static, TextArea
 
         plan_panel = self.query_one("#plan", TextArea)
         summary = self.query_one("#engage_plan_summary", Static)
         steps = self.query_one("#engage_plan_items", VerticalScroll)
         questions = self.query_one("#engage_plan_questions", VerticalScroll)
+        actions_row = self.query_one("#engage_plan_actions_row", Horizontal)
         start_button = self.query_one("#engage_start_plan", Button)
-        continue_button = self.query_one("#engage_continue_plan", Button)
-        clear_button = self.query_one("#engage_clear_plan", Button)
-        cancel_button = self.query_one("#engage_cancel_plan", Button)
 
         if pre_plan:
             plan_panel.styles.display = "block"
             self._set_plan_input_mode(editable=True)
             start_button.styles.display = "block"
-            continue_button.styles.display = "none"
-            clear_button.styles.display = "none"
-            cancel_button.styles.display = "none"
+            actions_row.styles.display = "none"
             summary.styles.display = "none"
             steps.styles.display = "none"
             questions.styles.display = "none"
@@ -58,9 +54,7 @@ class PlanMixin:
         plan_panel.styles.display = "none"
         self._set_plan_input_mode(editable=False)
         start_button.styles.display = "none"
-        continue_button.styles.display = "block"
-        clear_button.styles.display = "block"
-        cancel_button.styles.display = "block"
+        actions_row.styles.display = "block"
         summary_text = str(getattr(self.state.plan, "current_summary", "") or "").strip()
         summary.styles.display = "block" if summary_text else "none"
         steps.styles.display = "block" if list(steps.children) else "none"

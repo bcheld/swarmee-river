@@ -15,7 +15,8 @@ def _relative_time(ts_str: str) -> str:
     try:
         dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            # Timestamps from jsonl_logger use time.localtime() — treat as local time.
+            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
         delta = _time.time() - dt.timestamp()
         if delta < 0:
             return "just now"
@@ -154,7 +155,7 @@ def _extract_cached_tokens(usage: dict[str, Any]) -> int:
         cached = details.get("cached_tokens")
         if isinstance(cached, (int, float)) and cached:
             return int(cached)
-    for key in ("cache_read_input_tokens",):
+    for key in ("cache_read_input_tokens", "cacheReadInputTokens"):
         val = usage.get(key)
         if isinstance(val, (int, float)) and val:
             return int(val)
@@ -176,8 +177,8 @@ def _render_model_call_detail(event: dict[str, Any]) -> str:
     # --- Token Usage ---
     usage = event.get("usage")
     if isinstance(usage, dict):
-        inp = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
-        out = usage.get("output_tokens") or usage.get("completion_tokens") or 0
+        inp = usage.get("input_tokens") or usage.get("prompt_tokens") or usage.get("inputTokens") or 0
+        out = usage.get("output_tokens") or usage.get("completion_tokens") or usage.get("outputTokens") or 0
         cached = _extract_cached_tokens(usage)
         total = inp + out
         lines.append("")
@@ -254,8 +255,8 @@ def summarize_session_timeline_event(event: dict[str, Any] | None) -> str:
     if kind == "model":
         usage = event.get("usage")
         if isinstance(usage, dict):
-            inp = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
-            out = usage.get("output_tokens") or usage.get("completion_tokens") or 0
+            inp = usage.get("input_tokens") or usage.get("prompt_tokens") or usage.get("inputTokens") or 0
+            out = usage.get("output_tokens") or usage.get("completion_tokens") or usage.get("outputTokens") or 0
             parts = [f"{_fmt_tokens(inp)} in", f"{_fmt_tokens(out)} out"]
             cached = _extract_cached_tokens(usage)
             if cached:

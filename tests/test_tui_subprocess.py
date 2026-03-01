@@ -10,6 +10,7 @@ import sys
 from swarmee_river.tui import app as tui_app
 from swarmee_river.tui.mixins.artifacts import ArtifactsMixin
 from swarmee_river.tui.mixins.context_sources import ContextSourcesMixin
+from swarmee_river.tui.mixins.plan import PlanMixin
 from swarmee_river.tui.state import AppState
 
 
@@ -1091,6 +1092,32 @@ def test_model_call_with_usage_shows_token_summary_in_sidebar():
     assert "2.1k cached" in items[0]["title"]
 
 
+def test_relative_time_treats_naive_timestamps_as_local_time():
+    """Naive ISO timestamps (no TZ indicator) should be treated as local time,
+    matching the jsonl_logger which uses time.localtime().  A timestamp generated
+    'just now' in local time must show seconds-ago, not hours-ago."""
+    import time as _time
+
+    # Generate a timestamp the same way jsonl_logger does: local time, no TZ indicator
+    local_ts = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime())
+    events = [
+        {
+            "id": "m1",
+            "event": "after_model_call",
+            "duration_s": 0.5,
+            "ts": local_ts,
+            "usage": {"input_tokens": 100, "output_tokens": 20},
+        },
+    ]
+    items = tui_app.build_session_timeline_sidebar_items(events)
+    assert len(items) == 1
+    subtitle = items[0]["subtitle"]
+    # Should be "Xs ago" or "just now", definitely not hours/days ago
+    assert subtitle.endswith("s ago") or subtitle == "just now", (
+        f"Expected seconds-ago or 'just now' for a just-generated local timestamp, got: {subtitle!r}"
+    )
+
+
 def test_model_call_detail_renders_token_and_composition_sections():
     event = {
         "id": "m1",
@@ -1133,6 +1160,51 @@ def test_model_call_detail_degrades_gracefully_without_usage():
     detail = tui_app.render_session_timeline_detail_text(event)
     assert "no usage data" in detail
     assert "LLM call" in detail
+
+
+def test_model_call_with_camel_case_usage_shows_token_summary_in_sidebar():
+    """Anthropic/Bedrock providers return camelCase usage keys (inputTokens, outputTokens)."""
+    events = [
+        {
+            "id": "m1",
+            "event": "after_model_call",
+            "duration_s": 1.0,
+            "ts": "2026-02-23T12:00:00",
+            "usage": {"inputTokens": 4500, "outputTokens": 900, "cacheReadInputTokens": 3000},
+        },
+    ]
+    items = tui_app.build_session_timeline_sidebar_items(events)
+    assert len(items) == 1
+    assert "4.5k in" in items[0]["title"]
+    assert "900 out" in items[0]["title"]
+    assert "3.0k cached" in items[0]["title"]
+
+
+def test_model_call_detail_renders_camel_case_usage():
+    """Anthropic/Bedrock camelCase usage keys render correctly in the detail view."""
+    event = {
+        "id": "m1",
+        "event": "after_model_call",
+        "duration_s": 1.5,
+        "model_call_id": "abc456",
+        "model_id": "anthropic.claude-sonnet-4-6",
+        "usage": {
+            "inputTokens": 5000,
+            "outputTokens": 1200,
+            "cacheReadInputTokens": 3500,
+        },
+        "system_prompt_chars": 8400,
+        "tool_count": 25,
+        "tool_schema_chars": 32000,
+    }
+    detail = tui_app.render_session_timeline_detail_text(event)
+    assert "Token Usage" in detail
+    assert "5,000" in detail
+    assert "1,200" in detail
+    assert "3,500" in detail
+    assert "70%" in detail  # 3500/5000 = 70%
+    assert "Context Composition" in detail
+    assert "8,400" in detail
 
 
 def test_session_timeline_detail_and_actions_render_without_crashing():
@@ -1423,6 +1495,55 @@ def test_set_engage_view_mode_maps_legacy_values_to_plan():
     assert app.state.engage_view_mode == "plan"
     assert app._engage_plan_view.styles.display == "block"
     assert app._engage_session_view.styles.display == "none"
+
+
+def test_set_planning_ui_mode_toggles_actions_row_visibility():
+    class _Styles:
+        def __init__(self) -> None:
+            self.display = "none"
+
+    class _Widget:
+        def __init__(self) -> None:
+            self.styles = _Styles()
+            self.children: list[object] = []
+            self.renderable = ""
+            self.read_only = False
+            self.show_cursor = True
+
+        def update(self, text: str) -> None:
+            self.renderable = text
+
+    class _Dummy(PlanMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self._widgets = {
+                "#plan": _Widget(),
+                "#engage_plan_summary": _Widget(),
+                "#engage_plan_items": _Widget(),
+                "#engage_plan_questions": _Widget(),
+                "#engage_plan_actions_row": _Widget(),
+                "#engage_start_plan": _Widget(),
+                "#engage_continue_plan": _Widget(),
+                "#engage_clear_plan": _Widget(),
+                "#engage_cancel_plan": _Widget(),
+                "#engage_planning_header": _Widget(),
+            }
+
+        def query_one(self, selector: str, _type=None):  # noqa: ANN001
+            return self._widgets[selector]
+
+    app = _Dummy()
+    app.state.plan.current_summary = "Summary"
+    app._widgets["#engage_plan_items"].children = [object()]
+    app._widgets["#engage_plan_questions"].children = [object()]
+
+    app._set_planning_ui_mode(pre_plan=True)
+    assert app._widgets["#engage_start_plan"].styles.display == "block"
+    assert app._widgets["#engage_plan_actions_row"].styles.display == "none"
+
+    app._set_planning_ui_mode(pre_plan=False)
+    assert app._widgets["#engage_start_plan"].styles.display == "none"
+    assert app._widgets["#engage_plan_actions_row"].styles.display == "block"
 
 
 def test_artifact_entries_are_scoped_to_active_session(monkeypatch):

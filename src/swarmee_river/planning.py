@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class PlanStep(BaseModel):
@@ -13,6 +13,15 @@ class PlanStep(BaseModel):
     tools_expected: list[str] = Field(default_factory=list, description="Tools expected to be used.")
     commands_expected: list[str] = Field(default_factory=list, description="Shell commands expected to be run.")
     risks: list[str] = Field(default_factory=list, description="Risks and mitigations.")
+
+    @field_validator(
+        "files_to_read", "files_to_edit", "tools_expected",
+        "commands_expected", "risks",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_none_to_list(cls, v: Any) -> Any:
+        return v if v is not None else []
 
 
 class WorkPlan(BaseModel):
@@ -59,11 +68,15 @@ def classify_intent(prompt: str) -> str:
 def structured_plan_prompt() -> str:
     return (
         "You are Swarmee River in PLAN mode.\n"
-        "- Do NOT execute tools.\n"
-        "- You MUST return a WorkPlan structured output response.\n"
+        "- You may use read-only tools (file_read, file_search, file_list, glob, grep, "
+        "project_context, retrieve) to gather context before planning.\n"
+        "- Do NOT produce any text output. Your final response MUST be a single "
+        "WorkPlan tool call with no preceding text.\n"
+        "- Put all analysis, reasoning, and recommendations into the WorkPlan fields "
+        "(summary, assumptions, steps).\n"
         "- If you cannot produce a valid WorkPlan, ask focused questions in WorkPlan.questions.\n"
         "- Produce a concrete, minimally sufficient plan for the user's request.\n"
         "- If important details are missing, include them as questions (keep them specific).\n"
         "- Steps should reference likely files/tools/commands.\n"
-        "- Keep the plan short: 3–8 steps unless strictly necessary.\n"
+        "- Keep the plan short: 3\u20138 steps unless strictly necessary.\n"
     )

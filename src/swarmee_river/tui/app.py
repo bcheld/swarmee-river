@@ -1186,10 +1186,20 @@ def run_tui() -> int:
             scrollbar-color-active: #b3b3b3;
         }
 
-        #engage_continue_plan,
-        #engage_clear_plan,
-        #engage_cancel_plan {
+        #engage_plan_actions_row {
             display: none;
+            height: auto;
+            layout: horizontal;
+            margin: 0 0 1 0;
+        }
+
+        #engage_plan_actions_row Button {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+
+        #engage_plan_actions_row Button:last-child {
+            margin-right: 0;
         }
 
         #engage_session_view {
@@ -1703,14 +1713,17 @@ def run_tui() -> int:
             margin-bottom: 0;
         }
 
-        .layout-narrow #engage_continue_plan,
-        .layout-narrow #engage_clear_plan,
-        .layout-narrow #engage_cancel_plan {
+        .layout-narrow #engage_plan_actions_row {
+            layout: vertical;
+        }
+
+        .layout-narrow #engage_plan_actions_row Button {
             width: 1fr;
+            min-width: 0;
             margin: 0 0 1 0;
         }
 
-        .layout-narrow #engage_cancel_plan {
+        .layout-narrow #engage_plan_actions_row Button:last-child {
             margin-bottom: 0;
         }
 

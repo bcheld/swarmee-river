@@ -324,7 +324,7 @@ class TestInteractiveMode:
         swarmee.main()
 
         prompt_text = str(captured.get("prompt", ""))
-        assert "You MUST return a WorkPlan structured output response." in prompt_text
+        assert "Do NOT produce any text output" in prompt_text
         assert "User request:\nfix bug in runtime" in prompt_text
         sw_state = captured["invocation_state"]["swarmee"]  # type: ignore[index]
         assert sw_state["mode"] == "plan"  # type: ignore[index]
@@ -1349,3 +1349,69 @@ class TestOverflowErrorClassification:
 
         rendered = console.export_text()
         assert "[y]es/[n]o/[a]lways/[v]never:" in rendered
+
+
+class TestStructuredPlanPrompt:
+    """Tests for the structured plan prompt and PlanStep model."""
+
+    def test_structured_plan_prompt_suppresses_text_output(self):
+        from swarmee_river.planning import structured_plan_prompt
+
+        prompt = structured_plan_prompt()
+        assert "Do NOT produce any text output" in prompt, (
+            "Plan prompt must instruct the model not to produce text before WorkPlan"
+        )
+        assert "WorkPlan tool call" in prompt
+
+    def test_structured_plan_prompt_does_not_ban_all_tools(self):
+        from swarmee_river.planning import structured_plan_prompt
+
+        prompt = structured_plan_prompt()
+        assert "Do NOT execute tools" not in prompt, (
+            "Plan prompt should not blanket-ban tools since read-only tools are allowed"
+        )
+        assert "read-only tools" in prompt
+
+    def test_plan_step_coerces_null_list_fields_to_empty_list(self):
+        from swarmee_river.planning import PlanStep
+
+        step = PlanStep(
+            description="Test step",
+            files_to_read=None,
+            files_to_edit=None,
+            tools_expected=None,
+            commands_expected=None,
+            risks=None,
+        )
+        assert step.files_to_read == []
+        assert step.files_to_edit == []
+        assert step.tools_expected == []
+        assert step.commands_expected == []
+        assert step.risks == []
+
+    def test_plan_step_preserves_valid_list_fields(self):
+        from swarmee_river.planning import PlanStep
+
+        step = PlanStep(
+            description="Test step",
+            files_to_read=["src/foo.py"],
+            files_to_edit=["src/bar.py"],
+            tools_expected=["bash"],
+            commands_expected=["pytest"],
+            risks=["data loss"],
+        )
+        assert step.files_to_read == ["src/foo.py"]
+        assert step.files_to_edit == ["src/bar.py"]
+        assert step.tools_expected == ["bash"]
+        assert step.commands_expected == ["pytest"]
+        assert step.risks == ["data loss"]
+
+    def test_plan_step_omitted_fields_default_to_empty_list(self):
+        from swarmee_river.planning import PlanStep
+
+        step = PlanStep(description="Minimal step")
+        assert step.files_to_read == []
+        assert step.files_to_edit == []
+        assert step.tools_expected == []
+        assert step.commands_expected == []
+        assert step.risks == []

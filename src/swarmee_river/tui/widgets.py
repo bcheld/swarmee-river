@@ -1690,8 +1690,8 @@ class PlanStepRow(Vertical):
         margin: 0 0 0 0;
     }
     PlanStepRow .plan-step-toggle {
-        width: 3;
-        min-width: 3;
+        width: auto;
+        min-width: 10;
         margin: 0 1 0 0;
     }
     PlanStepRow .plan-step-description {
@@ -1755,7 +1755,7 @@ class PlanStepRow(Vertical):
     def compose(self):  # type: ignore[override]
         with Horizontal(classes="plan-step-row"):
             yield Checkbox(
-                "",
+                "Include",
                 id=f"plan_step_cb_{self._step_index}",
                 value=True,
                 classes="plan-step-toggle",

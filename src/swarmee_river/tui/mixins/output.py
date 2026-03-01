@@ -454,7 +454,7 @@ class OutputMixin:
     def _finalize_turn(self, *, exit_status: str) -> None:
         import time
         from swarmee_river.tui.text_sanitize import sanitize_output_text as _sanitize
-        from swarmee_river.tui.widgets import render_tui_hint_after_plan, extract_plan_section_from_output
+        from swarmee_river.tui.text_sanitize import render_tui_hint_after_plan, extract_plan_section_from_output
         self.state.daemon.run_active_tier_warning_emitted = False
         if self.state.daemon.status_timer is not None:
             self.state.daemon.status_timer.stop()
