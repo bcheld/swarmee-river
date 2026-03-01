@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Iterator
 
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Checkbox, Input, Static, TabPane, TextArea
+from textual.widgets import Button, DataTable, Input, Static, TabPane, TextArea
 
 from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader, SidebarList
 
@@ -26,17 +26,13 @@ def compose_tooling_tab() -> Iterator[Any]:
 
             # -- Tools sub-view (default) --------------------------------------
             with Vertical(id="tooling_tools_view"):
-                yield SidebarHeader("Tool Catalog", id="tooling_tools_header")
-                yield SidebarList(id="tooling_tools_list")
+                yield SidebarHeader(
+                    "Tool Catalog",
+                    id="tooling_tools_header",
+                    actions=[{"id": "tooling_tools_s3_import", "label": "S3 Import", "variant": "default"}],
+                )
+                yield DataTable(id="tooling_tools_table", cursor_type="row")
                 yield SidebarDetail(id="tooling_tools_detail")
-                yield Input(placeholder="Tags (comma-separated)", id="tooling_tool_tags_input")
-                with Horizontal(id="tooling_tool_access_row"):
-                    yield Checkbox("Read", value=False, id="tooling_tool_access_read")
-                    yield Checkbox("Write", value=False, id="tooling_tool_access_write")
-                    yield Checkbox("Execute", value=False, id="tooling_tool_access_execute")
-                with Horizontal(id="tooling_tool_actions"):
-                    yield Button("Save Tags", id="tooling_tool_save_tags", compact=True, variant="success")
-                    yield Button("S3 Import", id="tooling_tools_s3_import", compact=True, variant="default")
 
             # -- Prompts sub-view ----------------------------------------------
             with Vertical(id="tooling_prompts_view"):
@@ -98,12 +94,8 @@ def wire_tooling_widgets(app: Any) -> None:
 
     # Tools widgets
     app._tooling_tools_header = app.query_one("#tooling_tools_header", SidebarHeader)
-    app._tooling_tools_list = app.query_one("#tooling_tools_list", SidebarList)
+    app._tooling_tools_table = app.query_one("#tooling_tools_table", DataTable)
     app._tooling_tools_detail = app.query_one("#tooling_tools_detail", SidebarDetail)
-    app._tooling_tool_tags_input = app.query_one("#tooling_tool_tags_input", Input)
-    app._tooling_tool_access_read = app.query_one("#tooling_tool_access_read", Checkbox)
-    app._tooling_tool_access_write = app.query_one("#tooling_tool_access_write", Checkbox)
-    app._tooling_tool_access_execute = app.query_one("#tooling_tool_access_execute", Checkbox)
 
     # SOPs widgets
     app._tooling_sops_header = app.query_one("#tooling_sops_header", SidebarHeader)

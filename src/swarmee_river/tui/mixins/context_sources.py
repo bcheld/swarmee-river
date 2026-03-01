@@ -246,18 +246,43 @@ class ContextSourcesMixin:
 
     def _refresh_tooling_tools_list(self) -> None:
         from swarmee_river.tui.tool_metadata import discover_tools_with_metadata
-        from swarmee_river.tui.tooling_handlers import render_tool_catalog_items
+        from swarmee_river.tui.tooling_handlers import build_tool_table_rows
 
         catalog = [item.to_dict() for item in discover_tools_with_metadata()]
         self.state.tooling.tool_catalog = catalog
-        list_widget = self._tooling_tools_list
-        if list_widget is None:
+        table = self._tooling_tools_table
+        if table is None:
             return
-        selected_id = str(self.state.tooling.tool_selected_id or "").strip() or None
-        list_widget.set_items(render_tool_catalog_items(catalog), selected_id=selected_id, emit=False)
-        selected = list_widget.selected_item()
-        selected_item_id = str((selected or {}).get("id", "")).strip() if isinstance(selected, dict) else ""
-        self._tooling_select_tool(selected_item_id if selected_item_id else None)
+
+        # Remember previously selected tool
+        prev_selected = str(self.state.tooling.tool_selected_id or "").strip() or None
+
+        # Add columns on first load
+        if not table.columns:
+            table.add_column("Name", key="name")
+            table.add_column("Access", key="access", width=9)
+            table.add_column("Source", key="source", width=10)
+            table.add_column("Tags", key="tags")
+
+        # Clear and repopulate rows
+        table.clear()
+        rows = build_tool_table_rows(catalog)
+        for name, access, source, tags in rows:
+            table.add_row(name, access, source, tags, key=name)
+
+        # Restore cursor to previously selected tool
+        if prev_selected and rows:
+            for idx, (name, _, _, _) in enumerate(rows):
+                if name == prev_selected:
+                    with contextlib.suppress(Exception):
+                        table.move_cursor(row=idx)
+                    break
+        elif rows:
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=0)
+            first_name = rows[0][0] if rows else None
+            if first_name:
+                self._tooling_select_tool(first_name)
 
     def _tooling_select_tool(self, selected_id: str | None) -> None:
         from swarmee_river.tui.tooling_handlers import render_tool_detail
@@ -277,47 +302,52 @@ class ContextSourcesMixin:
         if self._tooling_tools_detail is not None:
             with contextlib.suppress(Exception):
                 if selected is None:
-                    self._tooling_tools_detail.update("Select a tool to edit tags and access hints.")
+                    self._tooling_tools_detail.set_preview("Select a tool to view details.")
                 else:
-                    self._tooling_tools_detail.update(render_tool_detail(selected))
-        tags = ", ".join(
-            str(tag).strip()
-            for tag in ((selected or {}).get("tags") or [])
-            if str(tag).strip()
-        )
-        if self._tooling_tool_tags_input is not None:
-            with contextlib.suppress(Exception):
-                self._tooling_tool_tags_input.value = tags
-        if self._tooling_tool_access_read is not None:
-            with contextlib.suppress(Exception):
-                self._tooling_tool_access_read.value = bool((selected or {}).get("access_read", False))
-        if self._tooling_tool_access_write is not None:
-            with contextlib.suppress(Exception):
-                self._tooling_tool_access_write.value = bool((selected or {}).get("access_write", False))
-        if self._tooling_tool_access_execute is not None:
-            with contextlib.suppress(Exception):
-                self._tooling_tool_access_execute.value = bool((selected or {}).get("access_execute", False))
+                    self._tooling_tools_detail.set_preview(render_tool_detail(selected))
 
-    def _tooling_tool_save_tags(self) -> None:
-        from swarmee_river.tui.tool_metadata import load_tool_metadata_overrides, save_tool_metadata_overrides
+    def _tooling_tool_open_tag_editor(self) -> None:
+        from swarmee_river.tui.widgets import TagEditScreen
 
         selected_name = str(self.state.tooling.tool_selected_id or "").strip()
         if not selected_name:
             self._notify("Select a tool first.", severity="warning")
             return
-        tags_raw = str(getattr(self._tooling_tool_tags_input, "value", "")).strip() if self._tooling_tool_tags_input else ""
-        tags = [segment.strip() for segment in tags_raw.split(",") if segment.strip()]
+        selected = next(
+            (
+                item
+                for item in self.state.tooling.tool_catalog
+                if str(item.get("name", "")).strip() == selected_name
+            ),
+            None,
+        )
+        current_tags = ", ".join(
+            str(tag).strip()
+            for tag in ((selected or {}).get("tags") or [])
+            if str(tag).strip()
+        )
+        self.push_screen(
+            TagEditScreen(selected_name, current_tags),
+            callback=self._on_tag_edit_complete,
+        )
+
+    def _on_tag_edit_complete(self, result: str | None) -> None:
+        if result is None:
+            return
+        from swarmee_river.tui.tool_metadata import load_tool_metadata_overrides, save_tool_metadata_overrides
+
+        selected_name = str(self.state.tooling.tool_selected_id or "").strip()
+        if not selected_name:
+            return
+        tags = [segment.strip() for segment in result.split(",") if segment.strip()]
         overrides = load_tool_metadata_overrides()
         record = dict(overrides.get(selected_name, {}))
         record["tags"] = tags
-        record["access_read"] = bool(getattr(self._tooling_tool_access_read, "value", False))
-        record["access_write"] = bool(getattr(self._tooling_tool_access_write, "value", False))
-        record["access_execute"] = bool(getattr(self._tooling_tool_access_execute, "value", False))
         overrides[selected_name] = record
         save_tool_metadata_overrides(overrides)
         self._refresh_tooling_tools_list()
         self._tooling_select_tool(selected_name)
-        self._write_transcript_line(f"[tooling] updated tool metadata: {selected_name}")
+        self._write_transcript_line(f"[tooling] updated tags for: {selected_name}")
 
     def _tooling_s3_import(self, target: str) -> None:
         from swarmee_river.tui.prompt_templates import PromptTemplate, load_prompt_templates, save_prompt_templates

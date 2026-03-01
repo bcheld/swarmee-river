@@ -1257,6 +1257,31 @@ def run_tui() -> int:
             layout: vertical;
         }
 
+        #tooling_tools_table {
+            height: 2fr;
+            border: round #3b3b3b;
+            scrollbar-background: #2f2f2f;
+            scrollbar-background-hover: #3a3a3a;
+            scrollbar-background-active: #454545;
+            scrollbar-color: #7f7f7f;
+            scrollbar-color-hover: #999999;
+            scrollbar-color-active: #b3b3b3;
+        }
+
+        #tooling_tools_table > .datatable--cursor {
+            background: $accent 30%;
+            color: $text;
+        }
+
+        #tooling_tools_table > .datatable--header {
+            background: #2f2f2f;
+            color: $text;
+        }
+
+        #tooling_tools_view SidebarDetail {
+            height: 1fr;
+        }
+
         #tooling_prompts_view {
             display: none;
             height: 1fr;
@@ -2027,12 +2052,8 @@ def run_tui() -> int:
         _tooling_prompt_name_input: Any = None
         _tooling_prompt_content_input: Any = None
         _tooling_tools_header: Any = None
-        _tooling_tools_list: Any = None
+        _tooling_tools_table: Any = None
         _tooling_tools_detail: Any = None
-        _tooling_tool_tags_input: Any = None
-        _tooling_tool_access_read: Any = None
-        _tooling_tool_access_write: Any = None
-        _tooling_tool_access_execute: Any = None
         _tooling_sops_header: Any = None
         _tooling_kbs_header: Any = None
         _kbs_list: Any = None
@@ -2747,9 +2768,23 @@ def run_tui() -> int:
                 self._tooling_select_prompt(selected_id)
                 return
 
-            if sidebar_list is self._tooling_tools_list:
-                selected_id = str(getattr(event, "item_id", "")).strip()
-                self._tooling_select_tool(selected_id)
+        def on_data_table_row_selected(self, event: Any) -> None:
+            table = getattr(event, "data_table", None)
+            if table is not None and table is self._tooling_tools_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._tooling_select_tool(selected_id)
+                    self._tooling_tool_open_tag_editor()
+                return
+
+        def on_data_table_row_highlighted(self, event: Any) -> None:
+            table = getattr(event, "data_table", None)
+            if table is not None and table is self._tooling_tools_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._tooling_select_tool(selected_id)
                 return
 
         def on_sidebar_detail_action_selected(self, event: Any) -> None:
@@ -2940,9 +2975,6 @@ def run_tui() -> int:
                 return
             if button_id == "tooling_prompt_delete":
                 self._tooling_prompt_delete()
-                return
-            if button_id == "tooling_tool_save_tags":
-                self._tooling_tool_save_tags()
                 return
             if button_id == "tooling_prompts_s3_import":
                 self._tooling_s3_import("prompts")

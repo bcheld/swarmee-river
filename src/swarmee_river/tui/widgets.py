@@ -15,6 +15,7 @@ from rich.panel import Panel as RichPanel
 from rich.text import Text as RichText
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
+from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Collapsible, Input, Static, TextArea
 
 
@@ -2540,6 +2541,82 @@ class StatusBar(Static):
                         rendered = " | ".join(parts)
 
         self.update(rendered)
+
+
+class TagEditScreen(ModalScreen[str | None]):
+    """Popup editor for tool tags — returns new comma-separated tag string or None."""
+
+    DEFAULT_CSS = """
+    TagEditScreen {
+        align: center middle;
+    }
+    TagEditScreen #tag_edit_container {
+        width: 60;
+        max-width: 90%;
+        height: auto;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    TagEditScreen #tag_edit_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    TagEditScreen #tag_edit_input {
+        margin: 0 0 1 0;
+    }
+    TagEditScreen #tag_edit_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    TagEditScreen #tag_edit_buttons Button {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    """
+
+    def __init__(self, tool_name: str, current_tags: str, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._tool_name = tool_name
+        self._current_tags = current_tags
+
+    def compose(self):  # type: ignore[override]
+        with Vertical(id="tag_edit_container"):
+            yield Static(f"Edit tags for [bold]{self._tool_name}[/bold]", id="tag_edit_title")
+            yield Input(
+                value=self._current_tags,
+                placeholder="Tags (comma-separated)",
+                id="tag_edit_input",
+            )
+            with Horizontal(id="tag_edit_buttons"):
+                yield Button("Save", id="tag_edit_save", variant="success")
+                yield Button("Cancel", id="tag_edit_cancel", variant="default")
+
+    def on_mount(self) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#tag_edit_input", Input).focus()
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "tag_edit_save":
+            value = str(self.query_one("#tag_edit_input", Input).value or "").strip()
+            self.dismiss(value)
+        elif button_id == "tag_edit_cancel":
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Any) -> None:
+        input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
+        if input_id == "tag_edit_input":
+            value = str(self.query_one("#tag_edit_input", Input).value or "").strip()
+            self.dismiss(value)
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
 
 
 class SystemMessage(Static):

@@ -160,7 +160,44 @@ def render_prompt_detail(tmpl: Any) -> str:
     return "\n".join(lines)
 
 
+def build_tool_table_rows(catalog: list[Any]) -> list[tuple[str, str, str, str]]:
+    """Build DataTable row tuples from a tool catalog.
+
+    Returns list of (name, access_badge, source, tags_str) tuples.
+    """
+    rows: list[tuple[str, str, str, str]] = []
+    for tool in catalog:
+        if isinstance(tool, dict):
+            name = str(tool.get("name", ""))
+            tags = tool.get("tags", [])
+            r = tool.get("access_read", False)
+            w = tool.get("access_write", False)
+            x = tool.get("access_execute", False)
+            source = str(tool.get("source", ""))
+        else:
+            name = getattr(tool, "name", "")
+            tags = getattr(tool, "tags", [])
+            r = getattr(tool, "access_read", False)
+            w = getattr(tool, "access_write", False)
+            x = getattr(tool, "access_execute", False)
+            source = getattr(tool, "source", "")
+
+        badge_parts: list[str] = []
+        if r:
+            badge_parts.append("[R]")
+        if w:
+            badge_parts.append("[W]")
+        if x:
+            badge_parts.append("[X]")
+        badge = "".join(badge_parts)
+
+        tag_str = ", ".join(str(t) for t in tags if str(t).strip())
+        rows.append((name, badge, source, tag_str))
+    return rows
+
+
 __all__ = [
+    "build_tool_table_rows",
     "render_prompt_detail",
     "render_prompt_list_items",
     "render_tool_catalog_items",
