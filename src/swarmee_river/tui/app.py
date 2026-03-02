@@ -1013,7 +1013,7 @@ def run_tui() -> int:
         #panes {
             layout: horizontal;
             height: 1fr;
-            width: 100%;
+            width: 1fr;
         }
 
         #transcript, #transcript_text {
@@ -2247,6 +2247,7 @@ def run_tui() -> int:
         def on_resize(self, event: Any) -> None:
             _ = event
             self._update_responsive_layout_classes()
+            self.refresh()
 
         def _bind_ui_widgets(self) -> None:
             self._command_palette = self.query_one("#command_palette", CommandPalette)

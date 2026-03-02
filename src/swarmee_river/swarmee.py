@@ -2156,7 +2156,7 @@ def _runtime_broker_pids() -> list[int]:
         pid_text, command = parts
         if "swarmee_river.swarmee" not in command:
             continue
-        if re.search(r"(?:^|\\s)serve(?:\\s|$)", command) is None:
+        if re.search(r"(?:^|\s)serve(?:\s|$)", command) is None:
             continue
         try:
             pid = int(pid_text)

@@ -15,7 +15,7 @@ import pytest
 
 # The harness fixture is defined in tui_harness.py (auto-discovered via conftest or
 # direct import).  We import it so pytest collects it as a fixture.
-from tests.tui_harness import tui_app_factory as _tui_app_factory_fixture  # noqa: F401
+from tests.tui_harness import tui_app_factory  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -574,6 +574,85 @@ async def test_second_query_appends_to_timeline(tui_app_factory, tmp_path):
         all_event_types = [e.get("event") for e in app.state.session.timeline_events]
         tool_calls = [e for e in app.state.session.timeline_events if e.get("event") == "after_tool_call"]
         assert len(tool_calls) >= 1, f"Expected after_tool_call from second query in {all_event_types}"
-        assert any(e.get("tool") == "read_file" for e in tool_calls), (
-            f"Expected read_file tool from second query, got: {tool_calls}"
+        assert any(
+            e.get("tool") == "read_file" for e in tool_calls
+        ), f"Expected read_file tool from second query, got: {tool_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Scenario 10 — terminal resize with content does not corrupt state
+# ---------------------------------------------------------------------------
+
+async def test_resize_clears_right_edge_artifacts(tui_app_factory):
+    """
+    Regression test for right-edge artifacts after terminal resize.
+
+    After populating the transcript with streamed text and tool output,
+    shrink and then expand the terminal.  Assert that:
+
+    1. No errors are raised during resize.
+    2. App state (daemon ready, transcript content, tool count) is preserved.
+    3. The on_resize handler fires without exceptions.
+
+    This test cannot assert visual pixel-level artifacts directly, but it
+    validates that the resize path with loaded content is stable and that
+    the full-screen refresh added to on_resize() executes without error.
+    """
+    async with tui_app_factory(size=(200, 50)) as (app, pilot, transport):
+        # --- Setup: daemon ready + transcript content ---
+        transport.emit_ready(session_id="resize-test-session")
+        reached = await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+        assert reached, "daemon never became ready"
+
+        # Stream some text into transcript
+        transport.emit_event({"event": "text_delta", "text": "Here is a detailed answer "})
+        transport.emit_event({"event": "text_delta", "text": "spanning multiple chunks."})
+        await pilot.pause(delay=0.1)
+
+        # Run a tool
+        transport.emit_event({
+            "event": "tool_start",
+            "tool_use_id": "tu-resize-1",
+            "tool": "bash",
+        })
+        transport.emit_event({
+            "event": "tool_result",
+            "tool_use_id": "tu-resize-1",
+            "tool": "bash",
+            "status": "success",
+            "duration_s": 0.3,
+        })
+        await pilot.pause(delay=0.1)
+
+        transport.emit_event({"event": "text_complete", "text": ""})
+        await pilot.pause(delay=0.1)
+
+        # Snapshot state before resize
+        pre_error_count = app.state.session.error_count
+        pre_tool_count = app.state.daemon.run_tool_count
+        pre_transcript = list(app._transcript_fallback_lines)
+
+        # --- Shrink terminal ---
+        await pilot.resize_terminal(100, 30)
+        await pilot.pause(delay=0.15)
+
+        assert app.state.daemon.ready, "daemon should still be ready after shrink"
+        assert app.state.session.error_count == pre_error_count, (
+            f"error_count changed after shrink: {app.state.session.error_count} != {pre_error_count}"
+        )
+        assert app.state.daemon.run_tool_count == pre_tool_count
+
+        # --- Expand terminal back ---
+        await pilot.resize_terminal(200, 50)
+        await pilot.pause(delay=0.15)
+
+        assert app.state.daemon.ready, "daemon should still be ready after expand"
+        assert app.state.session.error_count == pre_error_count, (
+            f"error_count changed after expand: {app.state.session.error_count} != {pre_error_count}"
+        )
+        assert app.state.daemon.run_tool_count == pre_tool_count
+
+        # Transcript content should be preserved through resizes
+        assert len(app._transcript_fallback_lines) >= len(pre_transcript), (
+            "transcript lines should not be lost after resize"
         )
