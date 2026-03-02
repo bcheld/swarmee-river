@@ -611,40 +611,125 @@ class AgentStudioMixin:
         if self._agent_builder_kb_summary is not None:
             self._agent_builder_kb_summary.update(f"KB: {kb_id}" if kb_id else "KB: inherit")
 
+    def _agent_builder_tooling_tool_options(self) -> list[str]:
+        options: list[str] = []
+        for item in (self.state.tooling.tool_catalog or []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name:
+                options.append(name)
+        if not options:
+            options = [str(name).strip() for name in (self.state.agent_studio.tool_catalog or []) if str(name).strip()]
+        return _normalized_tool_name_list(options)
+
+    def _agent_builder_tooling_sop_options(self) -> list[str]:
+        options: list[str] = []
+        for item in (self.state.tooling.sop_catalog or []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name:
+                options.append(name)
+        return _normalized_tool_name_list(options)
+
+    def _agent_builder_tooling_kb_options(self) -> list[tuple[str, str]]:
+        options: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for index, item in enumerate(self.state.tooling.kb_entries or []):
+            if not isinstance(item, dict):
+                continue
+            kb_id = str(item.get("id", item.get("name", f"kb-{index + 1}"))).strip()
+            if not kb_id:
+                continue
+            lowered = kb_id.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            name = str(item.get("name", kb_id)).strip() or kb_id
+            label = f"{name} ({kb_id})" if name.lower() != kb_id.lower() else kb_id
+            options.append((label, kb_id))
+        return options
+
+    def _apply_agent_builder_capability_multi_edit(self, capability: str, values: list[str] | None) -> None:
+        if values is None:
+            return
+        key = str(capability or "").strip().lower()
+        normalized_values = _normalized_tool_name_list(values)
+        if key == "tools":
+            self._agent_builder_tools_draft = normalized_values
+        elif key == "sops":
+            self._agent_builder_sops_draft = normalized_values
+        else:
+            return
+        self._refresh_agent_builder_capability_summaries()
+        self._set_agent_builder_status("Agent draft changes pending.")
+        self._set_agent_draft_dirty(True)
+
+    def _apply_agent_builder_kb_edit(self, value: str | None) -> None:
+        if value is None:
+            return
+        self._agent_builder_kb_draft = str(value).strip()
+        self._refresh_agent_builder_capability_summaries()
+        self._set_agent_builder_status("Agent draft changes pending.")
+        self._set_agent_draft_dirty(True)
+
     def _edit_agent_builder_capability(self, capability: str) -> None:
-        from swarmee_river.tui.widgets import TableCellEditScreen
+        from swarmee_river.tui.widgets import CatalogMultiSelectScreen, CatalogSingleSelectScreen
 
         key = str(capability or "").strip().lower()
         if key == "tools":
-            initial = ", ".join(list(getattr(self, "_agent_builder_tools_draft", []) or []))
-            title = "Edit Agent Tools"
-            help_text = "Comma-separated tool names or @tag refs. Leave empty to inherit."
+            self.push_screen(
+                CatalogMultiSelectScreen(
+                    title="Edit Agent Tools",
+                    options=self._agent_builder_tooling_tool_options(),
+                    selected_values=list(getattr(self, "_agent_builder_tools_draft", []) or []),
+                    help_text="Select tools and/or enter custom names or @tag refs. Clear for inherit.",
+                ),
+                callback=lambda result: self._apply_agent_builder_capability_multi_edit("tools", result),
+            )
+            return
         elif key == "sops":
-            initial = ", ".join(list(getattr(self, "_agent_builder_sops_draft", []) or []))
-            title = "Edit Agent SOPs"
-            help_text = "Comma-separated SOP names. Leave empty to inherit."
+            self.push_screen(
+                CatalogMultiSelectScreen(
+                    title="Edit Agent SOPs",
+                    options=self._agent_builder_tooling_sop_options(),
+                    selected_values=list(getattr(self, "_agent_builder_sops_draft", []) or []),
+                    help_text="Select SOPs and/or enter custom SOP names. Clear for inherit.",
+                ),
+                callback=lambda result: self._apply_agent_builder_capability_multi_edit("sops", result),
+            )
+            return
         elif key == "kb":
-            initial = str(getattr(self, "_agent_builder_kb_draft", "") or "").strip()
-            title = "Edit Agent KB"
-            help_text = "Knowledge base ID (single value). Leave empty to inherit."
+            self.push_screen(
+                CatalogSingleSelectScreen(
+                    title="Edit Agent KB",
+                    options=self._agent_builder_tooling_kb_options(),
+                    selected_value=str(getattr(self, "_agent_builder_kb_draft", "") or "").strip(),
+                    help_text="Choose a knowledge base or enter a custom KB ID. Clear for inherit.",
+                ),
+                callback=self._apply_agent_builder_kb_edit,
+            )
+            return
         else:
             return
-        self.push_screen(
-            TableCellEditScreen(title, initial, help_text=help_text),
-            callback=lambda result: self._apply_agent_builder_capability_edit(key, result),
-        )
 
-    def _apply_agent_builder_capability_edit(self, capability: str, value: str | None) -> None:
+    def _apply_agent_builder_capability_edit(self, capability: str, value: Any) -> None:
         if value is None:
             return
         key = str(capability or "").strip().lower()
-        text = str(value).strip()
         if key == "tools":
-            self._agent_builder_tools_draft = self._parse_agent_tools_csv_list(text)
+            if isinstance(value, list):
+                self._agent_builder_tools_draft = _normalized_tool_name_list(value)
+            else:
+                self._agent_builder_tools_draft = self._parse_agent_tools_csv_list(str(value).strip())
         elif key == "sops":
-            self._agent_builder_sops_draft = self._parse_agent_tools_csv_list(text)
+            if isinstance(value, list):
+                self._agent_builder_sops_draft = _normalized_tool_name_list(value)
+            else:
+                self._agent_builder_sops_draft = self._parse_agent_tools_csv_list(str(value).strip())
         elif key == "kb":
-            self._agent_builder_kb_draft = text
+            self._agent_builder_kb_draft = str(value).strip()
         else:
             return
         self._refresh_agent_builder_capability_summaries()

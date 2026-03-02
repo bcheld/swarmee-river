@@ -23,11 +23,12 @@ def test_build_prompt_table_rows_formats_fields_and_truncates_preview() -> None:
     )
 
     assert len(rows) == 1
-    template_id, name, tags, source, preview = rows[0]
+    template_id, name, prompt_id, tags, used_by, preview = rows[0]
     assert template_id == "tmpl-1"
     assert name == "Review Prompt"
+    assert prompt_id == "tmpl-1"
     assert tags == "code, review"
-    assert source == "s3"
+    assert used_by == "-"
     assert preview.endswith("…")
     assert len(preview) == 80
 

@@ -16,7 +16,7 @@ from rich.text import Text as RichText
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Collapsible, Input, Static, TextArea
+from textual.widgets import Button, Checkbox, Collapsible, DataTable, Input, Select, Static, TextArea
 
 
 def render_user_message(text: str, *, timestamp: str | None = None) -> RichPanel:
@@ -2784,6 +2784,683 @@ class PromptUsedByEditScreen(ModalScreen[list[str] | None]):
 
     def on_key(self, event: Any) -> None:
         key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
+class CatalogMultiSelectScreen(ModalScreen[list[str] | None]):
+    """Catalog-backed multi-select modal with optional custom CSV values."""
+
+    DEFAULT_CSS = """
+    CatalogMultiSelectScreen {
+        align: center middle;
+    }
+    CatalogMultiSelectScreen #catalog_multi_container {
+        width: 78;
+        max-width: 94%;
+        max-height: 90%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    CatalogMultiSelectScreen #catalog_multi_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    CatalogMultiSelectScreen #catalog_multi_help {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text-muted;
+    }
+    CatalogMultiSelectScreen #catalog_multi_options {
+        height: 1fr;
+        min-height: 8;
+        border: round $panel;
+        padding: 0 1;
+        margin: 0 0 1 0;
+    }
+    CatalogMultiSelectScreen #catalog_multi_custom {
+        margin: 0 0 1 0;
+    }
+    CatalogMultiSelectScreen #catalog_multi_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    CatalogMultiSelectScreen #catalog_multi_buttons Button {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        options: list[str],
+        selected_values: list[str],
+        help_text: str = "",
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._title = str(title or "").strip() or "Select values"
+        self._help_text = str(help_text or "").strip()
+        self._options = self._normalize_tokens(options)
+        self._selected_values = self._normalize_tokens(selected_values)
+        option_lowers = {item.lower() for item in self._options}
+        self._custom_initial = ", ".join(
+            item for item in self._selected_values if item.lower() not in option_lowers
+        )
+        self._checkbox_map: dict[str, str] = {}
+
+    @staticmethod
+    def _normalize_tokens(tokens: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            value = str(token).strip()
+            if not value:
+                continue
+            lowered = value.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append(value)
+        return normalized
+
+    def _selected_values_from_ui(self) -> list[str]:
+        selected: list[str] = []
+        seen: set[str] = set()
+        for checkbox_id, option in self._checkbox_map.items():
+            with contextlib.suppress(Exception):
+                checkbox = self.query_one(f"#{checkbox_id}", Checkbox)
+                if bool(getattr(checkbox, "value", False)):
+                    lowered = option.lower()
+                    if lowered in seen:
+                        continue
+                    seen.add(lowered)
+                    selected.append(option)
+        custom_value = ""
+        with contextlib.suppress(Exception):
+            custom_value = str(self.query_one("#catalog_multi_custom", Input).value or "")
+        for raw in custom_value.split(","):
+            token = str(raw).strip()
+            lowered = token.lower()
+            if not token or lowered in seen:
+                continue
+            seen.add(lowered)
+            selected.append(token)
+        return selected
+
+    def compose(self):  # type: ignore[override]
+        with Vertical(id="catalog_multi_container"):
+            yield Static(self._title, id="catalog_multi_title")
+            if self._help_text:
+                yield Static(self._help_text, id="catalog_multi_help")
+            with VerticalScroll(id="catalog_multi_options"):
+                if not self._options:
+                    yield Static("(no catalog entries)")
+                selected_lowers = {item.lower() for item in self._selected_values}
+                for index, option in enumerate(self._options):
+                    checkbox_id = f"catalog_multi_cb_{index}"
+                    self._checkbox_map[checkbox_id] = option
+                    yield Checkbox(
+                        option,
+                        value=(option.lower() in selected_lowers),
+                        id=checkbox_id,
+                    )
+            yield Input(
+                value=self._custom_initial,
+                placeholder="Additional values (comma-separated)",
+                id="catalog_multi_custom",
+            )
+            with Horizontal(id="catalog_multi_buttons"):
+                yield Button("Save", id="catalog_multi_save", variant="success")
+                yield Button("Clear", id="catalog_multi_clear", variant="warning")
+                yield Button("Cancel", id="catalog_multi_cancel", variant="default")
+
+    def on_mount(self) -> None:
+        first_checkbox_id = next(iter(self._checkbox_map), "")
+        if first_checkbox_id:
+            with contextlib.suppress(Exception):
+                self.query_one(f"#{first_checkbox_id}", Checkbox).focus()
+                return
+        with contextlib.suppress(Exception):
+            self.query_one("#catalog_multi_custom", Input).focus()
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "catalog_multi_save":
+            self.dismiss(self._selected_values_from_ui())
+            return
+        if button_id == "catalog_multi_clear":
+            self.dismiss([])
+            return
+        if button_id == "catalog_multi_cancel":
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Any) -> None:
+        input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
+        if input_id == "catalog_multi_custom":
+            self.dismiss(self._selected_values_from_ui())
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
+class CatalogSingleSelectScreen(ModalScreen[str | None]):
+    """Catalog-backed single-select modal with optional custom value."""
+
+    _INHERIT_VALUE = "__inherit__"
+
+    DEFAULT_CSS = """
+    CatalogSingleSelectScreen {
+        align: center middle;
+    }
+    CatalogSingleSelectScreen #catalog_single_container {
+        width: 74;
+        max-width: 94%;
+        max-height: 90%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    CatalogSingleSelectScreen #catalog_single_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    CatalogSingleSelectScreen #catalog_single_help {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text-muted;
+    }
+    CatalogSingleSelectScreen #catalog_single_select {
+        margin: 0 0 1 0;
+    }
+    CatalogSingleSelectScreen #catalog_single_custom {
+        margin: 0 0 1 0;
+    }
+    CatalogSingleSelectScreen #catalog_single_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    CatalogSingleSelectScreen #catalog_single_buttons Button {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        options: list[tuple[str, str]],
+        selected_value: str | None,
+        help_text: str = "",
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._title = str(title or "").strip() or "Select value"
+        self._help_text = str(help_text or "").strip()
+        self._options = self._normalize_options(options)
+        token = str(selected_value or "").strip()
+        token_lower = token.lower()
+        resolved_value = next(
+            (value for _label, value in self._options if value.lower() == token_lower),
+            self._INHERIT_VALUE,
+        )
+        self._initial_select_value = resolved_value
+        self._initial_custom_value = "" if resolved_value != self._INHERIT_VALUE else token
+
+    @staticmethod
+    def _normalize_options(options: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        normalized: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for label, value in options:
+            resolved_label = str(label).strip()
+            resolved_value = str(value).strip()
+            if not resolved_value:
+                continue
+            lowered = resolved_value.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append((resolved_label or resolved_value, resolved_value))
+        return normalized
+
+    def _resolve_value(self) -> str:
+        custom_value = ""
+        with contextlib.suppress(Exception):
+            custom_value = str(self.query_one("#catalog_single_custom", Input).value or "").strip()
+        if custom_value:
+            return custom_value
+        selected_value = str(getattr(self.query_one("#catalog_single_select", Select), "value", "") or "").strip()
+        if not selected_value or selected_value == self._INHERIT_VALUE:
+            return ""
+        return selected_value
+
+    def compose(self):  # type: ignore[override]
+        options: list[tuple[str, str]] = [("Inherit (none)", self._INHERIT_VALUE)]
+        options.extend(self._options)
+        with Vertical(id="catalog_single_container"):
+            yield Static(self._title, id="catalog_single_title")
+            if self._help_text:
+                yield Static(self._help_text, id="catalog_single_help")
+            yield Select(
+                options,
+                id="catalog_single_select",
+                value=self._initial_select_value,
+            )
+            yield Input(
+                value=self._initial_custom_value,
+                placeholder="Custom value (optional)",
+                id="catalog_single_custom",
+            )
+            with Horizontal(id="catalog_single_buttons"):
+                yield Button("Save", id="catalog_single_save", variant="success")
+                yield Button("Clear", id="catalog_single_clear", variant="warning")
+                yield Button("Cancel", id="catalog_single_cancel", variant="default")
+
+    def on_mount(self) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#catalog_single_select", Select).focus()
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "catalog_single_save":
+            self.dismiss(self._resolve_value())
+            return
+        if button_id == "catalog_single_clear":
+            self.dismiss("")
+            return
+        if button_id == "catalog_single_cancel":
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Any) -> None:
+        input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
+        if input_id == "catalog_single_custom":
+            self.dismiss(self._resolve_value())
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
+class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
+    """Modal tag manager for editing tool-tag associations with explicit save."""
+
+    _NO_TAG_VALUE = "__no_tag__"
+
+    DEFAULT_CSS = """
+    ToolTagManagerScreen {
+        align: center middle;
+    }
+    ToolTagManagerScreen #tool_tag_manager_container {
+        width: 96;
+        max-width: 96%;
+        max-height: 94%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    ToolTagManagerScreen #tool_tag_manager_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    ToolTagManagerScreen #tool_tag_manager_controls {
+        height: auto;
+        layout: horizontal;
+        margin: 0 0 1 0;
+    }
+    ToolTagManagerScreen #tool_tag_manager_select {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    ToolTagManagerScreen #tool_tag_manager_input {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    ToolTagManagerScreen #tool_tag_manager_controls Button {
+        width: auto;
+        margin: 0 1 0 0;
+    }
+    ToolTagManagerScreen #tool_tag_manager_table {
+        height: 1fr;
+        min-height: 10;
+        margin: 0 0 1 0;
+    }
+    ToolTagManagerScreen #tool_tag_manager_status {
+        height: auto;
+        color: $text-muted;
+        margin: 0 0 1 0;
+    }
+    ToolTagManagerScreen #tool_tag_manager_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    ToolTagManagerScreen #tool_tag_manager_buttons Button {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    """
+
+    def __init__(self, catalog: list[dict[str, Any]], **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._catalog = [dict(item) for item in catalog if isinstance(item, dict)]
+        self._tool_names = sorted(
+            {str(item.get("name", "")).strip() for item in self._catalog if str(item.get("name", "")).strip()},
+            key=str.lower,
+        )
+        self._tool_tags: dict[str, list[str]] = {}
+        for tool_name in self._tool_names:
+            entry = next(
+                (item for item in self._catalog if str(item.get("name", "")).strip() == tool_name),
+                {},
+            )
+            self._tool_tags[tool_name] = self._normalize_tags(entry.get("tags", []))
+        self._all_tags = self._collect_all_tags()
+        self._selected_tag = self._all_tags[0] if self._all_tags else ""
+
+    @staticmethod
+    def _normalize_tags(raw_tags: Any) -> list[str]:
+        tags = raw_tags if isinstance(raw_tags, list) else []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in tags:
+            tag = str(raw).strip()
+            lowered = tag.lower()
+            if not tag or lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append(tag)
+        return normalized
+
+    def _collect_all_tags(self) -> list[str]:
+        tags: list[str] = []
+        seen: set[str] = set()
+        for tool_name in self._tool_names:
+            for tag in self._tool_tags.get(tool_name, []):
+                lowered = tag.lower()
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                tags.append(tag)
+        tags.sort(key=str.lower)
+        return tags
+
+    def _selected_tag_lower(self) -> str:
+        return str(self._selected_tag or "").strip().lower()
+
+    def _lookup_tag_by_lower(self, lowered: str) -> str | None:
+        for tag in self._all_tags:
+            if tag.lower() == lowered:
+                return tag
+        return None
+
+    def _set_status(self, text: str) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#tool_tag_manager_status", Static).update(str(text or "").strip())
+
+    def _refresh_tag_select(self) -> None:
+        selector = self.query_one("#tool_tag_manager_select", Select)
+        options: list[tuple[str, str]] = []
+        if self._all_tags:
+            options = [(tag, tag) for tag in self._all_tags]
+        else:
+            options = [("(no tags)", self._NO_TAG_VALUE)]
+        selector.set_options(options)
+        if self._all_tags:
+            target = self._lookup_tag_by_lower(self._selected_tag_lower())
+            self._selected_tag = target or self._all_tags[0]
+            selector.value = self._selected_tag
+        else:
+            self._selected_tag = ""
+            selector.value = self._NO_TAG_VALUE
+
+    def _refresh_tool_table(self) -> None:
+        table = self.query_one("#tool_tag_manager_table", DataTable)
+        if not table.columns:
+            table.add_column("Tool", key="tool")
+            table.add_column("Tagged", key="tagged", width=8)
+        cursor_coordinate = getattr(table, "cursor_coordinate", None)
+        previous_row = int(getattr(cursor_coordinate, "row", 0) or 0)
+        table.clear()
+        selected_lower = self._selected_tag_lower()
+        for tool_name in self._tool_names:
+            has_tag = any(str(tag).strip().lower() == selected_lower for tag in self._tool_tags.get(tool_name, []))
+            table.add_row(tool_name, "[x]" if has_tag else "[ ]", key=tool_name)
+        if self._tool_names:
+            target_row = min(max(previous_row, 0), len(self._tool_names) - 1)
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=target_row)
+
+    def add_tag(self, tag_name: str) -> bool:
+        token = str(tag_name or "").strip()
+        lowered = token.lower()
+        if not token:
+            return False
+        existing = self._lookup_tag_by_lower(lowered)
+        if existing is not None:
+            self._selected_tag = existing
+            return False
+        self._all_tags.append(token)
+        self._all_tags.sort(key=str.lower)
+        self._selected_tag = token
+        return True
+
+    def rename_selected_tag(self, tag_name: str) -> bool:
+        old_tag = str(self._selected_tag or "").strip()
+        old_lower = old_tag.lower()
+        new_tag = str(tag_name or "").strip()
+        new_lower = new_tag.lower()
+        if not old_tag or not new_tag:
+            return False
+
+        changed = False
+        for tool_name in self._tool_names:
+            current = self._tool_tags.get(tool_name, [])
+            next_tags: list[str] = []
+            seen: set[str] = set()
+            for tag in current:
+                lowered = str(tag).strip().lower()
+                if lowered in {old_lower, new_lower}:
+                    candidate = new_tag
+                else:
+                    candidate = str(tag).strip()
+                candidate_lower = candidate.lower()
+                if not candidate or candidate_lower in seen:
+                    continue
+                seen.add(candidate_lower)
+                next_tags.append(candidate)
+                if candidate != tag:
+                    changed = True
+            self._tool_tags[tool_name] = next_tags
+
+        tags: list[str] = []
+        seen_tags: set[str] = set()
+        for tag in self._all_tags:
+            lowered = tag.lower()
+            candidate = new_tag if lowered in {old_lower, new_lower} else tag
+            candidate_lower = candidate.lower()
+            if candidate_lower in seen_tags:
+                continue
+            seen_tags.add(candidate_lower)
+            tags.append(candidate)
+        if new_lower not in seen_tags:
+            tags.append(new_tag)
+        tags.sort(key=str.lower)
+        self._all_tags = tags
+        self._selected_tag = new_tag
+        return changed or old_lower != new_lower or old_tag != new_tag
+
+    def delete_selected_tag(self) -> bool:
+        old_tag = str(self._selected_tag or "").strip()
+        old_lower = old_tag.lower()
+        if not old_tag:
+            return False
+
+        changed = False
+        for tool_name in self._tool_names:
+            current = self._tool_tags.get(tool_name, [])
+            filtered = [tag for tag in current if str(tag).strip().lower() != old_lower]
+            if len(filtered) != len(current):
+                changed = True
+            self._tool_tags[tool_name] = filtered
+
+        self._all_tags = [tag for tag in self._all_tags if tag.lower() != old_lower]
+        self._selected_tag = self._all_tags[0] if self._all_tags else ""
+        return changed
+
+    def toggle_tool_for_selected_tag(self, tool_name: str) -> bool:
+        selected = str(self._selected_tag or "").strip()
+        selected_lower = selected.lower()
+        target_tool = str(tool_name or "").strip()
+        if not selected or not target_tool or target_tool not in self._tool_tags:
+            return False
+
+        tags = list(self._tool_tags.get(target_tool, []))
+        if any(str(tag).strip().lower() == selected_lower for tag in tags):
+            tags = [tag for tag in tags if str(tag).strip().lower() != selected_lower]
+        else:
+            tags.append(selected)
+        self._tool_tags[target_tool] = self._normalize_tags(tags)
+
+        if self._lookup_tag_by_lower(selected_lower) is None:
+            self._all_tags.append(selected)
+            self._all_tags.sort(key=str.lower)
+        return True
+
+    def build_result_payload(self) -> dict[str, Any]:
+        return {"tool_tags": {name: list(tags) for name, tags in self._tool_tags.items()}}
+
+    def _toggle_selected_row(self) -> None:
+        if not self._selected_tag:
+            self._set_status("Select or add a tag first.")
+            return
+        table = self.query_one("#tool_tag_manager_table", DataTable)
+        cursor = getattr(table, "cursor_coordinate", None)
+        row_index = int(getattr(cursor, "row", -1) or -1)
+        if row_index < 0 or row_index >= len(self._tool_names):
+            return
+        tool_name = self._tool_names[row_index]
+        if self.toggle_tool_for_selected_tag(tool_name):
+            self._refresh_tool_table()
+            self._set_status(f"Toggled '{self._selected_tag}' for {tool_name}.")
+
+    def compose(self):  # type: ignore[override]
+        options: list[tuple[str, str]] = (
+            [(tag, tag) for tag in self._all_tags] if self._all_tags else [("(no tags)", self._NO_TAG_VALUE)]
+        )
+        selected_value = self._selected_tag if self._selected_tag else self._NO_TAG_VALUE
+        with Vertical(id="tool_tag_manager_container"):
+            yield Static("Tag Manager", id="tool_tag_manager_title")
+            with Horizontal(id="tool_tag_manager_controls"):
+                yield Select(options, id="tool_tag_manager_select", value=selected_value)
+                yield Input(placeholder="Tag name", id="tool_tag_manager_input")
+                yield Button("Add", id="tool_tag_manager_add", variant="success")
+                yield Button("Rename", id="tool_tag_manager_rename", variant="warning")
+                yield Button("Delete", id="tool_tag_manager_delete", variant="error")
+            yield DataTable(id="tool_tag_manager_table", cursor_type="row")
+            yield Static(
+                "Select a tag, then press Enter/Space on a tool row to toggle association.",
+                id="tool_tag_manager_status",
+            )
+            with Horizontal(id="tool_tag_manager_buttons"):
+                yield Button("Save", id="tool_tag_manager_save", variant="success")
+                yield Button("Cancel", id="tool_tag_manager_cancel", variant="default")
+
+    def on_mount(self) -> None:
+        self._refresh_tag_select()
+        self._refresh_tool_table()
+        with contextlib.suppress(Exception):
+            self.query_one("#tool_tag_manager_table", DataTable).focus()
+
+    def on_select_changed(self, event: Any) -> None:
+        select_id = str(getattr(getattr(event, "select", None), "id", "")).strip()
+        if select_id != "tool_tag_manager_select":
+            return
+        value = str(getattr(event, "value", "")).strip()
+        if value == self._NO_TAG_VALUE:
+            self._selected_tag = ""
+        else:
+            self._selected_tag = value
+        self._refresh_tool_table()
+
+    def on_data_table_row_selected(self, event: Any) -> None:
+        table = getattr(event, "data_table", None)
+        if table is None:
+            return
+        table_id = str(getattr(table, "id", "")).strip()
+        if table_id != "tool_tag_manager_table":
+            return
+        self._toggle_selected_row()
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "tool_tag_manager_add":
+            tag_name = str(self.query_one("#tool_tag_manager_input", Input).value or "").strip()
+            if not tag_name:
+                self._set_status("Enter a tag name to add.")
+                return
+            added = self.add_tag(tag_name)
+            self._refresh_tag_select()
+            self._refresh_tool_table()
+            self.query_one("#tool_tag_manager_input", Input).value = ""
+            if added:
+                self._set_status(f"Added tag '{tag_name}'.")
+            else:
+                self._set_status(f"Tag '{tag_name}' already exists; selected it.")
+            return
+        if button_id == "tool_tag_manager_rename":
+            tag_name = str(self.query_one("#tool_tag_manager_input", Input).value or "").strip()
+            if not self._selected_tag:
+                self._set_status("Select a tag to rename.")
+                return
+            if not tag_name:
+                self._set_status("Enter the new tag name.")
+                return
+            if self.rename_selected_tag(tag_name):
+                self._refresh_tag_select()
+                self._refresh_tool_table()
+                self.query_one("#tool_tag_manager_input", Input).value = ""
+                self._set_status(f"Renamed tag to '{tag_name}'.")
+            return
+        if button_id == "tool_tag_manager_delete":
+            if not self._selected_tag:
+                self._set_status("Select a tag to delete.")
+                return
+            deleted_tag = self._selected_tag
+            if self.delete_selected_tag():
+                self._refresh_tag_select()
+                self._refresh_tool_table()
+                self._set_status(f"Deleted tag '{deleted_tag}'.")
+            else:
+                self._set_status(f"Tag '{deleted_tag}' removed.")
+            return
+        if button_id == "tool_tag_manager_save":
+            self.dismiss(self.build_result_payload())
+            return
+        if button_id == "tool_tag_manager_cancel":
+            self.dismiss(None)
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key in {"space", "spacebar"}:
+            event.stop()
+            event.prevent_default()
+            self._toggle_selected_row()
+            return
         if key == "escape":
             event.stop()
             event.prevent_default()

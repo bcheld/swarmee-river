@@ -10,6 +10,7 @@ import sys
 from types import SimpleNamespace
 
 from swarmee_river.tui import app as tui_app
+from swarmee_river.tui.mixins.agent_studio import AgentStudioMixin
 from swarmee_river.tui.mixins.artifacts import ArtifactsMixin
 from swarmee_river.tui.mixins.context_sources import ContextSourcesMixin
 from swarmee_river.tui.mixins.daemon import DaemonMixin
@@ -1795,6 +1796,279 @@ def test_tooling_prompt_used_by_edit_toggles_prompt_refs():
     assert "shared_prompt" in agents["orchestrator"]["prompt_refs"]
     assert "shared_prompt" in agents["writer"]["prompt_refs"]
     assert app._refresh_count == 1
+
+
+def test_builder_tools_editor_uses_tooling_catalog_and_allows_custom():
+    from swarmee_river.tui.widgets import CatalogMultiSelectScreen
+
+    class _Dummy(AgentStudioMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.tooling.tool_catalog = [{"name": "shell"}, {"name": "git"}]
+            self._agent_builder_tools_draft = ["shell", "custom_tool"]
+            self._agent_builder_sops_draft = []
+            self._agent_builder_kb_draft = ""
+            self._agent_builder_tools_summary = None
+            self._agent_builder_sops_summary = None
+            self._agent_builder_kb_summary = None
+            self.pushed_screen = None
+            self.screen_callback = None
+            self.dirty_values: list[bool] = []
+            self.status_messages: list[str] = []
+
+        def push_screen(self, screen, callback=None):  # noqa: ANN001
+            self.pushed_screen = screen
+            self.screen_callback = callback
+
+        def _set_agent_builder_status(self, message: str) -> None:
+            self.status_messages.append(message)
+
+        def _set_agent_draft_dirty(self, dirty: bool, *, note: str | None = None) -> None:
+            self.dirty_values.append(dirty)
+
+    app = _Dummy()
+    app._edit_agent_builder_capability("tools")
+    assert isinstance(app.pushed_screen, CatalogMultiSelectScreen)
+    assert app.pushed_screen._options == ["shell", "git"]
+    assert app.pushed_screen._selected_values == ["shell", "custom_tool"]
+
+    assert callable(app.screen_callback)
+    app.screen_callback(["git", "custom_two", "git"])
+    assert app._agent_builder_tools_draft == ["git", "custom_two"]
+    assert app.dirty_values[-1] is True
+
+
+def test_builder_sops_editor_uses_tooling_catalog_and_allows_custom():
+    from swarmee_river.tui.widgets import CatalogMultiSelectScreen
+
+    class _Dummy(AgentStudioMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.tooling.sop_catalog = [{"name": "incident_response"}, {"name": "qa_pass"}]
+            self._agent_builder_tools_draft = []
+            self._agent_builder_sops_draft = ["incident_response", "custom_sop"]
+            self._agent_builder_kb_draft = ""
+            self._agent_builder_tools_summary = None
+            self._agent_builder_sops_summary = None
+            self._agent_builder_kb_summary = None
+            self.pushed_screen = None
+            self.screen_callback = None
+            self.dirty_values: list[bool] = []
+
+        def push_screen(self, screen, callback=None):  # noqa: ANN001
+            self.pushed_screen = screen
+            self.screen_callback = callback
+
+        def _set_agent_builder_status(self, _message: str) -> None:
+            return
+
+        def _set_agent_draft_dirty(self, dirty: bool, *, note: str | None = None) -> None:
+            self.dirty_values.append(dirty)
+
+    app = _Dummy()
+    app._edit_agent_builder_capability("sops")
+    assert isinstance(app.pushed_screen, CatalogMultiSelectScreen)
+    assert app.pushed_screen._options == ["incident_response", "qa_pass"]
+    assert app.pushed_screen._selected_values == ["incident_response", "custom_sop"]
+
+    assert callable(app.screen_callback)
+    app.screen_callback(["qa_pass", "custom_sop_2"])
+    assert app._agent_builder_sops_draft == ["qa_pass", "custom_sop_2"]
+    assert app.dirty_values[-1] is True
+
+
+def test_builder_kb_editor_uses_tooling_kb_catalog_and_custom_seed():
+    from swarmee_river.tui.widgets import CatalogSingleSelectScreen
+
+    class _Dummy(AgentStudioMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.tooling.kb_entries = [{"id": "kb-primary", "name": "Primary KB"}]
+            self._agent_builder_tools_draft = []
+            self._agent_builder_sops_draft = []
+            self._agent_builder_kb_draft = "kb-custom"
+            self._agent_builder_tools_summary = None
+            self._agent_builder_sops_summary = None
+            self._agent_builder_kb_summary = None
+            self.pushed_screen = None
+            self.screen_callback = None
+            self.dirty_values: list[bool] = []
+
+        def push_screen(self, screen, callback=None):  # noqa: ANN001
+            self.pushed_screen = screen
+            self.screen_callback = callback
+
+        def _set_agent_builder_status(self, _message: str) -> None:
+            return
+
+        def _set_agent_draft_dirty(self, dirty: bool, *, note: str | None = None) -> None:
+            self.dirty_values.append(dirty)
+
+    app = _Dummy()
+    app._edit_agent_builder_capability("kb")
+    assert isinstance(app.pushed_screen, CatalogSingleSelectScreen)
+    assert app.pushed_screen._options == [("Primary KB (kb-primary)", "kb-primary")]
+    assert app.pushed_screen._initial_custom_value == "kb-custom"
+
+    assert callable(app.screen_callback)
+    app.screen_callback("kb-primary")
+    assert app._agent_builder_kb_draft == "kb-primary"
+    assert app.dirty_values[-1] is True
+
+
+def test_tools_row_selection_does_not_open_legacy_tag_editor():
+    class _Table:
+        pass
+
+    class _Harness:
+        def __init__(self) -> None:
+            self._tooling_tools_table = _Table()
+            self._tooling_sops_table = None
+            self._tooling_prompts_table = None
+            self._tooling_kbs_table = None
+            self._session_timeline_table = None
+            self._session_artifacts_table = None
+            self._agent_overview_table = None
+            self._agent_builder_table = None
+            self._bundles_table = None
+            self._settings_models_table = None
+            self._settings_env_table = None
+            self.selected: list[str] = []
+
+        def _tooling_select_tool(self, selected_id: str) -> None:
+            self.selected.append(selected_id)
+
+        def _tooling_tool_open_tag_editor(self) -> None:
+            raise AssertionError("Legacy row-driven tag editor should not open.")
+
+    harness = _Harness()
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+    event = SimpleNamespace(
+        data_table=harness._tooling_tools_table,
+        row_key=SimpleNamespace(value="shell"),
+    )
+    SwarmeeTUI.on_data_table_row_selected(harness, event)
+    assert harness.selected == ["shell"]
+
+
+def test_tag_manager_button_opens_manager():
+    class _Harness:
+        def __init__(self) -> None:
+            self.called = 0
+
+        def _tooling_tools_open_tag_manager(self) -> None:
+            self.called += 1
+
+    harness = _Harness()
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+    event = SimpleNamespace(button=SimpleNamespace(id="tooling_tools_tag_manager"))
+    SwarmeeTUI.on_button_pressed(harness, event)
+    assert harness.called == 1
+
+
+def test_tag_manager_result_updates_tags_and_preserves_non_tag_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
+
+    from swarmee_river.tui.tool_metadata import load_tool_metadata_overrides, save_tool_metadata_overrides
+
+    class _Dummy(ContextSourcesMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.tooling.tool_catalog = [{"name": "shell"}, {"name": "git"}]
+            self.state.tooling.tool_selected_id = "git"
+            self.refresh_calls = 0
+            self.selected_ids: list[str] = []
+            self.transcript_lines: list[str] = []
+
+        def _refresh_tooling_tools_list(self) -> None:
+            self.refresh_calls += 1
+
+        def _tooling_select_tool(self, selected_id: str | None) -> None:
+            self.selected_ids.append(str(selected_id or ""))
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.transcript_lines.append(text)
+
+    save_tool_metadata_overrides(
+        {
+            "shell": {"tags": ["old"], "description": "Shell tool", "access_execute": True},
+            "git": {"tags": ["legacy"], "access_execute": True},
+            "unknown": {"tags": ["keep"]},
+        }
+    )
+
+    app = _Dummy()
+    app._on_tool_tag_manager_complete(
+        {
+            "tool_tags": {
+                "shell": ["alpha", "beta", "alpha"],
+                "git": [],
+                "unknown": ["changed"],
+            }
+        }
+    )
+
+    overrides = load_tool_metadata_overrides()
+    assert overrides["shell"]["tags"] == ["alpha", "beta"]
+    assert overrides["shell"]["description"] == "Shell tool"
+    assert overrides["shell"]["access_execute"] is True
+    assert "tags" not in overrides["git"]
+    assert overrides["git"]["access_execute"] is True
+    assert overrides["unknown"]["tags"] == ["keep"]
+    assert app.refresh_calls == 1
+    assert app.selected_ids == ["git"]
+    assert app.transcript_lines[-1] == "[tooling] saved tag manager changes."
+
+
+def test_tag_manager_cancel_result_is_noop(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
+
+    from swarmee_river.tui.tool_metadata import load_tool_metadata_overrides, save_tool_metadata_overrides
+
+    class _Dummy(ContextSourcesMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.tooling.tool_catalog = [{"name": "shell"}]
+
+        def _refresh_tooling_tools_list(self) -> None:
+            raise AssertionError("refresh should not run for cancel/noop")
+
+        def _tooling_select_tool(self, selected_id: str | None) -> None:
+            raise AssertionError(f"selection should not run for cancel/noop: {selected_id}")
+
+        def _write_transcript_line(self, text: str) -> None:
+            raise AssertionError(f"transcript should not run for cancel/noop: {text}")
+
+    save_tool_metadata_overrides({"shell": {"tags": ["ops"]}})
+    app = _Dummy()
+    app._on_tool_tag_manager_complete(None)
+    assert load_tool_metadata_overrides()["shell"]["tags"] == ["ops"]
+
+
+def test_tool_tag_manager_screen_tag_operations():
+    from swarmee_river.tui.widgets import ToolTagManagerScreen
+
+    screen = ToolTagManagerScreen(
+        [
+            {"name": "shell", "tags": ["ops"]},
+            {"name": "git", "tags": ["Ops", "ci"]},
+        ]
+    )
+    assert screen.add_tag("infra") is True
+    assert screen.toggle_tool_for_selected_tag("shell") is True
+    assert "infra" in screen.build_result_payload()["tool_tags"]["shell"]
+
+    screen._selected_tag = "ops"
+    assert screen.rename_selected_tag("CI") is True
+    payload = screen.build_result_payload()["tool_tags"]
+    assert payload["shell"] == ["CI", "infra"]
+    assert payload["git"] == ["CI"]
+
+    screen._selected_tag = "CI"
+    assert screen.delete_selected_tag() is True
+    payload_after_delete = screen.build_result_payload()["tool_tags"]
+    assert payload_after_delete["shell"] == ["infra"]
+    assert payload_after_delete["git"] == []
 
 
 def test_prompt_row_selected_opens_metadata_editor_for_editable_columns():

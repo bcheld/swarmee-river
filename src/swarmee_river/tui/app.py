@@ -58,6 +58,7 @@ from swarmee_river.tui.event_types import (
     parse_output_line,
     parse_tui_event,
 )
+from swarmee_river.tui.event_router import classify_tui_error_event, summarize_error_for_toast
 from swarmee_river.tui.event_types import (
     detect_consent_prompt as _event_detect_consent_prompt,
 )
@@ -141,6 +142,7 @@ from swarmee_river.tui.transport import (
 from swarmee_river.tui.transport import (
     write_to_proc as _transport_write_to_proc,
 )
+from swarmee_river.state_paths import sessions_dir
 
 _COMPAT_AGENT_HELPERS = (
     build_activated_agent_sidebar_items,
@@ -207,6 +209,7 @@ _COMPAT_REEXPORTS = (
     choose_daemon_model_select_value,
     choose_model_summary_parts,
     classify_copy_command,
+    classify_tui_error_event,
     classify_model_command,
     classify_post_run_command,
     classify_pre_run_command,
@@ -236,9 +239,11 @@ _COMPAT_REEXPORTS = (
     render_session_timeline_detail_text,
     resolve_model_config_summary,
     sanitize_output_text,
+    sessions_dir,
     session_issue_actions,
     session_timeline_actions,
     summarize_session_timeline_event,
+    summarize_error_for_toast,
 )
 
 # Backwards-compatible alias used by tests and older imports.
@@ -2767,7 +2772,6 @@ def run_tui() -> int:
                 if row_key is not None:
                     selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
                     self._tooling_select_tool(selected_id)
-                    self._tooling_tool_open_tag_editor()
                 return
             if table is not None and table is self._tooling_sops_table:
                 row_key = getattr(event, "row_key", None)
@@ -3139,6 +3143,9 @@ def run_tui() -> int:
                 return
             if button_id == "tooling_tools_s3_import":
                 self._tooling_s3_import("tools")
+                return
+            if button_id == "tooling_tools_tag_manager":
+                self._tooling_tools_open_tag_manager()
                 return
             if button_id == "tooling_sops_s3_import":
                 self._tooling_s3_import("sops")

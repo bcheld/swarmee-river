@@ -700,6 +700,64 @@ class ContextSourcesMixin:
                 else:
                     self._tooling_tools_detail.set_preview(render_tool_detail(selected))
 
+    def _tooling_tools_open_tag_manager(self) -> None:
+        from swarmee_river.tui.widgets import ToolTagManagerScreen
+
+        catalog = [dict(item) for item in self.state.tooling.tool_catalog if isinstance(item, dict)]
+        self.push_screen(
+            ToolTagManagerScreen(catalog),
+            callback=self._on_tool_tag_manager_complete,
+        )
+
+    def _on_tool_tag_manager_complete(self, result: dict[str, Any] | None) -> None:
+        if result is None or not isinstance(result, dict):
+            return
+        tool_tags_raw = result.get("tool_tags")
+        if not isinstance(tool_tags_raw, dict):
+            return
+
+        from swarmee_river.tui.tool_metadata import load_tool_metadata_overrides, save_tool_metadata_overrides
+
+        selected_name = str(self.state.tooling.tool_selected_id or "").strip()
+        catalog_names = {
+            str(item.get("name", "")).strip()
+            for item in self.state.tooling.tool_catalog
+            if isinstance(item, dict) and str(item.get("name", "")).strip()
+        }
+        overrides = load_tool_metadata_overrides()
+
+        for raw_name, raw_tags in tool_tags_raw.items():
+            tool_name = str(raw_name).strip()
+            if not tool_name or tool_name not in catalog_names:
+                continue
+            incoming_tags = raw_tags if isinstance(raw_tags, list) else []
+            tags: list[str] = []
+            seen: set[str] = set()
+            for raw_tag in incoming_tags:
+                tag = str(raw_tag).strip()
+                lowered = tag.lower()
+                if not tag or lowered in seen:
+                    continue
+                seen.add(lowered)
+                tags.append(tag)
+
+            record = dict(overrides.get(tool_name, {}))
+            if tags:
+                record["tags"] = tags
+            else:
+                record.pop("tags", None)
+
+            if record:
+                overrides[tool_name] = record
+            else:
+                overrides.pop(tool_name, None)
+
+        save_tool_metadata_overrides(overrides)
+        self._refresh_tooling_tools_list()
+        if selected_name:
+            self._tooling_select_tool(selected_name)
+        self._write_transcript_line("[tooling] saved tag manager changes.")
+
     def _tooling_tool_open_tag_editor(self) -> None:
         from swarmee_river.tui.widgets import TagEditScreen
 

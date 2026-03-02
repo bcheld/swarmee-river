@@ -1004,8 +1004,14 @@ def _build_agent_runtime(
     pack_sop_paths = enabled_sop_paths(settings)
     pack_prompt_sections = enabled_system_prompts(settings)
     ensure_prompt_assets_bootstrapped()
+    raw_system_prompt = resolve_orchestrator_prompt_from_agent(None)
+    compat_system_prompt = str(load_system_prompt() or "").strip()
+    if compat_system_prompt and compat_system_prompt not in raw_system_prompt:
+        raw_system_prompt = (
+            f"{compat_system_prompt}\n\n{raw_system_prompt}" if raw_system_prompt else compat_system_prompt
+        )
     base_system_prompt = build_base_system_prompt(
-        raw_system_prompt=resolve_orchestrator_prompt_from_agent(None),
+        raw_system_prompt=raw_system_prompt,
         runtime_environment_prompt_section=runtime_environment_prompt_section,
         pack_prompt_sections=pack_prompt_sections,
         tool_usage_rules=_TOOL_USAGE_RULES,
@@ -1104,8 +1110,14 @@ def _build_agent_runtime(
 
     def _refresh_orchestrator_system_prompt() -> None:
         nonlocal base_system_prompt, summarization_system_prompt
+        raw_system_prompt = resolve_orchestrator_prompt_from_agent(active_orchestrator_agent, _prompt_assets_by_id())
+        compat_system_prompt = str(load_system_prompt() or "").strip()
+        if compat_system_prompt and compat_system_prompt not in raw_system_prompt:
+            raw_system_prompt = (
+                f"{compat_system_prompt}\n\n{raw_system_prompt}" if raw_system_prompt else compat_system_prompt
+            )
         base_system_prompt = build_base_system_prompt(
-            raw_system_prompt=resolve_orchestrator_prompt_from_agent(active_orchestrator_agent, _prompt_assets_by_id()),
+            raw_system_prompt=raw_system_prompt,
             runtime_environment_prompt_section=runtime_environment_prompt_section,
             pack_prompt_sections=pack_prompt_sections,
             tool_usage_rules=_TOOL_USAGE_RULES,

@@ -29,7 +29,10 @@ def compose_tooling_tab() -> Iterator[Any]:
                 yield SidebarHeader(
                     "Tool Catalog",
                     id="tooling_tools_header",
-                    actions=[{"id": "tooling_tools_s3_import", "label": "S3 Import", "variant": "default"}],
+                    actions=[
+                        {"id": "tooling_tools_s3_import", "label": "S3 Import", "variant": "default"},
+                        {"id": "tooling_tools_tag_manager", "label": "Tag Manager", "variant": "default"},
+                    ],
                 )
                 yield DataTable(id="tooling_tools_table", cursor_type="row")
                 yield SidebarDetail(id="tooling_tools_detail")
