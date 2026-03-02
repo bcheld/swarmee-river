@@ -123,12 +123,23 @@ class AutoEscalation:
     enabled: bool = False
     max_escalations_per_task: int = 1
     triggers: dict[str, Any] = field(default_factory=dict)
+    order: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AutoEscalation":
         enabled = raw.get("enabled")
         max_escalations_per_task = raw.get("max_escalations_per_task")
         triggers = raw.get("triggers")
+        order_raw = raw.get("order")
+        order: list[str] = []
+        seen: set[str] = set()
+        if isinstance(order_raw, list):
+            for item in order_raw:
+                tier_name = str(item or "").strip().lower()
+                if not tier_name or tier_name in seen:
+                    continue
+                seen.add(tier_name)
+                order.append(tier_name)
         return cls(
             enabled=bool(enabled)
             if isinstance(enabled, bool)
@@ -139,6 +150,7 @@ class AutoEscalation:
             if isinstance(max_escalations_per_task, (int, float, str)) and str(max_escalations_per_task).isdigit()
             else 1,
             triggers=triggers if isinstance(triggers, dict) else {},
+            order=order,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -146,13 +158,35 @@ class AutoEscalation:
             "enabled": self.enabled,
             "max_escalations_per_task": self.max_escalations_per_task,
             "triggers": self.triggers,
+            "order": list(self.order),
         }
+
+
+@dataclass(frozen=True)
+class DefaultModelSelection:
+    provider: str | None = None
+    tier: str = "balanced"
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "DefaultModelSelection":
+        provider_raw = raw.get("provider")
+        tier_raw = raw.get("tier")
+        provider = normalize_provider_name(provider_raw) if isinstance(provider_raw, str) and provider_raw.strip() else None
+        tier = str(tier_raw or "balanced").strip().lower() or "balanced"
+        return cls(provider=provider, tier=tier)
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"tier": self.tier}
+        if self.provider:
+            out["provider"] = self.provider
+        return out
 
 
 @dataclass(frozen=True)
 class ModelsConfig:
     provider: str | None = None
     default_tier: str = "balanced"
+    default_selection: DefaultModelSelection = field(default_factory=DefaultModelSelection)
     tiers: dict[str, ModelTier] = field(default_factory=dict)
     providers: dict[str, ProviderModels] = field(default_factory=dict)
     auto_escalation: AutoEscalation = field(default_factory=AutoEscalation)
@@ -163,6 +197,7 @@ class ModelsConfig:
     def from_dict(cls, raw: dict[str, Any]) -> "ModelsConfig":
         provider = raw.get("provider")
         default_tier = str(raw.get("default_tier") or "balanced").strip()
+        default_selection_raw = raw.get("default_selection")
 
         tiers_raw = raw.get("tiers")
         tiers: dict[str, ModelTier] = {}
@@ -201,9 +236,19 @@ class ModelsConfig:
                     continue
                 seen_hidden.add(key)
                 hidden_tiers.append(key)
+        legacy_provider = normalize_provider_name(provider) if isinstance(provider, str) and provider.strip() else None
+        legacy_tier = default_tier.strip().lower() or "balanced"
+        if isinstance(default_selection_raw, dict):
+            parsed_default = DefaultModelSelection.from_dict(default_selection_raw)
+            resolved_provider = parsed_default.provider if parsed_default.provider is not None else legacy_provider
+            resolved_tier = parsed_default.tier or legacy_tier
+            default_selection = DefaultModelSelection(provider=resolved_provider, tier=resolved_tier)
+        else:
+            default_selection = DefaultModelSelection(provider=legacy_provider, tier=legacy_tier)
         return cls(
-            provider=normalize_provider_name(provider) if isinstance(provider, str) and provider.strip() else None,
-            default_tier=default_tier,
+            provider=default_selection.provider,
+            default_tier=default_selection.tier,
+            default_selection=default_selection,
             tiers=tiers,
             providers=providers,
             auto_escalation=AutoEscalation.from_dict(auto) if isinstance(auto, dict) else AutoEscalation(),
@@ -212,16 +257,20 @@ class ModelsConfig:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        resolved_provider = self.default_selection.provider if self.default_selection else self.provider
+        resolved_tier = self.default_selection.tier if self.default_selection else self.default_tier
+        resolved_tier = str(resolved_tier or "balanced").strip().lower() or "balanced"
         out: dict[str, Any] = {
-            "default_tier": self.default_tier,
+            "default_tier": resolved_tier,
+            "default_selection": DefaultModelSelection(provider=resolved_provider, tier=resolved_tier).to_dict(),
             "tiers": {k: v.to_dict() for k, v in self.tiers.items()},
             "providers": {k: v.to_dict() for k, v in self.providers.items()},
             "auto_escalation": self.auto_escalation.to_dict(),
             "availability": self.availability,
             "hidden_tiers": list(self.hidden_tiers),
         }
-        if self.provider:
-            out["provider"] = self.provider
+        if resolved_provider:
+            out["provider"] = resolved_provider
         return out
 
 
@@ -522,9 +571,11 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
 
     models = settings.models
     if forced_provider and forced_provider.strip():
+        normalized_provider = normalize_provider_name(forced_provider.strip())
         models = ModelsConfig(
-            provider=normalize_provider_name(forced_provider.strip()),
+            provider=normalized_provider,
             default_tier=models.default_tier,
+            default_selection=DefaultModelSelection(provider=normalized_provider, tier=models.default_tier),
             tiers=models.tiers,
             providers=models.providers,
             auto_escalation=models.auto_escalation,
@@ -533,9 +584,11 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
         )
 
     if forced_tier and forced_tier.strip():
+        normalized_tier = forced_tier.strip().lower()
         models = ModelsConfig(
             provider=models.provider,
-            default_tier=forced_tier.strip().lower(),
+            default_tier=normalized_tier,
+            default_selection=DefaultModelSelection(provider=models.provider, tier=normalized_tier),
             tiers=models.tiers,
             providers=models.providers,
             auto_escalation=models.auto_escalation,
@@ -552,6 +605,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
         models = ModelsConfig(
             provider=models.provider,
             default_tier=models.default_tier,
+            default_selection=models.default_selection,
             tiers=models.tiers,
             providers=models.providers,
             auto_escalation=auto,
@@ -582,6 +636,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
         models = ModelsConfig(
             provider=selected_provider,
             default_tier=models.default_tier,
+            default_selection=DefaultModelSelection(provider=selected_provider, tier=models.default_tier),
             tiers=models.tiers,
             providers=filtered_providers,
             auto_escalation=models.auto_escalation,
@@ -620,6 +675,7 @@ def default_settings_template() -> SwarmeeSettings:
         models=ModelsConfig(
             provider=None,
             default_tier="balanced",
+            default_selection=DefaultModelSelection(provider=None, tier="balanced"),
             tiers={},
             providers={
                 "bedrock": ProviderModels(
@@ -642,8 +698,8 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "deep": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-                            display_name="Claude Sonnet 4.5 (deep)",
+                            model_id="us.anthropic.claude-opus-4-6-v1:0",
+                            display_name="Claude Opus 4.6 (deep)",
                             description=(
                                 "Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID)."
                             ),
@@ -658,8 +714,8 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "long": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-                            display_name="Claude Sonnet 4.5 (long)",
+                            model_id="us.anthropic.claude-opus-4-6-v1:0",
+                            display_name="Claude Opus 4.6 (long)",
                             description=(
                                 "Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID)."
                             ),
@@ -693,6 +749,12 @@ def default_settings_template() -> SwarmeeSettings:
                             model_id="gpt-5.2",
                             display_name="GPT-5.2 (long)",
                             description="Long-form outputs (override via SWARMEE_OPENAI_LONG_MODEL_ID).",
+                        ),
+                        "coding": ModelTier(
+                            provider="openai",
+                            model_id="gpt-5.3-codex",
+                            display_name="GPT-5.3 Codex (coding)",
+                            description="Optimized tier for coding-heavy workflows and refactors.",
                         ),
                     },
                 ),
@@ -767,7 +829,12 @@ def default_settings_template() -> SwarmeeSettings:
                     },
                 ),
             },
-            auto_escalation=AutoEscalation(enabled=False, max_escalations_per_task=1, triggers={}),
+            auto_escalation=AutoEscalation(
+                enabled=False,
+                max_escalations_per_task=1,
+                triggers={},
+                order=["fast", "balanced", "deep", "long"],
+            ),
             availability={},
         ),
         safety=SafetyConfig(
@@ -799,6 +866,7 @@ def default_settings_template() -> SwarmeeSettings:
                 "balanced": TierProfile(preflight_level="summary+tree"),
                 "deep": TierProfile(preflight_level="summary+files"),
                 "long": TierProfile(preflight_level="summary+files"),
+                "coding": TierProfile(preflight_level="summary+files"),
             }
         ),
         raw={},

@@ -74,7 +74,7 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
             ctx.output(f"Auto-escalation: {'on' if enabled else 'off'}")
             return CommandDispatchResult(handled=True)
 
-        ctx.output("Usage: :tier list | :tier set <fast|balanced|deep|long> | :tier auto on|off")
+        ctx.output("Usage: :tier list | :tier set <tier-name> | :tier auto on|off")
         return CommandDispatchResult(handled=True)
 
     def _approve(ctx: CLIContext, _inv: CommandInvocation) -> CommandDispatchResult:

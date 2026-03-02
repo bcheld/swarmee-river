@@ -92,7 +92,6 @@ _CHOICE_MAP: dict[str, tuple[str, ...]] = {
     "SWARMEE_PROJECT_MAP": ("enabled", "disabled"),
     "SWARMEE_FREEZE_TOOLS": ("true", "false"),
     "SWARMEE_CACHE_SAFE_SUMMARY": ("false", "true"),
-    "SWARMEE_MODEL_TIER": ("fast", "balanced", "deep", "long"),
     "SWARMEE_TIER_AUTO": ("false", "true"),
     "SWARMEE_INTERRUPT_FORCE_RESTART": ("true", "false"),
     "STRANDS_THINKING_TYPE": ("enabled", "disabled"),
@@ -402,16 +401,12 @@ def compose_settings_tab() -> Iterator[Any]:
                         compact=True,
                     )
                     yield Select(
-                        options=[
-                            ("Tier: fast", "fast"),
-                            ("Tier: balanced", "balanced"),
-                            ("Tier: deep", "deep"),
-                            ("Tier: long", "long"),
-                        ],
+                        options=[("Tier: (none configured)", "__none__")],
                         allow_blank=False,
                         id="settings_models_default_tier_select",
                         compact=True,
                     )
+                yield DataTable(id="settings_models_table", cursor_type="row")
                 with Horizontal(id="settings_auth_row"):
                     yield Button("Connect Copilot", id="settings_auth_connect_copilot", compact=True, variant="success")
                     yield Button("Connect AWS", id="settings_auth_connect_aws", compact=True, variant="primary")
@@ -420,62 +415,9 @@ def compose_settings_tab() -> Iterator[Any]:
                     yield Input(placeholder="AWS profile (default)", id="settings_aws_profile_input")
                     yield Button("Apply", id="settings_aws_profile_apply", compact=True, variant="default")
                 yield Static("", id="settings_auth_status")
-                yield DataTable(id="settings_models_table", cursor_type="row")
-                yield Static("", id="settings_models_detail")
-                with Horizontal(id="settings_models_form_row_1"):
-                    yield Select(
-                        options=[
-                            ("bedrock", "bedrock"),
-                            ("openai", "openai"),
-                            ("ollama", "ollama"),
-                            ("github_copilot", "github_copilot"),
-                        ],
-                        allow_blank=False,
-                        id="settings_models_form_provider",
-                        compact=True,
-                    )
-                    yield Select(
-                        options=[
-                            ("fast", "fast"),
-                            ("balanced", "balanced"),
-                            ("deep", "deep"),
-                            ("long", "long"),
-                        ],
-                        allow_blank=False,
-                        id="settings_models_form_tier",
-                        compact=True,
-                    )
-                    yield Input(placeholder="model_id", id="settings_models_form_model_id")
-                with Horizontal(id="settings_models_form_row_2"):
-                    yield Input(placeholder="display_name", id="settings_models_form_display_name")
-                    yield Input(placeholder="description", id="settings_models_form_description")
-                with Horizontal(id="settings_models_form_row_3"):
-                    yield Input(placeholder="input $ / 1M", id="settings_models_form_price_input")
-                    yield Input(placeholder="output $ / 1M", id="settings_models_form_price_output")
-                    yield Input(placeholder="cached input $ / 1M", id="settings_models_form_price_cached")
-                with Horizontal(id="settings_models_form_actions"):
-                    yield Button("New", id="settings_models_new", compact=True, variant="default")
-                    yield Button("Save Model", id="settings_models_save", compact=True, variant="success")
-                    yield Button(
-                        "Restore Defaults",
-                        id="settings_models_restore_defaults",
-                        compact=True,
-                        variant="default",
-                    )
-                    yield Button("Delete", id="settings_models_delete", compact=True, variant="error")
-                yield Static("Bedrock Runtime", classes="settings-section-label")
-                with Horizontal(id="settings_bedrock_runtime_row"):
-                    yield Input(placeholder="Read Timeout (sec)", id="settings_bedrock_read_timeout_input")
-                    yield Input(placeholder="Connect Timeout (sec)", id="settings_bedrock_connect_timeout_input")
-                    yield Input(placeholder="Max Retries", id="settings_bedrock_max_retries_input")
-                with Horizontal(id="settings_bedrock_runtime_actions"):
-                    yield Button("Apply", id="settings_bedrock_runtime_apply", compact=True, variant="success")
-                    yield Button(
-                        "Reset Defaults",
-                        id="settings_bedrock_runtime_reset",
-                        compact=True,
-                        variant="default",
-                    )
+                yield Static("Manage model catalog and tiers in popup editor.", id="settings_models_detail")
+                with Horizontal(id="settings_models_actions"):
+                    yield Button("Manage Models", id="settings_models_open_manager", compact=True, variant="primary")
 
             # -- Advanced sub-view (all env vars by category) ----------------
             with Vertical(id="settings_advanced_view"):
@@ -524,7 +466,6 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_advanced_view = app.query_one("#settings_advanced_view", Vertical)
     app._settings_general_summary = app.query_one("#settings_general_summary", Static)
     app._settings_models_summary = app.query_one("#settings_models_summary", Static)
-    app._settings_models_table = app.query_one("#settings_models_table", DataTable)
     app._settings_models_detail = app.query_one("#settings_models_detail", Static)
     app._settings_auth_status = app.query_one("#settings_auth_status", Static)
     app._settings_aws_profile_input = app.query_one("#settings_aws_profile_input", Input)
@@ -551,9 +492,10 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_toggle_truncate_results_button = app.query_one("#settings_toggle_truncate_results", Button)
     app._settings_toggle_log_redact_button = app.query_one("#settings_toggle_log_redact", Button)
     app._settings_toggle_freeze_tools_button = app.query_one("#settings_toggle_freeze_tools", Button)
-    app._settings_bedrock_read_timeout_input = app.query_one("#settings_bedrock_read_timeout_input", Input)
-    app._settings_bedrock_connect_timeout_input = app.query_one("#settings_bedrock_connect_timeout_input", Input)
-    app._settings_bedrock_max_retries_input = app.query_one("#settings_bedrock_max_retries_input", Input)
+    app._settings_models_table = app.query_one("#settings_models_table", DataTable)
+    app._settings_bedrock_read_timeout_input = None
+    app._settings_bedrock_connect_timeout_input = None
+    app._settings_bedrock_max_retries_input = None
     app._settings_env_table = app.query_one("#settings_env_table", DataTable)
     app._settings_scope_current = app.query_one("#settings_scope_current", Static)
     app._settings_directory_tree = app.query_one("#settings_directory_tree", SettingsDirectoryTree)

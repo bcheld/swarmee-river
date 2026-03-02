@@ -18,6 +18,7 @@ def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path, monkeypat
     assert "github_copilot" in settings.models.providers
     assert settings.models.providers["openai"].tiers["fast"].model_id == "gpt-5-nano"
     assert settings.models.providers["openai"].tiers["fast"].display_name
+    assert settings.models.default_selection.tier == settings.models.default_tier
 
 
 def test_load_settings_env_overrides_provider(tmp_path: Path, monkeypatch) -> None:
@@ -27,6 +28,44 @@ def test_load_settings_env_overrides_provider(tmp_path: Path, monkeypatch) -> No
     settings = load_settings(settings_path)
 
     assert settings.models.provider == "openai"
+    assert settings.models.default_selection.provider == "openai"
+
+
+def test_load_settings_prefers_default_selection_over_legacy_keys(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "provider": "bedrock",
+                    "default_tier": "balanced",
+                    "default_selection": {"provider": "openai", "tier": "coding"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.models.provider == "openai"
+    assert settings.models.default_tier == "coding"
+    assert settings.models.default_selection.provider == "openai"
+    assert settings.models.default_selection.tier == "coding"
+
+
+def test_auto_escalation_uses_explicit_order_only(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"models": {"provider": "openai", "auto_escalation": {"enabled": True, "order": ["coding", "deep"]}}}),
+        encoding="utf-8",
+    )
+    settings = load_settings(settings_path)
+    manager = SessionModelManager(settings, fallback_provider="openai")
+    assert manager.auto_escalation_enabled is True
+    assert settings.models.auto_escalation.order == ["coding", "deep"]
 
 
 def test_tier_model_id_env_overrides_win_over_settings(tmp_path: Path, monkeypatch) -> None:

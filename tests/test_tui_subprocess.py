@@ -1983,6 +1983,55 @@ def test_tag_manager_button_opens_manager():
     assert harness.called == 1
 
 
+def test_settings_models_manage_button_opens_popup_manager():
+    class _Harness:
+        def __init__(self) -> None:
+            self.called = 0
+
+        def _open_settings_model_manager(self) -> None:
+            self.called += 1
+
+    harness = _Harness()
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+    event = SimpleNamespace(button=SimpleNamespace(id="settings_models_open_manager"))
+    SwarmeeTUI.on_button_pressed(harness, event)
+    assert harness.called == 1
+
+
+def test_settings_models_row_selection_updates_model_detail():
+    class _Table:
+        pass
+
+    class _Harness:
+        def __init__(self) -> None:
+            self._tooling_tools_table = None
+            self._tooling_sops_table = None
+            self._tooling_prompts_table = None
+            self._tooling_kbs_table = None
+            self._session_timeline_table = None
+            self._session_artifacts_table = None
+            self._agent_overview_table = None
+            self._agent_builder_table = None
+            self._bundles_table = None
+            self._settings_models_table = _Table()
+            self._settings_env_table = None
+            self._settings_models_selected_id = None
+            self.detail_refreshes = 0
+
+        def _refresh_settings_model_detail(self) -> None:
+            self.detail_refreshes += 1
+
+    harness = _Harness()
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+    event = SimpleNamespace(
+        data_table=harness._settings_models_table,
+        row_key=SimpleNamespace(value="openai|coding"),
+    )
+    SwarmeeTUI.on_data_table_row_selected(harness, event)
+    assert harness._settings_models_selected_id == "openai|coding"
+    assert harness.detail_refreshes == 1
+
+
 def test_tag_manager_result_updates_tags_and_preserves_non_tag_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
 
@@ -2086,6 +2135,40 @@ def test_tool_tag_manager_screen_tag_operations():
     payload_after_delete = screen.build_result_payload()["tool_tags"]
     assert payload_after_delete["shell"] == ["infra"]
     assert payload_after_delete["git"] == []
+
+
+def test_model_manager_screen_stage_delete_and_default_pair():
+    from swarmee_river.tui.widgets import ModelConfigManagerScreen
+
+    payload = {
+        "models": {
+            "provider": "openai",
+            "default_tier": "balanced",
+            "default_selection": {"provider": "openai", "tier": "balanced"},
+            "providers": {
+                "openai": {
+                    "tiers": {
+                        "balanced": {"provider": "openai", "model_id": "gpt-5-mini"},
+                        "coding": {"provider": "openai", "model_id": "gpt-5.3-codex"},
+                    }
+                }
+            },
+        },
+        "env": {},
+    }
+    screen = ModelConfigManagerScreen(payload)
+    rows = screen._model_rows()
+    assert any(provider == "openai" and tier == "coding" for provider, tier, _ in rows)
+
+    screen._set_default_pair("openai", "coding")
+    result_before_delete = screen.build_result_payload()
+    assert result_before_delete["models"]["default_selection"] == {"provider": "openai", "tier": "coding"}
+
+    deleted = screen._delete_entry("openai", "coding")
+    assert deleted is True
+    result_after_delete = screen.build_result_payload()
+    openai_tiers = result_after_delete["models"]["providers"]["openai"]["tiers"]
+    assert "coding" not in openai_tiers
 
 
 def test_prompt_row_selected_opens_metadata_editor_for_editable_columns():

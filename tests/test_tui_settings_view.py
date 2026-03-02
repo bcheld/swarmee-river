@@ -36,6 +36,31 @@ def test_env_var_specs_include_bedrock_and_interrupt_runtime_controls() -> None:
     assert "SWARMEE_INTERRUPT_FORCE_RESTART" in keys
 
 
+def test_env_category_options_include_bedrock_runtime() -> None:
+    categories = {value for _label, value in settings_view.env_category_options()}
+    assert "Bedrock Runtime" in categories
+
+
+def test_bedrock_runtime_spec_has_clear_transport_description() -> None:
+    specs = settings_view.env_var_specs()
+    read_timeout = next((spec for spec in specs if spec.key == "SWARMEE_BEDROCK_READ_TIMEOUT_SEC"), None)
+    assert read_timeout is not None
+    assert read_timeout.category == "Bedrock Runtime"
+    normalized_desc = read_timeout.description.lower()
+    assert "response body chunks" in normalized_desc
+    assert "seconds" in normalized_desc
+
+
+def test_bedrock_runtime_category_filters_to_expected_keys() -> None:
+    rows = settings_view.build_env_table_rows(category="Bedrock Runtime")
+    keys = {row[0] for row in rows}
+    assert keys == {
+        "SWARMEE_BEDROCK_READ_TIMEOUT_SEC",
+        "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC",
+        "SWARMEE_BEDROCK_MAX_RETRIES",
+    }
+
+
 class _Widget:
     def __init__(self, value: str = "") -> None:
         self.value = value
@@ -219,3 +244,35 @@ def test_apply_bedrock_runtime_settings_rejects_invalid_values() -> None:
 
     assert harness.saved_payload is None
     assert any("invalid Bedrock read timeout" in msg for msg in harness.messages)
+
+
+def test_apply_settings_model_manager_result_persists_models_and_env() -> None:
+    harness = _SettingsHarness({"models": {"providers": {}}, "env": {}}, selected_id=None)
+
+    harness._apply_settings_model_manager_result(
+        {
+            "models": {
+                "provider": "openai",
+                "default_tier": "coding",
+                "default_selection": {"provider": "openai", "tier": "coding"},
+                "providers": {
+                    "openai": {
+                        "tiers": {
+                            "coding": {
+                                "provider": "openai",
+                                "model_id": "gpt-5.3-codex",
+                            }
+                        }
+                    }
+                },
+            },
+            "env": {
+                "SWARMEE_BEDROCK_READ_TIMEOUT_SEC": "60",
+            },
+        }
+    )
+
+    assert harness.saved_payload is not None
+    assert harness.saved_payload["models"]["default_selection"]["tier"] == "coding"
+    assert harness.saved_payload["models"]["providers"]["openai"]["tiers"]["coding"]["model_id"] == "gpt-5.3-codex"
+    assert harness.saved_payload["env"]["SWARMEE_BEDROCK_READ_TIMEOUT_SEC"] == "60"

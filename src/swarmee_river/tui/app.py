@@ -1423,28 +1423,18 @@ def run_tui() -> int:
             padding: 0 0 1 0;
         }
 
-        #settings_models_form_row_1, #settings_models_form_row_2,
-        #settings_models_form_row_3, #settings_models_form_actions,
-        #settings_bedrock_runtime_row, #settings_bedrock_runtime_actions {
+        #settings_models_actions {
             height: auto;
             layout: horizontal;
             margin: 0 0 1 0;
         }
 
-        #settings_models_form_row_1 Select, #settings_models_form_row_1 Input,
-        #settings_models_form_row_2 Input, #settings_models_form_row_3 Input,
-        #settings_bedrock_runtime_row Input {
+        #settings_models_actions Button {
             width: 1fr;
             margin: 0 1 0 0;
         }
 
-        #settings_models_form_actions Button, #settings_bedrock_runtime_actions Button {
-            width: 1fr;
-            margin: 0 1 0 0;
-        }
-
-        #settings_models_form_actions Button:last-child,
-        #settings_bedrock_runtime_actions Button:last-child {
+        #settings_models_actions Button:last-child {
             margin-right: 0;
         }
 
@@ -1467,7 +1457,6 @@ def run_tui() -> int:
             layout: horizontal;
             margin: 0 0 1 0;
         }
-
         #settings_general_runtime_row Button,
         #settings_general_features_row Button,
         #settings_general_guardrails_row Button {
@@ -1800,8 +1789,7 @@ def run_tui() -> int:
         .layout-narrow #settings_interrupt_control_actions,
         .layout-narrow #settings_general_features_row,
         .layout-narrow #settings_general_guardrails_row,
-        .layout-narrow #settings_models_form_actions,
-        .layout-narrow #settings_bedrock_runtime_actions,
+        .layout-narrow #settings_models_actions,
         .layout-narrow #settings_env_actions,
         .layout-narrow #settings_safety_actions {
             layout: vertical;
@@ -1818,8 +1806,7 @@ def run_tui() -> int:
         .layout-narrow #settings_interrupt_control_actions Button,
         .layout-narrow #settings_general_features_row Button,
         .layout-narrow #settings_general_guardrails_row Button,
-        .layout-narrow #settings_models_form_actions Button,
-        .layout-narrow #settings_bedrock_runtime_actions Button,
+        .layout-narrow #settings_models_actions Button,
         .layout-narrow #settings_env_actions Button,
         .layout-narrow #settings_safety_actions Button {
             width: 1fr;
@@ -1838,8 +1825,7 @@ def run_tui() -> int:
         .layout-narrow #settings_interrupt_control_actions Button:last-child,
         .layout-narrow #settings_general_features_row Button:last-child,
         .layout-narrow #settings_general_guardrails_row Button:last-child,
-        .layout-narrow #settings_models_form_actions Button:last-child,
-        .layout-narrow #settings_bedrock_runtime_actions Button:last-child,
+        .layout-narrow #settings_models_actions Button:last-child,
         .layout-narrow #settings_env_actions Button:last-child,
         .layout-narrow #settings_safety_actions Button:last-child {
             margin-bottom: 0;
@@ -2665,6 +2651,11 @@ def run_tui() -> int:
             if select_id in {"settings_models_provider_select", "settings_models_default_tier_select"}:
                 if self.state.daemon.model_select_syncing:
                     return
+                # Ignore programmatic/default updates during view refresh; only persist
+                # when the user actively changes the selector.
+                has_focus = bool(getattr(select_widget, "has_focus", False))
+                if not has_focus:
+                    return
                 self._save_models_default_selection()
                 self._refresh_model_select()
                 self._refresh_settings_models()
@@ -3291,23 +3282,8 @@ def run_tui() -> int:
                 self._refresh_settings_models()
                 self._write_transcript_line("[settings] refreshed model/auth status.")
                 return
-            if button_id == "settings_models_new":
-                self._clear_model_form()
-                return
-            if button_id == "settings_models_save":
-                self._save_model_form()
-                return
-            if button_id == "settings_models_restore_defaults":
-                self._restore_model_form_selection()
-                return
-            if button_id == "settings_models_delete":
-                self._delete_model_form_selection()
-                return
-            if button_id == "settings_bedrock_runtime_apply":
-                self._apply_bedrock_runtime_settings()
-                return
-            if button_id == "settings_bedrock_runtime_reset":
-                self._reset_bedrock_runtime_settings()
+            if button_id == "settings_models_open_manager":
+                self._open_settings_model_manager()
                 return
             if button_id == "settings_env_apply":
                 key = (self._settings_env_selected_key or "").strip()

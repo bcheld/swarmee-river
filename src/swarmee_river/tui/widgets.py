@@ -3655,6 +3655,489 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
             self.dismiss(None)
 
 
+class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
+    """Popup editor for model catalog entries (selector + form, explicit save)."""
+
+    _PROVIDERS = ("bedrock", "openai", "ollama", "github_copilot")
+
+    DEFAULT_CSS = """
+    ModelConfigManagerScreen {
+        align: center middle;
+    }
+    ModelConfigManagerScreen #model_manager_container {
+        width: 96;
+        max-width: 98%;
+        max-height: 96%;
+        border: round $accent;
+        background: $surface;
+        padding: 1;
+        layout: vertical;
+    }
+    ModelConfigManagerScreen #model_manager_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    ModelConfigManagerScreen #model_manager_body {
+        height: 1fr;
+        border: round #4a5461;
+        padding: 1;
+        margin: 0 0 1 0;
+        scrollbar-background: #2f2f2f;
+        scrollbar-background-hover: #3a3a3a;
+        scrollbar-background-active: #454545;
+        scrollbar-color: #7f7f7f;
+        scrollbar-color-hover: #999999;
+        scrollbar-color-active: #b3b3b3;
+    }
+    ModelConfigManagerScreen #model_manager_controls,
+    ModelConfigManagerScreen #model_manager_select_row {
+        height: auto;
+        layout: horizontal;
+        margin: 0 0 1 0;
+    }
+    ModelConfigManagerScreen #model_manager_provider_filter,
+    ModelConfigManagerScreen #model_manager_search,
+    ModelConfigManagerScreen #model_manager_model_select {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    ModelConfigManagerScreen #model_manager_editor {
+        height: auto;
+        border: round #4a5461;
+        margin: 0 0 1 0;
+        padding: 1;
+    }
+    ModelConfigManagerScreen .model-edit-row {
+        height: auto;
+        layout: horizontal;
+        margin: 0 0 1 0;
+    }
+    ModelConfigManagerScreen .model-edit-row Input,
+    ModelConfigManagerScreen .model-edit-row Select {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    ModelConfigManagerScreen #model_manager_summary {
+        height: auto;
+        color: $text-muted;
+        margin: 0 0 1 0;
+    }
+    ModelConfigManagerScreen #model_manager_status {
+        height: auto;
+        color: $text-muted;
+        margin: 0 0 1 0;
+    }
+    ModelConfigManagerScreen #model_manager_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    ModelConfigManagerScreen #model_manager_buttons Button {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    """
+
+    def __init__(self, settings_payload: dict[str, Any], **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        payload = dict(settings_payload) if isinstance(settings_payload, dict) else {}
+        models_payload = payload.get("models")
+        env_payload = payload.get("env")
+        self._models: dict[str, Any] = _json.loads(_json.dumps(models_payload if isinstance(models_payload, dict) else {}))
+        self._env: dict[str, Any] = _json.loads(_json.dumps(env_payload if isinstance(env_payload, dict) else {}))
+        self._provider_filter: str = "__all__"
+        self._search: str = ""
+        self._selected_entry: tuple[str, str] | None = None
+
+    @staticmethod
+    def _tier_key(raw: str) -> str:
+        return str(raw or "").strip().lower()
+
+    def _provider_options(self) -> list[tuple[str, str]]:
+        return [(provider, provider) for provider in self._PROVIDERS]
+
+    def _models_providers(self) -> dict[str, Any]:
+        providers = self._models.setdefault("providers", {})
+        return providers if isinstance(providers, dict) else {}
+
+    def _default_pair(self) -> tuple[str | None, str]:
+        default_selection = self._models.get("default_selection")
+        if isinstance(default_selection, dict):
+            provider = str(default_selection.get("provider", "")).strip().lower() or None
+            tier = self._tier_key(str(default_selection.get("tier", "")).strip() or "balanced")
+            return provider, tier
+        provider = str(self._models.get("provider", "")).strip().lower() or None
+        tier = self._tier_key(str(self._models.get("default_tier", "")).strip() or "balanced")
+        return provider, tier
+
+    def _set_default_pair(self, provider: str | None, tier: str) -> None:
+        normalized_provider = str(provider or "").strip().lower() or None
+        normalized_tier = self._tier_key(tier) or "balanced"
+        self._models["default_selection"] = {"provider": normalized_provider, "tier": normalized_tier}
+        self._models["provider"] = normalized_provider
+        self._models["default_tier"] = normalized_tier
+
+    def _model_rows(self) -> list[tuple[str, str, dict[str, Any]]]:
+        rows: list[tuple[str, str, dict[str, Any]]] = []
+        providers = self._models_providers()
+        for provider_name, provider_payload in providers.items():
+            provider = str(provider_name or "").strip().lower()
+            if not provider or self._provider_filter not in {"", "__all__", provider}:
+                continue
+            tiers = provider_payload.get("tiers", {}) if isinstance(provider_payload, dict) else {}
+            if not isinstance(tiers, dict):
+                continue
+            for tier_name, tier_payload in tiers.items():
+                tier = self._tier_key(tier_name)
+                if not tier or not isinstance(tier_payload, dict):
+                    continue
+                if self._search:
+                    needle = self._search.lower()
+                    haystack = " ".join(
+                        [
+                            provider,
+                            tier,
+                            str(tier_payload.get("model_id", "")),
+                            str(tier_payload.get("display_name", "")),
+                            str(tier_payload.get("description", "")),
+                        ]
+                    ).lower()
+                    if needle not in haystack:
+                        continue
+                rows.append((provider, tier, tier_payload))
+        return sorted(rows, key=lambda item: (item[0], item[1]))
+
+    def _model_select_options(self) -> list[tuple[str, str]]:
+        options = [("Select model...", "__none__")]
+        for provider, tier, payload in self._model_rows():
+            model_id = str(payload.get("model_id", "") or "").strip() or "(unset)"
+            options.append((f"{provider}/{tier}  [{model_id}]", f"{provider}|{tier}"))
+        return options
+
+    def _set_status(self, text: str) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#model_manager_status", Static).update(str(text or "").strip())
+
+    def _refresh_summary(self) -> None:
+        default_provider, default_tier = self._default_pair()
+        row_count = len(self._model_rows())
+        default_label = f"{default_provider}/{default_tier}" if default_provider else f"auto/{default_tier}"
+        with contextlib.suppress(Exception):
+            self.query_one("#model_manager_summary", Static).update(
+                f"Models: {row_count} | Default: {default_label}"
+            )
+
+    def _refresh_editor_provider_options(self, selected_provider: str | None = None) -> None:
+        selector = self.query_one("#model_edit_provider", Select)
+        options = self._provider_options()
+        selector.set_options(options)
+        target = str(selected_provider or "").strip().lower()
+        if target not in {value for _label, value in options}:
+            target = "openai"
+        selector.value = target
+
+    def _load_editor(self, *, provider: str, tier: str, payload: dict[str, Any]) -> None:
+        self._selected_entry = (provider, tier)
+        self._refresh_editor_provider_options(provider)
+        self.query_one("#model_edit_tier", Input).value = tier
+        self.query_one("#model_edit_model_id", Input).value = str(payload.get("model_id", "") or "")
+        self.query_one("#model_edit_display_name", Input).value = str(payload.get("display_name", "") or "")
+        self.query_one("#model_edit_description", Input).value = str(payload.get("description", "") or "")
+        provider_key = provider.upper()
+        self.query_one("#model_edit_price_input", Input).value = str(
+            self._env.get(f"SWARMEE_PRICE_{provider_key}_INPUT_PER_1M", "") or ""
+        )
+        self.query_one("#model_edit_price_output", Input).value = str(
+            self._env.get(f"SWARMEE_PRICE_{provider_key}_OUTPUT_PER_1M", "") or ""
+        )
+        self.query_one("#model_edit_price_cached", Input).value = str(
+            self._env.get(f"SWARMEE_PRICE_{provider_key}_CACHED_INPUT_PER_1M", "") or ""
+        )
+
+    def _set_model_select_value(self, provider: str | None, tier: str | None) -> None:
+        target = "__none__"
+        if provider and tier:
+            target = f"{provider}|{tier}"
+        selector = self.query_one("#model_manager_model_select", Select)
+        with contextlib.suppress(Exception):
+            selector.value = target
+
+    def _refresh_model_select_options(self) -> None:
+        selector = self.query_one("#model_manager_model_select", Select)
+        options = self._model_select_options()
+        selector.set_options(options)
+        selected_value = "__none__"
+        if self._selected_entry is not None:
+            selected_value = f"{self._selected_entry[0]}|{self._selected_entry[1]}"
+        values = {value for _label, value in options}
+        if selected_value not in values:
+            self._selected_entry = None
+            selected_value = "__none__"
+        with contextlib.suppress(Exception):
+            selector.value = selected_value
+        self._refresh_summary()
+
+    def _clear_editor(self, *, keep_selection: bool = False) -> None:
+        if not keep_selection:
+            self._selected_entry = None
+        self._refresh_editor_provider_options("openai")
+        self.query_one("#model_edit_tier", Input).value = ""
+        self.query_one("#model_edit_model_id", Input).value = ""
+        self.query_one("#model_edit_display_name", Input).value = ""
+        self.query_one("#model_edit_description", Input).value = ""
+        self.query_one("#model_edit_price_input", Input).value = ""
+        self.query_one("#model_edit_price_output", Input).value = ""
+        self.query_one("#model_edit_price_cached", Input).value = ""
+        self._set_model_select_value(None, None)
+
+    def _load_selected_entry(self) -> None:
+        selector = self.query_one("#model_manager_model_select", Select)
+        raw = str(getattr(selector, "value", "__none__") or "__none__").strip().lower()
+        if "|" not in raw:
+            self._selected_entry = None
+            self._set_status("Select an existing model or choose New Model.")
+            return
+        provider, tier = raw.split("|", 1)
+        provider_payload = self._models_providers().get(provider, {})
+        tiers = provider_payload.get("tiers", {}) if isinstance(provider_payload, dict) else {}
+        payload = tiers.get(tier, {}) if isinstance(tiers, dict) else {}
+        if not isinstance(payload, dict):
+            self._selected_entry = None
+            self._set_status("Selected model is unavailable.")
+            return
+        self._load_editor(provider=provider, tier=tier, payload=payload)
+        self._set_status(f"Editing {provider}/{tier}.")
+
+    def _save_editor_entry(self) -> bool:
+        provider = str(self.query_one("#model_edit_provider", Select).value or "").strip().lower()
+        tier = self._tier_key(str(self.query_one("#model_edit_tier", Input).value or ""))
+        model_id = str(self.query_one("#model_edit_model_id", Input).value or "").strip()
+        if provider not in self._PROVIDERS:
+            self._set_status("Select a valid provider.")
+            return False
+        if not tier:
+            self._set_status("Tier is required.")
+            return False
+        if not model_id:
+            self._set_status("model_id is required.")
+            return False
+        providers = self._models_providers()
+        provider_payload = providers.setdefault(provider, {})
+        if not isinstance(provider_payload, dict):
+            provider_payload = {}
+            providers[provider] = provider_payload
+        tiers = provider_payload.setdefault("tiers", {})
+        if not isinstance(tiers, dict):
+            tiers = {}
+            provider_payload["tiers"] = tiers
+        if (
+            self._selected_entry is not None
+            and (self._selected_entry[0] != provider or self._selected_entry[1] != tier)
+        ):
+            with contextlib.suppress(Exception):
+                prev_provider = providers.get(self._selected_entry[0], {})
+                prev_tiers = prev_provider.get("tiers", {}) if isinstance(prev_provider, dict) else {}
+                if isinstance(prev_tiers, dict):
+                    prev_tiers.pop(self._selected_entry[1], None)
+        entry: dict[str, Any] = {
+            "provider": provider,
+            "model_id": model_id,
+        }
+        display_name = str(self.query_one("#model_edit_display_name", Input).value or "").strip()
+        description = str(self.query_one("#model_edit_description", Input).value or "").strip()
+        if display_name:
+            entry["display_name"] = display_name
+        if description:
+            entry["description"] = description
+        tiers[tier] = entry
+        provider_key = provider.upper()
+        for suffix, selector in (
+            ("INPUT_PER_1M", "#model_edit_price_input"),
+            ("OUTPUT_PER_1M", "#model_edit_price_output"),
+            ("CACHED_INPUT_PER_1M", "#model_edit_price_cached"),
+        ):
+            env_key = f"SWARMEE_PRICE_{provider_key}_{suffix}"
+            value = str(self.query_one(selector, Input).value or "").strip()
+            if value:
+                self._env[env_key] = value
+            else:
+                self._env.pop(env_key, None)
+        self._selected_entry = (provider, tier)
+        self._set_model_select_value(provider, tier)
+        self._set_status(f"Saved draft entry for {provider}/{tier}.")
+        return True
+
+    def _delete_entry(self, provider: str, tier: str) -> bool:
+        providers = self._models_providers()
+        provider_payload = providers.get(provider, {})
+        tiers = provider_payload.get("tiers", {}) if isinstance(provider_payload, dict) else {}
+        removed = False
+        if isinstance(tiers, dict):
+            removed = tiers.pop(tier, None) is not None
+            if not tiers:
+                providers.pop(provider, None)
+        default_provider, default_tier = self._default_pair()
+        if provider == default_provider and tier == default_tier:
+            self._set_default_pair(None, "balanced")
+        if self._selected_entry == (provider, tier):
+            self._selected_entry = None
+            self._clear_editor(keep_selection=True)
+        return removed
+
+    def _set_current_entry_default(self) -> bool:
+        if self._selected_entry is None:
+            return False
+        provider, tier = self._selected_entry
+        self._set_default_pair(provider, tier)
+        return True
+
+    def _ensure_valid_default_pair(self) -> None:
+        default_provider, default_tier = self._default_pair()
+        rows = self._model_rows()
+        for provider, tier, _payload in rows:
+            if provider == default_provider and tier == default_tier:
+                return
+        if rows:
+            provider, tier, _payload = rows[0]
+            self._set_default_pair(provider, tier)
+            return
+        self._set_default_pair(None, "balanced")
+
+    def build_result_payload(self) -> dict[str, Any]:
+        self._ensure_valid_default_pair()
+        hidden_raw = self._models.get("hidden_tiers")
+        if isinstance(hidden_raw, list):
+            existing = set()
+            for provider, provider_payload in self._models_providers().items():
+                tiers = provider_payload.get("tiers", {}) if isinstance(provider_payload, dict) else {}
+                if not isinstance(tiers, dict):
+                    continue
+                for tier in tiers.keys():
+                    existing.add((str(provider).strip().lower(), self._tier_key(str(tier))))
+            filtered_hidden: list[str] = []
+            seen: set[str] = set()
+            for item in hidden_raw:
+                token = str(item or "").strip().lower()
+                if "|" not in token:
+                    continue
+                provider, tier = token.split("|", 1)
+                key = (provider.strip(), self._tier_key(tier))
+                normalized = f"{key[0]}|{key[1]}"
+                if key not in existing or normalized in seen:
+                    continue
+                seen.add(normalized)
+                filtered_hidden.append(normalized)
+            self._models["hidden_tiers"] = filtered_hidden
+        return {"models": self._models, "env": self._env}
+
+    def compose(self):  # type: ignore[override]
+        filter_options = [("All providers", "__all__")] + [(provider, provider) for provider in self._PROVIDERS]
+        with Vertical(id="model_manager_container"):
+            yield Static("Model Manager", id="model_manager_title")
+            with VerticalScroll(id="model_manager_body"):
+                with Horizontal(id="model_manager_controls"):
+                    yield Select(filter_options, id="model_manager_provider_filter", value=self._provider_filter)
+                    yield Input(placeholder="Search...", id="model_manager_search")
+                with Horizontal(id="model_manager_select_row"):
+                    yield Select(
+                        [("Select model...", "__none__")],
+                        id="model_manager_model_select",
+                        allow_blank=False,
+                    )
+                    yield Button("New Model", id="model_manager_new_entry", variant="success", compact=True)
+                yield Static("", id="model_manager_summary")
+                with Vertical(id="model_manager_editor"):
+                    with Horizontal(classes="model-edit-row"):
+                        yield Select(self._provider_options(), id="model_edit_provider", value="openai")
+                        yield Input(placeholder="tier", id="model_edit_tier")
+                        yield Input(placeholder="model_id", id="model_edit_model_id")
+                    with Horizontal(classes="model-edit-row"):
+                        yield Input(placeholder="display_name", id="model_edit_display_name")
+                        yield Input(placeholder="description", id="model_edit_description")
+                    with Horizontal(classes="model-edit-row"):
+                        yield Input(placeholder="input $ / 1M", id="model_edit_price_input")
+                        yield Input(placeholder="output $ / 1M", id="model_edit_price_output")
+                        yield Input(placeholder="cached input $ / 1M", id="model_edit_price_cached")
+                    with Horizontal(classes="model-edit-row"):
+                        yield Button("Save Entry", id="model_edit_save", variant="success", compact=True)
+                        yield Button("Set Default", id="model_edit_set_default", variant="primary", compact=True)
+                        yield Button("Delete", id="model_edit_delete", variant="error", compact=True)
+                        yield Button("Clear", id="model_edit_clear", variant="default", compact=True)
+                with Horizontal(classes="model-edit-row"):
+                    yield Static("Esc to cancel without saving.", id="model_manager_status")
+            with Horizontal(id="model_manager_buttons"):
+                yield Button("Save", id="model_manager_save", variant="success")
+                yield Button("Cancel", id="model_manager_cancel", variant="default")
+
+    def on_mount(self) -> None:
+        self._refresh_model_select_options()
+        self._clear_editor()
+        self._refresh_model_select_options()
+        self._refresh_summary()
+        with contextlib.suppress(Exception):
+            self.query_one("#model_manager_model_select", Select).focus()
+
+    def on_select_changed(self, event: Any) -> None:
+        select_id = str(getattr(getattr(event, "select", None), "id", "")).strip()
+        if select_id == "model_manager_provider_filter":
+            self._provider_filter = str(getattr(event, "value", "__all__") or "__all__")
+            self._refresh_model_select_options()
+            return
+        if select_id == "model_manager_model_select":
+            self._load_selected_entry()
+
+    def on_input_changed(self, event: Any) -> None:
+        input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
+        if input_id == "model_manager_search":
+            self._search = str(getattr(event, "value", "") or "").strip()
+            self._refresh_model_select_options()
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "model_manager_new_entry":
+            self._clear_editor()
+            self._set_status("Ready for new model entry.")
+            return
+        if button_id == "model_edit_clear":
+            self._clear_editor()
+            self._set_status("Editor cleared.")
+            return
+        if button_id == "model_edit_save":
+            if self._save_editor_entry():
+                self._refresh_model_select_options()
+            return
+        if button_id == "model_edit_set_default":
+            if self._set_current_entry_default():
+                self._refresh_summary()
+                self._set_status("Default model updated.")
+            else:
+                self._set_status("Select or save a model first.")
+            return
+        if button_id == "model_edit_delete":
+            if self._selected_entry is None:
+                self._set_status("Select a model to delete.")
+                return
+            provider, tier = self._selected_entry
+            if self._delete_entry(provider, tier):
+                self._refresh_model_select_options()
+                self._set_status(f"Deleted {provider}/{tier}.")
+            else:
+                self._set_status("Selected model no longer exists.")
+            return
+        if button_id == "model_manager_save":
+            self.dismiss(self.build_result_payload())
+            return
+        if button_id == "model_manager_cancel":
+            self.dismiss(None)
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
 class SystemMessage(Static):
     """TUI-internal messages (welcome, hints, status)."""
 

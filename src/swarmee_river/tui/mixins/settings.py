@@ -16,8 +16,8 @@ from swarmee_river.tui.model_select import (
     resolve_model_config_summary,
 )
 from swarmee_river.tui.views.settings import (
-    build_env_table_rows,
     build_models_table_rows,
+    build_env_table_rows,
     env_category_options,
     env_spec_by_key,
 )
@@ -349,61 +349,79 @@ class SettingsMixin:
         from swarmee_river.settings import load_settings
 
         table = self._settings_models_table
-        if table is None:
-            return
-
         settings = load_settings()
-        provider_default = (settings.models.provider or "__auto__").strip().lower()
-        tier_default = (settings.models.default_tier or "balanced").strip().lower()
+        provider_default = (settings.models.provider or "__auto__").strip().lower() or "__auto__"
+        tier_default = (settings.models.default_tier or "balanced").strip().lower() or "balanced"
 
         self.state.daemon.model_select_syncing = True
         try:
             provider_select = self.query_one("#settings_models_provider_select", Select)
             tier_select = self.query_one("#settings_models_default_tier_select", Select)
+            provider_options: list[tuple[str, str]] = [
+                ("Provider: auto", "__auto__"),
+                ("bedrock", "bedrock"),
+                ("openai", "openai"),
+                ("ollama", "ollama"),
+                ("github_copilot", "github_copilot"),
+            ]
+            provider_select.set_options(provider_options)
             with contextlib.suppress(Exception):
                 provider_select.value = provider_default if provider_default else "__auto__"
+            selected_provider = (
+                provider_default
+                if provider_default != "__auto__"
+                else str(getattr(provider_select, "value", "__auto__")).strip().lower()
+            )
+            tier_options: list[tuple[str, str]] = []
+            if selected_provider and selected_provider != "__auto__":
+                provider_cfg = settings.models.providers.get(selected_provider)
+                tier_names = sorted(provider_cfg.tiers.keys()) if provider_cfg and provider_cfg.tiers else []
+                tier_options = [(f"Tier: {tier_name}", tier_name) for tier_name in tier_names]
+            if not tier_options:
+                tier_options = [("Tier: (none configured)", "__none__")]
+            tier_select.set_options(tier_options)
             with contextlib.suppress(Exception):
-                tier_select.value = tier_default if tier_default else "balanced"
+                tier_select.value = tier_default if tier_default in {value for _label, value in tier_options} else tier_options[0][1]
         finally:
             self.state.daemon.model_select_syncing = False
 
-        rows = build_models_table_rows(settings)
-        if not rows:
-            rows = [("__none__", "No model tiers configured", "Use the form below to add a model tier.", "")]
+        if table is not None:
+            rows = build_models_table_rows(settings)
+            if not rows:
+                rows = [("__none__", "No model tiers configured", "(unset)", "")]
+            if not table.columns:
+                table.add_column("Provider/Tier", key="provider_tier")
+                table.add_column("Model ID", key="model_id")
+                table.add_column("Pricing", key="pricing")
+            table.clear()
+            for row_id, provider_tier, model_id, pricing_label in rows:
+                table.add_row(provider_tier, model_id, pricing_label, key=row_id)
 
-        if not table.columns:
-            table.add_column("Provider/Tier", key="provider_tier")
-            table.add_column("Model ID", key="model_id")
-            table.add_column("Pricing", key="pricing")
-        table.clear()
-        for row_id, provider_tier, model_id, pricing_label in rows:
-            table.add_row(provider_tier, model_id, pricing_label, key=row_id)
-
-        selected_id = str(self._settings_models_selected_id or "").strip()
-        if selected_id and rows:
-            for idx, (row_id, _provider_tier, _model_id, _pricing_label) in enumerate(rows):
-                if row_id == selected_id:
-                    with contextlib.suppress(Exception):
-                        table.move_cursor(row=idx)
-                    break
-        elif rows:
-            with contextlib.suppress(Exception):
-                table.move_cursor(row=0)
-        cursor_coordinate = getattr(table, "cursor_coordinate", None)
-        row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
-        if 0 <= row_index < len(rows):
-            selected_id = rows[row_index][0]
-            self._settings_models_selected_id = (
-                selected_id if selected_id and not selected_id.startswith("__") else None
-            )
-        else:
-            self._settings_models_selected_id = None
+            selected_id = str(self._settings_models_selected_id or "").strip()
+            cursor_row = -1
+            if selected_id:
+                for idx, (row_id, _provider_tier, _model_id, _pricing_label) in enumerate(rows):
+                    if row_id == selected_id:
+                        cursor_row = idx
+                        break
+            if cursor_row < 0:
+                cursor_row = 0 if rows else -1
+            if cursor_row >= 0:
+                with contextlib.suppress(Exception):
+                    table.move_cursor(row=cursor_row)
+                self._settings_models_selected_id = rows[cursor_row][0]
+            else:
+                self._settings_models_selected_id = None
 
         summary_widget = self._settings_models_summary
         if summary_widget is not None:
             provider_label = provider_default if provider_default != "__auto__" else "auto"
+            provider_count = len(settings.models.providers)
+            tier_count = sum(len(provider.tiers) for provider in settings.models.providers.values())
             with contextlib.suppress(Exception):
-                summary_widget.update(f"Default provider: {provider_label} | Default tier: {tier_default}")
+                summary_widget.update(
+                    f"Default provider: {provider_label} | Default tier: {tier_default} | Providers: {provider_count} | Tiers: {tier_count}"
+                )
 
         auth_widget = self._settings_auth_status
         if auth_widget is not None:
@@ -417,23 +435,19 @@ class SettingsMixin:
                 with contextlib.suppress(Exception):
                     aws_input.value = current_profile
 
-        self._refresh_settings_bedrock_runtime_controls()
         self._refresh_settings_model_detail()
 
     def _refresh_settings_model_detail(self) -> None:
-        from textual.widgets import Input, Select
-
         from swarmee_river.pricing import resolve_pricing
         from swarmee_river.settings import load_settings
 
         detail_widget = self._settings_models_detail
         if detail_widget is None:
             return
-
-        selected = self._settings_models_selected_id or ""
+        selected = str(self._settings_models_selected_id or "").strip().lower()
         if "|" not in selected:
             with contextlib.suppress(Exception):
-                detail_widget.update("Select a model tier to inspect and edit.")
+                detail_widget.update("Select a model row to inspect, or use Manage Models to edit.")
             return
         provider_name, tier_name = selected.split("|", 1)
         settings = load_settings()
@@ -451,38 +465,19 @@ class SettingsMixin:
                 "Pricing: "
                 f"${pricing.input_per_1m}/1M input, ${pricing.output_per_1m}/1M output, ${cached}/1M cached input"
             )
-        detail_lines = [
-            f"Provider: {provider_name}",
-            f"Tier: {tier_name}",
-            f"Model ID: {tier.model_id or '(unset)'}",
-            f"Display: {tier.display_name or '(unset)'}",
-            f"Description: {tier.description or '(unset)'}",
-            pricing_label,
-        ]
         with contextlib.suppress(Exception):
-            detail_widget.update("\n".join(detail_lines))
-
-        form_provider = self.query_one("#settings_models_form_provider", Select)
-        form_tier = self.query_one("#settings_models_form_tier", Select)
-        model_id_input = self.query_one("#settings_models_form_model_id", Input)
-        display_input = self.query_one("#settings_models_form_display_name", Input)
-        description_input = self.query_one("#settings_models_form_description", Input)
-        price_input_widget = self.query_one("#settings_models_form_price_input", Input)
-        price_output_widget = self.query_one("#settings_models_form_price_output", Input)
-        price_cached_widget = self.query_one("#settings_models_form_price_cached", Input)
-        with contextlib.suppress(Exception):
-            form_provider.value = provider_name
-            form_tier.value = tier_name
-            model_id_input.value = str(tier.model_id or "")
-            display_input.value = str(tier.display_name or "")
-            description_input.value = str(tier.description or "")
-            provider_key = provider_name.upper()
-            env_input = os.getenv(f"SWARMEE_PRICE_{provider_key}_INPUT_PER_1M")
-            env_output = os.getenv(f"SWARMEE_PRICE_{provider_key}_OUTPUT_PER_1M")
-            env_cached = os.getenv(f"SWARMEE_PRICE_{provider_key}_CACHED_INPUT_PER_1M")
-            price_input_widget.value = env_input if env_input is not None else ""
-            price_output_widget.value = env_output if env_output is not None else ""
-            price_cached_widget.value = env_cached if env_cached is not None else ""
+            detail_widget.update(
+                "\n".join(
+                    [
+                        f"Provider: {provider_name}",
+                        f"Tier: {tier_name}",
+                        f"Model ID: {tier.model_id or '(unset)'}",
+                        f"Display: {tier.display_name or '(unset)'}",
+                        f"Description: {tier.description or '(unset)'}",
+                        pricing_label,
+                    ]
+                )
+            )
 
     def _load_project_settings_payload(self) -> tuple[dict[str, Any], Path]:
         from swarmee_river.settings import deep_merge_dict, default_settings_template
@@ -624,13 +619,51 @@ class SettingsMixin:
         provider_widget = self.query_one("#settings_models_provider_select", Select)
         tier_widget = self.query_one("#settings_models_default_tier_select", Select)
         provider_value = str(getattr(provider_widget, "value", "__auto__")).strip().lower()
-        tier_value = str(getattr(tier_widget, "value", "balanced")).strip().lower()
+        tier_value = str(getattr(tier_widget, "value", "balanced")).strip().lower() or "balanced"
+        if tier_value == "__none__":
+            tier_value = str(models.get("default_tier", "balanced")).strip().lower() or "balanced"
         if provider_value in {"", "__auto__"}:
             models["provider"] = None
+            models["default_selection"] = {"provider": None, "tier": tier_value}
         else:
             models["provider"] = provider_value
+            models["default_selection"] = {"provider": provider_value, "tier": tier_value}
         models["default_tier"] = tier_value or "balanced"
         self._save_project_settings_payload(payload, path)
+
+    def _open_settings_model_manager(self) -> None:
+        from swarmee_river.tui.widgets import ModelConfigManagerScreen
+
+        payload, _path = self._load_project_settings_payload()
+        self.push_screen(
+            ModelConfigManagerScreen(payload),
+            self._apply_settings_model_manager_result,
+        )
+
+    def _apply_settings_model_manager_result(self, result: dict[str, Any] | None) -> None:
+        if not isinstance(result, dict):
+            return
+        payload, path = self._load_project_settings_payload()
+        incoming_models = result.get("models")
+        if isinstance(incoming_models, dict):
+            payload["models"] = incoming_models
+        incoming_env = result.get("env")
+        if isinstance(incoming_env, dict):
+            payload["env"] = incoming_env
+            for key, value in incoming_env.items():
+                normalized_key = str(key).strip()
+                normalized_value = str(value).strip()
+                if normalized_key and normalized_value:
+                    os.environ[normalized_key] = normalized_value
+                elif normalized_key:
+                    os.environ.pop(normalized_key, None)
+        self._save_project_settings_payload(payload, path)
+        self._refresh_model_select()
+        self._refresh_settings_models()
+        self._refresh_settings_env_list()
+        self._refresh_settings_env_detail(self._settings_env_selected_key)
+        self._refresh_agent_summary()
+        self._write_transcript_line("[settings] saved model manager changes.")
 
     def _save_model_form(self) -> None:
         from textual.widgets import Input, Select

@@ -12,6 +12,11 @@
         "tool_allowlist": [],
         "tool_blocklist": []
       },
+      "coding": {
+        "preflight_level": "summary+files",
+        "tool_allowlist": [],
+        "tool_blocklist": []
+      },
       "deep": {
         "preflight_level": "summary+files",
         "tool_allowlist": [],
@@ -33,9 +38,19 @@
     "auto_escalation": {
       "enabled": false,
       "max_escalations_per_task": 1,
+      "order": [
+        "fast",
+        "balanced",
+        "deep",
+        "long"
+      ],
       "triggers": {}
     },
     "availability": {},
+    "default_selection": {
+      "provider": "bedrock",
+      "tier": "balanced"
+    },
     "default_tier": "balanced",
     "hidden_tiers": [],
     "provider": "bedrock",
@@ -58,8 +73,8 @@
               }
             },
             "description": "Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID).",
-            "display_name": "Claude Sonnet 4.5 (deep)",
-            "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "display_name": "Claude Opus 4.6 (deep)",
+            "model_id": "us.anthropic.claude-opus-4-6-v1:0",
             "provider": "bedrock"
           },
           "fast": {
@@ -70,8 +85,8 @@
           },
           "long": {
             "description": "Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID).",
-            "display_name": "Claude Sonnet 4.5 (long)",
-            "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "display_name": "Claude Opus 4.6 (long)",
+            "model_id": "us.anthropic.claude-opus-4-6-v1:0",
             "provider": "bedrock"
           }
         }
@@ -144,6 +159,12 @@
             "description": "Default OpenAI tier for most coding tasks.",
             "display_name": "GPT-5 mini",
             "model_id": "gpt-5-mini",
+            "provider": "openai"
+          },
+          "coding": {
+            "description": "Optimized tier for coding-heavy workflows and refactors.",
+            "display_name": "GPT-5.3 Codex (coding)",
+            "model_id": "gpt-5.3-codex",
             "provider": "openai"
           },
           "deep": {

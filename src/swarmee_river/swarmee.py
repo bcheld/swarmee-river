@@ -1292,10 +1292,14 @@ def _build_agent_runtime(
         requested_tier = (tier_name or "").strip().lower()
         if not requested_tier:
             return None
-        for item in model_manager.list_tiers():
-            if item.name.strip().lower() != requested_tier:
-                continue
-            provider = normalize_provider_name(item.provider)
+        for provider_name, provider_cfg in settings.models.providers.items():
+            tiers = getattr(provider_cfg, "tiers", {}) or {}
+            if requested_tier in tiers:
+                provider = normalize_provider_name(provider_name)
+                return provider or None
+        global_tier = settings.models.tiers.get(requested_tier)
+        if global_tier is not None:
+            provider = normalize_provider_name(getattr(global_tier, "provider", ""))
             return provider or None
         return None
 

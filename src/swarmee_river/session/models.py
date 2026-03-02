@@ -10,8 +10,6 @@ from swarmee_river.settings import ModelTier, ProviderModels, SwarmeeSettings
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.provider_utils import has_aws_credentials, has_github_copilot_token, normalize_provider_name
 
-_TIER_ORDER: list[str] = ["fast", "balanced", "deep", "long"]
-
 
 @dataclass
 class TierStatus:
@@ -41,13 +39,43 @@ class SessionModelManager:
         self.current_tier: str = settings.models.default_tier.strip().lower() or "balanced"
         self.auto_escalation_enabled: bool = settings.models.auto_escalation.enabled
         self.max_escalations_per_task: int = max(0, settings.models.auto_escalation.max_escalations_per_task)
+        self._auto_escalation_order: list[str] = list(settings.models.auto_escalation.order)
+
+    def _available_tiers_for_provider(self, provider_name: str) -> list[str]:
+        provider_name = normalize_provider_name(provider_name)
+        tier_names: set[str] = set()
+        provider_cfg = self._settings.models.providers.get(provider_name)
+        if isinstance(provider_cfg, ProviderModels):
+            for tier_name in provider_cfg.tiers.keys():
+                normalized = str(tier_name or "").strip().lower()
+                if normalized:
+                    tier_names.add(normalized)
+        for tier_name in self._settings.models.tiers.keys():
+            normalized = str(tier_name or "").strip().lower()
+            if normalized:
+                tier_names.add(normalized)
+        if not tier_names and self.current_tier:
+            tier_names.add(self.current_tier.strip().lower())
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for tier_name in self._auto_escalation_order:
+            normalized = str(tier_name or "").strip().lower()
+            if not normalized or normalized not in tier_names or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        for tier_name in sorted(tier_names):
+            if tier_name in seen:
+                continue
+            ordered.append(tier_name)
+        return ordered
 
     def set_fallback_config(self, config: dict[str, Any] | None) -> None:
         self._fallback_config = dict(config) if isinstance(config, dict) else None
 
     def list_tiers(self) -> list[TierStatus]:
         out: list[TierStatus] = []
-        for name in _TIER_ORDER:
+        for name in self._available_tiers_for_provider(self._default_provider):
             tier = self._resolve_tier(name)
             effective_model_id = self._effective_model_id(tier, tier_name=name)
             available, reason = self._is_tier_available(tier)
@@ -69,8 +97,9 @@ class SessionModelManager:
 
     def set_tier(self, agent: Any, tier_name: str) -> None:
         tier_name = (tier_name or "").strip().lower()
-        if tier_name not in _TIER_ORDER:
-            raise ValueError(f"Unknown tier: {tier_name}. Expected one of: {', '.join(_TIER_ORDER)}")
+        available_tiers = self._available_tiers_for_provider(self._default_provider)
+        if not tier_name or tier_name not in set(available_tiers):
+            raise ValueError(f"Unknown tier: {tier_name}. Available tiers: {', '.join(available_tiers)}")
 
         model = self._build_model_for_tier(tier_name)
         agent.model = model
@@ -85,13 +114,19 @@ class SessionModelManager:
         """Escalate to the next tier if possible. Returns True if a switch occurred."""
         if not self.auto_escalation_enabled:
             return False
+        ordered = [str(item or "").strip().lower() for item in self._auto_escalation_order if str(item or "").strip()]
+        if not ordered:
+            return False
 
         try:
-            idx = _TIER_ORDER.index(self.current_tier)
+            idx = ordered.index(self.current_tier)
         except ValueError:
-            idx = 1
+            return False
 
-        for next_tier in _TIER_ORDER[idx + 1 :]:
+        available_tiers = set(self._available_tiers_for_provider(self._default_provider))
+        for next_tier in ordered[idx + 1 :]:
+            if next_tier not in available_tiers:
+                continue
             if next_tier in attempted:
                 continue
             try:
