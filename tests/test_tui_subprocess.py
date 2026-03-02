@@ -772,6 +772,8 @@ def test_spawn_swarmee_configures_subprocess_run_mode(monkeypatch):
     assert env["PYTHONUNBUFFERED"] == "1"
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["SWARMEE_SPINNERS"] == "0"
+    assert env["WATCHFILES_FORCE_POLLING"] == "1"
+    assert env["WATCHDOG_USE_POLLING"] == "1"
     assert "PYTHONWARNINGS" in env
     assert "Http_requestTool" in str(env["PYTHONWARNINGS"])
 
@@ -806,6 +808,8 @@ def test_spawn_swarmee_configures_subprocess_plan_mode(monkeypatch):
     assert isinstance(env, dict)
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["SWARMEE_SPINNERS"] == "0"
+    assert env["WATCHFILES_FORCE_POLLING"] == "1"
+    assert env["WATCHDOG_USE_POLLING"] == "1"
     assert "PYTHONWARNINGS" in env
     assert "Http_requestTool" in str(env["PYTHONWARNINGS"])
 
@@ -1007,6 +1011,19 @@ def test_parse_output_line_classifies_homebrew_ps_warning():
     )
     assert event is not None
     assert event.kind == "warning"
+
+
+def test_parse_output_line_classifies_traceback_and_fsevents_lines():
+    head = tui_app.parse_output_line("Traceback (most recent call last):")
+    frame = tui_app.parse_output_line('  File "/tmp/x.py", line 12, in <module>')
+    fsevents = tui_app.parse_output_line("SystemError: Cannot start fsevents stream. Use polling observer.")
+
+    assert head is not None
+    assert head.kind == "warning"
+    assert frame is not None
+    assert frame.kind == "noise"
+    assert fsevents is not None
+    assert fsevents.kind == "warning"
 
 
 def test_sanitize_output_text_strips_ansi_and_carriage_returns():
@@ -2730,7 +2747,7 @@ def test_render_thinking_indicator_includes_counts_and_preview():
 
     rendered = render_thinking_indicator(char_count=1247, elapsed_s=8.1, preview="line one\nline two")
     plain = rendered.plain
-    assert "Thinking" in plain
+    assert "thinking" in plain
     assert "1,247 chars" in plain
     assert "8s" in plain
     assert "line two" in plain
@@ -2912,3 +2929,56 @@ def test_warning_event_handler_calls_notify() -> None:
     assert len(notifications) == 1
     assert notifications[0][1] == "warning"
     assert "WARN:" in issues[0]
+
+
+def test_warning_event_handler_uses_connect_popup_instead_of_toast() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class FakeState:
+        class session:
+            warning_count = 0
+            error_count = 0
+
+    notifications = []
+    issues = []
+    popup_lines = []
+
+    class FakeApp:
+        state = FakeState()
+
+        def _write_issue(self, text):
+            issues.append(text)
+
+        def _update_header_status(self):
+            pass
+
+        def _notify(self, msg, *, severity="information", timeout=2.5):
+            notifications.append((msg, severity, timeout))
+
+        def _handle_connect_status_warning(self, text):
+            popup_lines.append(text)
+            return True
+
+    app = FakeApp()
+    event = {"text": "visit URL and enter code ABCD-EFGH"}
+    result = _handle_error_warning_events(app, "warning", event)
+    assert result is True
+    assert app.state.session.warning_count == 1
+    assert len(notifications) == 0
+    assert popup_lines == ["visit URL and enter code ABCD-EFGH"]
+    assert "WARN:" in issues[0]
+
+
+def test_streaming_handler_llm_start_triggers_thinking_indicator() -> None:
+    from swarmee_river.tui.event_router import _handle_streaming_events
+
+    calls: list[str] = []
+
+    class FakeApp:
+        def _record_thinking_event(self, text: str) -> None:
+            calls.append(text)
+
+    app = FakeApp()
+    handled = _handle_streaming_events(app, "llm_start", {"event": "llm_start"})
+    assert handled is True
+    assert calls == [""]

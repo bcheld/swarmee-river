@@ -9,32 +9,66 @@ from typing import Any, cast
 from botocore.config import Config
 from strands.models import Model
 
-# Default Bedrock model configuration
-DEFAULT_BEDROCK_MODEL_CONFIG: dict[str, Any] = {
-    "model_id": os.getenv("STRANDS_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
-    "max_tokens": int(os.getenv("STRANDS_MAX_TOKENS", "32768")),
-    "boto_client_config": Config(
-        read_timeout=900,
-        connect_timeout=900,
-        retries=dict(max_attempts=3, mode="adaptive"),
-    ),
-    "additional_request_fields": {
-        "thinking": {
-            "type": os.getenv("STRANDS_THINKING_TYPE", "enabled"),
-            "budget_tokens": int(os.getenv("STRANDS_BUDGET_TOKENS", "2048")),
+
+def _env_int(name: str, default: int, *, min_value: int | None = None) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        value = default
+    else:
+        with_value = raw
+        if with_value.startswith(("+", "-")):
+            with_value = with_value[1:]
+        if not with_value.isdigit():
+            return default
+        value = int(raw)
+    if min_value is not None and value < min_value:
+        return default
+    return value
+
+
+def _bedrock_timeout_seconds(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value
+
+
+def _default_bedrock_model_config() -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "model_id": os.getenv("STRANDS_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
+        "max_tokens": _env_int("STRANDS_MAX_TOKENS", 32768, min_value=1),
+        "boto_client_config": Config(
+            read_timeout=_bedrock_timeout_seconds("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", 60.0),
+            connect_timeout=_bedrock_timeout_seconds("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", 10.0),
+            retries={
+                "max_attempts": _env_int("SWARMEE_BEDROCK_MAX_RETRIES", 1, min_value=0),
+                "mode": "adaptive",
+            },
+        ),
+        "additional_request_fields": {
+            "thinking": {
+                "type": os.getenv("STRANDS_THINKING_TYPE", "enabled"),
+                "budget_tokens": _env_int("STRANDS_BUDGET_TOKENS", 2048, min_value=1),
+            },
         },
-    },
-    "cache_tools": os.getenv("STRANDS_CACHE_TOOLS", "default"),
-}
-ANTHROPIC_BETA_FEATURES = os.getenv("STRANDS_ANTHROPIC_BETA", "interleaved-thinking-2025-05-14")
-if len(ANTHROPIC_BETA_FEATURES) > 0:
-    DEFAULT_BEDROCK_MODEL_CONFIG["additional_request_fields"]["anthropic_beta"] = ANTHROPIC_BETA_FEATURES.split(",")
+        "cache_tools": os.getenv("STRANDS_CACHE_TOOLS", "default"),
+    }
+    anthropic_beta_features = os.getenv("STRANDS_ANTHROPIC_BETA", "interleaved-thinking-2025-05-14")
+    if anthropic_beta_features:
+        config["additional_request_fields"]["anthropic_beta"] = anthropic_beta_features.split(",")
+    return config
 
 
 def default_model_config(provider: str) -> dict[str, Any]:
     provider = provider.strip().lower()
     if provider == "bedrock":
-        return DEFAULT_BEDROCK_MODEL_CONFIG
+        return _default_bedrock_model_config()
 
     if provider == "ollama":
         return {

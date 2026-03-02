@@ -94,6 +94,7 @@ _CHOICE_MAP: dict[str, tuple[str, ...]] = {
     "SWARMEE_CACHE_SAFE_SUMMARY": ("false", "true"),
     "SWARMEE_MODEL_TIER": ("fast", "balanced", "deep", "long"),
     "SWARMEE_TIER_AUTO": ("false", "true"),
+    "SWARMEE_INTERRUPT_FORCE_RESTART": ("true", "false"),
     "STRANDS_THINKING_TYPE": ("enabled", "disabled"),
     "STRANDS_TOOL_CONSOLE_MODE": ("enabled", "disabled"),
     "BYPASS_TOOL_CONSENT": ("false", "true"),
@@ -307,6 +308,25 @@ def compose_settings_tab() -> Iterator[Any]:
                     yield Button(
                         "ESC Interrupt: On", id="settings_toggle_esc_interrupt", compact=True, variant="default"
                     )
+                with Horizontal(id="settings_interrupt_control_row"):
+                    yield Input(placeholder="Interrupt Timeout (sec)", id="settings_interrupt_timeout_input")
+                    yield Select(
+                        options=[
+                            ("Force Restart: true", "true"),
+                            ("Force Restart: false", "false"),
+                        ],
+                        allow_blank=False,
+                        id="settings_interrupt_force_restart_select",
+                        compact=True,
+                    )
+                with Horizontal(id="settings_interrupt_control_actions"):
+                    yield Button("Apply", id="settings_interrupt_control_apply", compact=True, variant="success")
+                    yield Button(
+                        "Reset Defaults",
+                        id="settings_interrupt_control_reset",
+                        compact=True,
+                        variant="default",
+                    )
 
                 yield Static("Context", classes="settings-section-label")
                 with Horizontal(id="settings_general_context_row"):
@@ -443,6 +463,19 @@ def compose_settings_tab() -> Iterator[Any]:
                         variant="default",
                     )
                     yield Button("Delete", id="settings_models_delete", compact=True, variant="error")
+                yield Static("Bedrock Runtime", classes="settings-section-label")
+                with Horizontal(id="settings_bedrock_runtime_row"):
+                    yield Input(placeholder="Read Timeout (sec)", id="settings_bedrock_read_timeout_input")
+                    yield Input(placeholder="Connect Timeout (sec)", id="settings_bedrock_connect_timeout_input")
+                    yield Input(placeholder="Max Retries", id="settings_bedrock_max_retries_input")
+                with Horizontal(id="settings_bedrock_runtime_actions"):
+                    yield Button("Apply", id="settings_bedrock_runtime_apply", compact=True, variant="success")
+                    yield Button(
+                        "Reset Defaults",
+                        id="settings_bedrock_runtime_reset",
+                        compact=True,
+                        variant="default",
+                    )
 
             # -- Advanced sub-view (all env vars by category) ----------------
             with Vertical(id="settings_advanced_view"):
@@ -506,6 +539,8 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_toggle_auto_approve_button = app.query_one("#settings_toggle_auto_approve", Button)
     app._settings_toggle_bypass_consent_button = app.query_one("#settings_toggle_bypass_consent", Button)
     app._settings_toggle_esc_interrupt_button = app.query_one("#settings_toggle_esc_interrupt", Button)
+    app._settings_interrupt_timeout_input = app.query_one("#settings_interrupt_timeout_input", Input)
+    app._settings_interrupt_force_restart_select = app.query_one("#settings_interrupt_force_restart_select", Select)
     app._settings_general_context_manager_select = app.query_one("#settings_general_context_manager", Select)
     app._settings_general_preflight_select = app.query_one("#settings_general_preflight", Select)
     app._settings_general_preflight_level_select = app.query_one("#settings_general_preflight_level", Select)
@@ -516,6 +551,9 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_toggle_truncate_results_button = app.query_one("#settings_toggle_truncate_results", Button)
     app._settings_toggle_log_redact_button = app.query_one("#settings_toggle_log_redact", Button)
     app._settings_toggle_freeze_tools_button = app.query_one("#settings_toggle_freeze_tools", Button)
+    app._settings_bedrock_read_timeout_input = app.query_one("#settings_bedrock_read_timeout_input", Input)
+    app._settings_bedrock_connect_timeout_input = app.query_one("#settings_bedrock_connect_timeout_input", Input)
+    app._settings_bedrock_max_retries_input = app.query_one("#settings_bedrock_max_retries_input", Input)
     app._settings_env_table = app.query_one("#settings_env_table", DataTable)
     app._settings_scope_current = app.query_one("#settings_scope_current", Static)
     app._settings_directory_tree = app.query_one("#settings_directory_tree", SettingsDirectoryTree)

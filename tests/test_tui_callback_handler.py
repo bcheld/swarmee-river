@@ -360,9 +360,23 @@ def test_init_event_loop_resets_text_fallback_state():
     events = _capture_events(h, run)
     assert events == [
         {"event": "text_delta", "data": "first"},
+        {"event": "llm_start"},
         {"event": "text_delta", "data": "second"},
         {"event": "text_complete"},
     ]
+
+
+def test_init_event_loop_emits_llm_start_once_per_turn():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: (
+            h.callback_handler(init_event_loop=True),
+            h.callback_handler(start_event_loop=True),
+            h.callback_handler(start_event_loop=True),
+        ),
+    )
+    assert events == [{"event": "llm_start"}]
 
 
 def test_tool_input_not_emitted_for_non_dict_input():

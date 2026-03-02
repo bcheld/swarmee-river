@@ -256,6 +256,10 @@ def _build_swarmee_subprocess_env(
     env["SWARMEE_TUI_EVENTS"] = "1"
     # Ensure JSONL event logging is active so the Session Timeline has data.
     env["SWARMEE_LOG_EVENTS"] = "1"
+    # Avoid macOS fsevents watcher crashes in sandboxed/PTY contexts.
+    # Polling is slower but stable and prevents traceback spam from degrading TUI input responsiveness.
+    env.setdefault("WATCHFILES_FORCE_POLLING", "1")
+    env.setdefault("WATCHDOG_USE_POLLING", "1")
     existing_warning_filters = env.get("PYTHONWARNINGS", "").strip()
     tui_warning_filters = [
         # `PYTHONWARNINGS` is parsed via `warnings._setoption`, which `re.escape`s message+module.

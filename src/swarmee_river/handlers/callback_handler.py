@@ -340,6 +340,7 @@ class TuiCallbackHandler:
         self._plan_marker_buffer: str = ""
         self._plan_total_steps: int = 0
         self._plan_complete_emitted: bool = False
+        self._llm_start_emitted: bool = False
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Write a single JSONL event to stdout."""
@@ -355,6 +356,13 @@ class TuiCallbackHandler:
         self._plan_marker_buffer = ""
         self._plan_total_steps = 0
         self._plan_complete_emitted = False
+        self._llm_start_emitted = False
+
+    def _emit_llm_start_if_needed(self) -> None:
+        if self._llm_start_emitted:
+            return
+        self._emit({"event": "llm_start"})
+        self._llm_start_emitted = True
 
     def _update_plan_metadata_from_invocation_state(self, invocation_state: Any) -> None:
         if not isinstance(invocation_state, dict):
@@ -844,7 +852,7 @@ class TuiCallbackHandler:
         **extra_event_fields: Any,
     ) -> None:
         del structured_output_model, structured_output_prompt
-        del console, start_event_loop
+        del console
         message = message if isinstance(message, dict) else {}
         current_tool_use = current_tool_use if isinstance(current_tool_use, dict) else {}
 
@@ -852,6 +860,10 @@ class TuiCallbackHandler:
 
         if init_event_loop:
             self._reset_turn_state()
+            self._emit_llm_start_if_needed()
+
+        if start_event_loop:
+            self._emit_llm_start_if_needed()
 
         if force_stop:
             self._reset_turn_state()

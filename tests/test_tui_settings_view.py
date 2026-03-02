@@ -26,6 +26,16 @@ def test_build_env_sidebar_items_includes_default_and_current(monkeypatch) -> No
     assert "default:" in target["subtitle"]
 
 
+def test_env_var_specs_include_bedrock_and_interrupt_runtime_controls() -> None:
+    specs = settings_view.env_var_specs()
+    keys = {spec.key for spec in specs}
+    assert "SWARMEE_BEDROCK_READ_TIMEOUT_SEC" in keys
+    assert "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC" in keys
+    assert "SWARMEE_BEDROCK_MAX_RETRIES" in keys
+    assert "SWARMEE_INTERRUPT_TIMEOUT_SEC" in keys
+    assert "SWARMEE_INTERRUPT_FORCE_RESTART" in keys
+
+
 class _Widget:
     def __init__(self, value: str = "") -> None:
         self.value = value
@@ -39,6 +49,7 @@ class _SettingsHarness(SettingsMixin):
         self._settings_env_selected_key = None
         self._refresh_model_select_calls = 0
         self._refresh_settings_models_calls = 0
+        self._refresh_settings_general_calls = 0
         self._refresh_agent_summary_calls = 0
         self.messages: list[str] = []
         self._widgets: dict[str, _Widget] = {
@@ -50,7 +61,17 @@ class _SettingsHarness(SettingsMixin):
             "#settings_models_form_price_input": _Widget(""),
             "#settings_models_form_price_output": _Widget(""),
             "#settings_models_form_price_cached": _Widget(""),
+            "#settings_bedrock_read_timeout_input": _Widget("60"),
+            "#settings_bedrock_connect_timeout_input": _Widget("10"),
+            "#settings_bedrock_max_retries_input": _Widget("1"),
+            "#settings_interrupt_timeout_input": _Widget("2.0"),
+            "#settings_interrupt_force_restart_select": _Widget("true"),
         }
+        self._settings_bedrock_read_timeout_input = self._widgets["#settings_bedrock_read_timeout_input"]
+        self._settings_bedrock_connect_timeout_input = self._widgets["#settings_bedrock_connect_timeout_input"]
+        self._settings_bedrock_max_retries_input = self._widgets["#settings_bedrock_max_retries_input"]
+        self._settings_interrupt_timeout_input = self._widgets["#settings_interrupt_timeout_input"]
+        self._settings_interrupt_force_restart_select = self._widgets["#settings_interrupt_force_restart_select"]
 
     def query_one(self, selector: str, _widget_type: Any = None) -> _Widget:
         return self._widgets[selector]
@@ -68,6 +89,9 @@ class _SettingsHarness(SettingsMixin):
 
     def _refresh_settings_models(self) -> None:
         self._refresh_settings_models_calls += 1
+
+    def _refresh_settings_general(self) -> None:
+        self._refresh_settings_general_calls += 1
 
     def _refresh_settings_env_list(self) -> None:
         return None
@@ -153,3 +177,45 @@ def test_save_model_unhides_hidden_tier_and_updates_row() -> None:
     assert balanced["model_id"] == "gpt-5-custom"
     assert balanced["display_name"] == "Custom"
     assert balanced["description"] == "Custom tier description"
+
+
+def test_apply_bedrock_runtime_settings_persists_values() -> None:
+    harness = _SettingsHarness({"models": {}, "env": {}}, selected_id=None)
+    harness._settings_bedrock_read_timeout_input.value = "75"
+    harness._settings_bedrock_connect_timeout_input.value = "12"
+    harness._settings_bedrock_max_retries_input.value = "2"
+
+    harness._apply_bedrock_runtime_settings()
+
+    assert harness.saved_payload is not None
+    env_payload = harness.saved_payload.get("env", {})
+    assert env_payload["SWARMEE_BEDROCK_READ_TIMEOUT_SEC"] == "75.0"
+    assert env_payload["SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC"] == "12.0"
+    assert env_payload["SWARMEE_BEDROCK_MAX_RETRIES"] == "2"
+    assert harness._refresh_settings_models_calls == 1
+
+
+def test_apply_interrupt_control_settings_persists_values() -> None:
+    harness = _SettingsHarness({"models": {}, "env": {}}, selected_id=None)
+    harness._settings_interrupt_timeout_input.value = "1.5"
+    harness._settings_interrupt_force_restart_select.value = "false"
+
+    harness._apply_interrupt_control_settings()
+
+    assert harness.saved_payload is not None
+    env_payload = harness.saved_payload.get("env", {})
+    assert env_payload["SWARMEE_INTERRUPT_TIMEOUT_SEC"] == "1.5"
+    assert env_payload["SWARMEE_INTERRUPT_FORCE_RESTART"] == "false"
+    assert harness._refresh_settings_general_calls == 1
+
+
+def test_apply_bedrock_runtime_settings_rejects_invalid_values() -> None:
+    harness = _SettingsHarness({"models": {}, "env": {}}, selected_id=None)
+    harness._settings_bedrock_read_timeout_input.value = "bad"
+    harness._settings_bedrock_connect_timeout_input.value = "10"
+    harness._settings_bedrock_max_retries_input.value = "1"
+
+    harness._apply_bedrock_runtime_settings()
+
+    assert harness.saved_payload is None
+    assert any("invalid Bedrock read timeout" in msg for msg in harness.messages)

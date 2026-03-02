@@ -61,8 +61,7 @@ def render_thinking_indicator(
     frames = (".", "..", "...")
     suffix = frames[frame_index % len(frames)]
     rendered = RichText()
-    rendered.append("💭 ", style="dim")
-    rendered.append(f"Thinking{suffix}", style="bold dim")
+    rendered.append(f"thinking{suffix}", style="bold dim")
     if char_count > 0:
         rendered.append(f" ({char_count:,} chars)", style="dim")
     if elapsed_s > 0:
@@ -1540,7 +1539,7 @@ class ThinkingIndicator(Static):
     _FRAMES = ["thinking.", "thinking..", "thinking..."]
 
     def __init__(self, **kwargs: object) -> None:
-        super().__init__("[dim]thinking...[/dim]", **kwargs)
+        super().__init__("[dim]thinking.[/dim]", **kwargs)
 
     def on_mount(self) -> None:
         self._frame_index = 0
@@ -2688,6 +2687,95 @@ class TableCellEditScreen(ModalScreen[str | None]):
         if input_id == "table_cell_edit_input":
             value = str(self.query_one("#table_cell_edit_input", Input).value or "")
             self.dismiss(value)
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
+class AuthConnectScreen(ModalScreen[None]):
+    """Persistent auth/connect status dialog for device-code flows."""
+
+    DEFAULT_CSS = """
+    AuthConnectScreen {
+        align: center middle;
+    }
+    AuthConnectScreen #auth_connect_container {
+        width: 96;
+        max-width: 98%;
+        max-height: 92%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    AuthConnectScreen #auth_connect_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    AuthConnectScreen #auth_connect_body {
+        height: 1fr;
+        min-height: 10;
+        border: round $panel;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        scrollbar-background: #2f2f2f;
+        scrollbar-background-hover: #3a3a3a;
+        scrollbar-background-active: #454545;
+        scrollbar-color: #7f7f7f;
+        scrollbar-color-hover: #999999;
+        scrollbar-color-active: #b3b3b3;
+    }
+    AuthConnectScreen #auth_connect_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    AuthConnectScreen #auth_connect_buttons Button {
+        width: 1fr;
+    }
+    """
+
+    def __init__(self, *, title: str, lines: list[str] | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._title = str(title or "").strip() or "Connect Provider"
+        self._lines: list[str] = []
+        for line in lines or []:
+            text = str(line or "").strip()
+            if text:
+                self._lines.append(text)
+
+    def compose(self):  # type: ignore[override]
+        with Vertical(id="auth_connect_container"):
+            yield Static(self._title, id="auth_connect_title")
+            with VerticalScroll(id="auth_connect_body"):
+                yield Static(self._render_lines(), id="auth_connect_text")
+            with Horizontal(id="auth_connect_buttons"):
+                yield Button("Close", id="auth_connect_close", variant="primary")
+
+    def _render_lines(self) -> str:
+        if not self._lines:
+            return "Waiting for provider status..."
+        return "\n".join(self._lines)
+
+    def append_line(self, text: str) -> None:
+        line = str(text or "").strip()
+        if not line:
+            return
+        self._lines.append(line)
+        with contextlib.suppress(Exception):
+            target = self.query_one("#auth_connect_text", Static)
+            target.update(self._render_lines())
+        with contextlib.suppress(Exception):
+            body = self.query_one("#auth_connect_body", VerticalScroll)
+            body.scroll_end(animate=False)
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "auth_connect_close":
+            self.dismiss(None)
 
     def on_key(self, event: Any) -> None:
         key = str(getattr(event, "key", "")).lower()

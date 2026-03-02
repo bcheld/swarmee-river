@@ -32,6 +32,26 @@ _SESSION_IDLE_TIMEOUT_S: float = float(os.environ.get("SWARMEE_SESSION_IDLE_TIME
 _BROKER_IDLE_TIMEOUT_S: float = float(os.environ.get("SWARMEE_BROKER_IDLE_TIMEOUT", "3600"))
 
 
+def _interrupt_timeout_seconds() -> float:
+    raw = (
+        os.environ.get("SWARMEE_INTERRUPT_TIMEOUT_SEC")
+        or os.environ.get("SWARMEE_INTERRUPT_TIMEOUT")
+        or "2.0"
+    )
+    try:
+        value = float(raw)
+    except ValueError:
+        return 2.0
+    if value <= 0:
+        return 2.0
+    return value
+
+
+def _interrupt_force_restart_enabled() -> bool:
+    raw = (os.environ.get("SWARMEE_INTERRUPT_FORCE_RESTART") or "true").strip().lower()
+    return raw not in {"false", "0", "no", "off", "disabled"}
+
+
 @dataclass
 class SessionState:
     session_id: str
@@ -45,6 +65,7 @@ class SessionState:
     controller_client_id: str | None = None
     started_new_session: bool = False
     idle_timeout_task: asyncio.Task[None] | None = None
+    interrupt_watchdog_task: asyncio.Task[None] | None = None
 
 
 class RuntimeServiceServer:
@@ -227,6 +248,79 @@ class RuntimeServiceServer:
             return
         session.idle_timeout_task = asyncio.ensure_future(self._idle_session_cleanup(session))
 
+    def _cancel_interrupt_watchdog(self, session: SessionState) -> None:
+        task = session.interrupt_watchdog_task
+        current_task = asyncio.current_task()
+        if task is not None and not task.done() and task is not current_task:
+            task.cancel()
+        session.interrupt_watchdog_task = None
+
+    def _arm_interrupt_watchdog(self, session: SessionState) -> None:
+        self._cancel_interrupt_watchdog(session)
+        if not session.query_active:
+            return
+        timeout_s = _interrupt_timeout_seconds()
+        if timeout_s <= 0:
+            return
+        force_restart = _interrupt_force_restart_enabled()
+        session.interrupt_watchdog_task = asyncio.ensure_future(
+            self._interrupt_watchdog(session, timeout_s=timeout_s, force_restart=force_restart)
+        )
+
+    async def _interrupt_watchdog(self, session: SessionState, *, timeout_s: float, force_restart: bool) -> None:
+        try:
+            await asyncio.sleep(timeout_s)
+        except asyncio.CancelledError:
+            return
+        if not session.query_active:
+            return
+        if not force_restart:
+            await self._broadcast_session_event(
+                session,
+                {
+                    "event": "warning",
+                    "text": "Interrupt timeout reached; waiting for graceful shutdown.",
+                    "interrupt_timeout_sec": timeout_s,
+                    "force_restart": False,
+                },
+            )
+            return
+        await self._broadcast_session_event(
+            session,
+            {
+                "event": "warning",
+                "text": "Interrupt timeout reached; restarting runtime session.",
+                "interrupt_timeout_sec": timeout_s,
+                "force_restart": True,
+                "forced_restart_triggered": True,
+            },
+        )
+        await self._stop_session_process(session)
+        await self._broadcast_session_event(
+            session,
+            {
+                "event": "turn_complete",
+                "exit_status": "interrupted",
+                "reason": "interrupt_timeout",
+                "interrupt_timeout_sec": timeout_s,
+                "force_restart": True,
+                "forced_restart_triggered": True,
+            },
+        )
+        try:
+            await self._start_session_process(session)
+        except Exception as exc:
+            await self._broadcast_session_event(
+                session,
+                {
+                    "event": "warning",
+                    "text": f"Failed to restart session runtime after interrupt timeout: {exc}",
+                    "interrupt_timeout_sec": timeout_s,
+                    "force_restart": True,
+                    "forced_restart_triggered": True,
+                },
+            )
+
     async def _idle_session_cleanup(self, session: SessionState) -> None:
         try:
             await asyncio.sleep(_SESSION_IDLE_TIMEOUT_S)
@@ -278,6 +372,7 @@ class RuntimeServiceServer:
         return await asyncio.to_thread(_wait)
 
     async def _stop_session_process(self, session: SessionState) -> None:
+        self._cancel_interrupt_watchdog(session)
         process = session.process
         if process is None:
             session.stdout_task = None
@@ -404,6 +499,7 @@ class RuntimeServiceServer:
         if event_type == "consent_prompt":
             session.consent_pending = True
         elif event_type == "turn_complete":
+            self._cancel_interrupt_watchdog(session)
             session.query_active = False
             session.consent_pending = False
             session.controller_client_id = None
@@ -447,6 +543,7 @@ class RuntimeServiceServer:
                 if process.poll() is None:
                     await asyncio.to_thread(process.wait)
             if session.process is process:
+                self._cancel_interrupt_watchdog(session)
                 session.process = None
                 session.stdout_task = None
                 session.query_active = False
@@ -599,6 +696,7 @@ class RuntimeServiceServer:
             session.controller_client_id = client.client_id
             session.query_active = True
             session.consent_pending = False
+            self._cancel_interrupt_watchdog(session)
         elif cmd == "consent_response":
             choice = payload.get("choice")
             if not isinstance(choice, str) or not choice.strip():
@@ -746,6 +844,8 @@ class RuntimeServiceServer:
         try:
             await self._ensure_session_process(session)
             await self._forward_to_session(session, forwarded)
+            if cmd == "interrupt":
+                self._arm_interrupt_watchdog(session)
         except Exception as exc:
             await self._send_error(
                 client,

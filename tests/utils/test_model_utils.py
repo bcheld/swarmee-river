@@ -82,6 +82,45 @@ def test_default_model_config_openai():
     assert config["model_id"]
 
 
+def test_default_model_config_bedrock_uses_responsive_defaults(monkeypatch):
+    monkeypatch.delenv("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("SWARMEE_BEDROCK_MAX_RETRIES", raising=False)
+
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock")
+    boto_config = config["boto_client_config"]
+
+    assert boto_config.read_timeout == 60.0
+    assert boto_config.connect_timeout == 10.0
+    assert boto_config.retries["max_attempts"] == 1
+
+
+def test_default_model_config_bedrock_honors_timeout_and_retry_env(monkeypatch):
+    monkeypatch.setenv("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", "75")
+    monkeypatch.setenv("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", "12")
+    monkeypatch.setenv("SWARMEE_BEDROCK_MAX_RETRIES", "2")
+
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock")
+    boto_config = config["boto_client_config"]
+
+    assert boto_config.read_timeout == 75.0
+    assert boto_config.connect_timeout == 12.0
+    assert boto_config.retries["max_attempts"] == 2
+
+
+def test_default_model_config_bedrock_invalid_env_falls_back(monkeypatch):
+    monkeypatch.setenv("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", "abc")
+    monkeypatch.setenv("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", "0")
+    monkeypatch.setenv("SWARMEE_BEDROCK_MAX_RETRIES", "-2")
+
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock")
+    boto_config = config["boto_client_config"]
+
+    assert boto_config.read_timeout == 60.0
+    assert boto_config.connect_timeout == 10.0
+    assert boto_config.retries["max_attempts"] == 1
+
+
 def test_default_model_config_openai_includes_max_retries_default_zero(monkeypatch):
     monkeypatch.delenv("SWARMEE_OPENAI_MAX_RETRIES", raising=False)
     config = swarmee_river.utils.model_utils.default_model_config("openai")

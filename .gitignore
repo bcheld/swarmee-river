@@ -2,12 +2,12 @@ __pycache__*
 .coverage
 .models
 .mypy_cache
-.prompt
 .pytest_cache
 .ruff_cache
 .welcome
 .swarmee/*
 !.swarmee/settings.json
+!.swarmee/prompts.json
 .vscode
 build
 *.bak

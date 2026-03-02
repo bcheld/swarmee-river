@@ -44,6 +44,16 @@ def _should_ignore_stale_model_info_update(
 
 
 class SettingsMixin:
+    _BEDROCK_RUNTIME_DEFAULTS: dict[str, str] = {
+        "SWARMEE_BEDROCK_READ_TIMEOUT_SEC": "60",
+        "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC": "10",
+        "SWARMEE_BEDROCK_MAX_RETRIES": "1",
+    }
+    _INTERRUPT_CONTROL_DEFAULTS: dict[str, str] = {
+        "SWARMEE_INTERRUPT_TIMEOUT_SEC": "2.0",
+        "SWARMEE_INTERRUPT_FORCE_RESTART": "true",
+    }
+
     def _set_settings_view_mode(self, mode: str) -> None:
         normalized = mode.strip().lower()
         if normalized not in {"general", "models", "advanced"}:
@@ -77,6 +87,126 @@ class SettingsMixin:
             return
         summary = self._current_model_summary()
         widget.update(f"Orchestrator: {summary}" if summary else "Orchestrator")
+
+    def _refresh_settings_bedrock_runtime_controls(self) -> None:
+        read_widget = self._settings_bedrock_read_timeout_input
+        connect_widget = self._settings_bedrock_connect_timeout_input
+        retries_widget = self._settings_bedrock_max_retries_input
+        if read_widget is not None:
+            with contextlib.suppress(Exception):
+                read_widget.value = (
+                    os.environ.get("SWARMEE_BEDROCK_READ_TIMEOUT_SEC")
+                    or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_READ_TIMEOUT_SEC"]
+                )
+        if connect_widget is not None:
+            with contextlib.suppress(Exception):
+                connect_widget.value = (
+                    os.environ.get("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC")
+                    or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC"]
+                )
+        if retries_widget is not None:
+            with contextlib.suppress(Exception):
+                retries_widget.value = (
+                    os.environ.get("SWARMEE_BEDROCK_MAX_RETRIES")
+                    or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_MAX_RETRIES"]
+                )
+
+    def _refresh_settings_interrupt_control_controls(self) -> None:
+        timeout_widget = self._settings_interrupt_timeout_input
+        restart_widget = self._settings_interrupt_force_restart_select
+        if timeout_widget is not None:
+            with contextlib.suppress(Exception):
+                timeout_widget.value = (
+                    os.environ.get("SWARMEE_INTERRUPT_TIMEOUT_SEC")
+                    or os.environ.get("SWARMEE_INTERRUPT_TIMEOUT")
+                    or self._INTERRUPT_CONTROL_DEFAULTS["SWARMEE_INTERRUPT_TIMEOUT_SEC"]
+                )
+        if restart_widget is not None:
+            raw = (
+                os.environ.get("SWARMEE_INTERRUPT_FORCE_RESTART")
+                or self._INTERRUPT_CONTROL_DEFAULTS["SWARMEE_INTERRUPT_FORCE_RESTART"]
+            ).strip().lower()
+            value = "false" if raw in {"false", "0", "no", "off", "disabled"} else "true"
+            with contextlib.suppress(Exception):
+                restart_widget.value = value
+
+    def _parse_positive_float_setting(self, raw: str, *, label: str) -> float | None:
+        token = str(raw or "").strip()
+        try:
+            value = float(token)
+        except ValueError:
+            self._write_transcript_line(f"[settings] invalid {label}: {token or '(blank)'}")
+            return None
+        if value <= 0:
+            self._write_transcript_line(f"[settings] {label} must be > 0.")
+            return None
+        return value
+
+    def _parse_non_negative_int_setting(self, raw: str, *, label: str) -> int | None:
+        token = str(raw or "").strip()
+        if not token.isdigit():
+            self._write_transcript_line(f"[settings] invalid {label}: {token or '(blank)'}")
+            return None
+        value = int(token)
+        if value < 0:
+            self._write_transcript_line(f"[settings] {label} must be >= 0.")
+            return None
+        return value
+
+    def _apply_bedrock_runtime_settings(self) -> None:
+        read_raw = str(getattr(self._settings_bedrock_read_timeout_input, "value", "")).strip()
+        connect_raw = str(getattr(self._settings_bedrock_connect_timeout_input, "value", "")).strip()
+        retries_raw = str(getattr(self._settings_bedrock_max_retries_input, "value", "")).strip()
+        read_timeout = self._parse_positive_float_setting(read_raw, label="Bedrock read timeout")
+        if read_timeout is None:
+            return
+        connect_timeout = self._parse_positive_float_setting(connect_raw, label="Bedrock connect timeout")
+        if connect_timeout is None:
+            return
+        max_retries = self._parse_non_negative_int_setting(retries_raw, label="Bedrock max retries")
+        if max_retries is None:
+            return
+        self._persist_project_setting_env_override("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", str(read_timeout))
+        self._persist_project_setting_env_override("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", str(connect_timeout))
+        self._persist_project_setting_env_override("SWARMEE_BEDROCK_MAX_RETRIES", str(max_retries))
+        self._refresh_settings_models()
+        self._refresh_settings_env_list()
+        self._refresh_settings_env_detail(self._settings_env_selected_key)
+        self._write_transcript_line(
+            f"[settings] bedrock runtime updated (read={read_timeout}s connect={connect_timeout}s retries={max_retries})."
+        )
+
+    def _reset_bedrock_runtime_settings(self) -> None:
+        for key, value in self._BEDROCK_RUNTIME_DEFAULTS.items():
+            self._persist_project_setting_env_override(key, value)
+        self._refresh_settings_models()
+        self._refresh_settings_env_list()
+        self._refresh_settings_env_detail(self._settings_env_selected_key)
+        self._write_transcript_line("[settings] bedrock runtime reset to defaults.")
+
+    def _apply_interrupt_control_settings(self) -> None:
+        timeout_raw = str(getattr(self._settings_interrupt_timeout_input, "value", "")).strip()
+        timeout_s = self._parse_positive_float_setting(timeout_raw, label="interrupt timeout")
+        if timeout_s is None:
+            return
+        restart_raw = str(getattr(self._settings_interrupt_force_restart_select, "value", "true")).strip().lower()
+        restart_value = "false" if restart_raw in {"false", "0", "no", "off", "disabled"} else "true"
+        self._persist_project_setting_env_override("SWARMEE_INTERRUPT_TIMEOUT_SEC", str(timeout_s))
+        self._persist_project_setting_env_override("SWARMEE_INTERRUPT_FORCE_RESTART", restart_value)
+        self._refresh_settings_general()
+        self._refresh_settings_env_list()
+        self._refresh_settings_env_detail(self._settings_env_selected_key)
+        self._write_transcript_line(
+            f"[settings] interrupt control updated (timeout={timeout_s}s force_restart={restart_value})."
+        )
+
+    def _reset_interrupt_control_settings(self) -> None:
+        for key, value in self._INTERRUPT_CONTROL_DEFAULTS.items():
+            self._persist_project_setting_env_override(key, value)
+        self._refresh_settings_general()
+        self._refresh_settings_env_list()
+        self._refresh_settings_env_detail(self._settings_env_selected_key)
+        self._write_transcript_line("[settings] interrupt control reset to defaults.")
 
     def _refresh_plan_actions_visibility(self) -> None:
         """Show plan action buttons only when a plan is pending approval."""
@@ -287,6 +417,7 @@ class SettingsMixin:
                 with contextlib.suppress(Exception):
                     aws_input.value = current_profile
 
+        self._refresh_settings_bedrock_runtime_controls()
         self._refresh_settings_model_detail()
 
     def _refresh_settings_model_detail(self) -> None:
@@ -671,6 +802,7 @@ class SettingsMixin:
             on = val != "disabled"
             btn.label = f"ESC Interrupt: {'On' if on else 'Off'}"
             btn.variant = "success" if on else "default"
+        self._refresh_settings_interrupt_control_controls()
 
         # -- Context Manager select --
         sel = self._settings_general_context_manager_select
@@ -890,6 +1022,8 @@ class SettingsMixin:
         )
 
     def _handle_model_info(self, event: dict[str, Any]) -> None:
+        with contextlib.suppress(Exception):
+            self._handle_connect_model_info_event(event)
         provider = str(event.get("provider", "")).strip().lower()
         tier = str(event.get("tier", "")).strip().lower()
         tool_names_raw = event.get("tool_names")

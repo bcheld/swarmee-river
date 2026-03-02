@@ -7,9 +7,43 @@ from swarmee_river.tui.text_sanitize import sanitize_output_text
 
 _THINKING_DISPLAY_DEBOUNCE_S = 0.2
 _THINKING_ANIMATION_INTERVAL_S = 0.5
+_THINKING_MIN_VISIBLE_S = 0.35
 
 
 class ThinkingMixin:
+    def _show_thinking_indicator(self) -> None:
+        from swarmee_river.tui.widgets import ThinkingIndicator
+
+        if self._active_thinking_indicator is not None:
+            return
+        indicator = ThinkingIndicator()
+        self._active_thinking_indicator = indicator
+        self._mount_transcript_widget(indicator)
+
+    def _clear_thinking_indicator(self) -> None:
+        indicator = self._active_thinking_indicator
+        self._active_thinking_indicator = None
+        if indicator is None:
+            return
+        with contextlib.suppress(Exception):
+            indicator.remove()
+
+    def _cancel_thinking_min_visible_timer(self) -> None:
+        timer = getattr(self, "_thinking_min_visible_timer", None)
+        self._thinking_min_visible_timer = None
+        if timer is not None:
+            with contextlib.suppress(RuntimeError):
+                timer.stop()
+
+    def _ensure_thinking_state_active(self) -> None:
+        if self._current_thinking:
+            return
+        self._current_thinking = True
+        if not isinstance(self._thinking_started_mono, float):
+            self._thinking_started_mono = time.monotonic()
+        self._thinking_frame_index = 0
+        self._ensure_thinking_animation_timer()
+
     def _cancel_thinking_display_timer(self) -> None:
         timer = self._thinking_display_timer
         self._thinking_display_timer = None
@@ -74,6 +108,8 @@ class ThinkingMixin:
     def _reset_thinking_state(self) -> None:
         self._cancel_thinking_display_timer()
         self._cancel_thinking_animation_timer()
+        self._cancel_thinking_min_visible_timer()
+        self._clear_thinking_indicator()
         self._current_thinking = False
         self._thinking_buffer = []
         self._thinking_char_count = 0
@@ -88,16 +124,16 @@ class ThinkingMixin:
         from swarmee_river.tui.widgets import ReasoningBlock
 
         chunk = sanitize_output_text(str(thinking_text or ""))
-        first_event = not self._current_thinking and not self._thinking_buffer and self._thinking_char_count == 0
-        if first_event:
-            self._current_thinking = True
-            self._thinking_started_mono = time.monotonic()
-            self._thinking_frame_index = 0
-            self._ensure_thinking_animation_timer()
-            self._active_reasoning_block = ReasoningBlock(timestamp=self._turn_timestamp())
-            self._mount_transcript_widget(self._active_reasoning_block)
+        if not self._current_thinking:
+            self._ensure_thinking_state_active()
         else:
             self._current_thinking = True
+        if not chunk:
+            self._show_thinking_indicator()
+        if chunk and self._active_reasoning_block is None:
+            self._clear_thinking_indicator()
+            self._active_reasoning_block = ReasoningBlock(timestamp=self._turn_timestamp())
+            self._mount_transcript_widget(self._active_reasoning_block)
         if chunk:
             self._thinking_buffer.append(chunk)
             self._thinking_char_count += len(chunk)
@@ -117,17 +153,32 @@ class ThinkingMixin:
             or self._thinking_buffer
         )
         if not had_thinking:
+            self._clear_thinking_indicator()
             bar = self._thinking_bar
             if bar is not None:
                 with contextlib.suppress(Exception):
                     bar.hide_thinking()
             return
 
+        # Keep the indicator visible briefly so fast first-delta/tool-start turns
+        # still show clear "LLM in progress" feedback.
+        char_count = self._thinking_char_count
+        elapsed_s = self._thinking_elapsed_s()
+        if char_count <= 0 and elapsed_s < _THINKING_MIN_VISIBLE_S:
+            if getattr(self, "_thinking_min_visible_timer", None) is None:
+                remaining = max(0.0, _THINKING_MIN_VISIBLE_S - elapsed_s)
+                self._thinking_min_visible_timer = self.set_timer(
+                    remaining,
+                    lambda: self._dismiss_thinking(emit_summary=emit_summary),
+                )
+            return
+
+        self._cancel_thinking_min_visible_timer()
         elapsed_s = self._thinking_elapsed_s()
         full_thinking = "".join(self._thinking_buffer)
         self._last_thinking_text = full_thinking
         char_count = self._thinking_char_count
-        if emit_summary:
+        if emit_summary and char_count > 0:
             elapsed_label = max(0, int(round(elapsed_s)))
             summary_line = f"💭 Reasoning ({elapsed_label}s, {char_count:,} chars)"
             self._record_transcript_fallback(summary_line)

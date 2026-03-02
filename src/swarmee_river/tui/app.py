@@ -1424,24 +1424,27 @@ def run_tui() -> int:
         }
 
         #settings_models_form_row_1, #settings_models_form_row_2,
-        #settings_models_form_row_3, #settings_models_form_actions {
+        #settings_models_form_row_3, #settings_models_form_actions,
+        #settings_bedrock_runtime_row, #settings_bedrock_runtime_actions {
             height: auto;
             layout: horizontal;
             margin: 0 0 1 0;
         }
 
         #settings_models_form_row_1 Select, #settings_models_form_row_1 Input,
-        #settings_models_form_row_2 Input, #settings_models_form_row_3 Input {
+        #settings_models_form_row_2 Input, #settings_models_form_row_3 Input,
+        #settings_bedrock_runtime_row Input {
             width: 1fr;
             margin: 0 1 0 0;
         }
 
-        #settings_models_form_actions Button {
+        #settings_models_form_actions Button, #settings_bedrock_runtime_actions Button {
             width: 1fr;
             margin: 0 1 0 0;
         }
 
-        #settings_models_form_actions Button:last-child {
+        #settings_models_form_actions Button:last-child,
+        #settings_bedrock_runtime_actions Button:last-child {
             margin-right: 0;
         }
 
@@ -1454,6 +1457,8 @@ def run_tui() -> int:
         }
 
         #settings_general_runtime_row,
+        #settings_interrupt_control_row,
+        #settings_interrupt_control_actions,
         #settings_general_context_row,
         #settings_general_features_row,
         #settings_general_guardrails_row,
@@ -1480,6 +1485,19 @@ def run_tui() -> int:
         #settings_general_context_row Select {
             width: 1fr;
             margin: 0 1 0 0;
+        }
+        #settings_interrupt_control_row Input,
+        #settings_interrupt_control_row Select {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
+        #settings_interrupt_control_actions Button {
+            width: 1fr;
+            min-width: 10;
+            margin: 0 1 0 0;
+        }
+        #settings_interrupt_control_actions Button:last-child {
+            margin-right: 0;
         }
 
         #settings_scope_current {
@@ -1779,9 +1797,11 @@ def run_tui() -> int:
         .layout-narrow #bundles_actions_primary,
         .layout-narrow #bundles_actions_secondary,
         .layout-narrow #settings_general_runtime_row,
+        .layout-narrow #settings_interrupt_control_actions,
         .layout-narrow #settings_general_features_row,
         .layout-narrow #settings_general_guardrails_row,
         .layout-narrow #settings_models_form_actions,
+        .layout-narrow #settings_bedrock_runtime_actions,
         .layout-narrow #settings_env_actions,
         .layout-narrow #settings_safety_actions {
             layout: vertical;
@@ -1795,9 +1815,11 @@ def run_tui() -> int:
         .layout-narrow #bundles_actions_primary Button,
         .layout-narrow #bundles_actions_secondary Button,
         .layout-narrow #settings_general_runtime_row Button,
+        .layout-narrow #settings_interrupt_control_actions Button,
         .layout-narrow #settings_general_features_row Button,
         .layout-narrow #settings_general_guardrails_row Button,
         .layout-narrow #settings_models_form_actions Button,
+        .layout-narrow #settings_bedrock_runtime_actions Button,
         .layout-narrow #settings_env_actions Button,
         .layout-narrow #settings_safety_actions Button {
             width: 1fr;
@@ -1813,9 +1835,11 @@ def run_tui() -> int:
         .layout-narrow #bundles_actions_primary Button:last-child,
         .layout-narrow #bundles_actions_secondary Button:last-child,
         .layout-narrow #settings_general_runtime_row Button:last-child,
+        .layout-narrow #settings_interrupt_control_actions Button:last-child,
         .layout-narrow #settings_general_features_row Button:last-child,
         .layout-narrow #settings_general_guardrails_row Button:last-child,
         .layout-narrow #settings_models_form_actions Button:last-child,
+        .layout-narrow #settings_bedrock_runtime_actions Button:last-child,
         .layout-narrow #settings_env_actions Button:last-child,
         .layout-narrow #settings_safety_actions Button:last-child {
             margin-bottom: 0;
@@ -1972,9 +1996,11 @@ def run_tui() -> int:
         _thinking_char_count: int = 0
         _thinking_display_timer: Any = None
         _thinking_animation_timer: Any = None
+        _thinking_min_visible_timer: Any = None
         _thinking_started_mono: float | None = None
         _thinking_frame_index: int = 0
         _last_thinking_text: str = ""
+        _active_thinking_indicator: Any = None  # ThinkingIndicator | None
         _tool_blocks: dict[str, dict[str, Any]] = {}
         _tool_pending_start: dict[str, float] = {}
         _tool_pending_start_timers: dict[str, Any] = {}
@@ -2142,6 +2168,8 @@ def run_tui() -> int:
         _settings_toggle_auto_approve_button: Any = None  # Button | None
         _settings_toggle_bypass_consent_button: Any = None  # Button | None
         _settings_toggle_esc_interrupt_button: Any = None  # Button | None
+        _settings_interrupt_timeout_input: Any = None  # Input | None
+        _settings_interrupt_force_restart_select: Any = None  # Select | None
         _settings_general_context_manager_select: Any = None  # Select | None
         _settings_general_preflight_select: Any = None  # Select | None
         _settings_general_preflight_level_select: Any = None  # Select | None
@@ -2152,6 +2180,9 @@ def run_tui() -> int:
         _settings_toggle_truncate_results_button: Any = None  # Button | None
         _settings_toggle_log_redact_button: Any = None  # Button | None
         _settings_toggle_freeze_tools_button: Any = None  # Button | None
+        _settings_bedrock_read_timeout_input: Any = None  # Input | None
+        _settings_bedrock_connect_timeout_input: Any = None  # Input | None
+        _settings_bedrock_max_retries_input: Any = None  # Input | None
         _settings_env_table: Any = None  # DataTable | None
         _settings_scope_current: Any = None  # Static | None
         _settings_directory_tree: Any = None  # DirectoryTree | None
@@ -2164,6 +2195,9 @@ def run_tui() -> int:
         _pending_connect_payload: dict[str, Any] | None = None
         _pending_connect_retry_payload: dict[str, Any] | None = None
         _runtime_proxy_recovery_attempted: set[str] = set()
+        _auth_connect_screen: Any = None
+        _auth_connect_provider: str | None = None
+        _auth_connect_capture_warnings: bool = False
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
@@ -3187,6 +3221,12 @@ def run_tui() -> int:
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] ESC interrupt {new_val}.")
                 return
+            if button_id == "settings_interrupt_control_apply":
+                self._apply_interrupt_control_settings()
+                return
+            if button_id == "settings_interrupt_control_reset":
+                self._reset_interrupt_control_settings()
+                return
             if button_id == "settings_toggle_swarm":
                 cur = (os.environ.get("SWARMEE_SWARM_ENABLED") or "true").strip().lower()
                 new_val = "false" if cur not in {"false", "0", "no", "off", "disabled"} else "true"
@@ -3262,6 +3302,12 @@ def run_tui() -> int:
                 return
             if button_id == "settings_models_delete":
                 self._delete_model_form_selection()
+                return
+            if button_id == "settings_bedrock_runtime_apply":
+                self._apply_bedrock_runtime_settings()
+                return
+            if button_id == "settings_bedrock_runtime_reset":
+                self._reset_bedrock_runtime_settings()
                 return
             if button_id == "settings_env_apply":
                 key = (self._settings_env_selected_key or "").strip()

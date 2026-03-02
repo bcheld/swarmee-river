@@ -12,6 +12,7 @@ from swarmee_river.tui.text_sanitize import _extract_paths_from_text, sanitize_o
 _TRUNCATED_ARTIFACT_RE = re.compile(r"full output saved to (?P<path>[^\]]+)")
 _PROVIDER_NOISE_PREFIX = "[provider]"
 _PROVIDER_FALLBACK_PHRASE = "falling back to"
+_TRACEBACK_FILE_LINE_RE = re.compile(r'^File ".*", line \d+')
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,21 @@ def parse_output_line(line: str) -> ParsedEvent | None:
 
     if stripped.startswith("Error:") or stripped.startswith("ERROR:"):
         return ParsedEvent(kind="error", text=text)
+
+    if stripped.startswith("Traceback (most recent call last):"):
+        return ParsedEvent(kind="warning", text="WARN: daemon emitted a Python traceback (details in tui_error.log).")
+
+    if _TRACEBACK_FILE_LINE_RE.match(stripped):
+        return ParsedEvent(kind="noise", text=text)
+
+    if "_watchdog_fsevents.py" in lower or "_fsevents.add_watch" in lower:
+        return ParsedEvent(kind="noise", text=text)
+
+    if "cannot start fsevents stream" in lower:
+        return ParsedEvent(
+            kind="warning",
+            text="WARN: filesystem watcher fsevents backend unavailable; continuing without it.",
+        )
 
     if "operation not permitted" in lower and "/bin/ps" in lower:
         return ParsedEvent(kind="warning", text=text)

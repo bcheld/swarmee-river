@@ -282,6 +282,10 @@ def _handle_usage_and_compaction_events(app: Any, etype: str, event: dict[str, A
 
 
 def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
+    if etype in {"llm_start", "model_start", "before_model_call"}:
+        app._record_thinking_event("")
+        return True
+
     if etype in {"text_delta", "message_delta", "output_text_delta", "delta"}:
         chunk = sanitize_output_text(extract_tui_text_chunk(event))
         if not chunk:
@@ -625,13 +629,18 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
         return True
 
     if etype == "warning":
-        warn_text = event.get("text", "")
+        raw_warn_text = str(event.get("text", ""))
+        warn_text = raw_warn_text
         if not warn_text.startswith("WARN:"):
             warn_text = f"WARN: {warn_text}"
         app.state.session.warning_count += 1
         app._write_issue(warn_text)
         app._update_header_status()
-        app._notify(warn_text, severity="warning", timeout=4)
+        handled_in_popup = False
+        with contextlib.suppress(Exception):
+            handled_in_popup = bool(app._handle_connect_status_warning(raw_warn_text))
+        if not handled_in_popup:
+            app._notify(warn_text, severity="warning", timeout=4)
         return True
 
     return False

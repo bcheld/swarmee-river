@@ -564,6 +564,178 @@ def test_runtime_service_set_profile_requires_idle_query_and_proxies(monkeypatch
     asyncio.run(_scenario())
 
 
+def test_runtime_service_interrupt_watchdog_restarts_stuck_session(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "interrupt-token"
+    session_id = "interrupt-session"
+    attach_cwd = tmp_path / "workspace"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _connect_and_attach(*, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            json.dumps(
+                {"cmd": "hello", "token": token, "client_name": "controller", "surface": "tests"},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+
+        writer.write(
+            json.dumps({"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)}, ensure_ascii=False).encode(
+                "utf-8"
+            )
+            + b"\n"
+        )
+        await writer.drain()
+        attached_event = await _read_event(reader)
+        assert attached_event["event"] == "attached"
+        return reader, writer
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        monkeypatch.setenv("SWARMEE_INTERRUPT_TIMEOUT_SEC", "0.05")
+        monkeypatch.setenv("SWARMEE_INTERRUPT_FORCE_RESTART", "true")
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader, writer = await _connect_and_attach(port=service.port)
+            try:
+                assert len(fake_popen.instances) == 1
+                first_proc = fake_popen.instances[0]
+
+                writer.write(json.dumps({"cmd": "query", "text": "long running"}).encode("utf-8") + b"\n")
+                await writer.drain()
+                await asyncio.sleep(0.05)
+                assert first_proc.stdin.writes
+                query_payload = json.loads(first_proc.stdin.writes[-1].strip())
+                assert query_payload["cmd"] == "query"
+
+                writer.write(json.dumps({"cmd": "interrupt"}).encode("utf-8") + b"\n")
+                await writer.drain()
+                await asyncio.sleep(0.05)
+                assert first_proc.stdin.writes
+                interrupt_payload = json.loads(first_proc.stdin.writes[-1].strip())
+                assert interrupt_payload["cmd"] == "interrupt"
+
+                interrupted_event: dict[str, Any] | None = None
+                deadline = asyncio.get_running_loop().time() + 2.0
+                while asyncio.get_running_loop().time() < deadline:
+                    event = await _read_event(reader)
+                    if str(event.get("event", "")).lower() != "turn_complete":
+                        continue
+                    if str(event.get("exit_status", "")).lower() == "interrupted":
+                        interrupted_event = event
+                        break
+
+                assert interrupted_event is not None, "expected turn_complete(interrupted) after interrupt timeout"
+                assert len(fake_popen.instances) >= 2, "session daemon should be restarted after interrupt timeout"
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_runtime_service_interrupt_watchdog_no_restart_when_disabled(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "interrupt-no-restart-token"
+    session_id = "interrupt-no-restart-session"
+    attach_cwd = tmp_path / "workspace"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _connect_and_attach(*, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            json.dumps(
+                {"cmd": "hello", "token": token, "client_name": "controller", "surface": "tests"},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+
+        writer.write(
+            json.dumps({"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)}, ensure_ascii=False).encode(
+                "utf-8"
+            )
+            + b"\n"
+        )
+        await writer.drain()
+        attached_event = await _read_event(reader)
+        assert attached_event["event"] == "attached"
+        return reader, writer
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        monkeypatch.setenv("SWARMEE_INTERRUPT_TIMEOUT_SEC", "0.05")
+        monkeypatch.setenv("SWARMEE_INTERRUPT_FORCE_RESTART", "false")
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader, writer = await _connect_and_attach(port=service.port)
+            try:
+                assert len(fake_popen.instances) == 1
+                first_proc = fake_popen.instances[0]
+
+                writer.write(json.dumps({"cmd": "query", "text": "long running"}).encode("utf-8") + b"\n")
+                await writer.drain()
+                await asyncio.sleep(0.05)
+                writer.write(json.dumps({"cmd": "interrupt"}).encode("utf-8") + b"\n")
+                await writer.drain()
+
+                warning_event: dict[str, Any] | None = None
+                deadline = asyncio.get_running_loop().time() + 1.5
+                while asyncio.get_running_loop().time() < deadline:
+                    event = await _read_event(reader)
+                    if str(event.get("event", "")).lower() == "warning":
+                        warning_event = event
+                        break
+
+                assert warning_event is not None
+                assert warning_event.get("force_restart") is False
+                assert len(fake_popen.instances) == 1, "session daemon should not restart when force_restart is disabled"
+                assert first_proc.returncode is None
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_runtime_service_interrupt_timeout_precedence(monkeypatch) -> None:
+    import swarmee_river.runtime_service.server as server_module
+
+    monkeypatch.delenv("SWARMEE_INTERRUPT_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("SWARMEE_INTERRUPT_TIMEOUT", raising=False)
+    assert server_module._interrupt_timeout_seconds() == 2.0
+
+    monkeypatch.setenv("SWARMEE_INTERRUPT_TIMEOUT", "3.5")
+    assert server_module._interrupt_timeout_seconds() == 3.5
+
+    monkeypatch.setenv("SWARMEE_INTERRUPT_TIMEOUT_SEC", "1.5")
+    assert server_module._interrupt_timeout_seconds() == 1.5
+
+
 def test_runtime_service_proxies_auth_and_connect_commands(monkeypatch, tmp_path: Path) -> None:
     state_root = tmp_path / ".swarmee"
     token = "auth-connect-token"

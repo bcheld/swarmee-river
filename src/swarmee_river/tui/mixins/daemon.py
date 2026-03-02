@@ -21,6 +21,65 @@ class DaemonMixin:
     # Set to a callable() -> _DaemonTransport before the app starts.
     _test_transport_factory: "Callable[[], _DaemonTransport] | None" = None
 
+    def _on_auth_connect_popup_closed(self, screen: Any) -> None:
+        if self._auth_connect_screen is screen:
+            self._auth_connect_screen = None
+        self._auth_connect_capture_warnings = False
+        self._auth_connect_provider = None
+
+    def _show_auth_connect_popup(self, provider: str, *, profile: str | None = None) -> None:
+        from swarmee_river.tui.widgets import AuthConnectScreen
+
+        normalized = str(provider or "").strip().lower()
+        if normalized == "github_copilot":
+            title = "Connect Copilot"
+            intro = [
+                "Follow the device login instructions below.",
+                "Keep this popup open while entering the code in the browser.",
+            ]
+        else:
+            resolved_profile = str(profile or "").strip() or "default"
+            title = "Connect AWS"
+            intro = [
+                f"Starting AWS auth flow for profile '{resolved_profile}'.",
+                "Keep this popup open while completing browser/device steps.",
+            ]
+        if self._auth_connect_screen is not None:
+            with contextlib.suppress(Exception):
+                self._auth_connect_screen.dismiss(None)
+            self._auth_connect_screen = None
+        screen = AuthConnectScreen(title=title, lines=intro)
+        self._auth_connect_screen = screen
+        self._auth_connect_provider = normalized or None
+        self._auth_connect_capture_warnings = True
+        self.push_screen(screen, lambda result, active=screen: self._on_auth_connect_popup_closed(active))
+
+    def _append_auth_connect_popup_line(self, text: str) -> None:
+        line = str(text or "").strip()
+        if not line:
+            return
+        screen = self._auth_connect_screen
+        if screen is None:
+            return
+        with contextlib.suppress(Exception):
+            screen.append_line(line)
+
+    def _handle_connect_status_warning(self, text: str) -> bool:
+        if not bool(self._auth_connect_capture_warnings):
+            return False
+        screen = self._auth_connect_screen
+        if screen is None:
+            return False
+        self._append_auth_connect_popup_line(text)
+        return True
+
+    def _handle_connect_model_info_event(self, _event: dict[str, Any]) -> None:
+        if not bool(self._auth_connect_capture_warnings):
+            return
+        self._append_auth_connect_popup_line("Authentication status refreshed.")
+        self._append_auth_connect_popup_line("You can close this popup.")
+        self._auth_connect_capture_warnings = False
+
     def _handle_daemon_exit(self, proc: _DaemonTransport, *, return_code: int) -> None:
         if self.state.daemon.proc is not proc:
             return
@@ -260,6 +319,8 @@ class DaemonMixin:
         self._last_prompt = prompt
         self._last_run_auto_approve = auto_approve
         self.state.daemon.query_active = True
+        # Show immediate "LLM in progress" feedback even before first stream/tool events arrive.
+        self._record_thinking_event("")
         self._current_assistant_model = self.state.daemon.current_model
         self._current_assistant_timestamp = self._turn_timestamp()
         self._assistant_placeholder_written = False
@@ -291,6 +352,7 @@ class DaemonMixin:
             command["mode"] = mode
         if not send_daemon_command(proc, command):
             self.state.daemon.query_active = False
+            self._dismiss_thinking(emit_summary=False)
             if self.state.daemon.status_timer is not None:
                 self.state.daemon.status_timer.stop()
                 self.state.daemon.status_timer = None
@@ -349,13 +411,16 @@ class DaemonMixin:
         if normalized == "github_copilot":
             payload.update({"method": "device", "open_browser": True})
             self._write_transcript_line("[connect] starting provider auth for github_copilot...")
+            self._show_auth_connect_popup("github_copilot")
         else:
             resolved_profile = (profile or "").strip() or (os.getenv("AWS_PROFILE") or "").strip() or "default"
             payload.update({"method": "sso", "profile": resolved_profile})
             self._write_transcript_line(f"[connect] starting provider auth for bedrock (profile={resolved_profile})...")
+            self._show_auth_connect_popup("bedrock", profile=resolved_profile)
         self._pending_connect_payload = dict(payload)
         if not send_daemon_command(proc, payload):
             self._write_transcript_line("[connect] failed to send command.")
+            self._append_auth_connect_popup_line("Failed to send connect command to daemon.")
             return False
         return True
 
@@ -395,6 +460,7 @@ class DaemonMixin:
         if send_daemon_command(proc, payload):
             provider_label = str(payload.get("provider", "provider")).strip()
             self._write_transcript_line(f"[connect] retrying provider auth for {provider_label}...")
+            self._append_auth_connect_popup_line(f"Retrying auth for {provider_label}...")
             self._pending_connect_retry_payload = None
 
     def _handle_pre_run_command(self, text: str) -> bool:

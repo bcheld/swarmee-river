@@ -165,6 +165,60 @@ async def test_mock_transport_captures_sent_commands(tui_app_factory):
         assert any(c.get("cmd") == "interrupt" for c in transport.sent_commands)
 
 
+async def test_prompt_submit_shows_thinking_bar_before_stream_events(tui_app_factory):
+    async with tui_app_factory() as (app, pilot, transport):
+        from textual.widgets import TextArea
+
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+
+        prompt = app.query_one("#prompt", TextArea)
+        prompt.insert("ping")
+        app.action_submit_prompt()
+
+        # Verify the query command was sent first.
+        sent_query = await _wait_for(
+            lambda: any(str(cmd.get("cmd", "")).strip().lower() == "query" for cmd in transport.sent_commands),
+            pilot=pilot,
+        )
+        assert sent_query, "query command was not sent after prompt submit"
+
+        # Before any text/tool streaming events, the thinking bar should be visible.
+        await pilot.pause(delay=0.05)
+        assert str(app._thinking_bar.styles.display) == "block"
+        assert app._active_thinking_indicator is not None
+
+
+async def test_thinking_bar_stays_visible_briefly_on_immediate_first_delta(tui_app_factory):
+    async with tui_app_factory() as (app, pilot, transport):
+        from textual.widgets import TextArea
+
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+
+        prompt = app.query_one("#prompt", TextArea)
+        prompt.insert("ping")
+        app.action_submit_prompt()
+
+        sent_query = await _wait_for(
+            lambda: any(str(cmd.get("cmd", "")).strip().lower() == "query" for cmd in transport.sent_commands),
+            pilot=pilot,
+        )
+        assert sent_query, "query command was not sent after prompt submit"
+
+        # Simulate a very fast first model token.
+        transport.emit_event({"event": "text_delta", "data": "p"})
+        await pilot.pause(delay=0.05)
+        assert str(app._thinking_bar.styles.display) == "block"
+        assert app._active_thinking_indicator is not None
+
+        # After the minimum-visible window, the thinking bar and transcript
+        # spinner should hide.
+        await pilot.pause(delay=0.40)
+        assert str(app._thinking_bar.styles.display) == "none"
+        assert app._active_thinking_indicator is None
+
+
 # ---------------------------------------------------------------------------
 # Scenario 7 — full timeline round-trip after turn_complete
 # ---------------------------------------------------------------------------
