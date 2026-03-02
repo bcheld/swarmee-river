@@ -1,133 +1,201 @@
 {
-  "models": {
-    "provider": "bedrock",
-    "default_tier": "balanced",
-    "tiers": {},
-    "providers": {
-      "bedrock": {
-        "display_name": "Amazon Bedrock",
-        "description": "AWS-managed models (Anthropic Claude, etc). Uses STRANDS_* env vars by default.",
-        "tiers": {
-          "fast": {
-            "provider": "bedrock",
-            "model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-            "display_name": "Claude Sonnet 4 (fast)",
-            "description": "Lower latency / lower cost default (override via SWARMEE_BEDROCK_FAST_MODEL_ID)."
-          },
-          "balanced": {
-            "provider": "bedrock",
-            "model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-            "display_name": "Claude Sonnet 4 (balanced)",
-            "description": "Default tier for most coding and analysis work."
-          },
-          "deep": {
-            "provider": "bedrock",
-            "model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-            "display_name": "Claude Sonnet 4 (deep)",
-            "description": "Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID)."
-          },
-          "long": {
-            "provider": "bedrock",
-            "model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-            "display_name": "Claude Sonnet 4 (long)",
-            "description": "Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID)."
-          }
-        }
+  "env": {
+    "SWARMEE_CONTEXT_MANAGER": "summarize",
+    "SWARMEE_LOG_EVENTS": "false",
+    "SWARMEE_PREFLIGHT": "enabled",
+    "SWARMEE_PREFLIGHT_LEVEL": "summary"
+  },
+  "harness": {
+    "tier_profiles": {
+      "balanced": {
+        "preflight_level": "summary+tree",
+        "tool_allowlist": [],
+        "tool_blocklist": []
       },
-      "openai": {
-        "display_name": "OpenAI",
-        "description": "OpenAI API models. Requires OPENAI_API_KEY.",
-        "tiers": {
-          "fast": {
-            "provider": "openai",
-            "model_id": "gpt-5-nano",
-            "display_name": "GPT-5 nano",
-            "description": "Lowest latency/cost; good for quick iterations."
-          },
-          "balanced": {
-            "provider": "openai",
-            "model_id": "gpt-5-mini",
-            "display_name": "GPT-5 mini",
-            "description": "Default OpenAI tier for most coding tasks."
-          },
-          "deep": {
-            "provider": "openai",
-            "model_id": "gpt-5",
-            "display_name": "GPT-5",
-            "description": "Stronger reasoning; slower / more expensive."
-          },
-          "long": {
-            "provider": "openai",
-            "model_id": "gpt-5",
-            "display_name": "GPT-5 (long)",
-            "description": "Long-form outputs (override via SWARMEE_OPENAI_LONG_MODEL_ID)."
-          }
-        }
+      "deep": {
+        "preflight_level": "summary+files",
+        "tool_allowlist": [],
+        "tool_blocklist": []
       },
-      "ollama": {
-        "display_name": "Ollama",
-        "description": "Local models via Ollama (SWARMEE_OLLAMA_HOST).",
-        "tiers": {
-          "fast": {
-            "provider": "ollama",
-            "model_id": "llama3.1",
-            "display_name": "llama3.1",
-            "description": "Local default for fast iteration (override via SWARMEE_OLLAMA_FAST_MODEL_ID)."
-          },
-          "balanced": {
-            "provider": "ollama",
-            "model_id": "llama3.1",
-            "display_name": "llama3.1",
-            "description": "Local balanced default."
-          },
-          "deep": {
-            "provider": "ollama",
-            "model_id": "llama3.1",
-            "display_name": "llama3.1",
-            "description": "Local deep tier (override via SWARMEE_OLLAMA_DEEP_MODEL_ID)."
-          },
-          "long": {
-            "provider": "ollama",
-            "model_id": "llama3.1",
-            "display_name": "llama3.1",
-            "description": "Local long tier (override via SWARMEE_OLLAMA_LONG_MODEL_ID)."
-          }
-        }
+      "fast": {
+        "preflight_level": "summary",
+        "tool_allowlist": [],
+        "tool_blocklist": []
+      },
+      "long": {
+        "preflight_level": "summary+files",
+        "tool_allowlist": [],
+        "tool_blocklist": []
       }
-    },
+    }
+  },
+  "models": {
     "auto_escalation": {
       "enabled": false,
       "max_escalations_per_task": 1,
       "triggers": {}
     },
-    "availability": {}
-  },
-  "safety": {
-    "tool_consent": "ask",
-    "tool_rules": [
-      {
-        "tool": "shell",
-        "default": "ask",
-        "remember": true
+    "availability": {},
+    "default_tier": "balanced",
+    "hidden_tiers": [],
+    "provider": "bedrock",
+    "providers": {
+      "bedrock": {
+        "description": "AWS-managed models (Anthropic Claude, etc). Uses STRANDS_* env vars by default.",
+        "display_name": "Amazon Bedrock",
+        "tiers": {
+          "balanced": {
+            "description": "Default tier for most coding and analysis work.",
+            "display_name": "Claude Haiku 4.5 (fast)",
+            "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "provider": "bedrock"
+          },
+          "deep": {
+            "additional_request_fields": {
+              "thinking": {
+                "budget_tokens": 8192,
+                "type": "enabled"
+              }
+            },
+            "description": "Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID).",
+            "display_name": "Claude Sonnet 4.5 (deep)",
+            "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "provider": "bedrock"
+          },
+          "fast": {
+            "description": "Lower latency / lower cost default (override via SWARMEE_BEDROCK_FAST_MODEL_ID).",
+            "display_name": "Claude Haiku 4.5 (fast)",
+            "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "provider": "bedrock"
+          },
+          "long": {
+            "description": "Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID).",
+            "display_name": "Claude Sonnet 4.5 (long)",
+            "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "provider": "bedrock"
+          }
+        }
       },
-      {
-        "tool": "file_write",
-        "default": "ask",
-        "remember": true
+      "github_copilot": {
+        "description": "OpenAI-compatible endpoint for GitHub Copilot. Uses SWARMEE_GITHUB_COPILOT_API_KEY or GITHUB_TOKEN.",
+        "display_name": "GitHub Copilot",
+        "tiers": {
+          "balanced": {
+            "description": "Default Copilot tier for most coding tasks.",
+            "display_name": "GPT-4o (Copilot)",
+            "model_id": "gpt-4o",
+            "provider": "github_copilot"
+          },
+          "deep": {
+            "description": "Stronger reasoning where available (override via SWARMEE_GITHUB_COPILOT_DEEP_MODEL_ID).",
+            "display_name": "GPT-5 (Copilot)",
+            "model_id": "gpt-5",
+            "provider": "github_copilot"
+          },
+          "fast": {
+            "description": "Lower latency default for Copilot (override via SWARMEE_GITHUB_COPILOT_FAST_MODEL_ID).",
+            "display_name": "GPT-4o mini (Copilot)",
+            "model_id": "gpt-4o-mini",
+            "provider": "github_copilot"
+          },
+          "long": {
+            "description": "Long-form outputs on Copilot (override via SWARMEE_GITHUB_COPILOT_LONG_MODEL_ID).",
+            "display_name": "GPT-5 (Copilot long)",
+            "model_id": "gpt-5",
+            "provider": "github_copilot"
+          }
+        }
       },
-      {
-        "tool": "editor",
-        "default": "ask",
-        "remember": true
+      "ollama": {
+        "description": "Local models via Ollama (SWARMEE_OLLAMA_HOST).",
+        "display_name": "Ollama",
+        "tiers": {
+          "balanced": {
+            "description": "Local balanced default.",
+            "display_name": "llama3.1",
+            "model_id": "llama3.1",
+            "provider": "ollama"
+          },
+          "deep": {
+            "description": "Local deep tier (override via SWARMEE_OLLAMA_DEEP_MODEL_ID).",
+            "display_name": "llama3.1",
+            "model_id": "llama3.1",
+            "provider": "ollama"
+          },
+          "fast": {
+            "description": "Local default for fast iteration (override via SWARMEE_OLLAMA_FAST_MODEL_ID).",
+            "display_name": "llama3.1",
+            "model_id": "llama3.1",
+            "provider": "ollama"
+          },
+          "long": {
+            "description": "Local long tier (override via SWARMEE_OLLAMA_LONG_MODEL_ID).",
+            "display_name": "llama3.1",
+            "model_id": "llama3.1",
+            "provider": "ollama"
+          }
+        }
       },
-      {
-        "tool": "http_request",
-        "default": "ask",
-        "remember": true
+      "openai": {
+        "description": "OpenAI API models. Requires OPENAI_API_KEY.",
+        "display_name": "OpenAI",
+        "tiers": {
+          "balanced": {
+            "description": "Default OpenAI tier for most coding tasks.",
+            "display_name": "GPT-5 mini",
+            "model_id": "gpt-5-mini",
+            "provider": "openai"
+          },
+          "deep": {
+            "description": "Stronger reasoning; slower / more expensive.",
+            "display_name": "GPT-5.2",
+            "model_id": "gpt-5.2",
+            "provider": "openai"
+          },
+          "fast": {
+            "description": "Lowest latency/cost; good for quick iterations.",
+            "display_name": "GPT-5 nano",
+            "model_id": "gpt-5-nano",
+            "provider": "openai"
+          },
+          "long": {
+            "description": "Long-form outputs (override via SWARMEE_OPENAI_LONG_MODEL_ID).",
+            "display_name": "GPT-5.2 (long)",
+            "model_id": "gpt-5.2",
+            "provider": "openai"
+          }
+        }
       }
-    ]
+    },
+    "tiers": {}
   },
   "packs": {
     "installed": []
+  },
+  "safety": {
+    "permission_rules": [],
+    "tool_consent": "ask",
+    "tool_rules": [
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "shell"
+      },
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "file_write"
+      },
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "editor"
+      },
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "http_request"
+      }
+    ]
   }
 }

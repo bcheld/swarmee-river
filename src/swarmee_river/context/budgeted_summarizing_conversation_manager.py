@@ -93,6 +93,18 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         )
         self.enabled = truthy_env("SWARMEE_SUMMARIZE_CONTEXT", True)
 
+    def reduce_context(self, agent: "Any", e: Exception | None = None, **kwargs: Any) -> None:
+        messages = getattr(agent, "messages", [])
+        if not isinstance(messages, list) or len(messages) < 2:
+            return
+        try:
+            super().reduce_context(agent, e=e, **kwargs)
+        except Exception as exc:
+            text = str(exc or "").strip().lower()
+            if "cannot summarize" in text and "insufficient messages" in text:
+                return
+            raise
+
     def apply_management(self, agent: "Any", **kwargs: Any) -> None:
         if not self.enabled:
             return

@@ -58,6 +58,9 @@ Documentation = "https://strandsagents.com"
 strands_tools = [
     "strands-agents-tools>=0.1.0,<1.0.0",
 ]
+tui = [
+    "textual>=0.70.0",
+]
 dev = [
     "commitizen>=4.4.0,<5.0.0",
     "hatch>=1.0.0,<2.0.0",
@@ -66,6 +69,17 @@ jupyter = [
     "ipykernel>=6.0.0,<7.0.0",
     "ipython>=8.0.0,<9.0.0",
     "nbformat>=5.0.0,<6.0.0",
+]
+office = [
+    "python-docx>=1.1.0,<2.0.0",
+    "openpyxl>=3.1.0,<4.0.0",
+    "python-pptx>=1.0.2,<2.0.0",
+]
+aws_data = [
+    "boto3>=1.34.0,<2.0.0",
+]
+snowflake = [
+    "snowflake-connector-python>=3.12.0,<4.0.0",
 ]
 docs = [
     "sphinx>=5.0.0,<6.0.0",

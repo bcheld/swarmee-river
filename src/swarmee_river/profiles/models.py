@@ -1,0 +1,339 @@
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+_ALLOWED_CONTEXT_SOURCE_TYPES = {"file", "note", "sop", "kb", "url"}
+ORCHESTRATOR_AGENT_ID = "orchestrator"
+ORCHESTRATOR_AGENT_NAME = "Orchestrator"
+_ORCHESTRATOR_DEFAULT_PROMPT_REFS = ["orchestrator_base"]
+
+
+def _normalize_text(value: object | None, *, lower: bool = False) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text.lower() if lower else text
+
+
+def _normalize_text_list(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = _normalize_text(item)
+        if text is None or text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+    return output
+
+
+def _sanitize_context_source_token(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (value or "").strip())
+    return token.strip("-") or uuid.uuid4().hex[:12]
+
+
+def _normalize_prompt_ref_list(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        token = str(item or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        output.append(token)
+    return output
+
+
+def is_orchestrator_agent_definition(raw: Any) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    agent_id = str(raw.get("id", "")).strip().lower()
+    return agent_id == ORCHESTRATOR_AGENT_ID
+
+
+def normalize_context_source(source: Any) -> dict[str, str] | None:
+    if not isinstance(source, dict):
+        return None
+
+    source_type = str(source.get("type", "")).strip().lower()
+    if source_type not in _ALLOWED_CONTEXT_SOURCE_TYPES:
+        return None
+
+    normalized: dict[str, str] = {"type": source_type}
+    if source_type == "file":
+        path = str(source.get("path", "")).strip()
+        if not path:
+            return None
+        normalized["path"] = path
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", path)))
+        return normalized
+    if source_type == "note":
+        text = str(source.get("text", "")).strip()
+        if not text:
+            return None
+        normalized["text"] = text
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", text[:64])))
+        return normalized
+    if source_type == "sop":
+        name = str(source.get("name", "")).strip()
+        if not name:
+            return None
+        normalized["name"] = name
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", name)))
+        return normalized
+    if source_type == "kb":
+        kb_id = str(source.get("id", source.get("kb_id", ""))).strip()
+        if not kb_id:
+            return None
+        normalized["id"] = kb_id
+        return normalized
+    if source_type == "url":
+        url = str(source.get("url", source.get("path", ""))).strip()
+        if not url:
+            return None
+        normalized["url"] = url
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", url)))
+        return normalized
+    return None
+
+
+def normalize_context_sources(raw_sources: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_sources, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_sources:
+        source = normalize_context_source(item)
+        if source is None:
+            continue
+        source_type = source.get("type", "")
+        value_key = (
+            source.get("path")
+            or source.get("text")
+            or source.get("name")
+            or source.get("url")
+            or source.get("id")
+            or ""
+        ).strip()
+        dedupe_key = (source_type, value_key)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(source)
+    return normalized
+
+
+def _normalize_team_preset_spec(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        encoded = json.dumps(raw, ensure_ascii=False, sort_keys=True)
+        decoded = json.loads(encoded)
+    except Exception:
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def normalize_team_preset(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    name = _normalize_text(raw.get("name"))
+    if name is None:
+        return None
+
+    preset_id = _normalize_text(raw.get("id"))
+    if preset_id is None:
+        preset_id = _sanitize_context_source_token(name)
+
+    spec = _normalize_team_preset_spec(raw.get("spec"))
+    if spec is None:
+        return None
+
+    return {
+        "id": preset_id,
+        "name": name,
+        "description": str(raw.get("description", "")).strip(),
+        "spec": spec,
+    }
+
+
+def normalize_team_presets(raw_presets: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_presets, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in raw_presets:
+        preset = normalize_team_preset(item)
+        if preset is None:
+            continue
+        preset_id = str(preset.get("id", "")).strip()
+        if not preset_id or preset_id in seen_ids:
+            continue
+        seen_ids.add(preset_id)
+        normalized.append(preset)
+    return normalized
+
+
+def normalize_agent_definition(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    name = _normalize_text(raw.get("name"))
+    if name is None:
+        return None
+
+    raw_id = _normalize_text(raw.get("id"))
+    agent_id = _sanitize_context_source_token(raw_id or name)
+    if not agent_id:
+        return None
+
+    summary = str(raw.get("summary", "")).strip()
+    prompt = str(raw.get("prompt", "")).strip()
+    knowledge_base_id = _normalize_text(raw.get("knowledge_base_id"))
+
+    activated_raw = raw.get("activated")
+    if isinstance(activated_raw, bool):
+        activated = activated_raw
+    else:
+        activated = str(activated_raw or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+    return {
+        "id": agent_id,
+        "name": name,
+        "summary": summary,
+        "prompt": prompt,
+        "prompt_refs": _normalize_prompt_ref_list(raw.get("prompt_refs")),
+        "provider": _normalize_text(raw.get("provider"), lower=True),
+        "tier": _normalize_text(raw.get("tier"), lower=True),
+        "tool_names": _normalize_text_list(raw.get("tool_names")),
+        "sop_names": _normalize_text_list(raw.get("sop_names")),
+        "knowledge_base_id": knowledge_base_id,
+        "activated": activated,
+    }
+
+
+def _normalized_orchestrator_agent(raw: Any | None) -> dict[str, Any]:
+    candidate = normalize_agent_definition(raw if isinstance(raw, dict) else {})
+    if candidate is None:
+        candidate = {
+            "id": ORCHESTRATOR_AGENT_ID,
+            "name": ORCHESTRATOR_AGENT_NAME,
+            "summary": "",
+            "prompt": "",
+            "prompt_refs": list(_ORCHESTRATOR_DEFAULT_PROMPT_REFS),
+            "provider": None,
+            "tier": None,
+            "tool_names": [],
+            "sop_names": [],
+            "knowledge_base_id": None,
+            "activated": False,
+        }
+    candidate["id"] = ORCHESTRATOR_AGENT_ID
+    name = str(candidate.get("name", "")).strip()
+    candidate["name"] = name or ORCHESTRATOR_AGENT_NAME
+    candidate["prompt_refs"] = _normalize_prompt_ref_list(candidate.get("prompt_refs")) or list(
+        _ORCHESTRATOR_DEFAULT_PROMPT_REFS
+    )
+    candidate["prompt"] = str(candidate.get("prompt", "")).strip()
+    candidate["activated"] = False
+    return candidate
+
+
+def normalize_agent_definitions(raw_agents: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_agents, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    orchestrator_candidate: dict[str, Any] | None = None
+    for item in raw_agents:
+        definition = normalize_agent_definition(item)
+        if definition is None:
+            continue
+        item_id = str(definition.get("id", "")).strip()
+        if not item_id:
+            continue
+        if item_id == ORCHESTRATOR_AGENT_ID:
+            if orchestrator_candidate is None:
+                orchestrator_candidate = definition
+            continue
+        if item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        normalized.append(definition)
+    orchestrator = _normalized_orchestrator_agent(orchestrator_candidate)
+    return [orchestrator, *normalized]
+
+
+@dataclass
+class AgentProfile:
+    id: str
+    name: str
+    provider: str | None = None
+    tier: str | None = None
+    system_prompt_snippets: list[str] = field(default_factory=list)
+    context_sources: list[dict[str, str]] = field(default_factory=list)
+    active_sops: list[str] = field(default_factory=list)
+    knowledge_base_id: str | None = None
+    agents: list[dict[str, Any]] = field(default_factory=list)
+    auto_delegate_assistive: bool = True
+    team_presets: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> AgentProfile:
+        if not isinstance(raw, dict):
+            raise ValueError("profile payload must be an object")
+
+        profile_id = _normalize_text(raw.get("id"))
+        if profile_id is None:
+            raise ValueError("profile id is required")
+
+        name = _normalize_text(raw.get("name"))
+        if name is None:
+            raise ValueError("profile name is required")
+
+        auto_delegate_raw = raw.get("auto_delegate_assistive", True)
+        if isinstance(auto_delegate_raw, bool):
+            auto_delegate_assistive = auto_delegate_raw
+        else:
+            auto_delegate_assistive = str(auto_delegate_raw).strip().lower() not in {"0", "false", "no", "off"}
+
+        return cls(
+            id=profile_id,
+            name=name,
+            provider=_normalize_text(raw.get("provider"), lower=True),
+            tier=_normalize_text(raw.get("tier"), lower=True),
+            system_prompt_snippets=_normalize_text_list(raw.get("system_prompt_snippets")),
+            context_sources=normalize_context_sources(raw.get("context_sources")),
+            active_sops=_normalize_text_list(raw.get("active_sops")),
+            knowledge_base_id=_normalize_text(raw.get("knowledge_base_id")),
+            agents=normalize_agent_definitions(raw.get("agents")),
+            auto_delegate_assistive=auto_delegate_assistive,
+            team_presets=normalize_team_presets(raw.get("team_presets")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "provider": self.provider,
+            "tier": self.tier,
+            "system_prompt_snippets": list(self.system_prompt_snippets),
+            "context_sources": [dict(source) for source in self.context_sources],
+            "active_sops": list(self.active_sops),
+            "knowledge_base_id": self.knowledge_base_id,
+            "agents": normalize_agent_definitions(self.agents),
+            "auto_delegate_assistive": bool(self.auto_delegate_assistive),
+            "team_presets": normalize_team_presets(self.team_presets),
+        }

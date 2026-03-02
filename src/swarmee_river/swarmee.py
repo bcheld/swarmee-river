@@ -10,9 +10,37 @@ import contextlib
 import json
 import os
 import re
+import shutil
+import signal
+import subprocess
+import sys
 import threading
+import time
+import uuid
+import warnings
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
+
+_ROOT_HELP_EPILOG = (
+    "Runtime commands:\n"
+    "  swarmee daemon status            Show runtime broker status\n"
+    "  swarmee daemon start             Start runtime broker\n"
+    "  swarmee daemon stop              Stop runtime broker\n"
+    "  swarmee daemon stop all          Stop all runtime brokers across scopes\n"
+    "  swarmee broker stop              Alias for 'swarmee daemon stop'\n"
+    "  swarmee serve                    Run runtime broker in foreground\n"
+    "  swarmee attach [--tail]          Attach to runtime broker session\n"
+    "\n"
+    "TUI command: swarmee tui"
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message='Field name "json" in "Http_requestTool" shadows an attribute in parent "BaseModel"',
+    category=UserWarning,
+    module=r"pydantic\.main",
+)
 
 # Strands
 from strands import Agent
@@ -46,6 +74,7 @@ Text: Any = _RichText
 
 try:
     from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks as _JSONLLoggerHooks
+    from swarmee_river.hooks.tui_metrics import TuiMetricsHooks as _TuiMetricsHooks
     from swarmee_river.hooks.tool_consent import ToolConsentHooks as _ToolConsentHooks
     from swarmee_river.hooks.tool_policy import ToolPolicyHooks as _ToolPolicyHooks
     from swarmee_river.hooks.tool_result_limiter import ToolResultLimiterHooks as _ToolResultLimiterHooks
@@ -53,11 +82,13 @@ try:
     _HAS_STRANDS_HOOKS = True
 except Exception:
     _JSONLLoggerHooks = None  # type: ignore[misc,assignment]
+    _TuiMetricsHooks = None  # type: ignore[misc,assignment]
     _ToolConsentHooks = None  # type: ignore[misc,assignment]
     _ToolResultLimiterHooks = None  # type: ignore[misc,assignment]
     _ToolPolicyHooks = None  # type: ignore[misc,assignment]
     _HAS_STRANDS_HOOKS = False
 JSONLLoggerHooks: Any = _JSONLLoggerHooks
+TuiMetricsHooks: Any = _TuiMetricsHooks
 ToolConsentHooks: Any = _ToolConsentHooks
 ToolResultLimiterHooks: Any = _ToolResultLimiterHooks
 ToolPolicyHooks: Any = _ToolPolicyHooks
@@ -67,37 +98,85 @@ try:
 except Exception:
     _ToolMessageRepairHooks = None  # type: ignore[misc,assignment]
 ToolMessageRepairHooks: Any = _ToolMessageRepairHooks
+
+try:
+    from swarmee_river.hooks.session_s3 import SessionS3Hooks as _SessionS3Hooks
+except Exception:
+    _SessionS3Hooks = None  # type: ignore[misc,assignment]
+SessionS3Hooks: Any = _SessionS3Hooks
 from swarmee_river.agent_runner import invoke_agent
+from swarmee_river.auth.github_copilot import login_device_flow, save_api_key
+from swarmee_river.auth.store import delete_provider_record, list_auth_records, normalize_provider_name
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.cli.builtin_commands import register_builtin_commands
-from swarmee_river.cli.commands import CLIContext, CommandRegistry
+from swarmee_river.cli.commands import CLIContext, CommandRegistry, handle_pack_command
 from swarmee_river.cli.diagnostics import (
-    render_artifact_get,
-    render_artifact_list,
-    render_effective_config,
-    render_git_diff,
-    render_git_status,
-    render_log_tail,
-    render_replay_invocation,
+    render_config_command_for_surface,
+    render_diagnostic_command_for_surface,
 )
 from swarmee_river.cli.repl import run_repl
+from swarmee_river.context.prompt_cache import PromptCacheState
+from swarmee_river.error_classification import (
+    ERROR_CATEGORY_AUTH_ERROR,
+    ERROR_CATEGORY_FATAL,
+    ERROR_CATEGORY_ESCALATABLE,
+    ERROR_CATEGORY_TRANSIENT,
+    ERROR_CATEGORY_TOOL_ERROR,
+    classify_error_message,
+)
 from swarmee_river.interrupts import (
     AgentInterruptedError,
     interrupt_watcher_from_env,
     pause_active_interrupt_watcher_for_input,
 )
-from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
+from swarmee_river.packs import (
+    find_agent_bundle,
+    enabled_sop_paths,
+    enabled_system_prompts,
+    list_agent_bundles,
+    load_enabled_pack_tools,
+    with_deleted_agent_bundle,
+    with_upserted_agent_bundle,
+)
 from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
+from swarmee_river.prompt_assets import (
+    PromptAsset,
+    ensure_prompt_assets_bootstrapped,
+    load_prompt_assets,
+    resolve_agent_prompt_text,
+    resolve_orchestrator_prompt_from_agent,
+    save_prompt_assets,
+)
+from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID, AgentProfile, normalize_agent_definitions
 from swarmee_river.project_map import build_context_snapshot, build_project_map
+from swarmee_river.runtime_service.client import (
+    RuntimeServiceClient,
+    default_session_id_for_cwd,
+    ensure_runtime_broker,
+    runtime_discovery_path,
+    shutdown_runtime_broker,
+)
+from swarmee_river.runtime_service.server import RuntimeServiceServer
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
 from swarmee_river.session.models import SessionModelManager
+from swarmee_river.session.graph_index import (
+    build_session_graph_index,
+    write_session_graph_index,
+)
 from swarmee_river.session.store import SessionStore
-from swarmee_river.settings import PackEntry, PacksConfig, SwarmeeSettings, load_settings, save_settings
+from swarmee_river.settings import SwarmeeSettings, load_settings, save_settings
 from swarmee_river.tools import get_tools
+from swarmee_river.utils.agent_runtime_utils import (
+    build_base_system_prompt,
+    plan_json_for_execution,
+    render_plan_text,
+    resolve_effective_sop_paths,
+)
 from swarmee_river.utils import model_utils
-from swarmee_river.utils.env_utils import load_env_file
+from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
 from swarmee_river.utils.provider_utils import resolve_model_provider
+from swarmee_river.utils.stdio_utils import configure_stdio_for_utf8, write_stdout_jsonl
 from swarmee_river.utils.welcome_utils import render_goodbye_message, render_welcome_message
 from tools.sop import run_sop
 from tools.welcome import read_welcome_text
@@ -109,17 +188,294 @@ _TOOL_USAGE_RULES = (
     "- Do not use shell for ls/find/sed/cat/grep/rg when file tools can do it.\n"
     "- Reserve shell for real command execution tasks."
 )
+_SYSTEM_REMINDER_RULES = (
+    "System reminder rules:\n"
+    "- You may receive a `<system-reminder>` block prepended to a user message.\n"
+    "- Treat it as system-level updates/context (higher priority than normal user content).\n"
+    "- Do not quote or reveal `<system-reminder>` contents unless the user explicitly asks.\n"
+)
+
+_COMPAT_LOAD_SYSTEM_PROMPT = load_system_prompt
+_DIAGNOSTIC_COMMANDS = {"status", "diff", "artifact", "log", "replay"}
+_USER_CONTEXT_SOURCE_TYPES = {"file", "note", "sop", "kb", "url"}
+_USER_CONTEXT_PER_SOURCE_MAX_CHARS = 8000
+_USER_CONTEXT_TOTAL_MAX_CHARS = 32000
+_SOP_FILE_SUFFIX = ".sop.md"
+_SESSION_MESSAGE_VERSION = 1
+_SESSION_MESSAGE_MAX_COUNT = 200
+_TRANSIENT_RETRY_MAX_ATTEMPTS = 3
 
 
 _consent_prompt_session: Any | None = None
 _consent_prompt_lock = threading.Lock()
 _consent_console: Any | None = Console() if Console is not None else None
+_stdout_jsonl_lock = threading.Lock()
 
 
-def _truthy(value: str | None) -> bool:
-    if value is None:
+def _sanitize_context_source_token(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (value or "").strip())
+    return token.strip("-") or uuid.uuid4().hex[:12]
+
+
+def _normalize_daemon_context_source(source: Any) -> dict[str, str] | None:
+    if not isinstance(source, dict):
+        return None
+    source_type = str(source.get("type", "")).strip().lower()
+    if source_type not in _USER_CONTEXT_SOURCE_TYPES:
+        return None
+
+    normalized: dict[str, str] = {"type": source_type}
+    if source_type == "file":
+        path = str(source.get("path", "")).strip()
+        if not path:
+            return None
+        normalized["path"] = path
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", path)))
+        return normalized
+    if source_type == "note":
+        text = str(source.get("text", "")).strip()
+        if not text:
+            return None
+        normalized["text"] = text
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", text[:64])))
+        return normalized
+    if source_type == "sop":
+        name = str(source.get("name", "")).strip()
+        if not name:
+            return None
+        normalized["name"] = name
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", name)))
+        return normalized
+    if source_type == "kb":
+        kb_id = str(source.get("id", source.get("kb_id", ""))).strip()
+        if not kb_id:
+            return None
+        normalized["id"] = kb_id
+        return normalized
+    if source_type == "url":
+        url = str(source.get("url", source.get("path", ""))).strip()
+        if not url:
+            return None
+        normalized["url"] = url
+        normalized["id"] = _sanitize_context_source_token(str(source.get("id", url)))
+        return normalized
+    return None
+
+
+def _normalize_daemon_context_sources(raw_sources: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_sources, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_sources:
+        source = _normalize_daemon_context_source(item)
+        if source is None:
+            continue
+        source_type = source.get("type", "")
+        value_key = (
+            source.get("path")
+            or source.get("text")
+            or source.get("name")
+            or source.get("url")
+            or source.get("id")
+            or ""
+        ).strip()
+        dedupe_key = (source_type, value_key)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(source)
+    return normalized
+
+
+_SAFETY_OVERRIDE_CONSENT_VALUES = {"ask", "allow", "deny"}
+
+
+def _normalize_safety_override_tool_list(raw_value: Any) -> list[str] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, list):
+        raise ValueError("must be a list of strings or null")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_value:
+        token = str(item).strip()
+        if not token:
+            continue
+        lowered = token.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(token)
+    return normalized
+
+
+def _normalize_session_safety_overrides_update(raw_update: Any) -> dict[str, Any]:
+    if not isinstance(raw_update, dict):
+        raise ValueError("set_safety_overrides payload must be an object")
+
+    normalized: dict[str, Any] = {}
+    if "tool_consent" in raw_update:
+        raw_consent = raw_update.get("tool_consent")
+        if raw_consent is None:
+            normalized["tool_consent"] = None
+        else:
+            consent = str(raw_consent).strip().lower()
+            if consent not in _SAFETY_OVERRIDE_CONSENT_VALUES:
+                raise ValueError("set_safety_overrides.tool_consent must be ask|allow|deny")
+            normalized["tool_consent"] = consent
+
+    if "tool_allowlist" in raw_update:
+        try:
+            normalized["tool_allowlist"] = _normalize_safety_override_tool_list(raw_update.get("tool_allowlist"))
+        except ValueError as exc:
+            raise ValueError(f"set_safety_overrides.tool_allowlist {exc}") from exc
+
+    if "tool_blocklist" in raw_update:
+        try:
+            normalized["tool_blocklist"] = _normalize_safety_override_tool_list(raw_update.get("tool_blocklist"))
+        except ValueError as exc:
+            raise ValueError(f"set_safety_overrides.tool_blocklist {exc}") from exc
+
+    return normalized
+
+
+def _normalized_session_safety_overrides_payload(raw_state: Any) -> dict[str, Any]:
+    if not isinstance(raw_state, dict):
+        return {}
+    payload: dict[str, Any] = {}
+    consent = str(raw_state.get("tool_consent", "")).strip().lower()
+    if consent in _SAFETY_OVERRIDE_CONSENT_VALUES:
+        payload["tool_consent"] = consent
+    for key in ("tool_allowlist", "tool_blocklist"):
+        raw_list = raw_state.get(key)
+        if not isinstance(raw_list, list):
+            continue
+        normalized = [str(item).strip() for item in raw_list if str(item).strip()]
+        if normalized:
+            payload[key] = normalized
+    return payload
+
+
+def _write_stdout_jsonl(event: dict[str, Any]) -> None:
+    write_stdout_jsonl(event, lock=_stdout_jsonl_lock)
+
+
+configure_stdio_for_utf8()
+
+
+def _tui_events_enabled() -> bool:
+    """True when running as a subprocess spawned by the TUI."""
+    return truthy(os.getenv("SWARMEE_TUI_EVENTS"))
+
+
+def _is_context_window_overflow_error(exc: BaseException) -> bool:
+    text = str(exc or "").strip().lower()
+    if not text:
         return False
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
+    markers = (
+        "context window overflow",
+        "context length",
+        "maximum context",
+        "too many tokens",
+        "token limit exceeded",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _emit_tui_event(event: dict[str, Any]) -> None:
+    """Emit a structured JSONL event to stdout for TUI consumption."""
+    if _tui_events_enabled():
+        _write_stdout_jsonl(event)
+
+
+def _build_tui_error_event(
+    text: str,
+    *,
+    category_hint: str | None = None,
+    tool_use_id: str | None = None,
+    retry_after_s: int | None = None,
+    next_tier: str | None = None,
+) -> dict[str, Any]:
+    classified = classify_error_message(text, category_hint=category_hint, tool_use_id=tool_use_id)
+    payload: dict[str, Any] = {
+        "event": "error",
+        # Keep both fields for compatibility with older TUI parsers.
+        "text": text,
+        "message": text,
+        "category": classified["category"],
+        "retryable": bool(classified.get("retryable", False)),
+    }
+    resolved_tool = classified.get("tool_use_id")
+    if isinstance(resolved_tool, str) and resolved_tool.strip():
+        payload["tool_use_id"] = resolved_tool.strip()
+    if isinstance(retry_after_s, int) and retry_after_s > 0:
+        payload["retry_after_s"] = retry_after_s
+    if isinstance(next_tier, str) and next_tier.strip():
+        payload["next_tier"] = next_tier.strip().lower()
+    return payload
+
+
+def _emit_classified_tui_error(
+    text: str,
+    *,
+    category_hint: str | None = None,
+    tool_use_id: str | None = None,
+    retry_after_s: int | None = None,
+    next_tier: str | None = None,
+) -> None:
+    _emit_tui_event(
+        _build_tui_error_event(
+            text,
+            category_hint=category_hint,
+            tool_use_id=tool_use_id,
+            retry_after_s=retry_after_s,
+            next_tier=next_tier,
+        )
+    )
+
+
+def _extract_replay_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            text = _extract_replay_text(item)
+            if text:
+                parts.append(text)
+        return "".join(parts)
+    if isinstance(content, dict):
+        if content.get("toolUse") or content.get("toolResult"):
+            return ""
+        for key in ("text", "data", "delta", "output_text", "outputText", "textDelta"):
+            value = content.get(key)
+            if isinstance(value, str) and value:
+                return value
+        nested = content.get("content")
+        if nested is not None:
+            nested_text = _extract_replay_text(nested)
+            if nested_text:
+                return nested_text
+    return ""
+
+
+def _extract_text_from_message_for_replay(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    extracted = _extract_replay_text(content)
+    if extracted:
+        return extracted
+    for key in ("text", "data", "output_text"):
+        value = message.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _turn_count_from_messages(messages: list[Any]) -> int:
+    return sum(1 for item in messages if isinstance(item, dict) and str(item.get("role", "")).strip().lower() == "user")
 
 
 def _event_loop_running() -> bool:
@@ -234,12 +590,278 @@ def _render_tool_consent_message(message: str) -> None:
     print(f"\n[tool consent] {text}")
 
 
-def _plan_json_for_execution(plan: WorkPlan) -> str:
-    payload = plan.model_dump(exclude={"confirmation_prompt"})
-    return json.dumps(payload, indent=2, ensure_ascii=False)
+def _build_resolved_invocation_state(
+    *,
+    invocation_state: dict[str, Any] | None,
+    runtime_environment: dict[str, Any],
+    model_manager: SessionModelManager,
+    selected_provider: str,
+    settings: SwarmeeSettings,
+    structured_output_model: type[Any] | None,
+    session_safety_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolved_state: dict[str, Any] = dict(invocation_state) if isinstance(invocation_state, dict) else {}
+    sw_state = resolved_state.setdefault("swarmee", {})
+    if isinstance(sw_state, dict):
+        sw_state.setdefault("runtime_environment", dict(runtime_environment))
+        sw_state["tier"] = model_manager.current_tier
+        sw_state["provider"] = selected_provider
+        profile = settings.harness.tier_profiles.get(model_manager.current_tier)
+        if profile is not None:
+            sw_state["tool_profile"] = profile.to_dict()
+        if sw_state.get("mode") == "plan" and structured_output_model is not None:
+            model_tool_name = getattr(structured_output_model, "__name__", "").strip()
+            if model_tool_name:
+                existing = sw_state.get("plan_allowed_tools")
+                merged: set[str] = {model_tool_name}
+                if isinstance(existing, (list, tuple, set)):
+                    merged.update(str(item).strip() for item in existing if str(item).strip())
+                sw_state["plan_allowed_tools"] = sorted(merged)
+        tiers = model_manager.list_tiers()
+        current = next((item for item in tiers if item.name == model_manager.current_tier), None)
+        if current is not None:
+            sw_state["model_id"] = current.model_id
+        sw_state["session_safety_overrides"] = _normalized_session_safety_overrides_payload(session_safety_overrides)
+    return resolved_state
 
 
-def _build_conversation_manager(*, window_size: Optional[int], per_turn: Optional[int]) -> Any:
+def _emit_tui_context_event_if_enabled(agent: Any) -> None:
+    if not _tui_events_enabled():
+        return
+    try:
+        from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
+
+        chars_per_token = int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4"))
+        prompt_tokens_est = estimate_tokens(
+            system_prompt=getattr(agent, "system_prompt", None),
+            messages=getattr(agent, "messages", []),
+            chars_per_token=chars_per_token,
+        )
+        budget = int(os.getenv("SWARMEE_CONTEXT_BUDGET_TOKENS", "20000"))
+        _emit_tui_event(
+            {
+                "event": "context",
+                "prompt_tokens_est": prompt_tokens_est,
+                "budget_tokens": budget,
+                "chars_per_token": chars_per_token,
+                "messages": len(getattr(agent, "messages", []) or []),
+            }
+        )
+    except Exception:
+        pass
+
+
+def _build_session_meta_payload(
+    *,
+    settings: SwarmeeSettings,
+    selected_provider: str,
+    current_tier: str,
+    active_sop_names: list[str] | None,
+) -> dict[str, Any]:
+    normalized_sops = [name.strip() for name in (active_sop_names or []) if str(name).strip()]
+    enabled_packs = [
+        {"name": p.name, "path": p.path, "enabled": p.enabled}
+        for p in settings.packs.installed
+        if getattr(p, "enabled", True)
+    ]
+    try:
+        pm = build_project_map()
+        git_root = pm.get("git_root")
+    except Exception:
+        git_root = None
+    return {
+        "cwd": str(Path.cwd()),
+        "git_root": git_root,
+        "provider": selected_provider,
+        "tier": current_tier,
+        "packs": enabled_packs,
+        # Keep both fields for backwards compatibility with existing session metadata readers.
+        "active_sop": normalized_sops[0] if normalized_sops else None,
+        "active_sops": normalized_sops,
+    }
+
+
+def _build_model_info_event_payload(
+    *,
+    model_manager: SessionModelManager,
+    selected_provider: str,
+    tool_names: list[str] | None = None,
+) -> dict[str, Any]:
+    tiers = model_manager.list_tiers()
+    current = next((item for item in tiers if item.name == model_manager.current_tier), None)
+    normalized_tool_names = sorted({str(name).strip() for name in (tool_names or []) if str(name).strip()})
+    return {
+        "event": "model_info",
+        "provider": current.provider if current is not None else selected_provider,
+        "tier": model_manager.current_tier,
+        "model_id": current.model_id if current is not None else None,
+        "tool_names": normalized_tool_names,
+        "tiers": [
+            {
+                "name": item.name,
+                "provider": item.provider,
+                "model_id": item.model_id,
+                "display_name": item.display_name,
+                "description": item.description,
+                "available": item.available,
+                "reason": item.reason,
+            }
+            for item in tiers
+        ],
+    }
+
+
+def _render_auth_records_text() -> str:
+    records = list_auth_records(include_opencode=True)
+    if not records:
+        return "No provider credentials found."
+    lines = ["# Auth records", ""]
+    for item in records:
+        provider = str(item.get("provider", ""))
+        source = str(item.get("source", ""))
+        auth_type = str(item.get("type", "unknown"))
+        details: list[str] = [auth_type, source]
+        if item.get("has_key"):
+            details.append("key")
+        if item.get("has_refresh"):
+            details.append("refresh")
+        if item.get("has_access"):
+            details.append("access")
+        lines.append(f"- {provider}: {', '.join(details)}")
+    return "\n".join(lines)
+
+
+def _run_aws_identity_check(*, profile: str | None) -> tuple[bool, str]:
+    command = ["aws", "sts", "get-caller-identity", "--output", "json"]
+    resolved_profile = (profile or "").strip()
+    if resolved_profile:
+        command.extend(["--profile", resolved_profile])
+    env = dict(os.environ)
+    if resolved_profile:
+        env["AWS_PROFILE"] = resolved_profile
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+    except Exception as exc:
+        return False, str(exc)
+    if result.returncode == 0:
+        return True, ""
+    stderr = (result.stderr or "").strip()
+    stdout = (result.stdout or "").strip()
+    return False, stderr or stdout or f"aws sts failed (exit {result.returncode})"
+
+
+def _connect_aws_credentials(
+    *,
+    profile: str | None,
+    emit: Callable[[str], None],
+) -> None:
+    aws_path = shutil.which("aws")
+    if not aws_path:
+        raise RuntimeError("AWS CLI was not found on PATH. Install AWS CLI v2 and configure a profile.")
+
+    resolved_profile = (profile or os.getenv("AWS_PROFILE") or "default").strip() or "default"
+    os.environ["AWS_PROFILE"] = resolved_profile
+
+    ok, check_message = _run_aws_identity_check(profile=resolved_profile)
+    if ok:
+        emit(f"AWS credentials already valid for profile '{resolved_profile}'.")
+        return
+
+    emit(f"AWS credentials unavailable for profile '{resolved_profile}'. Starting aws sso login...")
+    login_cmd = [aws_path, "sso", "login", "--profile", resolved_profile]
+    login_env = dict(os.environ)
+    login_env["AWS_PROFILE"] = resolved_profile
+
+    try:
+        process = subprocess.Popen(
+            login_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=login_env,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to start AWS SSO login: {exc}") from exc
+
+    try:
+        if process.stdout is not None:
+            for raw_line in process.stdout:
+                line = str(raw_line or "").strip()
+                if line:
+                    emit(f"[aws] {line}")
+    finally:
+        return_code = process.wait()
+
+    if return_code != 0:
+        suffix = f" Last check: {check_message}" if check_message else ""
+        raise RuntimeError(f"AWS SSO login failed for profile '{resolved_profile}'.{suffix}")
+
+    ok_after, verify_message = _run_aws_identity_check(profile=resolved_profile)
+    if not ok_after:
+        raise RuntimeError(
+            f"AWS login completed but credentials are still unavailable for profile '{resolved_profile}': "
+            f"{verify_message}"
+        )
+    emit(f"AWS credentials refreshed for profile '{resolved_profile}'.")
+
+
+def _handle_auth_cli_command(command: str, args: list[str]) -> tuple[bool, str]:
+    cmd = (command or "").strip().lower()
+    if cmd == "connect":
+        provider = normalize_provider_name(args[0] if args else "github_copilot")
+        if provider == "bedrock":
+            profile = args[1] if len(args) >= 2 else None
+            _connect_aws_credentials(profile=profile, emit=lambda line: print(line))
+            resolved_profile = (str(profile or os.getenv("AWS_PROFILE") or "default")).strip() or "default"
+            return True, f"AWS credentials connected for profile '{resolved_profile}'."
+        if provider != "github_copilot":
+            return True, "Usage: swarmee connect [github_copilot] | swarmee connect aws [profile]"
+        result = login_device_flow(status=lambda line: print(line), open_browser=True)
+        return True, f"GitHub Copilot connected.\nSaved credentials to: {result.get('path')}"
+
+    if cmd != "auth":
+        return False, ""
+
+    subcmd = args[0].strip().lower() if args else "list"
+    if subcmd in {"list", "ls"}:
+        return True, _render_auth_records_text()
+    if subcmd == "logout":
+        provider = normalize_provider_name(args[1] if len(args) >= 2 else "github_copilot")
+        if not provider:
+            return True, "Usage: swarmee auth logout <provider>"
+        deleted = delete_provider_record(provider)
+        if deleted:
+            return True, f"Removed saved credentials for provider: {provider}"
+        return True, f"No saved credentials found for provider: {provider}"
+    if subcmd == "login":
+        provider_raw = "github_copilot"
+        if len(args) >= 2 and not str(args[1]).strip().startswith("-"):
+            provider_raw = args[1]
+        provider = normalize_provider_name(provider_raw)
+        if provider != "github_copilot":
+            return True, "Only github_copilot login is currently supported."
+        if "--api-key" in args:
+            key = (os.getenv("SWARMEE_GITHUB_COPILOT_API_KEY") or "").strip()
+            if not key:
+                return True, (
+                    "Set SWARMEE_GITHUB_COPILOT_API_KEY and re-run `swarmee auth login --api-key` to save it locally."
+                )
+            path = save_api_key(key)
+            return True, f"Saved GitHub Copilot API key to: {path}"
+        result = login_device_flow(status=lambda line: print(line), open_browser=True)
+        return True, f"GitHub Copilot connected.\nSaved credentials to: {result.get('path')}"
+    return (
+        True,
+        "Usage: swarmee auth list | swarmee auth login [github_copilot] [--api-key] | swarmee auth logout [provider]",
+    )
+
+
+def _build_conversation_manager(
+    *,
+    window_size: int | None,
+    per_turn: int | None,
+    summarization_system_prompt: str | None = None,
+) -> Any:
     manager_name = (os.getenv("SWARMEE_CONTEXT_MANAGER", "summarize") or "summarize").strip().lower()
 
     if manager_name in {"none", "null", "off", "disabled"}:
@@ -264,6 +886,7 @@ def _build_conversation_manager(*, window_size: Optional[int], per_turn: Optiona
             max_prompt_tokens=max_prompt_tokens,
             summary_ratio=summary_ratio,
             preserve_recent_messages=preserve_recent,
+            summarization_system_prompt=summarization_system_prompt,
         )
 
     # Default: sliding window
@@ -274,7 +897,7 @@ def _build_conversation_manager(*, window_size: Optional[int], per_turn: Optiona
 
     resolved_window_size = window_size if window_size is not None else int(os.getenv("SWARMEE_WINDOW_SIZE", "20"))
     resolved_per_turn = per_turn if per_turn is not None else int(os.getenv("SWARMEE_CONTEXT_PER_TURN", "1"))
-    should_truncate_results = _truthy(os.getenv("SWARMEE_TRUNCATE_RESULTS", "true"))
+    should_truncate_results = truthy(os.getenv("SWARMEE_TRUNCATE_RESULTS", "true"))
 
     return SlidingWindowConversationManager(
         window_size=resolved_window_size,
@@ -283,9 +906,1888 @@ def _build_conversation_manager(*, window_size: Optional[int], per_turn: Optiona
     )
 
 
+def _build_runtime_hooks(
+    *,
+    args: argparse.Namespace,
+    safety_settings: Any,
+    auto_approve: bool,
+    consent_prompt_fn: Callable[[str], str] | None,
+) -> list[Any]:
+    if not _HAS_STRANDS_HOOKS:
+        return []
+
+    def _consent_prompt(text: str) -> str:
+        if callable(consent_prompt_fn):
+            return str(consent_prompt_fn(text) or "")
+        if _tui_events_enabled():
+            _emit_tui_event(
+                {
+                    "event": "consent_prompt",
+                    "context": text,
+                    "options": ["y", "n", "a", "v"],
+                }
+            )
+            try:
+                return input().strip()
+            except (KeyboardInterrupt, EOFError):
+                return ""
+        callback_handler(force_stop=True)
+        _render_tool_consent_message(text)
+        with pause_active_interrupt_watcher_for_input():
+            return _get_user_input_compat(
+                "\n~ consent> ",
+                default="",
+                keyboard_interrupt_return_default=True,
+                prefer_prompt_toolkit_in_async=False,
+            )
+
+    hooks = [
+        JSONLLoggerHooks(),
+        TuiMetricsHooks(),
+        ToolPolicyHooks(safety_settings),
+        ToolConsentHooks(
+            safety_settings,
+            interactive=not bool(args.query),
+            auto_approve=auto_approve,
+            prompt=_consent_prompt,
+        ),
+        ToolResultLimiterHooks(),
+    ]
+    if ToolMessageRepairHooks is not None:
+        hooks.insert(2, ToolMessageRepairHooks())
+    if (os.getenv("SWARMEE_SESSION_S3_BUCKET") or "").strip() and SessionS3Hooks is not None:
+        hooks.append(SessionS3Hooks())
+    return hooks
+
+
+def _build_runtime_tools(settings: SwarmeeSettings) -> tuple[dict[str, Any], list[Any]]:
+    tools_dict = get_tools()
+    for name, tool_obj in load_enabled_pack_tools(settings).items():
+        tools_dict.setdefault(name, tool_obj)
+    return tools_dict, [tools_dict[name] for name in sorted(tools_dict)]
+
+
+def _resolve_provider_and_model_manager(
+    *,
+    args: argparse.Namespace,
+    settings: SwarmeeSettings,
+) -> tuple[str, str | None, SessionModelManager]:
+    selected_provider, provider_notice = resolve_model_provider(
+        cli_provider=args.model_provider.stem if args.model_provider is not None else None,
+        env_provider=os.getenv("SWARMEE_MODEL_PROVIDER"),
+        settings_provider=settings.models.provider,
+    )
+    model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
+    model_manager.set_fallback_config(args.model_config)
+    return selected_provider, provider_notice, model_manager
+
+
+def _build_agent_runtime(
+    args: argparse.Namespace,
+    settings: SwarmeeSettings,
+    auto_approve: bool,
+    consent_prompt_fn: Callable[[str], str] | None,
+    *,
+    knowledge_base_id: str | None = None,
+    settings_path_for_project: Path | None = None,
+) -> dict[str, Any]:
+    selected_provider, provider_notice, model_manager = _resolve_provider_and_model_manager(
+        args=args,
+        settings=settings,
+    )
+    model = model_manager.build_model()
+    runtime_environment = detect_runtime_environment(cwd=Path.cwd())
+    runtime_environment_prompt_section = render_runtime_environment_section(runtime_environment)
+
+    tools_dict, tools = _build_runtime_tools(settings)
+
+    pack_sop_paths = enabled_sop_paths(settings)
+    pack_prompt_sections = enabled_system_prompts(settings)
+    ensure_prompt_assets_bootstrapped()
+    base_system_prompt = build_base_system_prompt(
+        raw_system_prompt=resolve_orchestrator_prompt_from_agent(None),
+        runtime_environment_prompt_section=runtime_environment_prompt_section,
+        pack_prompt_sections=pack_prompt_sections,
+        tool_usage_rules=_TOOL_USAGE_RULES,
+        system_reminder_rules=_SYSTEM_REMINDER_RULES,
+    )
+    effective_sop_paths = resolve_effective_sop_paths(cli_sop_paths=args.sop_paths, pack_sop_paths=pack_sop_paths)
+
+    summarization_system_prompt = (
+        base_system_prompt if truthy(os.getenv("SWARMEE_CACHE_SAFE_SUMMARY", "false")) else None
+    )
+    conversation_manager = _build_conversation_manager(
+        window_size=args.window_size,
+        per_turn=args.context_per_turn,
+        summarization_system_prompt=summarization_system_prompt,
+    )
+    hooks = _build_runtime_hooks(
+        args=args,
+        safety_settings=settings.safety,
+        auto_approve=auto_approve,
+        consent_prompt_fn=consent_prompt_fn,
+    )
+
+    agent_kwargs: dict[str, Any] = {
+        "model": model,
+        "tools": tools,
+        "system_prompt": base_system_prompt,
+        "callback_handler": callback_handler,
+        "load_tools_from_directory": not truthy(os.getenv("SWARMEE_FREEZE_TOOLS", "false")),
+    }
+    if conversation_manager is not None:
+        agent_kwargs["conversation_manager"] = conversation_manager
+    if hooks:
+        agent_kwargs["hooks"] = hooks
+
+    def create_agent(*, messages: Any | None = None, state: Any | None = None) -> Agent:
+        kwargs = dict(agent_kwargs)
+        if messages is not None:
+            kwargs["messages"] = messages
+        if state is not None:
+            kwargs["state"] = state
+        try:
+            return Agent(**kwargs)
+        except TypeError:
+            kwargs.pop("conversation_manager", None)
+            kwargs.pop("hooks", None)
+            kwargs.pop("messages", None)
+            kwargs.pop("state", None)
+            return Agent(**kwargs)
+
+    agent = create_agent()
+    interrupt_event = threading.Event()
+
+    preflight_prompt_section: str | None = None
+    project_map_prompt_section: str | None = None
+    active_plan_prompt_section: str | None = None
+    artifact_store = ArtifactStore()
+    prompt_cache = PromptCacheState()
+    active_knowledge_base_id: str | None = knowledge_base_id
+    user_context_sources: list[dict[str, str]] = []
+    active_profile_system_prompt_snippets: list[str] = []
+    active_profile_agents: list[dict[str, Any]] = []
+    active_orchestrator_agent: dict[str, Any] | None = None
+    auto_delegate_assistive = True
+    user_context_active_reminder_keys: set[str] = set()
+    user_context_file_cache: dict[str, dict[str, Any]] = {}
+    user_context_sop_cache: dict[str, dict[str, Any]] = {}
+    user_context_last_warning: str | None = None
+    user_context_lock = threading.Lock()
+    active_sop_overrides: dict[str, str] = {}
+    active_sop_lock = threading.Lock()
+    daemon_managed_sops = False
+    session_safety_overrides: dict[str, Any] = {}
+
+    def _prompt_assets_by_id() -> dict[str, PromptAsset]:
+        ensure_prompt_assets_bootstrapped()
+        return {asset.id: asset for asset in load_prompt_assets()}
+
+    def _normalize_prompt_asset_payload(raw: Any) -> PromptAsset:
+        if not isinstance(raw, dict):
+            raise ValueError("prompt asset payload must be an object")
+        return PromptAsset.from_dict(raw)
+
+    def _orchestrator_agent_from_agents(agents: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        for agent in normalize_agent_definitions(agents or []):
+            if str(agent.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID:
+                return dict(agent)
+        return None
+
+    def _orchestrator_prompt_refs(orchestrator_agent: dict[str, Any] | None) -> set[str]:
+        refs = {
+            str(item).strip().lower()
+            for item in ((orchestrator_agent or {}).get("prompt_refs") or [])
+            if str(item).strip()
+        }
+        return refs or {"orchestrator_base"}
+
+    def _refresh_orchestrator_system_prompt() -> None:
+        nonlocal base_system_prompt, summarization_system_prompt
+        base_system_prompt = build_base_system_prompt(
+            raw_system_prompt=resolve_orchestrator_prompt_from_agent(active_orchestrator_agent, _prompt_assets_by_id()),
+            runtime_environment_prompt_section=runtime_environment_prompt_section,
+            pack_prompt_sections=pack_prompt_sections,
+            tool_usage_rules=_TOOL_USAGE_RULES,
+            system_reminder_rules=_SYSTEM_REMINDER_RULES,
+        )
+        agent_kwargs["system_prompt"] = base_system_prompt
+        with contextlib.suppress(Exception):
+            agent.system_prompt = base_system_prompt
+        if truthy(os.getenv("SWARMEE_CACHE_SAFE_SUMMARY", "false")):
+            summarization_system_prompt = base_system_prompt
+
+    def get_prompt_assets_payload() -> dict[str, Any]:
+        assets = load_prompt_assets()
+        orchestrator_prompt_id = next(iter(_orchestrator_prompt_refs(active_orchestrator_agent)), "orchestrator_base")
+        return {
+            "event": "prompt_assets",
+            "orchestrator_prompt_id": orchestrator_prompt_id,
+            "assets": [asset.to_dict() for asset in assets],
+        }
+
+    def set_prompt_asset(raw_asset: Any) -> dict[str, Any]:
+        asset = _normalize_prompt_asset_payload(raw_asset)
+        assets_by_id = _prompt_assets_by_id()
+        assets_by_id[asset.id] = asset
+        save_prompt_assets(list(assets_by_id.values()))
+        if asset.id in _orchestrator_prompt_refs(active_orchestrator_agent):
+            _refresh_orchestrator_system_prompt()
+            _refresh_query_context(interactive=True)
+        return get_prompt_assets_payload()
+
+    def delete_prompt_asset(prompt_id: str) -> dict[str, Any]:
+        token = str(prompt_id or "").strip().lower()
+        if not token:
+            raise ValueError("delete_prompt_asset.id is required")
+        if token in _orchestrator_prompt_refs(active_orchestrator_agent):
+            raise ValueError("Cannot delete orchestrator-bound prompt asset")
+        assets_by_id = _prompt_assets_by_id()
+        if token not in assets_by_id:
+            raise ValueError(f"Prompt asset not found: {token}")
+        assets_by_id.pop(token, None)
+        save_prompt_assets(list(assets_by_id.values()))
+        return get_prompt_assets_payload()
+
+    def _context_source_key(source: dict[str, str]) -> str:
+        source_type = source.get("type", "").strip().lower()
+        raw_value = (
+            source.get("id")
+            or source.get("path")
+            or source.get("name")
+            or source.get("text", "")[:64]
+            or source.get("url")
+            or uuid.uuid4().hex
+        )
+        token = _sanitize_context_source_token(raw_value)
+        return f"user_context_{source_type}_{token}"
+
+    def _context_per_source_limit() -> int:
+        try:
+            return max(
+                128,
+                int(
+                    os.getenv(
+                        "SWARMEE_USER_CONTEXT_SOURCE_MAX_CHARS",
+                        str(_USER_CONTEXT_PER_SOURCE_MAX_CHARS),
+                    )
+                ),
+            )
+        except Exception:
+            return _USER_CONTEXT_PER_SOURCE_MAX_CHARS
+
+    def _context_total_limit() -> int:
+        try:
+            return max(1024, int(os.getenv("SWARMEE_USER_CONTEXT_TOTAL_MAX_CHARS", str(_USER_CONTEXT_TOTAL_MAX_CHARS))))
+        except Exception:
+            return _USER_CONTEXT_TOTAL_MAX_CHARS
+
+    def _resolve_context_file_path(path_text: str) -> Path:
+        candidate = Path(path_text).expanduser()
+        return candidate if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
+
+    def _load_cached_text_for_path(
+        *,
+        path: Path,
+        cache: dict[str, dict[str, Any]],
+        max_chars: int,
+    ) -> str | None:
+        try:
+            stat = path.stat()
+        except Exception:
+            return None
+        cache_key = str(path)
+        entry = cache.get(cache_key)
+        if entry and int(entry.get("mtime_ns", -1)) == int(stat.st_mtime_ns):
+            return str(entry.get("text", ""))
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        text = raw[:max_chars].strip()
+        cache[cache_key] = {"mtime_ns": int(stat.st_mtime_ns), "text": text}
+        return text
+
+    def _iter_effective_sop_dirs() -> list[Path]:
+        dirs: list[Path] = []
+        cwd_sops = Path.cwd() / "sops"
+        if cwd_sops.exists() and cwd_sops.is_dir():
+            dirs.append(cwd_sops)
+        if effective_sop_paths:
+            for token in str(effective_sop_paths).split(os.pathsep):
+                candidate = Path(token).expanduser()
+                if candidate.exists() and candidate.is_dir():
+                    dirs.append(candidate)
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for directory in dirs:
+            key = str(directory.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(directory)
+        return deduped
+
+    def _resolve_sop_file_path(name: str) -> Path | None:
+        sop_name = name.strip()
+        if not sop_name:
+            return None
+        filename = sop_name if sop_name.endswith(_SOP_FILE_SUFFIX) else f"{sop_name}{_SOP_FILE_SUFFIX}"
+        for directory in _iter_effective_sop_dirs():
+            candidate = directory / filename
+            if candidate.exists() and candidate.is_file():
+                return candidate.resolve()
+        return None
+
+    def _set_active_sop_override(name: str, content: str | None) -> None:
+        sop_name = name.strip()
+        if not sop_name:
+            return
+        with active_sop_lock:
+            if content is None:
+                active_sop_overrides.pop(sop_name, None)
+                return
+            normalized = str(content).strip()
+            if not normalized:
+                active_sop_overrides.pop(sop_name, None)
+                return
+            active_sop_overrides[sop_name] = normalized
+
+    def _snapshot_active_sop_overrides() -> dict[str, str]:
+        with active_sop_lock:
+            return dict(active_sop_overrides)
+
+    def _list_active_sop_names() -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        if not daemon_managed_sops and ctx.active_sop_name:
+            base = ctx.active_sop_name.strip()
+            if base:
+                lowered = base.lower()
+                seen.add(lowered)
+                names.append(base)
+        for name in _snapshot_active_sop_overrides().keys():
+            normalized = name.strip()
+            if normalized:
+                lowered = normalized.lower()
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                names.append(normalized)
+        return names
+
+    def _provider_for_tier_name(tier_name: str) -> str | None:
+        requested_tier = (tier_name or "").strip().lower()
+        if not requested_tier:
+            return None
+        for item in model_manager.list_tiers():
+            if item.name.strip().lower() != requested_tier:
+                continue
+            provider = normalize_provider_name(item.provider)
+            return provider or None
+        return None
+
+    def _current_provider_name() -> str | None:
+        return _provider_for_tier_name(model_manager.current_tier)
+
+    def _resolve_sop_content(name: str) -> str | None:
+        sop_name = name.strip()
+        if not sop_name:
+            return None
+        try:
+            sop_result = run_sop(action="get", name=sop_name, sop_paths=effective_sop_paths)
+        except Exception:
+            return None
+        if not isinstance(sop_result, dict):
+            return None
+        if str(sop_result.get("status", "")).strip().lower() != "success":
+            return None
+        content_entries = sop_result.get("content")
+        if not isinstance(content_entries, list) or not content_entries:
+            return None
+        first_entry = content_entries[0]
+        if not isinstance(first_entry, dict):
+            return None
+        text = str(first_entry.get("text", "")).strip()
+        return text or None
+
+    def _set_daemon_sop_override(name: str, content: str | None) -> None:
+        nonlocal daemon_managed_sops
+        daemon_managed_sops = True
+        _set_active_sop_override(name, content)
+
+    def _replace_daemon_sop_overrides(sop_stack: list[tuple[str, str]]) -> list[str]:
+        nonlocal daemon_managed_sops
+        daemon_managed_sops = True
+        with active_sop_lock:
+            active_sop_overrides.clear()
+            for raw_name, raw_content in sop_stack:
+                sop_name = raw_name.strip()
+                sop_content = raw_content.strip()
+                if not sop_name or not sop_content:
+                    continue
+                active_sop_overrides[sop_name] = sop_content
+            return list(active_sop_overrides.keys())
+
+    def _queue_user_context_reminders() -> str | None:
+        nonlocal user_context_active_reminder_keys, user_context_last_warning
+        total_limit = _context_total_limit()
+        per_source_limit = _context_per_source_limit()
+        used_chars = 0
+        seen_keys: set[str] = set()
+        warning_messages: list[str] = []
+        with user_context_lock:
+            sources_snapshot = [dict(item) for item in user_context_sources]
+            active_keys_snapshot = set(user_context_active_reminder_keys)
+
+        for source in sources_snapshot:
+            source_type = source.get("type", "").strip().lower()
+            if source_type == "kb":
+                continue
+
+            key = _context_source_key(source)
+            seen_keys.add(key)
+            section = ""
+            if source_type == "file":
+                resolved_path = _resolve_context_file_path(source.get("path", ""))
+                text = _load_cached_text_for_path(
+                    path=resolved_path,
+                    cache=user_context_file_cache,
+                    max_chars=per_source_limit,
+                )
+                if text:
+                    section = f"User Context File ({resolved_path}):\n{text}"
+                else:
+                    warning_messages.append(f"[context] failed to read file source: {resolved_path}")
+            elif source_type == "note":
+                text = source.get("text", "").strip()
+                section = f"User Context Note:\n{text[:per_source_limit]}".strip() if text else ""
+            elif source_type == "sop":
+                sop_name = source.get("name", "").strip()
+                sop_path = _resolve_sop_file_path(sop_name)
+                sop_text = ""
+                if sop_path is not None:
+                    loaded = _load_cached_text_for_path(
+                        path=sop_path,
+                        cache=user_context_sop_cache,
+                        max_chars=per_source_limit,
+                    )
+                    sop_text = loaded or ""
+                else:
+                    try:
+                        sop_result = run_sop(action="get", name=sop_name, sop_paths=effective_sop_paths)
+                        if sop_result.get("status") == "success":
+                            sop_text = str(sop_result.get("content", [{}])[0].get("text", "")).strip()[
+                                :per_source_limit
+                            ]
+                    except Exception:
+                        sop_text = ""
+                if sop_text:
+                    section = f"User SOP Context ({sop_name}):\n{sop_text}"
+                else:
+                    warning_messages.append(f"[context] failed to resolve sop source: {sop_name}")
+            elif source_type == "url":
+                url_text = source.get("url", "").strip()
+                section = f"User Context URL reference:\n{url_text[:per_source_limit]}".strip() if url_text else ""
+
+            section = section.strip()
+            if not section:
+                prompt_cache.queue_if_changed(key, "")
+                continue
+
+            if used_chars >= total_limit:
+                prompt_cache.queue_if_changed(key, "")
+                warning_messages.append(
+                    f"[context] user context exceeded {total_limit} chars; truncated before source {key}."
+                )
+                continue
+
+            remaining = total_limit - used_chars
+            if len(section) > remaining:
+                section = section[:remaining].rstrip()
+                warning_messages.append(
+                    f"[context] user context exceeded {total_limit} chars; additional content was truncated."
+                )
+
+            used_chars += len(section)
+            prompt_cache.queue_if_changed(key, section)
+
+        for stale_key in active_keys_snapshot - seen_keys:
+            prompt_cache.queue_if_changed(stale_key, "")
+        with user_context_lock:
+            user_context_active_reminder_keys = seen_keys
+
+        warning = warning_messages[0] if warning_messages else None
+        if warning != user_context_last_warning:
+            user_context_last_warning = warning
+            return warning
+        return None
+
+    def set_user_context_sources(raw_sources: Any) -> list[dict[str, str]]:
+        nonlocal user_context_sources, user_context_active_reminder_keys, active_knowledge_base_id
+        normalized = _normalize_daemon_context_sources(raw_sources)
+        with user_context_lock:
+            old_keys = {_context_source_key(item) for item in user_context_sources if item.get("type") != "kb"}
+            new_keys = {_context_source_key(item) for item in normalized if item.get("type") != "kb"}
+            user_context_active_reminder_keys = new_keys
+            user_context_sources = normalized
+        for stale_key in old_keys - new_keys:
+            prompt_cache.queue_if_changed(stale_key, "")
+        kb_override = next((item.get("id", "").strip() for item in normalized if item.get("type") == "kb"), "")
+        active_knowledge_base_id = kb_override or knowledge_base_id
+        return [dict(item) for item in normalized]
+
+    def current_knowledge_base_id() -> str | None:
+        return active_knowledge_base_id
+
+    def apply_session_safety_overrides(raw_update: Any) -> dict[str, Any]:
+        nonlocal session_safety_overrides
+        normalized_update = _normalize_session_safety_overrides_update(raw_update)
+        next_overrides = dict(_normalized_session_safety_overrides_payload(session_safety_overrides))
+        for key in ("tool_consent", "tool_allowlist", "tool_blocklist"):
+            if key not in normalized_update:
+                continue
+            value = normalized_update.get(key)
+            if value is None:
+                next_overrides.pop(key, None)
+                continue
+            if key in {"tool_allowlist", "tool_blocklist"} and isinstance(value, list) and not value:
+                next_overrides.pop(key, None)
+                continue
+            next_overrides[key] = value
+        session_safety_overrides = _normalized_session_safety_overrides_payload(next_overrides)
+        return dict(session_safety_overrides)
+
+    def current_session_safety_overrides() -> dict[str, Any]:
+        return dict(_normalized_session_safety_overrides_payload(session_safety_overrides))
+
+    def compact_context() -> dict[str, Any]:
+        manager = conversation_manager
+        before_tokens: int | None = None
+        after_tokens: int | None = None
+        compacted = False
+        warning: str | None = None
+
+        with contextlib.suppress(Exception):
+            from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
+
+            before_tokens = estimate_tokens(
+                system_prompt=getattr(agent, "system_prompt", None),
+                messages=getattr(agent, "messages", []),
+                chars_per_token=int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4")),
+            )
+
+        if manager is None:
+            warning = "Context compaction is unavailable for this session."
+        else:
+            try:
+                reduce_fn = getattr(manager, "reduce_context", None)
+                apply_fn = getattr(manager, "apply_management", None)
+                if callable(reduce_fn):
+                    reduce_fn(agent, e=None)
+                    compacted = True
+                elif callable(apply_fn):
+                    apply_fn(agent)
+                    compacted = True
+                else:
+                    warning = "Current conversation manager does not support compaction."
+            except Exception as exc:
+                warning = f"Context compaction failed: {exc}"
+
+        with contextlib.suppress(Exception):
+            from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
+
+            after_tokens = estimate_tokens(
+                system_prompt=getattr(agent, "system_prompt", None),
+                messages=getattr(agent, "messages", []),
+                chars_per_token=int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4")),
+            )
+        if (
+            isinstance(before_tokens, int)
+            and isinstance(after_tokens, int)
+            and after_tokens >= before_tokens
+            and compacted
+            and warning is None
+        ):
+            compacted = False
+        return {
+            "compacted": compacted,
+            "before_tokens_est": before_tokens,
+            "after_tokens_est": after_tokens,
+            "warning": warning,
+        }
+
+    def refresh_system_prompt(welcome_text_local: str) -> None:
+        nonlocal auto_delegate_assistive
+        prompt_cache.queue_if_changed("project_map", project_map_prompt_section)
+        prompt_cache.queue_if_changed("preflight", preflight_prompt_section)
+        prompt_cache.queue_if_changed("active_plan", active_plan_prompt_section)
+        snippet_sections: list[str] = []
+        for idx, snippet in enumerate(active_profile_system_prompt_snippets, start=1):
+            text = snippet.strip()
+            if not text:
+                continue
+            snippet_sections.append(f"Profile System Snippet {idx}:\n{text}")
+        prompt_cache.queue_if_changed("profile_system_prompt_snippets", "\n\n".join(snippet_sections))
+        if args.include_welcome_in_prompt and welcome_text_local:
+            prompt_cache.queue_if_changed("welcome", f"Welcome Text Reference:\n{welcome_text_local}")
+
+        active_sop_sections: list[str] = []
+        active_sop_names_seen: set[str] = set()
+
+        def _append_active_sop_section(name: str, content: str) -> None:
+            sop_name = name.strip()
+            sop_body = content.strip()
+            if not sop_name or not sop_body:
+                return
+            token = sop_name.lower()
+            if token in active_sop_names_seen:
+                return
+            active_sop_names_seen.add(token)
+            active_sop_sections.append(f"Active SOP ({sop_name}):\n{sop_body}")
+
+        if not daemon_managed_sops and ctx.active_sop_name:
+            sop_text = ""
+            try:
+                sop_result = run_sop(
+                    action="get",
+                    name=ctx.active_sop_name,
+                    sop_paths=effective_sop_paths,
+                )
+                if sop_result.get("status") == "success":
+                    sop_text = sop_result.get("content", [{}])[0].get("text", "")
+            except Exception:
+                sop_text = ""
+            _append_active_sop_section(ctx.active_sop_name, sop_text)
+
+        override_snapshot = _snapshot_active_sop_overrides()
+        for sop_name, sop_content in override_snapshot.items():
+            _append_active_sop_section(sop_name, sop_content)
+
+        if active_sop_sections:
+            prompt_cache.queue_if_changed("active_sop", "\n\n".join(active_sop_sections))
+        else:
+            prompt_cache.queue_if_changed("active_sop", "")
+
+        if auto_delegate_assistive:
+            activated_agents = [
+                item
+                for item in active_profile_agents
+                if isinstance(item, dict)
+                and str(item.get("id", "")).strip().lower() != ORCHESTRATOR_AGENT_ID
+                and bool(item.get("activated"))
+            ]
+            assets_by_id = _prompt_assets_by_id()
+            guidance_lines: list[str] = []
+            for idx, agent_def in enumerate(activated_agents, start=1):
+                name = str(agent_def.get("name", "")).strip() or f"agent_{idx}"
+                summary = str(agent_def.get("summary", "")).strip()
+                prompt = resolve_agent_prompt_text(agent_def, assets_by_id)
+                tools = [str(tool).strip() for tool in agent_def.get("tool_names", []) if str(tool).strip()]
+                line = f"{idx}. {name}"
+                if summary:
+                    line += f" - {summary}"
+                if tools:
+                    line += f" [tools: {', '.join(tools)}]"
+                if prompt:
+                    line += f"\n   Instructions: {prompt[:220]}"
+                guidance_lines.append(line)
+            if guidance_lines:
+                prompt_cache.queue_if_changed(
+                    "assistive_delegation",
+                    (
+                        "Assistive Delegation Roster:\n"
+                        "When a task matches one of these roles, prefer delegating via a single `swarm` call.\n"
+                        "If delegation does not fit, continue normally.\n\n" + "\n".join(guidance_lines)
+                    ),
+                )
+            else:
+                prompt_cache.queue_if_changed("assistive_delegation", "")
+        else:
+            prompt_cache.queue_if_changed("assistive_delegation", "")
+
+        warning_text = _queue_user_context_reminders()
+        if warning_text:
+            _emit_tui_event({"event": "warning", "text": warning_text})
+
+    def run_agent(
+        query: str,
+        *,
+        invocation_state: dict[str, Any] | None = None,
+        structured_output_model: type[Any] | None = None,
+        structured_output_prompt: str | None = None,
+    ) -> Any:
+        nonlocal agent
+        _emit_tui_context_event_if_enabled(agent)
+        invocation_state = _build_resolved_invocation_state(
+            invocation_state=invocation_state,
+            runtime_environment=runtime_environment,
+            model_manager=model_manager,
+            selected_provider=selected_provider,
+            settings=settings,
+            structured_output_model=structured_output_model,
+            session_safety_overrides=session_safety_overrides,
+        )
+
+        # Inject agent-level context metadata for LLM call inspector hooks.
+        sw = invocation_state.get("swarmee")
+        if isinstance(sw, dict):
+            sys_prompt = getattr(agent, "system_prompt", None) or ""
+            sw["system_prompt_chars"] = len(sys_prompt)
+            agent_tools = getattr(agent, "tools", None) or []
+            sw["tool_count"] = len(agent_tools)
+            try:
+                sw["tool_schema_chars"] = sum(len(json.dumps(t, default=str)) for t in agent_tools)
+            except Exception:
+                sw["tool_schema_chars"] = 0
+
+        interrupt_event.clear()
+        set_interrupt_event(interrupt_event)
+        with interrupt_watcher_from_env(interrupt_event):
+            try:
+                system_reminder = prompt_cache.pop_reminder()
+                return invoke_agent(
+                    agent,
+                    query,
+                    callback_handler=callback_handler,
+                    interrupt_event=interrupt_event,
+                    invocation_state=invocation_state,
+                    system_reminder=system_reminder or None,
+                    structured_output_model=structured_output_model,
+                    structured_output_prompt=structured_output_prompt,
+                )
+            except MaxTokensReachedException:
+                callback_handler(force_stop=True)
+                configured = os.getenv("SWARMEE_MAX_TOKENS") or os.getenv("STRANDS_MAX_TOKENS") or "(unset)"
+                error_msg = (
+                    "Error: Response hit the max output token limit.\n"
+                    f"- Current max: {configured}\n"
+                    "- Fix: increase SWARMEE_MAX_TOKENS (or pass --max-output-tokens), or ask for a shorter response.\n"
+                    "- Resetting agent loop so you can continue."
+                )
+                _emit_classified_tui_error(error_msg, category_hint=ERROR_CATEGORY_ESCALATABLE)
+                if not _tui_events_enabled():
+                    print(f"\n{error_msg}")
+                agent = create_agent()
+                raise
+            except Exception as exc:
+                should_retry_without_reminder = bool(system_reminder) and _is_context_window_overflow_error(exc)
+                if should_retry_without_reminder:
+                    warning_text = (
+                        "Prompt overflow detected; retrying once without preflight reminder context for this turn."
+                    )
+                    _emit_tui_event({"event": "warning", "text": warning_text})
+                    if not _tui_events_enabled():
+                        print(f"\n[warn] {warning_text}")
+                    return invoke_agent(
+                        agent,
+                        query,
+                        callback_handler=callback_handler,
+                        interrupt_event=interrupt_event,
+                        invocation_state=invocation_state,
+                        system_reminder=None,
+                        structured_output_model=structured_output_model,
+                        structured_output_prompt=structured_output_prompt,
+                    )
+                raise
+
+    def _escalation_attempts() -> int:
+        return max(1, model_manager.max_escalations_per_task + 1)
+
+    def _maybe_escalate_tier(*, attempted: set[str]) -> bool:
+        prev_tier = model_manager.current_tier
+        if not model_manager.maybe_escalate(agent, attempted=attempted):
+            return False
+        if model_manager.current_tier != prev_tier and not _tui_events_enabled():
+            print(f"\n[auto-escalation] tier: {prev_tier} -> {model_manager.current_tier}")
+        agent_kwargs["model"] = agent.model
+        return True
+
+    def _retry_with_escalation(
+        *,
+        run_once: Callable[[], Any],
+        retryable_exceptions: tuple[type[Exception], ...],
+        non_retryable_exceptions: tuple[type[BaseException], ...] = (),
+    ) -> Any:
+        attempted: set[str] = set()
+        max_attempts = _escalation_attempts()
+        last_error: Exception | None = None
+
+        for _attempt in range(max_attempts):
+            try:
+                return run_once()
+            except non_retryable_exceptions:
+                raise
+            except retryable_exceptions as exc:
+                last_error = exc
+
+            if not _maybe_escalate_tier(attempted=attempted):
+                break
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Execution failed")
+
+    def _generate_plan(user_request: str) -> WorkPlan:
+        def _run_plan_once() -> WorkPlan:
+            result = run_agent(
+                user_request,
+                invocation_state={"swarmee": {"mode": "plan"}},
+                structured_output_model=WorkPlan,
+                structured_output_prompt=structured_plan_prompt(),
+            )
+            plan = getattr(result, "structured_output", None)
+            if not isinstance(plan, WorkPlan):
+                raise ValueError("Structured plan parse failed")
+            artifact_store.write_text(
+                kind="plan",
+                text=plan.model_dump_json(indent=2),
+                suffix="json",
+                metadata={"request": user_request},
+            )
+            return plan
+
+        return _retry_with_escalation(
+            run_once=_run_plan_once,
+            retryable_exceptions=(MaxTokensReachedException, ValueError),
+        )
+
+    def _swap_agent(messages: Any | None, state: Any | None) -> None:
+        nonlocal agent
+        agent = create_agent(messages=messages, state=state)
+        ctx.agent = agent
+
+    def _build_session_meta() -> dict[str, Any]:
+        return _build_session_meta_payload(
+            settings=settings,
+            selected_provider=selected_provider,
+            current_tier=model_manager.current_tier,
+            active_sop_names=_list_active_sop_names(),
+        )
+
+    def _execute_with_plan(user_request: str, plan: WorkPlan, *, welcome_text_local: str) -> Any:
+        nonlocal active_plan_prompt_section
+        allowed = {tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan"}
+        allowed.add("plan_progress")
+        allowed_tools = sorted(allowed)
+        steps = list(plan.steps or [])
+        step_descriptions = [str(step.description).strip() for step in steps]
+        invocation_state = {
+            "swarmee": {
+                "mode": "execute",
+                "enforce_plan": True,
+                "allowed_tools": allowed_tools,
+                "plan_step_count": len(step_descriptions),
+                "plan_step_descriptions": step_descriptions,
+            }
+        }
+        plan_json_payload = plan_json_for_execution(plan)
+
+        lines: list[str] = [
+            "Active execution plan:",
+            f"Summary: {plan.summary}",
+        ]
+        if step_descriptions:
+            lines.append("Steps:")
+            for idx, desc in enumerate(step_descriptions, start=1):
+                lines.append(f"{idx}. {desc}")
+        else:
+            lines.append("Steps: (none)")
+        lines.extend(
+            [
+                "",
+                (
+                    "You are executing the following plan. Before starting each step, emit a brief status "
+                    "message indicating which step you are beginning."
+                ),
+                "Format: 'Starting step N: <description>'.",
+                "After completing a step, emit: 'Completed step N.'",
+                (
+                    "Use the `plan_progress` tool before each step (status=in_progress) and after each step "
+                    "(status=completed)."
+                ),
+                "The `plan_progress` tool accepts step (1-based) or step_index (0-based), status, and optional note.",
+            ]
+        )
+        active_plan_prompt_section = "\n".join(lines).strip()
+
+        approved_plan_section = (
+            "Approved Plan (execute ONLY this plan; if you need changes, ask to :replan):\n" + plan_json_payload
+        )
+        prompt_cache.queue_one_off(approved_plan_section)
+        refresh_system_prompt(welcome_text_local)
+        try:
+
+            def _run_execute_once() -> Any:
+                result = run_agent(user_request, invocation_state=invocation_state)
+                if knowledge_base_id:
+                    with contextlib.suppress(Exception):
+                        agent.tool.store_in_kb(
+                            content=(f"Approved plan for request:\n{user_request}\n\n{plan_json_payload}\n"),
+                            title=f"Plan: {user_request[:50]}{'...' if len(user_request) > 50 else ''}",
+                            knowledge_base_id=knowledge_base_id,
+                            record_direct_tool_call=False,
+                        )
+                return result
+
+            return _retry_with_escalation(
+                run_once=_run_execute_once,
+                retryable_exceptions=(Exception,),
+                non_retryable_exceptions=(AgentInterruptedError,),
+            )
+        finally:
+            active_plan_prompt_section = None
+            refresh_system_prompt(welcome_text_local)
+
+    registry = CommandRegistry()
+    register_builtin_commands(registry)
+
+    settings_path = settings_path_for_project or (Path.cwd() / ".swarmee" / "settings.json")
+
+    ctx = CLIContext(
+        agent=agent,
+        agent_kwargs=agent_kwargs,
+        tools_dict=tools_dict,
+        model_manager=model_manager,
+        knowledge_base_id=knowledge_base_id,
+        effective_sop_paths=effective_sop_paths,
+        welcome_text="",
+        auto_approve=auto_approve,
+        selected_provider=selected_provider,
+        settings=settings,
+        settings_path=settings_path,
+        refresh_system_prompt=lambda: refresh_system_prompt(ctx.welcome_text),
+        generate_plan=_generate_plan,
+        execute_with_plan=lambda req, plan: _execute_with_plan(req, plan, welcome_text_local=ctx.welcome_text),
+        render_plan=render_plan_text,
+        run_agent=run_agent,
+        store_conversation=lambda user_input, response: store_conversation_in_kb(
+            agent, user_input, response, knowledge_base_id
+        ),
+        output=print,
+        stop_spinners=lambda: callback_handler(force_stop=True),
+        build_session_meta=_build_session_meta,
+        swap_agent=_swap_agent,
+    )
+    ctx.active_sop_name = args.sop
+    ctx.session_store = SessionStore()
+
+    def _refresh_query_context(*, interactive: bool) -> None:
+        nonlocal preflight_prompt_section, project_map_prompt_section
+        profile = settings.harness.tier_profiles.get(model_manager.current_tier)
+        snapshot = build_context_snapshot(
+            artifact_store=artifact_store,
+            interactive=interactive,
+            default_preflight_level=profile.preflight_level if profile else None,
+        )
+        preflight_prompt_section = snapshot.preflight_prompt_section
+        project_map_prompt_section = snapshot.project_map_prompt_section
+        ctx.refresh_system_prompt()
+
+    def _current_model_info_event() -> dict[str, Any]:
+        return _build_model_info_event_payload(
+            model_manager=model_manager,
+            selected_provider=selected_provider,
+            tool_names=sorted(tools_dict.keys()),
+        )
+
+    def apply_profile(raw_profile: Any) -> dict[str, Any]:
+        nonlocal active_profile_system_prompt_snippets, active_profile_agents
+        nonlocal active_orchestrator_agent, auto_delegate_assistive
+
+        normalized = AgentProfile.from_dict(raw_profile)
+        requested_tier = (normalized.tier or "").strip().lower()
+        requested_provider = normalize_provider_name(normalized.provider)
+
+        if requested_tier:
+            tier_provider = _provider_for_tier_name(requested_tier)
+            if tier_provider is None:
+                raise ValueError(f"Unknown tier: {requested_tier}")
+            if requested_provider and requested_provider != tier_provider:
+                raise ValueError("set_profile.profile.provider does not match the requested tier's provider")
+        elif requested_provider:
+            current_provider = _current_provider_name()
+            if current_provider and requested_provider != current_provider:
+                raise ValueError("set_profile.profile.provider requires a matching profile.tier for runtime apply")
+
+        resolved_sops: list[tuple[str, str]] = []
+        for sop_name in normalized.active_sops:
+            sop_content = _resolve_sop_content(sop_name)
+            if sop_content is None:
+                raise ValueError(f"set_profile.active_sops contains unknown SOP: {sop_name}")
+            resolved_sops.append((sop_name, sop_content))
+
+        next_context_sources = [dict(item) for item in normalized.context_sources]
+        if normalized.knowledge_base_id:
+            next_context_sources = [
+                item for item in next_context_sources if str(item.get("type", "")).strip().lower() != "kb"
+            ]
+            next_context_sources.append({"type": "kb", "id": normalized.knowledge_base_id})
+        normalized_sources = _normalize_daemon_context_sources(next_context_sources)
+
+        if requested_tier:
+            model_manager.set_tier(ctx.agent, requested_tier)
+            agent_kwargs["model"] = ctx.agent.model
+            _refresh_query_context(interactive=True)
+
+        active_profile_system_prompt_snippets = list(normalized.system_prompt_snippets)
+        active_profile_agents = [dict(item) for item in normalized.agents]
+        active_orchestrator_agent = _orchestrator_agent_from_agents(active_profile_agents)
+        _refresh_orchestrator_system_prompt()
+        auto_delegate_assistive = bool(normalized.auto_delegate_assistive)
+        applied_sources = set_user_context_sources(normalized_sources)
+        _replace_daemon_sop_overrides(resolved_sops)
+        ctx.refresh_system_prompt()
+
+        current_provider = _current_provider_name()
+        current_kb = current_knowledge_base_id()
+        current_kb = current_kb.strip() if isinstance(current_kb, str) else None
+        return {
+            "id": normalized.id,
+            "name": normalized.name,
+            "provider": current_provider,
+            "tier": model_manager.current_tier,
+            "system_prompt_snippets": list(active_profile_system_prompt_snippets),
+            "context_sources": [dict(item) for item in applied_sources],
+            "active_sops": _list_active_sop_names(),
+            "knowledge_base_id": current_kb or None,
+            "agents": [dict(item) for item in active_profile_agents],
+            "auto_delegate_assistive": auto_delegate_assistive,
+            "team_presets": [dict(item) for item in normalized.team_presets],
+        }
+
+    def get_bundles_payload() -> dict[str, Any]:
+        nonlocal settings
+        settings = load_settings(settings_path)
+        return {
+            "event": "bundles_catalog",
+            "bundles": list_agent_bundles(settings),
+        }
+
+    def set_bundle(raw_bundle: Any) -> dict[str, Any]:
+        nonlocal settings
+        if not isinstance(raw_bundle, dict):
+            raise ValueError("set_bundle.bundle must be an object")
+        bundle_id = str(raw_bundle.get("id", "")).strip()
+        if not bundle_id:
+            raise ValueError("set_bundle.bundle.id is required")
+        bundle_name = str(raw_bundle.get("name", "")).strip() or bundle_id
+        normalized = AgentProfile.from_dict(
+            {
+                "id": bundle_id,
+                "name": bundle_name,
+                "provider": raw_bundle.get("provider"),
+                "tier": raw_bundle.get("tier"),
+                "system_prompt_snippets": raw_bundle.get("system_prompt_snippets") or [],
+                "context_sources": raw_bundle.get("context_sources") or [],
+                "active_sops": raw_bundle.get("active_sops") or [],
+                "knowledge_base_id": raw_bundle.get("knowledge_base_id"),
+                "agents": raw_bundle.get("agents") or [],
+                "auto_delegate_assistive": raw_bundle.get("auto_delegate_assistive", True),
+                "team_presets": raw_bundle.get("team_presets") or [],
+            }
+        )
+        settings = with_upserted_agent_bundle(settings, normalized.to_dict())
+        save_settings(settings, settings_path)
+        return get_bundles_payload()
+
+    def delete_bundle(bundle_id: str) -> dict[str, Any]:
+        nonlocal settings
+        token = str(bundle_id or "").strip()
+        if not token:
+            raise ValueError("delete_bundle.id is required")
+        if find_agent_bundle(settings, token) is None:
+            raise ValueError(f"Bundle not found: {token}")
+        settings = with_deleted_agent_bundle(settings, token)
+        save_settings(settings, settings_path)
+        return get_bundles_payload()
+
+    def apply_bundle(bundle_id: str) -> dict[str, Any]:
+        nonlocal settings
+        token = str(bundle_id or "").strip()
+        if not token:
+            raise ValueError("apply_bundle.id is required")
+        settings = load_settings(settings_path)
+        bundle = find_agent_bundle(settings, token)
+        if bundle is None:
+            raise ValueError(f"Bundle not found: {token}")
+        return apply_profile(bundle)
+
+    return {
+        "selected_provider": selected_provider,
+        "provider_notice": provider_notice,
+        "model_manager": model_manager,
+        "agent_kwargs": agent_kwargs,
+        "interrupt_event": interrupt_event,
+        "create_agent": create_agent,
+        "run_agent": run_agent,
+        "render_plan": render_plan_text,
+        "generate_plan": _generate_plan,
+        "execute_with_plan": _execute_with_plan,
+        "ctx": ctx,
+        "registry": registry,
+        "refresh_query_context": _refresh_query_context,
+        "current_model_info_event": _current_model_info_event,
+        "set_user_context_sources": set_user_context_sources,
+        "set_daemon_sop_override": _set_daemon_sop_override,
+        "current_knowledge_base_id": current_knowledge_base_id,
+        "compact_context": compact_context,
+        "apply_profile": apply_profile,
+        "apply_session_safety_overrides": apply_session_safety_overrides,
+        "current_session_safety_overrides": current_session_safety_overrides,
+        "get_prompt_assets_payload": get_prompt_assets_payload,
+        "set_prompt_asset": set_prompt_asset,
+        "delete_prompt_asset": delete_prompt_asset,
+        "get_bundles_payload": get_bundles_payload,
+        "set_bundle": set_bundle,
+        "delete_bundle": delete_bundle,
+        "apply_bundle": apply_bundle,
+    }
+
+
+def _handle_agent_interrupt(exc: AgentInterruptedError) -> None:
+    callback_handler(force_stop=True)
+    if not _tui_events_enabled():
+        print(f"\n{str(exc)}")
+
+
+def _run_query_with_optional_plan(
+    *,
+    query_text: str,
+    forced_mode: str | None,
+    auto_approve: bool,
+    welcome_text: str,
+    generate_plan: Callable[[str], WorkPlan],
+    execute_with_plan: Callable[[str, WorkPlan, str], Any],
+    run_agent: Callable[[str], Any],
+    classify_intent_fn: Callable[[str], str],
+    on_plan: Callable[[WorkPlan], None],
+) -> tuple[WorkPlan | None, Any | None, bool]:
+    mode = (forced_mode or "").strip().lower()
+    if mode == "execute":
+        return None, run_agent(query_text), True
+
+    should_plan = mode == "plan" or classify_intent_fn(query_text) == "work"
+    if not should_plan:
+        return None, run_agent(query_text), True
+
+    plan = generate_plan(query_text)
+    on_plan(plan)
+    if not auto_approve:
+        return plan, None, False
+
+    return plan, execute_with_plan(query_text, plan, welcome_text), True
+
+
+def _build_serve_command_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="swarmee serve", description="Run shared runtime broker.")
+    parser.add_argument("--port", type=int, default=0, help="Port for runtime broker (0 chooses an open port).")
+    parser.add_argument(
+        "--state-dir",
+        type=str,
+        default=None,
+        help="Override runtime state directory (defaults to <cwd>/.swarmee).",
+    )
+    return parser
+
+
+def _build_attach_command_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="swarmee attach", description="Attach to shared runtime broker.")
+    parser.add_argument("--session", type=str, default=None, help="Session ID to attach to.")
+    parser.add_argument("--cwd", type=str, default=None, help="Session cwd for attach command.")
+    parser.add_argument("--tail", action="store_true", help="Tail events only (no interactive prompt loop).")
+    parser.add_argument(
+        "--state-dir",
+        type=str,
+        default=None,
+        help="Override runtime state directory (defaults to <cwd>/.swarmee).",
+    )
+    return parser
+
+
+def _build_daemon_command_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="swarmee daemon", description="Manage shared runtime daemon.")
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=["start", "stop", "status"],
+        default="status",
+        help="Daemon action (default: status).",
+    )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        choices=["all"],
+        default=None,
+        help="Optional stop target (only 'all' is supported).",
+    )
+    parser.add_argument("--cwd", type=str, default=None, help="Scope cwd for daemon state resolution.")
+    parser.add_argument(
+        "--state-dir",
+        type=str,
+        default=None,
+        help="Override runtime state directory.",
+    )
+    return parser
+
+
+def _runtime_broker_pids() -> list[int]:
+    if os.name != "posix":
+        return []
+    try:
+        output = subprocess.check_output(
+            ["ps", "-ax", "-o", "pid=,command="],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception:
+        return []
+
+    pids: list[int] = []
+    self_pid = os.getpid()
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_text, command = parts
+        if "swarmee_river.swarmee" not in command:
+            continue
+        if re.search(r"(?:^|\\s)serve(?:\\s|$)", command) is None:
+            continue
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid <= 0 or pid == self_pid:
+            continue
+        pids.append(pid)
+    return sorted(set(pids))
+
+
+def _stop_all_runtime_brokers(*, timeout_s: float = 6.0) -> tuple[int, int]:
+    pids = _runtime_broker_pids()
+    if not pids:
+        return 0, 0
+
+    import signal as _signal
+
+    for pid in pids:
+        with contextlib.suppress(Exception):
+            os.kill(pid, _signal.SIGTERM)
+
+    deadline = time.monotonic() + max(0.5, float(timeout_s))
+    alive: set[int] = set(pids)
+    while alive and time.monotonic() < deadline:
+        for pid in list(alive):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                alive.discard(pid)
+        if alive:
+            time.sleep(0.1)
+
+    for pid in list(alive):
+        with contextlib.suppress(Exception):
+            os.kill(pid, _signal.SIGKILL)
+    for pid in list(alive):
+        with contextlib.suppress(Exception):
+            os.kill(pid, 0)
+            continue
+        alive.discard(pid)
+
+    stopped = len(pids) - len(alive)
+    failed = len(alive)
+    return stopped, failed
+
+
+def _print_attach_event(event: dict[str, Any], *, streaming_state: dict[str, bool]) -> None:
+    etype = str(event.get("event", "")).strip().lower()
+    text = str(event.get("text", event.get("message", "")))
+
+    if etype in {"text_delta", "message_delta", "output_text_delta", "delta"}:
+        chunk = text
+        if chunk:
+            print(chunk, end="", flush=True)
+            streaming_state["open"] = True
+        return
+
+    if etype in {"text_complete", "message_complete", "output_text_complete", "complete"}:
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        return
+
+    if etype == "turn_complete":
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        status = str(event.get("exit_status", "ok")).strip()
+        print(f"[turn] complete ({status})")
+        return
+
+    if etype == "consent_prompt":
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        context = str(event.get("context", "")).strip()
+        print("[consent] prompt received.")
+        if context:
+            print(context)
+        print("Use /consent <y|n|a|v> to respond.")
+        return
+
+    if etype in {"warning", "error"}:
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        prefix = "error" if etype == "error" else "warn"
+        line = text.strip() or json.dumps(event, ensure_ascii=False)
+        print(f"[{prefix}] {line}")
+        return
+
+    if etype in {"ready", "model_info", "attached", "session_available", "session_restored", "replay_complete"}:
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        print(f"[{etype}] {json.dumps(event, ensure_ascii=False)}")
+        return
+
+    if text.strip():
+        if streaming_state["open"]:
+            print()
+            streaming_state["open"] = False
+        print(f"[{etype or 'event'}] {text.strip()}")
+        return
+
+    if streaming_state["open"]:
+        print()
+        streaming_state["open"] = False
+    print(json.dumps(event, ensure_ascii=False))
+
+
+def _run_serve_command(raw_args: list[str]) -> int:
+    parser = _build_serve_command_parser()
+    args = parser.parse_args(raw_args)
+    if isinstance(args.state_dir, str) and args.state_dir.strip():
+        os.environ["SWARMEE_STATE_DIR"] = args.state_dir.strip()
+
+    async def _serve() -> None:
+        server = RuntimeServiceServer(port=int(args.port))
+        await server.start()
+        print(f"[runtime] listening on {server.host}:{server.port}")
+        print(f"[runtime] discovery file: {server.runtime_file}")
+        print("[runtime] press Ctrl+C to stop.")
+
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def _request_stop() -> None:
+            stop_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError, RuntimeError):
+                loop.add_signal_handler(sig, _request_stop)
+
+        try:
+            await stop_event.wait()
+        finally:
+            await server.stop()
+
+    try:
+        asyncio.run(_serve())
+        return 0
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:
+        print(f"Error: failed to start runtime broker: {exc}")
+        return 1
+
+
+def _run_attach_command(raw_args: list[str]) -> int:
+    parser = _build_attach_command_parser()
+    args = parser.parse_args(raw_args)
+    if isinstance(args.state_dir, str) and args.state_dir.strip():
+        os.environ["SWARMEE_STATE_DIR"] = args.state_dir.strip()
+
+    attach_cwd = Path(args.cwd).expanduser() if isinstance(args.cwd, str) and args.cwd.strip() else Path.cwd()
+    attach_cwd = attach_cwd.resolve()
+    if not attach_cwd.exists() or not attach_cwd.is_dir():
+        print(f"Error: attach cwd does not exist or is not a directory: {attach_cwd}")
+        return 1
+
+    session_id = (
+        (str(args.session).strip() if isinstance(args.session, str) else "")
+        or (os.getenv("SWARMEE_SESSION_ID") or "").strip()
+        or default_session_id_for_cwd(attach_cwd)
+    )
+
+    try:
+        discovery = ensure_runtime_broker(cwd=attach_cwd)
+    except Exception as exc:
+        print(f"Error: failed to start runtime broker: {exc}")
+        return 1
+
+    try:
+        client = RuntimeServiceClient.from_discovery_file(discovery)
+        client.connect()
+    except Exception as exc:
+        print(f"Error: failed to connect to runtime broker: {exc}")
+        return 1
+
+    try:
+        hello = client.hello(client_name="swarmee-attach", surface="cli")
+        if hello is None:
+            print("Error: runtime broker closed connection during hello.")
+            return 1
+        if str(hello.get("event", "")).strip().lower() == "error":
+            print(f"Error: {hello.get('message', hello)}")
+            return 1
+
+        attach = client.attach(session_id=session_id, cwd=str(attach_cwd))
+        if attach is None:
+            print("Error: runtime broker closed connection during attach.")
+            return 1
+        if str(attach.get("event", "")).strip().lower() == "error":
+            print(f"Error: {attach.get('message', attach)}")
+            return 1
+
+        print(f"[runtime] attached to session {session_id} (cwd={attach_cwd})")
+        streaming_state: dict[str, bool] = {"open": False}
+
+        stop_reader = threading.Event()
+
+        def _reader_loop() -> None:
+            while not stop_reader.is_set():
+                try:
+                    event = client.read_event()
+                except Exception as exc:
+                    if not stop_reader.is_set():
+                        if streaming_state["open"]:
+                            print()
+                            streaming_state["open"] = False
+                        print(f"[runtime] read error: {exc}")
+                    break
+                if event is None:
+                    if not stop_reader.is_set():
+                        if streaming_state["open"]:
+                            print()
+                            streaming_state["open"] = False
+                        print("[runtime] connection closed.")
+                    break
+                _print_attach_event(event, streaming_state=streaming_state)
+
+        reader_thread = threading.Thread(target=_reader_loop, daemon=True, name="swarmee-runtime-attach-reader")
+        reader_thread.start()
+
+        if args.tail:
+            print("[runtime] tail mode active. Ctrl+C to stop.")
+            try:
+                while reader_thread.is_alive():
+                    reader_thread.join(timeout=0.2)
+            except KeyboardInterrupt:
+                pass
+            return 0
+
+        print("Enter prompts to send `query`. Commands: /consent <y|n|a|v>, /stop, /shutdown, /exit")
+        while True:
+            try:
+                line = input("~ ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not line:
+                continue
+            lowered = line.lower()
+            if lowered in {"exit", "quit", "/exit", ":exit"}:
+                break
+            if lowered in {"/stop", ":stop"}:
+                client.send_command({"cmd": "interrupt"})
+                continue
+            if lowered in {"/shutdown", ":shutdown", "/daemon stop"}:
+                client.send_command({"cmd": "shutdown_service"})
+                break
+            if lowered.startswith("/consent "):
+                choice = lowered.split(maxsplit=1)[1].strip()
+                if choice not in {"y", "n", "a", "v"}:
+                    print("Usage: /consent <y|n|a|v>")
+                    continue
+                client.send_command({"cmd": "consent_response", "choice": choice})
+                continue
+            client.send_command({"cmd": "query", "text": line})
+        return 0
+    except Exception as exc:
+        print(f"Error: attach failed: {exc}")
+        return 1
+    finally:
+        stop_reader = locals().get("stop_reader")
+        reader_thread = locals().get("reader_thread")
+        if isinstance(stop_reader, threading.Event):
+            stop_reader.set()
+        client.close()
+        if isinstance(reader_thread, threading.Thread) and reader_thread.is_alive():
+            reader_thread.join(timeout=1.0)
+
+
+def _run_daemon_command(raw_args: list[str]) -> int:
+    parser = _build_daemon_command_parser()
+    args = parser.parse_args(raw_args)
+    if isinstance(args.state_dir, str) and args.state_dir.strip():
+        os.environ["SWARMEE_STATE_DIR"] = args.state_dir.strip()
+
+    daemon_cwd = Path(args.cwd).expanduser() if isinstance(args.cwd, str) and args.cwd.strip() else Path.cwd()
+    daemon_cwd = daemon_cwd.resolve()
+    if not daemon_cwd.exists() or not daemon_cwd.is_dir():
+        print(f"Error: cwd does not exist or is not a directory: {daemon_cwd}")
+        return 1
+
+    action = str(args.action or "status").strip().lower()
+    target = str(args.target or "").strip().lower()
+    if action == "start":
+        if target:
+            print("Error: 'all' target is only valid with 'stop'.")
+            return 1
+        try:
+            discovery = ensure_runtime_broker(cwd=daemon_cwd)
+            print(f"[daemon] running (discovery: {discovery})")
+            return 0
+        except Exception as exc:
+            print(f"Error: failed to start runtime broker: {exc}")
+            return 1
+
+    if action == "stop":
+        if target == "all":
+            stopped_count, failed_count = _stop_all_runtime_brokers()
+            if stopped_count == 0 and failed_count == 0:
+                print("[daemon] no runtime brokers found.")
+                return 0
+            if failed_count:
+                print(f"[daemon] stopped {stopped_count} broker(s), failed to stop {failed_count}.")
+                return 1
+            print(f"[daemon] stopped {stopped_count} broker(s).")
+            return 0
+        stopped = shutdown_runtime_broker(cwd=daemon_cwd)
+        if stopped:
+            print("[daemon] stopped.")
+            return 0
+        print("[daemon] not running.")
+        return 0
+    if target:
+        print("Error: 'all' target is only valid with 'stop'.")
+        return 1
+
+    discovery = runtime_discovery_path(cwd=daemon_cwd)
+    if not discovery.exists():
+        print("[daemon] not running.")
+        return 0
+    client: RuntimeServiceClient | None = None
+    try:
+        client = RuntimeServiceClient.from_discovery_file(discovery, timeout_s=1.0)
+        client.connect()
+        hello = client.hello(client_name="swarmee-daemon-status", surface="cli")
+        running = isinstance(hello, dict) and str(hello.get("event", "")).strip().lower() == "hello_ack"
+    except Exception:
+        running = False
+    finally:
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close()
+    if running:
+        print(f"[daemon] running (discovery: {discovery})")
+    else:
+        print("[daemon] not running.")
+    return 0
+
+
+def _build_session_command_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="swarmee session", description="Session graph and branching commands.")
+    sub = parser.add_subparsers(dest="session_cmd")
+
+    list_parser = sub.add_parser("list", help="List recent sessions.")
+    list_parser.add_argument("--limit", type=int, default=20, help="Max sessions to print.")
+
+    index_parser = sub.add_parser("index", help="Build and persist session graph index.")
+    index_parser.add_argument("--session", type=str, default=None, help="Session ID (defaults to SWARMEE_SESSION_ID).")
+
+    export_parser = sub.add_parser("export", help="Export session graph data.")
+    export_parser.add_argument("--session", type=str, default=None, help="Session ID (defaults to SWARMEE_SESSION_ID).")
+    export_parser.add_argument(
+        "--format",
+        choices=["md", "json"],
+        default="md",
+        help="Export format.",
+    )
+    export_parser.add_argument("--out", type=str, default=None, help="Output path. Defaults to stdout.")
+
+    branch_parser = sub.add_parser("branch", help="Create a branched session from a turn.")
+    branch_parser.add_argument("--from-session", required=True, help="Source session ID.")
+    branch_parser.add_argument("--turn", required=True, type=int, help="1-based user turn index.")
+    branch_parser.add_argument("--new-session", default=None, help="Optional target session ID.")
+    return parser
+
+
+def _resolve_session_id(raw_session_id: str | None) -> str | None:
+    session_id = (raw_session_id or os.getenv("SWARMEE_SESSION_ID") or "").strip()
+    return session_id or None
+
+
+def _render_session_list(entries: list[dict[str, Any]]) -> str:
+    if not entries:
+        return "No sessions found."
+    lines = ["session_id\tupdated_at\tturn_count\tcwd"]
+    for entry in entries:
+        session_id = str(entry.get("id", "")).strip()
+        updated_at = str(entry.get("updated_at") or entry.get("created_at") or "").strip()
+        turn_count = entry.get("turn_count")
+        turn_text = str(turn_count) if isinstance(turn_count, int) else ""
+        cwd = str(entry.get("cwd", "")).strip()
+        lines.append(f"{session_id}\t{updated_at}\t{turn_text}\t{cwd}")
+    return "\n".join(lines)
+
+
+def _summarize_plan(value: Any) -> str | None:
+    if isinstance(value, dict):
+        summary = str(value.get("summary", "")).strip()
+        if summary:
+            return summary
+        steps = value.get("steps")
+        if isinstance(steps, list) and steps:
+            first = steps[0]
+            if isinstance(first, dict):
+                desc = str(first.get("description", "")).strip()
+                if desc:
+                    return desc
+        return None
+    if isinstance(value, str):
+        summary = value.strip()
+        return summary or None
+    return None
+
+
+def _render_session_export_markdown(
+    *,
+    session_id: str,
+    index: dict[str, Any],
+    last_plan_summary: str | None,
+) -> str:
+    stats = index.get("stats") if isinstance(index.get("stats"), dict) else {}
+    tools = index.get("tools") if isinstance(index.get("tools"), dict) else {}
+    tool_counts = tools.get("counts") if isinstance(tools.get("counts"), dict) else {}
+    turns = index.get("turns") if isinstance(index.get("turns"), list) else []
+    events = index.get("events") if isinstance(index.get("events"), list) else []
+
+    lines: list[str] = [
+        "# Session Export",
+        "",
+        f"- Session ID: `{session_id}`",
+        f"- Generated: {str(index.get('generated_at', '')).strip() or '(unknown)'}",
+        f"- Turns: {int(stats.get('turns', 0)) if isinstance(stats.get('turns'), int) else 0}",
+        f"- Tool calls: {int(stats.get('tools', 0)) if isinstance(stats.get('tools'), int) else 0}",
+        f"- Errors: {int(stats.get('errors', 0)) if isinstance(stats.get('errors'), int) else 0}",
+        "",
+        "## Tool Summary",
+    ]
+
+    if isinstance(tool_counts, dict) and tool_counts:
+        for tool_name in sorted(tool_counts):
+            count = tool_counts.get(tool_name)
+            lines.append(f"- `{tool_name}`: {count}")
+    else:
+        lines.append("(no tool calls)")
+
+    lines.append("")
+    lines.append("## Errors")
+    error_events: list[str] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        error = event.get("error")
+        if isinstance(error, str) and error.strip():
+            tool_name = str(event.get("tool", "")).strip()
+            ts = str(event.get("ts", "")).strip()
+            prefix = f"{ts} " if ts else ""
+            if tool_name:
+                error_events.append(f"- {prefix}`{tool_name}`: {error.strip()}")
+            else:
+                error_events.append(f"- {prefix}{error.strip()}")
+        elif event.get("event") == "after_tool_call" and event.get("success") is False:
+            tool_name = str(event.get("tool", "")).strip() or "unknown_tool"
+            ts = str(event.get("ts", "")).strip()
+            prefix = f"{ts} " if ts else ""
+            error_events.append(f"- {prefix}`{tool_name}`: tool call failed")
+    if error_events:
+        lines.extend(error_events)
+    else:
+        lines.append("(no errors)")
+
+    lines.append("")
+    lines.append("## Last Plan")
+    lines.append(last_plan_summary if isinstance(last_plan_summary, str) and last_plan_summary.strip() else "(none)")
+    lines.append("")
+    lines.append("## Turns")
+
+    turn_rows = [item for item in turns if isinstance(item, dict)]
+    if not turn_rows:
+        lines.append("(no turns)")
+    else:
+        for turn in turn_rows:
+            turn_id = turn.get("turn_id")
+            user_text = str(turn.get("user_text", "")).strip()
+            assistant_text = str(turn.get("assistant_text", "")).strip()
+            lines.extend(
+                [
+                    f"### Turn {turn_id}",
+                    "",
+                    "User:",
+                    user_text or "(empty)",
+                    "",
+                    "Assistant:",
+                    assistant_text or "(empty)",
+                    "",
+                ]
+            )
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _is_counted_user_turn_message(message: Any) -> bool:
+    if not isinstance(message, dict):
+        return False
+    role = str(message.get("role", "")).strip().lower()
+    if role != "user":
+        return False
+    return bool(_extract_text_from_message_for_replay(message).strip())
+
+
+def _slice_messages_through_turn(messages: list[Any], turn_number: int) -> tuple[list[Any], int]:
+    if turn_number <= 0:
+        raise ValueError("--turn must be >= 1")
+    total_turns = 0
+    next_turn_start: int | None = None
+    for idx, message in enumerate(messages):
+        if not _is_counted_user_turn_message(message):
+            continue
+        total_turns += 1
+        if total_turns == turn_number + 1:
+            next_turn_start = idx
+            break
+    if total_turns < turn_number:
+        raise ValueError(f"Requested turn {turn_number} but session has only {total_turns} turns")
+    end_idx = next_turn_start if next_turn_start is not None else len(messages)
+    return list(messages[:end_idx]), total_turns
+
+
+def _run_session_command(raw_args: list[str]) -> int:
+    parser = _build_session_command_parser()
+    args = parser.parse_args(raw_args or ["list"])
+    command = str(args.session_cmd or "list").strip().lower()
+
+    store = SessionStore()
+    try:
+        if command == "list":
+            limit = max(1, int(args.limit))
+            print(_render_session_list(store.list(limit=limit)))
+            return 0
+
+        if command == "index":
+            session_id = _resolve_session_id(args.session)
+            if not session_id:
+                print("Error: --session is required (or set SWARMEE_SESSION_ID)")
+                return 1
+            index = build_session_graph_index(session_id, cwd=Path.cwd())
+            path = write_session_graph_index(session_id, index)
+            stats = index.get("stats") if isinstance(index.get("stats"), dict) else {}
+            turns = int(stats.get("turns", 0)) if isinstance(stats.get("turns"), int) else 0
+            tools = int(stats.get("tools", 0)) if isinstance(stats.get("tools"), int) else 0
+            errors = int(stats.get("errors", 0)) if isinstance(stats.get("errors"), int) else 0
+            print(f"Indexed session: {session_id}")
+            print(f"Path: {path}")
+            print(f"Turns: {turns}")
+            print(f"Tool calls: {tools}")
+            print(f"Errors: {errors}")
+            return 0
+
+        if command == "export":
+            session_id = _resolve_session_id(args.session)
+            if not session_id:
+                print("Error: --session is required (or set SWARMEE_SESSION_ID)")
+                return 1
+            index = build_session_graph_index(session_id, cwd=Path.cwd())
+            _, _, _, last_plan = store.load(session_id)
+            last_plan_summary = _summarize_plan(last_plan)
+
+            output_format = str(args.format).strip().lower()
+            if output_format == "json":
+                text = json.dumps(index, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            else:
+                text = _render_session_export_markdown(
+                    session_id=session_id,
+                    index=index,
+                    last_plan_summary=last_plan_summary,
+                )
+
+            if isinstance(args.out, str) and args.out.strip():
+                out_path = Path(args.out).expanduser()
+                if not out_path.is_absolute():
+                    out_path = (Path.cwd() / out_path).resolve()
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(text, encoding="utf-8")
+                print(f"Wrote export: {out_path}")
+                return 0
+
+            print(text, end="")
+            return 0
+
+        if command == "branch":
+            from_session_id = str(args.from_session).strip()
+            turn_number = int(args.turn)
+            requested_new_session = str(args.new_session).strip() if isinstance(args.new_session, str) else ""
+
+            source_meta = store.read_meta(from_session_id)
+            source_messages = store.load_messages(from_session_id, max_messages=1000000)
+            truncated_messages, total_turns = _slice_messages_through_turn(source_messages, turn_number)
+
+            copied_meta = dict(source_meta)
+            copied_meta.pop("id", None)
+            now = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+            copied_meta["created_at"] = now
+            copied_meta["updated_at"] = now
+            copied_meta["branched_from_session_id"] = from_session_id
+            copied_meta["branched_from_turn"] = turn_number
+            copied_meta["turn_count"] = turn_number
+            copied_meta["message_count"] = len(truncated_messages)
+
+            new_session_id = store.create(
+                meta=copied_meta,
+                session_id=requested_new_session if requested_new_session else None,
+            )
+            store.save_messages(
+                new_session_id,
+                truncated_messages,
+                max_messages=max(1, len(truncated_messages)),
+            )
+            print(f"Branched session: {new_session_id}")
+            print(f"From: {from_session_id}")
+            print(f"Turn: {turn_number}/{total_turns}")
+            print(f"Messages: {len(truncated_messages)}")
+            return 0
+
+        print("Error: unknown session command")
+        return 1
+    except Exception as exc:
+        print(f"Error: {exc}")
+        return 1
+
+
 def main() -> None:
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Swarmee - An enterprise analytics + coding assistant")
+    # Parse CLI arguments
+    parser = argparse.ArgumentParser(
+        description="Swarmee - An enterprise analytics + coding assistant",
+        epilog=_ROOT_HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("query", nargs="*", help="Query to process")
     parser.add_argument(
         "--kb",
@@ -347,6 +2849,11 @@ def main() -> None:
         help="Auto-approve plans and tool consent prompts (useful for automation).",
     )
     parser.add_argument(
+        "--tui-daemon",
+        action="store_true",
+        help="Run as long-lived JSONL daemon for the TUI.",
+    )
+    parser.add_argument(
         "--sop",
         type=str,
         default=None,
@@ -358,10 +2865,31 @@ def main() -> None:
         default=None,
         help="OS-separated directories containing `*.sop.md` files (overrides SWARMEE_SOP_PATHS)",
     )
-    args = parser.parse_args()
+    args, extra_args = parser.parse_known_args()
 
-    # Load .env early (useful for OPENAI_API_KEY and similar local dev settings)
+    # Load .env early for local dev credentials/config.
     load_env_file()
+
+    command = args.query[0].strip().lower() if args.query else ""
+    sub = args.query[1:] if len(args.query) > 1 else []
+
+    if command == "serve":
+        raise SystemExit(_run_serve_command([*sub, *extra_args]))
+    if command == "attach":
+        raise SystemExit(_run_attach_command([*sub, *extra_args]))
+    if command == "daemon":
+        raise SystemExit(_run_daemon_command([*sub, *extra_args]))
+    if command == "broker":
+        raise SystemExit(_run_daemon_command([*sub, *extra_args]))
+    if command == "session":
+        raise SystemExit(_run_session_command([*sub, *extra_args]))
+    if extra_args:
+        parser.error(f"unrecognized arguments: {' '.join(extra_args)}")
+
+    daemon_session_id: str | None = None
+    if args.tui_daemon:
+        daemon_session_id = (os.getenv("SWARMEE_SESSION_ID") or "").strip() or uuid.uuid4().hex
+        os.environ["SWARMEE_SESSION_ID"] = daemon_session_id
 
     if args.max_output_tokens is not None:
         os.environ["SWARMEE_MAX_TOKENS"] = str(args.max_output_tokens)
@@ -372,165 +2900,51 @@ def main() -> None:
     if args.context_budget_tokens:
         os.environ["SWARMEE_CONTEXT_BUDGET_TOKENS"] = str(args.context_budget_tokens)
 
-    # Get knowledge_base_id from args or environment variable
+    # Resolve KB from CLI first, then environment.
     knowledge_base_id = (
         args.knowledge_base_id or os.getenv("SWARMEE_KNOWLEDGE_BASE_ID") or os.getenv("STRANDS_KNOWLEDGE_BASE_ID")
     )
 
     settings = load_settings()
     settings_path_for_project = Path.cwd() / ".swarmee" / "settings.json"
-    auto_approve = args.yes or _truthy(os.getenv("SWARMEE_AUTO_APPROVE", "false"))
+    auto_approve = args.yes or truthy(os.getenv("SWARMEE_AUTO_APPROVE", "false"))
+    # Explicit opt-in to launch the full-screen Textual UI.
+    if command == "tui":
+        from swarmee_river.tui.app import run_tui
 
-    # Pack management is intentionally CLI-first: treat `swarmee pack ...` as a command.
-    if args.query and args.query[0].strip().lower() == "pack":
-        sub = args.query[1:] if len(args.query) > 1 else []
+        raise SystemExit(run_tui())
 
-        settings_path = Path.cwd() / ".swarmee" / "settings.json"
-
-        def _persist_packs(installed: list[PackEntry]) -> None:
-            new_settings = SwarmeeSettings(
-                models=settings.models,
-                safety=settings.safety,
-                packs=PacksConfig(installed=installed),
-                harness=settings.harness,
-                raw=settings.raw,
-            )
-            save_settings(new_settings, settings_path)
-
-        if not sub or sub[0] in {"list", "ls"}:
-            lines = ["# Packs", ""]
-            if not settings.packs.installed:
-                lines.append("No packs installed.")
-            else:
-                for pack_entry in settings.packs.installed:
-                    status = "enabled" if pack_entry.enabled else "disabled"
-                    lines.append(f"- {pack_entry.name} ({status}) -> {pack_entry.path}")
-            print("\n".join(lines))
-            return
-
-        if sub[0] == "install" and len(sub) >= 2:
-            pack_path = sub[1]
-            if pack_path.startswith("s3://"):
-                print("S3 pack install is not implemented yet. Use a local path for now.")
-                return
-            pack_dir = Path(pack_path).expanduser()
-            if not pack_dir.exists() or not pack_dir.is_dir():
-                print(f"Pack path not found: {pack_dir}")
-                return
-            meta_path = pack_dir / "pack.json"
-            name = pack_dir.name
-            if meta_path.exists():
-                try:
-                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                    if isinstance(meta.get("name"), str) and meta["name"].strip():
-                        name = meta["name"].strip()
-                except Exception:
-                    pass
-            installed_packs = [pack_entry for pack_entry in settings.packs.installed if pack_entry.name != name]
-            installed_packs.append(PackEntry(name=name, path=str(pack_dir.resolve()), enabled=True))
-            _persist_packs(installed_packs)
-            print(f"Installed pack: {name} -> {pack_dir.resolve()}")
-            return
-
-        if sub[0] in {"enable", "disable"} and len(sub) >= 2:
-            target = sub[1].strip()
-            if not target:
-                print("Pack name is required.")
-                return
-            updated: list[PackEntry] = []
-            found = False
-            for pack_entry in settings.packs.installed:
-                if pack_entry.name == target:
-                    updated.append(PackEntry(name=pack_entry.name, path=pack_entry.path, enabled=(sub[0] == "enable")))
-                    found = True
-                else:
-                    updated.append(pack_entry)
-            if not found:
-                print(f"Pack not found: {target}")
-                return
-            _persist_packs(updated)
-            print(f"{'Enabled' if sub[0] == 'enable' else 'Disabled'} pack: {target}")
-            return
-
-        print("Usage: swarmee pack list | swarmee pack install <path> | swarmee pack enable|disable <name>")
+    # Pack management is CLI-first: `swarmee pack ...`.
+    if command == "pack":
+        output_text = handle_pack_command(
+            args=sub,
+            settings=settings,
+            settings_path=Path.cwd() / ".swarmee" / "settings.json",
+        )
+        print(output_text)
         return
 
-    # Session management is CLI-first as well (project-local under .swarmee/sessions).
-    if args.query and args.query[0].strip().lower() == "session":
-        sub = args.query[1:] if len(args.query) > 1 else []
-        store = SessionStore()
-
-        if not sub or sub[0] in {"list", "ls"}:
-            entries = store.list()
-            if not entries:
-                print("No sessions found.")
-                return
-            lines = ["# Sessions", ""]
-            for entry in entries:
-                sid = str(entry.get("id") or "")
-                updated_at = str(entry.get("updated_at") or entry.get("created_at") or "")
-                provider = str(entry.get("provider") or "")
-                tier = str(entry.get("tier") or "")
-                suffix = " ".join([part for part in [updated_at, provider, tier] if part]).strip()
-                lines.append(f"- {sid}" + (f" ({suffix})" if suffix else ""))
-            print("\n".join(lines))
-            return
-
-        if sub[0] == "new":
-            try:
-                pm = build_project_map()
-                git_root = pm.get("git_root")
-            except Exception:
-                git_root = None
-            meta = {
-                "cwd": str(Path.cwd()),
-                "git_root": git_root,
-                "provider": (os.getenv("SWARMEE_MODEL_PROVIDER") or settings.models.provider),
-                "tier": os.getenv("SWARMEE_MODEL_TIER") or settings.models.default_tier,
-            }
-            sid = store.create(meta=meta)
-            print(sid)
-            return
-
-        if sub[0] in {"rm", "delete"} and len(sub) >= 2:
-            sid = sub[1].strip()
-            store.delete(sid)
-            print(f"Deleted session: {sid}")
-            return
-
-        if sub[0] == "info" and len(sub) >= 2:
-            sid = sub[1].strip()
-            meta = store.read_meta(sid)
-            print(json.dumps(meta, indent=2, ensure_ascii=False))
-            return
-
-        print("Usage: swarmee session list | swarmee session new | swarmee session info <id> | swarmee session rm <id>")
+    handled_auth, auth_text = _handle_auth_cli_command(command, sub)
+    if handled_auth:
+        if auth_text:
+            print(auth_text)
         return
 
-    # Lightweight one-shot commands (do not require model invocation).
-    if args.query and args.query[0].strip().lower() in {"config", "status", "diff", "artifact", "log", "replay"}:
-        cmd = args.query[0].strip().lower()
-        sub = args.query[1:] if len(args.query) > 1 else []
+    # Lightweight diagnostics commands that do not invoke the model.
+    if command in ({"config"} | _DIAGNOSTIC_COMMANDS):
+        cmd = command
 
         if cmd == "config":
-            subcmd = sub[0].strip().lower() if sub else "show"
-            if subcmd != "show":
-                print("Usage: swarmee config show")
-                return
-
-            selected_provider, provider_notice = resolve_model_provider(
-                cli_provider=args.model_provider.stem if args.model_provider is not None else None,
-                env_provider=os.getenv("SWARMEE_MODEL_PROVIDER"),
-                settings_provider=settings.models.provider,
+            selected_provider, provider_notice, model_manager = _resolve_provider_and_model_manager(
+                args=args,
+                settings=settings,
             )
             if provider_notice:
                 print(f"[provider] {provider_notice}")
 
-            model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
-            model_manager.set_fallback_config(args.model_config)
-
             print(
-                render_effective_config(
+                render_config_command_for_surface(
+                    args=sub,
                     cwd=Path.cwd(),
                     settings_path=settings_path_for_project,
                     settings=settings,
@@ -539,476 +2953,955 @@ def main() -> None:
                     knowledge_base_id=knowledge_base_id,
                     effective_sop_paths=args.sop_paths,
                     auto_approve=auto_approve,
+                    surface="cli",
                 )
             )
             return
 
-        if cmd == "status":
-            print(render_git_status(cwd=Path.cwd()))
+        if cmd in _DIAGNOSTIC_COMMANDS:
+            print(render_diagnostic_command_for_surface(cmd=cmd, args=sub, cwd=Path.cwd(), surface="cli"))
             return
 
-        if cmd == "diff":
-            staged = False
-            paths: list[str] = []
-            for item in sub:
-                if item in {"--staged", "--cached"}:
-                    staged = True
-                elif item.startswith("-"):
-                    continue
-                else:
-                    paths.append(item)
-            print(render_git_diff(cwd=Path.cwd(), staged=staged, paths=paths or None))
-            return
+    daemon_consent_event = threading.Event()
+    daemon_consent_lock = threading.Lock()
+    daemon_consent_state: dict[str, str] = {"response": ""}
 
-        if cmd == "artifact":
-            subcmd = sub[0].strip().lower() if sub else "list"
-            if subcmd in {"list", "ls"}:
-                print(render_artifact_list(cwd=Path.cwd()))
-                return
-            if subcmd == "get":
-                artifact_id = sub[1].strip() if len(sub) >= 2 else None
-                if not artifact_id:
-                    print("Usage: swarmee artifact get <artifact_id>")
-                    return
-                print(render_artifact_get(cwd=Path.cwd(), artifact_id=artifact_id, path=None))
-                return
-            print("Usage: swarmee artifact list | swarmee artifact get <artifact_id>")
-            return
+    def _set_daemon_consent_response(choice: str) -> None:
+        with daemon_consent_lock:
+            daemon_consent_state["response"] = choice
 
-        if cmd == "log":
-            subcmd = sub[0].strip().lower() if sub else "tail"
-            if subcmd != "tail":
-                print("Usage: swarmee log tail [--lines N]")
-                return
-            n = 50
-            if "--lines" in sub:
-                try:
-                    idx = sub.index("--lines")
-                    n = int(sub[idx + 1])
-                except Exception:
-                    n = 50
-            print(render_log_tail(cwd=Path.cwd(), lines=n))
-            return
+    def _consume_daemon_consent_response() -> str:
+        with daemon_consent_lock:
+            response = daemon_consent_state.get("response", "")
+            daemon_consent_state["response"] = ""
+            return response
 
-        if cmd == "replay":
-            if not sub:
-                print("Usage: swarmee replay <invocation_id>")
-                return
-            print(render_replay_invocation(cwd=Path.cwd(), invocation_id=sub[0].strip()))
-            return
-
-    selected_provider, provider_notice = resolve_model_provider(
-        cli_provider=args.model_provider.stem if args.model_provider is not None else None,
-        env_provider=os.getenv("SWARMEE_MODEL_PROVIDER"),
-        settings_provider=settings.models.provider,
-    )
-    if provider_notice:
-        print(f"[provider] {provider_notice}")
-
-    model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
-    model_manager.set_fallback_config(args.model_config)
-    model = model_manager.build_model()
-    runtime_environment = detect_runtime_environment(cwd=Path.cwd())
-    runtime_environment_prompt_section = render_runtime_environment_section(runtime_environment)
-
-    # Load system prompt
-    system_prompt = load_system_prompt()
-
-    # Base tools + enabled pack tools (pack tools never override core tools)
-    tools_dict = get_tools()
-    for name, tool_obj in load_enabled_pack_tools(settings).items():
-        tools_dict.setdefault(name, tool_obj)
-
-    tools = tools_dict.values()
-
-    pack_sop_paths = enabled_sop_paths(settings)
-    pack_prompt_sections = enabled_system_prompts(settings)
-
-    effective_sop_paths: str | None = args.sop_paths
-    if pack_sop_paths:
-        pack_paths_str = os.pathsep.join(str(p) for p in pack_sop_paths)
-        effective_sop_paths = (
-            pack_paths_str if not effective_sop_paths else os.pathsep.join([effective_sop_paths, pack_paths_str])
+    def _daemon_consent_prompt(text: str) -> str:
+        _write_stdout_jsonl(
+            {
+                "event": "consent_prompt",
+                "context": text,
+                "options": ["y", "n", "a", "v"],
+            }
         )
+        _set_daemon_consent_response("")
+        daemon_consent_event.clear()
+        daemon_consent_event.wait()
+        return _consume_daemon_consent_response().strip()
 
-    conversation_manager = _build_conversation_manager(window_size=args.window_size, per_turn=args.context_per_turn)
-
-    hooks = []
-    if _HAS_STRANDS_HOOKS:
-
-        def _consent_prompt(text: str) -> str:
-            # Keep consent prompts aligned with interactive UX:
-            # 1) stop active spinners so prompt doesn't appear inline/garbled
-            # 2) render consent context as an explicit line
-            # 3) reuse the familiar input prompt style
-            callback_handler(force_stop=True)
-            _render_tool_consent_message(text)
-            with pause_active_interrupt_watcher_for_input():
-                return _get_user_input_compat(
-                    "\n~ consent> ",
-                    default="",
-                    keyboard_interrupt_return_default=True,
-                    prefer_prompt_toolkit_in_async=False,
-                )
-
-        hooks = [
-            JSONLLoggerHooks(),
-            ToolPolicyHooks(settings.safety),
-            ToolConsentHooks(
-                settings.safety,
-                interactive=not bool(args.query),
-                auto_approve=auto_approve,
-                prompt=_consent_prompt,
-            ),
-            ToolResultLimiterHooks(),
-        ]
-        if ToolMessageRepairHooks is not None:
-            hooks.insert(2, ToolMessageRepairHooks())
-
-    agent_kwargs: dict[str, Any] = {
-        "model": model,
-        "tools": tools,
-        "system_prompt": system_prompt,
-        "callback_handler": callback_handler,
-        "load_tools_from_directory": True,
-    }
-    if conversation_manager is not None:
-        agent_kwargs["conversation_manager"] = conversation_manager
-    if hooks:
-        agent_kwargs["hooks"] = hooks
-
-    def create_agent(*, messages: Any | None = None, state: Any | None = None) -> Agent:
-        kwargs = dict(agent_kwargs)
-        if messages is not None:
-            kwargs["messages"] = messages
-        if state is not None:
-            kwargs["state"] = state
-        try:
-            return Agent(**kwargs)
-        except TypeError:
-            # Backwards compatibility for older Strands versions.
-            kwargs.pop("conversation_manager", None)
-            kwargs.pop("hooks", None)
-            kwargs.pop("messages", None)
-            kwargs.pop("state", None)
-            return Agent(**kwargs)
-
-    agent = create_agent()
-
-    interrupt_event = threading.Event()
-
-    preflight_prompt_section: str | None = None
-    project_map_prompt_section: str | None = None
-    active_plan_prompt_section: str | None = None
-
-    artifact_store = ArtifactStore()
-
-    def refresh_system_prompt(welcome_text_local: str) -> None:
-        parts: list[str] = [system_prompt, _TOOL_USAGE_RULES]
-
-        if runtime_environment_prompt_section:
-            parts.append(runtime_environment_prompt_section)
-
-        if pack_prompt_sections:
-            parts.extend(pack_prompt_sections)
-
-        if project_map_prompt_section:
-            parts.append(project_map_prompt_section)
-
-        if preflight_prompt_section:
-            parts.append(preflight_prompt_section)
-
-        if args.include_welcome_in_prompt and welcome_text_local:
-            parts.append(f"Welcome Text Reference:\n{welcome_text_local}")
-
-        if ctx.active_sop_name:
-            sop_text = ""
-            try:
-                sop_result = run_sop(
-                    action="get",
-                    name=ctx.active_sop_name,
-                    sop_paths=effective_sop_paths,
-                )
-                if sop_result.get("status") == "success":
-                    sop_text = sop_result.get("content", [{}])[0].get("text", "")
-            except Exception:
-                sop_text = ""
-            if sop_text:
-                parts.append(f"Active SOP:\n{sop_text}")
-
-        if active_plan_prompt_section:
-            parts.append(active_plan_prompt_section)
-
-        agent.system_prompt = "\n\n".join(parts).strip()
-
-    def run_agent(
-        query: str,
-        *,
-        invocation_state: dict[str, Any] | None = None,
-        structured_output_model: type[Any] | None = None,
-        structured_output_prompt: str | None = None,
-    ) -> Any:
-        nonlocal agent
-        resolved_state: dict[str, Any] = dict(invocation_state) if isinstance(invocation_state, dict) else {}
-        sw_state = resolved_state.setdefault("swarmee", {})
-        if isinstance(sw_state, dict):
-            sw_state.setdefault("runtime_environment", dict(runtime_environment))
-            sw_state["tier"] = model_manager.current_tier
-            profile = settings.harness.tier_profiles.get(model_manager.current_tier)
-            if profile is not None:
-                sw_state["tool_profile"] = profile.to_dict()
-            if sw_state.get("mode") == "plan" and structured_output_model is not None:
-                model_tool_name = getattr(structured_output_model, "__name__", "").strip()
-                if model_tool_name:
-                    existing = sw_state.get("plan_allowed_tools")
-                    merged: set[str] = {model_tool_name}
-                    if isinstance(existing, (list, tuple, set)):
-                        merged.update(str(item).strip() for item in existing if str(item).strip())
-                    sw_state["plan_allowed_tools"] = sorted(merged)
-        invocation_state = resolved_state
-
-        interrupt_event.clear()
-        set_interrupt_event(interrupt_event)
-        with interrupt_watcher_from_env(interrupt_event):
-            try:
-                return invoke_agent(
-                    agent,
-                    query,
-                    callback_handler=callback_handler,
-                    interrupt_event=interrupt_event,
-                    invocation_state=invocation_state,
-                    structured_output_model=structured_output_model,
-                    structured_output_prompt=structured_output_prompt,
-                )
-            except MaxTokensReachedException:
-                callback_handler(force_stop=True)
-                configured = os.getenv("SWARMEE_MAX_TOKENS") or os.getenv("STRANDS_MAX_TOKENS") or "(unset)"
-                print(
-                    "\nError: Response hit the max output token limit.\n"
-                    f"- Current max: {configured}\n"
-                    "- Fix: increase SWARMEE_MAX_TOKENS (or pass --max-output-tokens), or ask for a shorter response.\n"
-                    "- Resetting agent loop so you can continue."
-                )
-                agent = create_agent()
-                raise
-
-    def _render_plan(plan: WorkPlan) -> str:
-        lines: list[str] = ["\nProposed plan:", f"- Summary: {plan.summary}"]
-        if plan.assumptions:
-            lines.append("- Assumptions:")
-            lines.extend([f"  - {a}" for a in plan.assumptions])
-        if plan.questions:
-            lines.append("- Questions:")
-            lines.extend([f"  - {q}" for q in plan.questions])
-        if plan.steps:
-            lines.append("- Steps:")
-            for i, step in enumerate(plan.steps, start=1):
-                lines.append(f"  {i}. {step.description}")
-                if step.files_to_read:
-                    lines.append(f"     - read: {', '.join(step.files_to_read)}")
-                if step.files_to_edit:
-                    lines.append(f"     - edit: {', '.join(step.files_to_edit)}")
-                if step.tools_expected:
-                    lines.append(f"     - tools: {', '.join(step.tools_expected)}")
-                if step.commands_expected:
-                    lines.append(f"     - cmds: {', '.join(step.commands_expected)}")
-                if step.risks:
-                    lines.append(f"     - risks: {', '.join(step.risks)}")
-        return "\n".join(lines).strip()
-
-    def _generate_plan(user_request: str) -> WorkPlan:
-        attempted: set[str] = set()
-        max_attempts = max(1, model_manager.max_escalations_per_task + 1)
-        last_error: Exception | None = None
-
-        for _attempt in range(max_attempts):
-            try:
-                result = run_agent(
-                    user_request,
-                    invocation_state={"swarmee": {"mode": "plan"}},
-                    structured_output_model=WorkPlan,
-                    structured_output_prompt=structured_plan_prompt(),
-                )
-                plan = getattr(result, "structured_output", None)
-                if isinstance(plan, WorkPlan):
-                    artifact_store.write_text(
-                        kind="plan",
-                        text=plan.model_dump_json(indent=2),
-                        suffix="json",
-                        metadata={"request": user_request},
-                    )
-                    return plan
-                last_error = ValueError("Structured plan parse failed")
-            except MaxTokensReachedException as e:
-                last_error = e
-
-            prev = model_manager.current_tier
-            if not model_manager.maybe_escalate(agent, attempted=attempted):
-                break
-            if model_manager.current_tier != prev:
-                print(f"\n[auto-escalation] tier: {prev} -> {model_manager.current_tier}")
-            agent_kwargs["model"] = agent.model
-
-        raise last_error or ValueError("Failed to generate plan")
-
-    def _swap_agent(messages: Any | None, state: Any | None) -> None:
-        nonlocal agent
-        agent = create_agent(messages=messages, state=state)
-        ctx.agent = agent
-
-    def _build_session_meta() -> dict[str, Any]:
-        enabled_packs = [
-            {"name": p.name, "path": p.path, "enabled": p.enabled}
-            for p in settings.packs.installed
-            if getattr(p, "enabled", True)
-        ]
-        try:
-            pm = build_project_map()
-            git_root = pm.get("git_root")
-        except Exception:
-            git_root = None
-        return {
-            "cwd": str(Path.cwd()),
-            "git_root": git_root,
-            "provider": selected_provider,
-            "tier": model_manager.current_tier,
-            "packs": enabled_packs,
-            "active_sop": ctx.active_sop_name,
-        }
-
-    def _execute_with_plan(user_request: str, plan: WorkPlan, *, welcome_text_local: str) -> Any:
-        nonlocal active_plan_prompt_section
-
-        # Explicitly exclude plan-only tooling from execution allowlist.
-        allowed_tools = sorted(tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan")
-        invocation_state = {"swarmee": {"mode": "execute", "enforce_plan": True, "allowed_tools": allowed_tools}}
-        plan_json_for_execution = _plan_json_for_execution(plan)
-
-        active_plan_prompt_section = (
-            "Approved Plan (execute ONLY this plan; if you need changes, ask to :replan):\n" + plan_json_for_execution
-        )
-        refresh_system_prompt(welcome_text_local)
-        try:
-            attempted: set[str] = set()
-            max_attempts = max(1, model_manager.max_escalations_per_task + 1)
-            last_error: Exception | None = None
-
-            for _attempt in range(max_attempts):
-                try:
-                    result = run_agent(user_request, invocation_state=invocation_state)
-                    if knowledge_base_id:
-                        try:
-                            agent.tool.store_in_kb(
-                                content=(f"Approved plan for request:\n{user_request}\n\n{plan_json_for_execution}\n"),
-                                title=f"Plan: {user_request[:50]}{'...' if len(user_request) > 50 else ''}",
-                                knowledge_base_id=knowledge_base_id,
-                                record_direct_tool_call=False,
-                            )
-                        except Exception:
-                            pass
-                    return result
-                except AgentInterruptedError:
-                    raise
-                except MaxTokensReachedException as e:
-                    last_error = e
-                except Exception as e:
-                    last_error = e
-
-                prev = model_manager.current_tier
-                if not model_manager.maybe_escalate(agent, attempted=attempted):
-                    break
-                if model_manager.current_tier != prev:
-                    print(f"\n[auto-escalation] tier: {prev} -> {model_manager.current_tier}")
-                agent_kwargs["model"] = agent.model
-
-            raise last_error or RuntimeError("Execution failed")
-        finally:
-            active_plan_prompt_section = None
-            refresh_system_prompt(welcome_text_local)
-
-    registry = CommandRegistry()
-    register_builtin_commands(registry)
-
-    ctx = CLIContext(
-        agent=agent,
-        agent_kwargs=agent_kwargs,
-        tools_dict=tools_dict,
-        model_manager=model_manager,
+    runtime = _build_agent_runtime(
+        args,
+        settings,
+        auto_approve,
+        _daemon_consent_prompt if args.tui_daemon else None,
         knowledge_base_id=knowledge_base_id,
-        effective_sop_paths=effective_sop_paths,
-        welcome_text="",
-        auto_approve=auto_approve,
-        selected_provider=selected_provider,
-        settings=settings,
-        settings_path=settings_path_for_project,
-        refresh_system_prompt=lambda: refresh_system_prompt(ctx.welcome_text),
-        generate_plan=_generate_plan,
-        execute_with_plan=lambda req, plan: _execute_with_plan(req, plan, welcome_text_local=ctx.welcome_text),
-        render_plan=_render_plan,
-        run_agent=run_agent,
-        store_conversation=lambda user_input, response: store_conversation_in_kb(
-            agent, user_input, response, knowledge_base_id
-        ),
-        output=print,
-        stop_spinners=lambda: callback_handler(force_stop=True),
-        build_session_meta=_build_session_meta,
-        swap_agent=_swap_agent,
+        settings_path_for_project=settings_path_for_project,
     )
-    ctx.active_sop_name = args.sop
-    ctx.session_store = SessionStore()
 
-    # Process query or enter interactive mode
-    if args.query:
-        query = " ".join(args.query)
-        # Use retrieve if knowledge_base_id is defined
-        if knowledge_base_id:
-            try:
-                agent.tool.retrieve(text=query, knowledgeBaseId=knowledge_base_id)
-            except Exception as e:
-                # Retrieval is best-effort; missing tool / missing AWS creds shouldn't block the session.
+    selected_provider = runtime["selected_provider"]
+    provider_notice = runtime["provider_notice"]
+    if provider_notice:
+        if args.tui_daemon:
+            _write_stdout_jsonl({"event": "warning", "text": f"[provider] {provider_notice}"})
+        else:
+            print(f"[provider] {provider_notice}")
+
+    model_manager = runtime["model_manager"]
+    agent_kwargs = runtime["agent_kwargs"]
+    interrupt_event = runtime["interrupt_event"]
+    run_agent = runtime["run_agent"]
+    _render_plan = runtime["render_plan"]
+    _generate_plan = runtime["generate_plan"]
+    _execute_with_plan = runtime["execute_with_plan"]
+    ctx = runtime["ctx"]
+    registry = runtime["registry"]
+    _refresh_query_context = runtime["refresh_query_context"]
+    _current_model_info_event = runtime["current_model_info_event"]
+    _set_user_context_sources = runtime["set_user_context_sources"]
+    _set_daemon_sop_override = runtime["set_daemon_sop_override"]
+    _current_knowledge_base_id = runtime["current_knowledge_base_id"]
+    _compact_context = runtime["compact_context"]
+    _apply_profile = runtime["apply_profile"]
+    _apply_session_safety_overrides = runtime["apply_session_safety_overrides"]
+    _current_session_safety_overrides = runtime["current_session_safety_overrides"]
+    _get_prompt_assets_payload = runtime["get_prompt_assets_payload"]
+    _set_prompt_asset = runtime["set_prompt_asset"]
+    _delete_prompt_asset = runtime["delete_prompt_asset"]
+    _get_bundles_payload = runtime["get_bundles_payload"]
+    _set_bundle = runtime["set_bundle"]
+    _delete_bundle = runtime["delete_bundle"]
+    _apply_bundle = runtime["apply_bundle"]
+
+    def _best_effort_retrieve(query_text: str, *, warn_on_error: bool) -> None:
+        kb_for_turn = _current_knowledge_base_id()
+        if not kb_for_turn:
+            return
+        try:
+            ctx.agent.tool.retrieve(text=query_text, knowledgeBaseId=kb_for_turn)
+        except Exception as e:
+            if warn_on_error and not _tui_events_enabled():
                 print(f"[warn] retrieve failed: {e}")
 
-        profile = settings.harness.tier_profiles.get(model_manager.current_tier)
-        snapshot = build_context_snapshot(
-            artifact_store=artifact_store,
-            interactive=False,
-            default_preflight_level=profile.preflight_level if profile else None,
-        )
-        preflight_prompt_section = snapshot.preflight_prompt_section
-        project_map_prompt_section = snapshot.project_map_prompt_section
-        ctx.refresh_system_prompt()
-
-        intent = classify_intent(query)
-        if intent == "work":
-            plan = _generate_plan(query)
-            ctx.last_plan = plan
-            print(_render_plan(plan))
-            if not auto_approve:
-                print("\nPlan generated. Re-run with --yes (or set SWARMEE_AUTO_APPROVE=true) to execute.")
-                return
-            try:
-                response = _execute_with_plan(query, plan, welcome_text_local="")
-            except AgentInterruptedError as e:
-                callback_handler(force_stop=True)
-                print(f"\n{str(e)}")
-                return
-            except MaxTokensReachedException:
-                return
+    def _emit_plan_event(plan: WorkPlan, *, write_jsonl: bool, echo_console: bool) -> str:
+        rendered = _render_plan(plan)
+        event = {"event": "plan", "plan_json": plan.model_dump(), "rendered": rendered}
+        if write_jsonl:
+            _write_stdout_jsonl(event)
         else:
-            try:
-                response = run_agent(query, invocation_state={"swarmee": {"mode": "execute"}})
-            except AgentInterruptedError as e:
-                callback_handler(force_stop=True)
-                print(f"\n{str(e)}")
-                return
-            except MaxTokensReachedException:
-                return
+            _emit_tui_event(event)
+        if echo_console and not _tui_events_enabled():
+            print(rendered)
+        return rendered
 
-        if knowledge_base_id:
-            # Store conversation in knowledge base
-            store_conversation_in_kb(agent, query, response, knowledge_base_id)
+    def _run_tui_daemon() -> None:
+        _refresh_query_context(interactive=True)
+
+        resolved_session_id = daemon_session_id or (os.getenv("SWARMEE_SESSION_ID") or "").strip() or uuid.uuid4().hex
+        active_session_id = resolved_session_id
+        persist_lock = threading.Lock()
+
+        session_store = ctx.session_store if isinstance(ctx.session_store, SessionStore) else SessionStore()
+
+        def _persist_messages_async(*, session_id: str, messages_snapshot: list[Any]) -> None:
+            def _worker() -> None:
+                with persist_lock:
+                    try:
+                        session_store.save_messages(
+                            session_id,
+                            messages_snapshot,
+                            max_messages=_SESSION_MESSAGE_MAX_COUNT,
+                            version=_SESSION_MESSAGE_VERSION,
+                        )
+                    except Exception as e:
+                        _write_stdout_jsonl({"event": "warning", "text": f"Failed to persist session messages: {e}"})
+
+            threading.Thread(target=_worker, daemon=True, name="swarmee-session-save").start()
+
+        def _same_cwd(meta_cwd: str) -> bool:
+            if not meta_cwd:
+                return False
+            try:
+                return Path(meta_cwd).expanduser().resolve() == Path.cwd().resolve()
+            except Exception:
+                return str(meta_cwd).strip() == str(Path.cwd())
+
+        def _find_available_session_for_cwd() -> tuple[str, int, int] | None:
+            with contextlib.suppress(Exception):
+                entries = session_store.list(limit=200)
+                for entry in entries:
+                    sid = str(entry.get("id", "")).strip()
+                    if not sid:
+                        continue
+                    if not _same_cwd(str(entry.get("cwd", "")).strip()):
+                        continue
+                    messages = session_store.load_messages(sid, max_messages=_SESSION_MESSAGE_MAX_COUNT)
+                    if not messages:
+                        continue
+                    turn_count = _turn_count_from_messages(messages)
+                    return sid, turn_count, len(messages)
+            return None
+
+        def _restore_session(session_id: str) -> tuple[int, int]:
+            nonlocal active_session_id
+            sid = session_id.strip()
+            if not sid:
+                raise ValueError("restore_session.session_id is required")
+
+            messages = session_store.load_messages(sid, max_messages=_SESSION_MESSAGE_MAX_COUNT)
+            if not isinstance(messages, list):
+                messages = []
+
+            try:
+                ctx.agent.messages = messages
+            except Exception:
+                state = getattr(ctx.agent, "state", None)
+                with contextlib.suppress(Exception):
+                    ctx.swap_agent(messages, state)
+                    _refresh_query_context(interactive=True)
+
+            active_session_id = sid
+            os.environ["SWARMEE_SESSION_ID"] = sid
+            with contextlib.suppress(Exception):
+                session_store.save(sid, meta=ctx.build_session_meta())
+
+            turn_count = _turn_count_from_messages(messages)
+            _write_stdout_jsonl(
+                {
+                    "event": "session_restored",
+                    "session_id": sid,
+                    "turn_count": turn_count,
+                    "message_count": len(messages),
+                }
+            )
+
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role", "")).strip().lower()
+                if role not in {"user", "assistant"}:
+                    continue
+                text = _extract_text_from_message_for_replay(message).strip()
+                if not text:
+                    continue
+                event_payload: dict[str, Any] = {
+                    "event": "replay_turn",
+                    "role": role,
+                    "text": text,
+                    "timestamp": str(message.get("timestamp") or message.get("ts") or message.get("created_at") or ""),
+                }
+                if role == "assistant":
+                    model_value = message.get("model") or message.get("model_id") or message.get("name")
+                    if isinstance(model_value, str) and model_value.strip():
+                        event_payload["model"] = model_value.strip()
+                _write_stdout_jsonl(event_payload)
+
+            _write_stdout_jsonl({"event": "replay_complete", "turn_count": turn_count})
+            return turn_count, len(messages)
+
+        with contextlib.suppress(Exception):
+            session_store.save(active_session_id, meta=ctx.build_session_meta())
+            os.environ["SWARMEE_SESSION_ID"] = active_session_id
+
+        _write_stdout_jsonl({"event": "ready", "session_id": resolved_session_id})
+        _write_stdout_jsonl(_current_model_info_event())
+        _write_stdout_jsonl({"event": "safety_overrides", "overrides": _current_session_safety_overrides()})
+        _write_stdout_jsonl(_get_prompt_assets_payload())
+
+        available = _find_available_session_for_cwd()
+        if available is not None:
+            available_sid, available_turn_count, _available_message_count = available
+            _write_stdout_jsonl(
+                {
+                    "event": "session_available",
+                    "session_id": available_sid,
+                    "turn_count": available_turn_count,
+                }
+            )
+
+        worker_thread: threading.Thread | None = None
+        worker_lock = threading.Lock()
+        last_query_text: str = ""
+        last_query_auto_approve: bool = auto_approve
+
+        def _worker_is_running() -> bool:
+            with worker_lock:
+                return worker_thread is not None and worker_thread.is_alive()
+
+        def _next_available_tier() -> str | None:
+            current = str(model_manager.current_tier or "").strip().lower()
+            with contextlib.suppress(Exception):
+                tiers = [tier.name.strip().lower() for tier in model_manager.list_tiers() if tier.available]
+                if current in tiers:
+                    idx = tiers.index(current)
+                    for candidate in tiers[idx + 1 :]:
+                        if candidate:
+                            return candidate
+                for candidate in tiers:
+                    if candidate and candidate != current:
+                        return candidate
+            return None
+
+        def _emit_turn_error(text: str, *, category_hint: str | None = None) -> None:
+            _write_stdout_jsonl(_build_tui_error_event(text, category_hint=category_hint))
+            _write_stdout_jsonl({"event": "turn_complete", "exit_status": "error"})
+
+        def _set_daemon_consent_waiting(waiting: bool) -> None:
+            _set_daemon_consent_response("")
+            if waiting:
+                daemon_consent_event.clear()
+            else:
+                daemon_consent_event.set()
+
+        def _start_query_worker_thread(*, query_text: str, turn_auto_approve: bool, mode: str | None = None) -> None:
+            nonlocal worker_thread
+            interrupt_event.clear()
+            _set_daemon_consent_waiting(True)
+            with worker_lock:
+                worker_thread = threading.Thread(
+                    target=_run_query_worker,
+                    kwargs={
+                        "query_text": query_text,
+                        "turn_auto_approve": turn_auto_approve,
+                        "mode": mode,
+                    },
+                    daemon=True,
+                )
+                worker_thread.start()
+
+        def _run_query_worker(query_text: str, *, turn_auto_approve: bool, mode: str | None = None) -> None:
+            exit_status = "ok"
+            response: Any | None = None
+            executed = False
+            forced_mode = (mode or "").strip().lower()
+            if forced_mode not in {"", "plan", "execute"}:
+                forced_mode = ""
+            transient_attempts = 0
+
+            try:
+                while True:
+                    try:
+                        _refresh_query_context(interactive=False)
+                        _best_effort_retrieve(query_text, warn_on_error=False)
+
+                        _, response, executed = _run_query_with_optional_plan(
+                            query_text=query_text,
+                            forced_mode=forced_mode,
+                            auto_approve=turn_auto_approve,
+                            welcome_text=ctx.welcome_text,
+                            generate_plan=_generate_plan,
+                            execute_with_plan=lambda req, plan, welcome: _execute_with_plan(
+                                req, plan, welcome_text_local=welcome
+                            ),
+                            run_agent=lambda req: run_agent(req, invocation_state={"swarmee": {"mode": "execute"}}),
+                            classify_intent_fn=classify_intent,
+                            on_plan=lambda plan: (
+                                setattr(ctx, "last_plan", plan),
+                                _emit_plan_event(plan, write_jsonl=True, echo_console=False),
+                            ),
+                        )
+
+                        kb_for_turn = _current_knowledge_base_id()
+                        if executed and kb_for_turn:
+                            store_conversation_in_kb(ctx.agent, query_text, response, kb_for_turn)
+                        break
+                    except AgentInterruptedError:
+                        callback_handler(force_stop=True)
+                        exit_status = "interrupted"
+                        break
+                    except MaxTokensReachedException as exc:
+                        callback_handler(force_stop=True)
+                        next_tier = _next_available_tier()
+                        _write_stdout_jsonl(
+                            _build_tui_error_event(
+                                str(exc),
+                                category_hint=ERROR_CATEGORY_ESCALATABLE,
+                                next_tier=next_tier,
+                            )
+                        )
+                        exit_status = "error"
+                        break
+                    except Exception as e:
+                        callback_handler(force_stop=True)
+                        text = str(e)
+                        classified = classify_error_message(text)
+                        category = str(classified.get("category", "")).strip().lower()
+                        if category == ERROR_CATEGORY_TRANSIENT and transient_attempts < _TRANSIENT_RETRY_MAX_ATTEMPTS:
+                            retry_after_s = min(30, 2**transient_attempts)
+                            transient_attempts += 1
+                            _write_stdout_jsonl(
+                                _build_tui_error_event(
+                                    text,
+                                    category_hint=ERROR_CATEGORY_TRANSIENT,
+                                    retry_after_s=retry_after_s,
+                                )
+                            )
+                            time.sleep(retry_after_s)
+                            continue
+
+                        if category == ERROR_CATEGORY_TRANSIENT and transient_attempts >= _TRANSIENT_RETRY_MAX_ATTEMPTS:
+                            next_tier = _next_available_tier()
+                            _write_stdout_jsonl(
+                                _build_tui_error_event(
+                                    text,
+                                    category_hint=ERROR_CATEGORY_ESCALATABLE,
+                                    next_tier=next_tier,
+                                )
+                            )
+                        else:
+                            next_tier = _next_available_tier() if category == ERROR_CATEGORY_ESCALATABLE else None
+                            _write_stdout_jsonl(
+                                _build_tui_error_event(
+                                    text,
+                                    category_hint=category,
+                                    next_tier=next_tier,
+                                )
+                            )
+                        exit_status = "error"
+                        break
+            finally:
+                if exit_status == "ok":
+                    snapshot_raw = getattr(ctx.agent, "messages", [])
+                    if isinstance(snapshot_raw, list):
+                        messages_snapshot = list(snapshot_raw)
+                    elif isinstance(snapshot_raw, tuple):
+                        messages_snapshot = list(snapshot_raw)
+                    else:
+                        messages_snapshot = []
+                    _persist_messages_async(session_id=active_session_id, messages_snapshot=messages_snapshot)
+                _write_stdout_jsonl(_current_model_info_event())
+                _write_stdout_jsonl({"event": "turn_complete", "exit_status": exit_status})
+
+        while True:
+            raw_line = sys.stdin.readline()
+            if raw_line == "":
+                break
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+
+            try:
+                payload = json.loads(stripped)
+            except Exception:
+                _write_stdout_jsonl({"event": "warning", "text": "Invalid daemon command JSON"})
+                continue
+
+            if not isinstance(payload, dict):
+                _write_stdout_jsonl({"event": "warning", "text": "Invalid daemon command payload"})
+                continue
+
+            cmd = str(payload.get("cmd", "")).strip().lower()
+
+            if cmd == "query":
+                query_text = payload.get("text")
+                if not isinstance(query_text, str) or not query_text.strip():
+                    _emit_turn_error("query.text is required")
+                    continue
+                if _worker_is_running():
+                    _emit_turn_error("A query is already running", category_hint=ERROR_CATEGORY_FATAL)
+                    continue
+
+                requested_tier = payload.get("tier")
+                if isinstance(requested_tier, str) and requested_tier.strip():
+                    try:
+                        model_manager.set_tier(ctx.agent, requested_tier.strip().lower())
+                        agent_kwargs["model"] = ctx.agent.model
+                        _refresh_query_context(interactive=True)
+                        _write_stdout_jsonl(_current_model_info_event())
+                    except Exception as e:
+                        _emit_turn_error(str(e), category_hint=ERROR_CATEGORY_ESCALATABLE)
+                        continue
+
+                requested_mode = payload.get("mode")
+                mode = requested_mode.strip().lower() if isinstance(requested_mode, str) else None
+                raw_auto_approve = payload.get("auto_approve")
+                turn_auto_approve = raw_auto_approve if isinstance(raw_auto_approve, bool) else auto_approve
+                last_query_text = query_text.strip()
+                last_query_auto_approve = turn_auto_approve
+                _start_query_worker_thread(
+                    query_text=last_query_text,
+                    turn_auto_approve=turn_auto_approve,
+                    mode=mode,
+                )
+                continue
+
+            if cmd == "consent_response":
+                choice = payload.get("choice")
+                _set_daemon_consent_response(choice.strip().lower() if isinstance(choice, str) else "")
+                daemon_consent_event.set()
+                continue
+
+            if cmd == "set_context_sources":
+                sources_payload = payload.get("sources", [])
+                try:
+                    _set_user_context_sources(sources_payload)
+                except Exception as e:
+                    _write_stdout_jsonl({"event": "warning", "text": f"Failed to set context sources: {e}"})
+                continue
+
+            if cmd == "compact":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot compact while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                compact_result = _compact_context()
+                _emit_tui_context_event_if_enabled(ctx.agent)
+                _write_stdout_jsonl(
+                    {
+                        "event": "compact_complete",
+                        "compacted": bool(compact_result.get("compacted", False)),
+                        "before_tokens_est": compact_result.get("before_tokens_est"),
+                        "after_tokens_est": compact_result.get("after_tokens_est"),
+                        "warning": compact_result.get("warning"),
+                    }
+                )
+                continue
+
+            if cmd == "set_sop":
+                raw_name = payload.get("name")
+                if not isinstance(raw_name, str) or not raw_name.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event("set_sop.name is required", category_hint=ERROR_CATEGORY_FATAL)
+                    )
+                    continue
+                raw_content = payload.get("content")
+                if raw_content is not None and not isinstance(raw_content, str):
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "set_sop.content must be a string or null",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                _set_daemon_sop_override(raw_name, raw_content)
+                ctx.refresh_system_prompt()
+                with contextlib.suppress(Exception):
+                    session_store.save(active_session_id, meta=ctx.build_session_meta())
+                continue
+
+            if cmd == "set_profile":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot apply profile while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                raw_profile = payload.get("profile")
+                if not isinstance(raw_profile, dict):
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "set_profile.profile is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                before_model_info = _current_model_info_event()
+                try:
+                    applied_profile = _apply_profile(raw_profile)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+
+                with contextlib.suppress(Exception):
+                    session_store.save(active_session_id, meta=ctx.build_session_meta())
+
+                after_model_info = _current_model_info_event()
+                if (
+                    before_model_info.get("provider") != after_model_info.get("provider")
+                    or before_model_info.get("tier") != after_model_info.get("tier")
+                    or before_model_info.get("model_id") != after_model_info.get("model_id")
+                ):
+                    _write_stdout_jsonl(after_model_info)
+                _write_stdout_jsonl({"event": "profile_applied", "profile": applied_profile})
+                continue
+
+            if cmd == "get_bundles":
+                _write_stdout_jsonl(_get_bundles_payload())
+                continue
+
+            if cmd == "set_bundle":
+                raw_bundle = payload.get("bundle")
+                if not isinstance(raw_bundle, dict):
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "set_bundle.bundle is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    catalog_event = _set_bundle(raw_bundle)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+                _write_stdout_jsonl(catalog_event)
+                continue
+
+            if cmd == "delete_bundle":
+                raw_id = payload.get("id")
+                if not isinstance(raw_id, str) or not raw_id.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "delete_bundle.id is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    catalog_event = _delete_bundle(raw_id.strip())
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+                _write_stdout_jsonl(catalog_event)
+                continue
+
+            if cmd == "apply_bundle":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot apply bundle while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                raw_id = payload.get("id")
+                if not isinstance(raw_id, str) or not raw_id.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "apply_bundle.id is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                before_model_info = _current_model_info_event()
+                try:
+                    applied_bundle = _apply_bundle(raw_id.strip())
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+                with contextlib.suppress(Exception):
+                    session_store.save(active_session_id, meta=ctx.build_session_meta())
+                after_model_info = _current_model_info_event()
+                if (
+                    before_model_info.get("provider") != after_model_info.get("provider")
+                    or before_model_info.get("tier") != after_model_info.get("tier")
+                    or before_model_info.get("model_id") != after_model_info.get("model_id")
+                ):
+                    _write_stdout_jsonl(after_model_info)
+                _write_stdout_jsonl({"event": "bundle_applied", "bundle": applied_bundle, "profile": applied_bundle})
+                continue
+
+            if cmd == "set_safety_overrides":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot set safety overrides while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                payload_update: dict[str, Any] = {}
+                raw_nested = payload.get("overrides")
+                if isinstance(raw_nested, dict):
+                    payload_update.update(raw_nested)
+                for key in ("tool_consent", "tool_allowlist", "tool_blocklist"):
+                    if key in payload:
+                        payload_update[key] = payload.get(key)
+                if not payload_update:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "set_safety_overrides requires tool_consent/tool_allowlist/tool_blocklist payload",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    applied = _apply_session_safety_overrides(payload_update)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+                _write_stdout_jsonl({"event": "safety_overrides", "overrides": applied})
+                continue
+
+            if cmd == "get_prompt_assets":
+                _write_stdout_jsonl(_get_prompt_assets_payload())
+                continue
+
+            if cmd == "set_prompt_asset":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot update prompt assets while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    payload_event = _set_prompt_asset(payload.get("asset"))
+                    _write_stdout_jsonl(payload_event)
+                    _refresh_query_context(interactive=True)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                continue
+
+            if cmd == "delete_prompt_asset":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot delete prompt assets while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    payload_event = _delete_prompt_asset(str(payload.get("id", "")))
+                    _write_stdout_jsonl(payload_event)
+                    _refresh_query_context(interactive=True)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                continue
+
+            if cmd == "connect":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot connect provider while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                provider = normalize_provider_name(payload.get("provider") or "github_copilot")
+                method = str(payload.get("method", "device")).strip().lower()
+                try:
+                    if provider == "github_copilot":
+                        if method == "api":
+                            raw_api_key = payload.get("api_key")
+                            api_key = str(raw_api_key).strip() if isinstance(raw_api_key, str) else ""
+                            if not api_key:
+                                _write_stdout_jsonl(
+                                    _build_tui_error_event(
+                                        "connect(api) requires api_key",
+                                        category_hint=ERROR_CATEGORY_FATAL,
+                                    )
+                                )
+                                continue
+                            path = save_api_key(api_key)
+                            _write_stdout_jsonl(
+                                {"event": "warning", "text": f"Saved GitHub Copilot API key to: {path}"}
+                            )
+                        else:
+                            open_browser = bool(payload.get("open_browser", True))
+                            result = login_device_flow(
+                                open_browser=open_browser,
+                                status=lambda line: _write_stdout_jsonl({"event": "warning", "text": line}),
+                            )
+                            _write_stdout_jsonl(
+                                {
+                                    "event": "warning",
+                                    "text": f"GitHub Copilot connected. Saved credentials to: {result.get('path')}",
+                                }
+                            )
+                        _write_stdout_jsonl(_current_model_info_event())
+                        continue
+
+                    if provider == "bedrock":
+                        requested_profile = payload.get("profile")
+                        profile = str(requested_profile).strip() if isinstance(requested_profile, str) else ""
+                        _connect_aws_credentials(
+                            profile=profile or None,
+                            emit=lambda line: _write_stdout_jsonl({"event": "warning", "text": line}),
+                        )
+                        _write_stdout_jsonl(_current_model_info_event())
+                        continue
+
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            f"Unsupported connect provider: {provider}",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_AUTH_ERROR))
+                continue
+
+            if cmd == "auth":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot inspect auth while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                action = str(payload.get("action", "list")).strip().lower()
+                if action in {"list", "ls"}:
+                    text = _render_auth_records_text()
+                    _write_stdout_jsonl({"event": "warning", "text": text})
+                    continue
+                if action == "logout":
+                    provider = normalize_provider_name(payload.get("provider") or "github_copilot")
+                    deleted = delete_provider_record(provider)
+                    if deleted:
+                        _write_stdout_jsonl(
+                            {"event": "warning", "text": f"Removed saved credentials for provider: {provider}"}
+                        )
+                    else:
+                        _write_stdout_jsonl(
+                            {"event": "warning", "text": f"No saved credentials found for provider: {provider}"}
+                        )
+                    continue
+                _write_stdout_jsonl({"event": "warning", "text": "Unknown auth action"})
+                continue
+
+            if cmd == "restore_session":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot restore session while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                raw_session_id = payload.get("session_id")
+                if not isinstance(raw_session_id, str) or not raw_session_id.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "restore_session.session_id is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    _restore_session(raw_session_id)
+                except Exception as e:
+                    _write_stdout_jsonl({"event": "warning", "text": f"Failed to restore session: {e}"})
+                continue
+
+            if cmd == "interrupt":
+                interrupt_event.set()
+                _set_daemon_consent_waiting(False)
+                continue
+
+            if cmd == "set_tier":
+                tier = payload.get("tier")
+                if not isinstance(tier, str) or not tier.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event("set_tier.tier is required", category_hint=ERROR_CATEGORY_FATAL)
+                    )
+                    continue
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot set tier while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    model_manager.set_tier(ctx.agent, tier.strip().lower())
+                    agent_kwargs["model"] = ctx.agent.model
+                    _refresh_query_context(interactive=True)
+                    _write_stdout_jsonl(_current_model_info_event())
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_ESCALATABLE))
+                continue
+
+            if cmd == "retry_tool":
+                tool_use_id = str(payload.get("tool_use_id", "")).strip()
+                if not tool_use_id:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "retry_tool.tool_use_id is required",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                        )
+                    )
+                    continue
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot retry tool while a query is running",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                            tool_use_id=tool_use_id,
+                        )
+                    )
+                    continue
+                if not last_query_text:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "No previous query available for tool retry",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                            tool_use_id=tool_use_id,
+                        )
+                    )
+                    continue
+                recovery_query = (
+                    f"Tool call {tool_use_id} failed previously. Retry that tool call now and continue the task."
+                )
+                _start_query_worker_thread(
+                    query_text=recovery_query,
+                    turn_auto_approve=last_query_auto_approve,
+                    mode="execute",
+                )
+                continue
+
+            if cmd == "skip_tool":
+                tool_use_id = str(payload.get("tool_use_id", "")).strip()
+                if not tool_use_id:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "skip_tool.tool_use_id is required",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                        )
+                    )
+                    continue
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot skip tool while a query is running",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                            tool_use_id=tool_use_id,
+                        )
+                    )
+                    continue
+                if not last_query_text:
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "No previous query available for tool skip",
+                            category_hint=ERROR_CATEGORY_TOOL_ERROR,
+                            tool_use_id=tool_use_id,
+                        )
+                    )
+                    continue
+                recovery_query = (
+                    f"Tool call {tool_use_id} failed previously. Continue the task without rerunning that tool."
+                )
+                _start_query_worker_thread(
+                    query_text=recovery_query,
+                    turn_auto_approve=last_query_auto_approve,
+                    mode="execute",
+                )
+                continue
+
+            if cmd == "shutdown":
+                interrupt_event.set()
+                _set_daemon_consent_waiting(False)
+                break
+
+            _write_stdout_jsonl({"event": "warning", "text": f"Unknown daemon cmd: {cmd}"})
+
+        with worker_lock:
+            active_worker = worker_thread
+        if active_worker is not None and active_worker.is_alive():
+            active_worker.join(timeout=2.0)
+
+    if args.tui_daemon:
+        _run_tui_daemon()
+        return
+
+    # Query mode (one-shot) or interactive REPL mode.
+    if args.query:
+        query = " ".join(args.query)
+        # Retrieval is best-effort and should never block query execution.
+        _best_effort_retrieve(query, warn_on_error=True)
+
+        _refresh_query_context(interactive=False)
+
+        try:
+            plan, response, executed = _run_query_with_optional_plan(
+                query_text=query,
+                forced_mode=None,
+                auto_approve=auto_approve,
+                welcome_text="",
+                generate_plan=_generate_plan,
+                execute_with_plan=lambda req, p, welcome: _execute_with_plan(req, p, welcome_text_local=welcome),
+                run_agent=lambda req: run_agent(req, invocation_state={"swarmee": {"mode": "execute"}}),
+                classify_intent_fn=classify_intent,
+                on_plan=lambda p: (
+                    setattr(ctx, "last_plan", p),
+                    _emit_plan_event(p, write_jsonl=False, echo_console=True),
+                ),
+            )
+            if plan is not None and not executed:
+                if not _tui_events_enabled():
+                    print("\nPlan generated. Re-run with --yes (or set SWARMEE_AUTO_APPROVE=true) to execute.")
+                return
+        except AgentInterruptedError as e:
+            _handle_agent_interrupt(e)
+            return
+        except MaxTokensReachedException:
+            return
+
+        kb_for_turn = _current_knowledge_base_id()
+        if kb_for_turn and executed:
+            # Persist the executed exchange when KB is configured.
+            store_conversation_in_kb(ctx.agent, query, response, kb_for_turn)
     else:
-        # Display welcome text at startup.
+        # Render welcome banner once at startup in interactive mode.
         try:
             welcome_text = read_welcome_text()
         except Exception:
@@ -1016,16 +3909,7 @@ def main() -> None:
         if welcome_text:
             ctx.welcome_text = welcome_text
             render_welcome_message(welcome_text)
-        profile = settings.harness.tier_profiles.get(model_manager.current_tier)
-        snapshot = build_context_snapshot(
-            artifact_store=artifact_store,
-            interactive=True,
-            default_preflight_level=profile.preflight_level if profile else None,
-        )
-        preflight_prompt_section = snapshot.preflight_prompt_section
-        project_map_prompt_section = snapshot.project_map_prompt_section
-
-        ctx.refresh_system_prompt()
+        _refresh_query_context(interactive=True)
         run_repl(
             ctx=ctx,
             registry=registry,

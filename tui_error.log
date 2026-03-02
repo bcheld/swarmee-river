@@ -1,0 +1,17 @@
+{"event": "warning", "text": "[provider] No AWS credentials detected for Bedrock; falling back to OpenAI because OPENAI_API_KEY is set."}
+{"event": "ready", "session_id": "3851d486536e4a268db143bf37c3fbe7"}
+{"event": "model_info", "provider": "openai", "tier": "balanced", "model_id": "gpt-5-mini", "tiers": [{"name": "fast", "provider": "openai", "model_id": "gpt-5-nano", "display_name": "GPT-5 nano", "description": "Lowest latency/cost; good for quick iterations.", "available": true, "reason": null}, {"name": "balanced", "provider": "openai", "model_id": "gpt-5-mini", "display_name": "GPT-5 mini", "description": "Default OpenAI tier for most coding tasks.", "available": true, "reason": null}, {"name": "deep", "provider": "openai", "model_id": "gpt-5.2", "display_name": "GPT-5.2", "description": "Stronger reasoning; slower / more expensive.", "available": true, "reason": null}, {"name": "long", "provider": "openai", "model_id": "gpt-5.2", "display_name": "GPT-5.2 (long)", "description": "Long-form outputs (override via SWARMEE_OPENAI_LONG_MODEL_ID).", "available": true, "reason": null}]}
+{"event": "safety_overrides", "overrides": {}}
+{"event": "session_available", "session_id": "None", "turn_count": 6}
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/bcheld/dev/vscode/swarmee-river/src/swarmee_river/swarmee.py", line 3370, in <module>
+    main()
+    ~~~~^^
+  File "/Users/bcheld/dev/vscode/swarmee-river/src/swarmee_river/swarmee.py", line 3310, in main
+    _run_tui_daemon()
+    ~~~~~~~~~~~~~~~^^
+  File "/Users/bcheld/dev/vscode/swarmee-river/src/swarmee_river/swarmee.py", line 2907, in _run_tui_daemon
+    raw_line = sys.stdin.readline()
+KeyboardInterrupt

@@ -4,6 +4,7 @@ from unittest import mock
 
 from swarmee_river.cli.builtin_commands import register_builtin_commands
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
+from swarmee_river.cli.diagnostics import render_diagnostic_command_for_surface
 
 
 def _make_ctx(outputs: list[str]) -> CLIContext:
@@ -60,3 +61,20 @@ def test_help_lists_cancel_command() -> None:
 
     assert outputs
     assert ":cancel" in outputs[-1]
+
+
+def test_render_diagnostic_usage_rewrite_is_generic(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "swarmee_river.cli.diagnostics.render_diagnostic_command",
+        lambda **_kwargs: "Usage: status | Usage: diff | Usage: artifact",
+    )
+
+    repl_text = render_diagnostic_command_for_surface(cmd="status", args=[], cwd=mock.MagicMock(), surface="repl")
+    cli_text = render_diagnostic_command_for_surface(cmd="status", args=[], cwd=mock.MagicMock(), surface="cli")
+
+    assert "Usage: :status" in repl_text
+    assert "Usage: :diff" in repl_text
+    assert "Usage: :artifact" in repl_text
+    assert "Usage: swarmee status" in cli_text
+    assert "Usage: swarmee diff" in cli_text
+    assert "Usage: swarmee artifact" in cli_text

@@ -543,6 +543,18 @@ class TestCallbackHandler:
 
         # Should not raise any exception. The test passes if no exception is raised.
 
+    def test_message_handling_none_content(self):
+        """Test handling of message payloads where content is None."""
+        handler = CallbackHandler()
+
+        handler.callback_handler(message={"role": "assistant", "content": None})
+        handler.callback_handler(message={"role": "user", "content": None})
+
+    def test_current_tool_use_not_dict(self):
+        """Test handling of current_tool_use payloads that are not dicts."""
+        handler = CallbackHandler()
+        handler.callback_handler(current_tool_use="not-a-dict")
+
     def test_message_not_dict(self):
         """Test handling of message that is not a dictionary."""
         handler = CallbackHandler()

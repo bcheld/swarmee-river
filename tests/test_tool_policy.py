@@ -205,6 +205,19 @@ def test_execute_mode_blocks_workplan_tool() -> None:
     assert "only allowed in plan mode" in str(event.cancel_tool)
 
 
+def test_execute_mode_allows_plan_progress_even_when_enforce_plan_is_enabled() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "plan_progress", "input": {"step": 1, "status": "in_progress"}},
+        invocation_state={"swarmee": {"mode": "execute", "enforce_plan": True, "allowed_tools": ["shell"]}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool is False
+
+
 def test_execute_mode_enforce_plan_blocks_when_allowlist_is_empty() -> None:
     hook = ToolPolicyHooks()
     event = SimpleNamespace(
@@ -230,3 +243,45 @@ def test_execute_mode_enforce_plan_allows_alias_when_underlying_is_approved() ->
     hook.before_tool_call(event)
 
     assert event.cancel_tool is False
+
+
+def test_execute_mode_session_allowlist_override_wins_over_tier_allowlist() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "shell"},
+        invocation_state={
+            "swarmee": {
+                "mode": "execute",
+                "tier": "fast",
+                "tool_profile": {"tool_allowlist": ["shell"]},
+                "session_safety_overrides": {"tool_allowlist": ["file_read"]},
+            }
+        },
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool
+    assert "session tool_allowlist override" in str(event.cancel_tool)
+
+
+def test_execute_mode_session_blocklist_override_wins_over_tier_allowlist() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "bash"},
+        invocation_state={
+            "swarmee": {
+                "mode": "execute",
+                "tier": "fast",
+                "tool_profile": {"tool_allowlist": ["shell"]},
+                "session_safety_overrides": {"tool_blocklist": ["shell"]},
+            }
+        },
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool
+    assert "session tool_blocklist override" in str(event.cancel_tool)

@@ -1,0 +1,187 @@
+"""Agents sidebar tab UI composition and widget wiring."""
+
+from __future__ import annotations
+
+from typing import Any, Iterator
+
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import Button, Checkbox, Collapsible, DataTable, Input, Select, Static, TabPane, TextArea
+
+from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader
+
+
+def compose_agents_tab() -> Iterator[Any]:
+    """Yield the Agents tab pane with Overview + Builder sub-views."""
+    with TabPane("Agents", id="tab_agents"):
+        with Vertical(id="agent_panel"):
+            with Horizontal(id="agent_view_switch"):
+                yield Button("Overview", id="agent_view_overview", compact=True, variant="primary")
+                yield Button("Builder", id="agent_view_builder", compact=True, variant="default")
+
+            with Vertical(id="agent_overview_view"):
+                yield Static("Orchestrator Agent", id="agent_summary_header")
+                yield Static(
+                    "Activated agents are available for delegation and swarm runs.",
+                    id="agent_overview_help",
+                )
+                yield TextArea(
+                    text="",
+                    read_only=True,
+                    show_cursor=False,
+                    id="agent_summary",
+                    soft_wrap=True,
+                )
+                yield SidebarHeader("Activated Agents", id="agent_overview_header")
+                yield DataTable(id="agent_overview_table", cursor_type="row")
+                yield SidebarDetail(id="agent_overview_detail")
+                yield Static("", id="agent_overview_status")
+
+            with Vertical(id="agent_builder_view"):
+                with VerticalScroll(id="agent_builder_scroll"):
+                    yield Static(
+                        "Focused roster editor. Save and apply runtime bundles in the Bundles tab.",
+                        id="agent_builder_help",
+                    )
+                    yield Static("Agent Roster", id="agent_builder_agents_header")
+                    yield DataTable(id="agent_builder_table", cursor_type="row")
+                    yield SidebarDetail(id="agent_builder_agent_detail")
+                    with Horizontal(id="agent_builder_agent_meta_row"):
+                        yield Input(placeholder="Agent id", id="agent_builder_agent_id")
+                        yield Input(placeholder="Agent name", id="agent_builder_agent_name")
+                    yield Input(placeholder="Summary", id="agent_builder_agent_summary")
+                    yield Input(
+                        placeholder="Prompt refs (asset IDs, comma-separated)",
+                        id="agent_builder_agent_prompt_refs",
+                    )
+                    with Horizontal(id="agent_builder_tools_row"):
+                        yield Static("Tools: inherit", id="agent_builder_tools_summary")
+                        yield Button("Edit Tools", id="agent_builder_edit_tools", compact=True, variant="default")
+                    with Horizontal(id="agent_builder_sops_row"):
+                        yield Static("SOPs: inherit", id="agent_builder_sops_summary")
+                        yield Button("Edit SOPs", id="agent_builder_edit_sops", compact=True, variant="default")
+                    with Horizontal(id="agent_builder_kb_row"):
+                        yield Static("KB: inherit", id="agent_builder_kb_summary")
+                        yield Button("Edit KB", id="agent_builder_edit_kb", compact=True, variant="default")
+                    yield Checkbox("Activated", value=False, id="agent_builder_agent_activated")
+                    with Horizontal(id="agent_builder_agent_actions"):
+                        yield Button("New Agent", id="agent_builder_agent_new", compact=True, variant="default")
+                        yield Button("Save Agent", id="agent_builder_agent_save", compact=True, variant="success")
+                        yield Button("Delete Agent", id="agent_builder_agent_delete", compact=True, variant="warning")
+                    with Horizontal(id="agent_builder_run_actions"):
+                        yield Button(
+                            "Insert Run Prompt",
+                            id="agent_builder_insert_prompt",
+                            compact=True,
+                            variant="primary",
+                        )
+                        yield Button("Run Now", id="agent_builder_run_now", compact=True, variant="default")
+                    with Collapsible(
+                        title="Advanced Prompt Override",
+                        id="agent_builder_prompt_advanced",
+                        collapsed=True,
+                    ):
+                        yield TextArea(
+                            text="",
+                            id="agent_builder_agent_prompt",
+                            soft_wrap=True,
+                        )
+                        with Horizontal(id="agent_builder_prompt_asset_meta_row"):
+                            yield Input(placeholder="Prompt asset name", id="agent_builder_prompt_asset_name")
+                            yield Input(placeholder="Prompt asset id (optional)", id="agent_builder_prompt_asset_id")
+                            yield Input(
+                                placeholder="Prompt asset tags (optional)",
+                                id="agent_builder_prompt_asset_tags",
+                            )
+                        with Horizontal(id="agent_builder_prompt_asset_actions"):
+                            yield Button(
+                                "Add Inline Prompt to Tooling",
+                                id="agent_builder_prompt_promote",
+                                compact=True,
+                                variant="primary",
+                            )
+                        with Horizontal(id="agent_builder_model_row"):
+                            yield Select(
+                                options=[
+                                    ("Model provider: inherit", "__inherit__"),
+                                    ("bedrock", "bedrock"),
+                                    ("openai", "openai"),
+                                    ("ollama", "ollama"),
+                                    ("github_copilot", "github_copilot"),
+                                ],
+                                allow_blank=False,
+                                id="agent_builder_agent_provider",
+                                compact=True,
+                            )
+                            yield Select(
+                                options=[
+                                    ("Model tier: inherit", "__inherit__"),
+                                    ("fast", "fast"),
+                                    ("balanced", "balanced"),
+                                    ("deep", "deep"),
+                                    ("long", "long"),
+                                ],
+                                allow_blank=False,
+                                id="agent_builder_agent_tier",
+                                compact=True,
+                            )
+                    yield Static("", id="agent_builder_status")
+
+
+def wire_agents_widgets(app: Any) -> None:
+    """Bind Agents tab widgets onto app fields."""
+    app._agent_view_overview_button = app.query_one("#agent_view_overview", Button)
+    app._agent_view_builder_button = app.query_one("#agent_view_builder", Button)
+    app._agent_overview_view = app.query_one("#agent_overview_view", Vertical)
+    app._agent_builder_view = app.query_one("#agent_builder_view", Vertical)
+    app._agent_builder_scroll = app.query_one("#agent_builder_scroll", VerticalScroll)
+    app._agent_summary = app.query_one("#agent_summary", TextArea)
+    app._agent_overview_header = app.query_one("#agent_overview_header", SidebarHeader)
+    app._agent_overview_table = app.query_one("#agent_overview_table", DataTable)
+    app._agent_overview_detail = app.query_one("#agent_overview_detail", SidebarDetail)
+    app._agent_overview_status = app.query_one("#agent_overview_status", Static)
+
+    app._agent_builder_table = app.query_one("#agent_builder_table", DataTable)
+    app._agent_builder_detail = app.query_one("#agent_builder_agent_detail", SidebarDetail)
+    app._agent_builder_agent_id_input = app.query_one("#agent_builder_agent_id", Input)
+    app._agent_builder_agent_name_input = app.query_one("#agent_builder_agent_name", Input)
+    app._agent_builder_agent_summary_input = app.query_one("#agent_builder_agent_summary", Input)
+    app._agent_builder_agent_prompt_input = app.query_one("#agent_builder_agent_prompt", TextArea)
+    app._agent_builder_agent_prompt_refs_input = app.query_one("#agent_builder_agent_prompt_refs", Input)
+    app._agent_builder_prompt_asset_name_input = app.query_one("#agent_builder_prompt_asset_name", Input)
+    app._agent_builder_prompt_asset_id_input = app.query_one("#agent_builder_prompt_asset_id", Input)
+    app._agent_builder_prompt_asset_tags_input = app.query_one("#agent_builder_prompt_asset_tags", Input)
+    app._agent_builder_agent_provider_select = app.query_one("#agent_builder_agent_provider", Select)
+    app._agent_builder_agent_tier_select = app.query_one("#agent_builder_agent_tier", Select)
+    app._agent_builder_tools_summary = app.query_one("#agent_builder_tools_summary", Static)
+    app._agent_builder_sops_summary = app.query_one("#agent_builder_sops_summary", Static)
+    app._agent_builder_kb_summary = app.query_one("#agent_builder_kb_summary", Static)
+    app._agent_builder_agent_activated_checkbox = app.query_one("#agent_builder_agent_activated", Checkbox)
+    app._agent_builder_status = app.query_one("#agent_builder_status", Static)
+
+    # Keep compatibility with older app.py attribute names.
+    app._agent_view_profile_button = app._agent_view_overview_button
+    app._agent_view_tools_button = None
+    app._agent_view_team_button = None
+    app._agent_profile_view = app._agent_overview_view
+    app._agent_tools_view = None
+    app._agent_team_view = None
+    app._agent_profile_list = None
+    app._agent_profile_select = None
+    app._agent_profile_id_input = None
+    app._agent_profile_name_input = None
+    app._agent_profile_status = app._agent_builder_status
+    app._agent_builder_auto_delegate_checkbox = None
+    app._agent_tools_header = None
+    app._agent_tools_list = None
+    app._agent_tools_detail = None
+    app._agent_team_header = None
+    app._agent_team_list = None
+    app._agent_team_detail = None
+    app._agent_team_preset_id_input = None
+    app._agent_team_preset_name_input = None
+    app._agent_team_preset_description_input = None
+    app._agent_team_preset_spec_input = None
+    app._agent_team_status = None
+
+
+__all__ = ["compose_agents_tab", "wire_agents_widgets"]

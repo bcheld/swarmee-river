@@ -21,7 +21,7 @@
     <a href="https://pypi.org/project/swarmee-river/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/swarmee-river"/></a>
     <a href="https://python.org"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/swarmee-river"/></a>
   </div>
-  
+
   <p>
     <a href="https://strandsagents.com/">Documentation</a>
     ◆ <a href="https://github.com/strands-agents/samples">Samples</a>
@@ -32,7 +32,7 @@
   </p>
 </div>
 
-Swarmee River is an interactive, enterprise-oriented analytics + coding assistant built on the Strands Agents SDK. It keeps what works (simple packaging, hot-loaded tools, AWS connectivity) while adding better context management, SOPs, and observability.
+Swarmee River is an interactive, enterprise-oriented analytics + coding assistant built on the Strands Agents SDK. It keeps what works (simple packaging, hot-loaded tools, AWS connectivity) while adding better context management, agent profiles, SOPs, plan/approve/execute workflows, and a full-featured terminal UI.
 
 ## Quick Start
 
@@ -55,345 +55,130 @@ export SWARMEE_MODEL_PROVIDER="openai"
 # export SWARMEE_MODEL_PROVIDER="ollama"
 # export SWARMEE_OLLAMA_HOST="http://localhost:11434"
 # export SWARMEE_OLLAMA_MODEL_ID="llama3.1"
+#
+# GitHub Copilot (enterprise):
+# export SWARMEE_MODEL_PROVIDER="github_copilot"
+# export GITHUB_TOKEN="..."
+# export SWARMEE_GITHUB_COPILOT_MODEL_ID="gpt-4o"
 
-# Run interactive mode
+# Run interactive REPL
 swarmee
 
-# Build a custom tool and use it immediately
-swarmee "Create a tool named sentiment_analyzer that analyzes text sentiment and test it with some examples"
+# Run the full-screen terminal UI
+pipx install "swarmee-river[tui]"
+swarmee tui
 
-# Pipe content to build an agent based on specifications
+# One-shot prompt
+swarmee "Summarize the open PRs in this repo and suggest which to close"
+
+# Pipe content in
 cat agent-spec.txt | swarmee "Build a specialized agent based on these specifications"
-
-# Use with knowledge base to extend existing tools
-swarmee --kb YOUR_KB_ID "Load my previous calculator tool and enhance it with scientific functions"
 ```
 
-Optional: install the upstream Strands Tools pack for additional integrations (Slack, media generation, etc.):
+## Interfaces
+
+### Interactive CLI
+
+The default `swarmee` command opens an interactive REPL with plan/approve/execute support, tool consent prompts, in-session model tier switching, and built-in commands (`:plan`, `:tier`, `:session`, `:sop`, etc.).
+
+### Terminal UI
 
 ```bash
-pipx install "swarmee-river[strands_tools]"
+pip install "swarmee-river[tui]"
+swarmee tui
 ```
+
+The TUI is a full-screen Textual application with a multi-panel layout:
+
+- **Transcript** — streaming assistant output with reasoning blocks, tool call expansion, and rich/text display modes
+- **Run tab** — plan panel with step-by-step status, approve/replan/cancel actions, and session timeline
+- **Agents tab** — agent profile builder: define system prompt snippets, context sources, active SOPs, tool policy, knowledge base, and agent team presets; apply profiles to the live session
+- **Tools tab** — browse available tools with access-class metadata; manage prompt templates; import from S3
+- **Settings tab** — model tier configuration, environment overrides, orchestrator status
+
+The TUI connects to a shared runtime daemon so multiple clients can attach to the same session.
+
+### Shared Runtime
+
+Run a local shared runtime broker (localhost TCP) and attach lightweight clients:
+
+```bash
+# Start broker (writes .swarmee/runtime.json)
+swarmee serve --port 0
+
+# Attach from the same repo
+swarmee attach
+
+# Tail-only mode (no prompt input loop)
+swarmee attach --tail
+
+# Daemon management
+swarmee daemon status
+swarmee daemon start
+swarmee daemon stop
+```
+
+Discovery file lives at `.swarmee/runtime.json` (or under `SWARMEE_STATE_DIR`). `swarmee attach` defaults to `SWARMEE_SESSION_ID` when set; otherwise it derives a stable session ID from the current working directory.
+
+## Key Features
+
+**Context management**
+- Summarizing conversation manager that trims old turns before hitting token limits
+- Tool result limiting: large outputs are truncated in-prompt and persisted to `.swarmee/artifacts/`
+- Preflight snapshot: lightweight repo summary / tree / file content injected at startup (`SWARMEE_PREFLIGHT_LEVEL=summary|summary+tree|summary+files`)
+- Project map injection for persistent repo awareness
+
+**Agent control**
+- **Agent profiles**: named session configurations combining system prompt snippets, context sources, active SOPs, tool policy (allowlist/blocklist/consent), knowledge base, and agent team presets — apply any profile to the live session from the TUI or CLI
+- **Plan / approve / execute**: for "do work" prompts Swarmee generates a structured plan and waits for approval before executing
+- **Model tier switching**: `fast`, `balanced`, `deep`, `long` tiers with per-provider model ID overrides; switch in-session without restarting
+- **SOPs** (Standard Operating Procedures): Markdown-based procedure files injected into the system prompt when active
+- **Packs**: install/enable bundles of tools + SOPs + system prompt sections
+
+**Tool ecosystem**
+- 30+ built-in tools covering file ops, shell, Python, HTTP, git, artifacts, knowledge base, and multi-agent delegation
+- Hot-load custom tools from `./tools/` at runtime
+- Optional [Strands Tools](https://github.com/strands-agents/tools) pack for Slack, image generation, video, memory, and more
+
+**Observability**
+- JSONL event logs under `.swarmee/logs/` (optional S3 upload)
+- Artifact store under `.swarmee/artifacts/` indexed by `index.jsonl`
+- Session persistence: save/load full conversation state across runs
+- REPL replay: `:replay <invocation_id>` reconstructs any logged invocation
+
+**Providers**: Bedrock, OpenAI, Ollama, GitHub Copilot, and custom providers via `.models/`
 
 ## Configuration
 
-Swarmee is designed to work without users editing config files.
-
 Configuration precedence (highest → lowest):
-1) CLI flags (e.g., `--model-provider`)
-2) Environment variables / `.env`
-3) Project settings file: `.swarmee/settings.json` (optional; great for teams/repos)
-4) Built-in defaults (packaged)
+1. CLI flags (e.g., `--model-provider`)
+2. Environment variables / `.env`
+3. Project settings file: `.swarmee/settings.json` (optional; great for teams/repos)
+4. Built-in defaults
 
-For a comprehensive list of env vars, see `env.example`.
-For an end-to-end walkthrough of how context is assembled/trimmed/persisted, see `docs/agent_context_lifecycle.md`.
+For the full list of configuration knobs, see [`env.example`](env.example).
+For an end-to-end walkthrough of context assembly, trimming, and persistence, see [`docs/agent_context_lifecycle.md`](docs/agent_context_lifecycle.md).
 
-## Contributing
+## Model Providers
 
-Developer onboarding and contribution workflow: see `CONTRIBUTING.md`.
+Swarmee is packaged with `bedrock`, `openai`, `ollama`, and `github_copilot` providers. See `docs/configuration/` for default model configs and reasoning settings.
 
-## Features
-
-- 🏗️ Create and test custom tools with instant hot-reloading
-- 🤖 Build specialized agents with focused capabilities
-- 🔄 Extend existing tools and enhance their functionality
-- 💬 Interactive command-line interface with rich output
-- ⛔ Interrupt a running agent with `Esc`
-- 🧭 Plan-first workflow for “do work” prompts (plan → approve → execute)
-- ✅ Tool consent prompts for high-risk tools (shell/editor/file_write/http_request)
-- ⚡ In-session model tier switching (`:tier set fast|balanced|deep|long`)
-- 📁 Local artifacts + JSONL logs under `.swarmee/` (override via `SWARMEE_STATE_DIR`; optional S3 upload)
-- 📦 User/team extensibility via packs (tools + SOPs + prompts)
-- 🛠️ Powerful integrated tools (12+ tools including shell, editor, HTTP, Python)
-- 🧠 Knowledge base integration for persisting and loading tools
-- 🎮 Customizable system prompt for specialized agents
-- 🪄 Nested agent capabilities with tool delegation
-- 🔧 Dynamic tool loading for extending functionality
-- 🖥️ Environment variable management and customization
-
-## Frontier Harnessing (Claude Code–inspired)
-
-### Project preflight (automatic)
-On interactive startup, Swarmee can run a lightweight repo preflight and inject the summary into the system prompt.
-
-Controls:
-- `SWARMEE_PREFLIGHT=enabled|disabled`
-- `SWARMEE_PREFLIGHT_LEVEL=summary|summary+tree|summary+files`
-
-### Plan / approve / execute loop
-For “do work” prompts (e.g., implement/fix/refactor/add), Swarmee generates a structured plan and waits for approval.
-
-Interactive commands:
-- `:plan` plan the next prompt
-- `:approve` / `:y` execute the last plan
-- `:n` cancel the last plan
-- `:replan` regenerate the plan for the pending request
-
-### Model tiers
-Switch models within a session:
-- `:tier list`
-- `:tier set fast|balanced|deep|long`
-- `:tier auto on|off`
-
-Tier configuration lives in `.swarmee/settings.json` (optional), with env overrides such as
-`SWARMEE_OPENAI_FAST_MODEL_ID` / `SWARMEE_BEDROCK_DEEP_MODEL_ID`.
-
-### Packs (tools + SOPs + prompts)
-Install/enable packs by updating `.swarmee/settings.json` via CLI:
-```bash
-swarmee pack list
-swarmee pack install /path/to/pack
-swarmee pack enable my-pack
-swarmee pack disable my-pack
-```
-
-## Integrated Tools
-
-Swarmee River uses Strands Tools and supports hot-loading tools from `./tools`.
-
-Note: some integrations are available only when you install the optional upstream tools pack via
-`pip install "swarmee-river[strands_tools]"` (for example: `slack`, `generate_image`, `image_reader`, `nova_reels`,
-`memory`, `workflow`, and `cron`).
-
-- **agent_graph**: Create and manage graphs of agents
-- **artifact**: List/read/upload/store artifacts under `.swarmee/artifacts/`
-- **project_context**: Explore the project in the current working directory (files/search/git status)
-- **calculator**: Perform mathematical operations
-- **cron**: Task scheduling with cron jobs *(not available on Windows)*
-- **current_time**: Get the current date and time
-- **editor**: File editing operations like line edits, search, and undo *(fallback provided for minimal environments)*
-- **environment**: Manage environment variables
-- **generate_image**: Create AI generated images with Amazon Bedrock
-- **http_request**: Make API calls, fetch web data, and call local HTTP servers
-- **image_reader**: Process and analyze images
-- **journal**: Create structured tasks and logs for agents to manage and work from
-- **file_write**: Write text to files *(fallback provided for minimal environments)*
-- **list**: List directory contents (cross-platform, no shell)
-- **load_tool**: Dynamically load more tools at runtime
-- **glob**: Find paths by glob pattern (cross-platform, no shell)
-- **memory**: Agent memory persistence in Amazon Bedrock Knowledge Bases
-- **nova_reels**: Create AI generated videos with Nova Reels on Amazon Bedrock
-- **python_repl**: Run Python code *(fallback provided for minimal environments)*
-- **retrieve**: Semantically retrieve data from Amazon Bedrock Knowledge Bases for RAG, memory, and other purposes
-- **shell**: Execute shell commands *(fallback provided for minimal environments)*
-- **todoread / todowrite**: Read/write a project-local todo list at `.swarmee/todo.md` (or `SWARMEE_STATE_DIR/todo.md`)
-- **OpenCode aliases**: `grep`→`file_search`, `read`→`file_read`, `bash`→`shell`, `patch`→`patch_apply`, `write`→`file_write`, `edit`→`editor`
-- **slack**: Slack integration with real-time events, API access, and message sending
-- **speak**: Generate speech from text using macOS say command or Amazon Polly
-- **stop**: Force stop the agent event loop
-- **store_in_kb**: Save content to knowledge bases for future reference
-- **strand**: Create nested agent instances with specialized capabilities
-- **swarm**: Coordinate multiple AI agents in a swarm / network of agents
-- **think**: Perform deep thinking by creating parallel branches of agentic reasoning
-- **use_aws**: Interact with AWS services
-- **use_llm**: Run a new AI event loop with custom prompts
-- **welcome**: Manage the Swarmee welcome text
-- **workflow**: Orchestrate sequenced workflows
-
-## Jupyter Notebook Integration
-
-Swarmee River can be used inside Jupyter via an IPython extension that registers a `%%swarmee` cell magic.
-
-1) Install optional deps:
-```bash
-pip install "swarmee-river[jupyter]"
-# or (from source)
-pip install -e ".[jupyter]"
-```
-
-2) In a notebook:
-```python
-%load_ext swarmee_river.jupyter
-
-%%swarmee
-Review this notebook and suggest improvements to the code.
-```
-
-Example notebook: `examples/notebooks/swarmee_magic_demo.ipynb`
-
-Notebook tips:
-- Auto-approve plan + tool consent for a single invocation: `%%swarmee --yes`
-- Force plan mode (even for “info” prompts): `%%swarmee --plan`
-- Disable notebook context injection: `%%swarmee --no-context` (or `SWARMEE_NOTEBOOK_NO_CONTEXT=true`)
-
-## Knowledge Base Integration
-
-Swarmee River can leverage Amazon Bedrock Knowledge Bases to store and retrieve useful context and artifacts.
-
-### Set up your Knowledge Base
-
-#### Prerequisites
-- AWS account with IAM user 
-- Access to Amazon Bedrock console
-- Permissions to create IAM roles and S3 buckets
-
-#### Console Setup (Recommended)
-
-1. **Access Amazon Bedrock Console**
-   - Sign in to [AWS Management Console](https://console.aws.amazon.com/bedrock)
-   - Navigate to **Knowledge bases** in the left panel
-
-2. **Create Knowledge Base**
-   - Click **Create** → **Knowledge base with vector store**
-   - Enter a name and description for your knowledge base
-
-3. **Configure IAM Role**
-   - Choose **Create and use a new service role** (recommended)
-   - Or select an existing role with Bedrock permissions
-
-4. **Set Up Data Source**
-   - Choose your data source type, select `Custom` for Strands Agent
-   - Configure connection details
-
-5. **Configure Embeddings**
-   - Select an embeddings model (e.g., Amazon Titan Text Embeddings V2)
-   - Choose embedding type: `float32` (precise) or `binary` (cost-effective)
-
-6. **Choose Vector Store**
-   - **Quick create** (recommended): Let Bedrock create and manage the vector store
-   - **Custom**: Use existing OpenSearch Serverless, Aurora PostgreSQL, or S3 Vectors
-
-7. **Review and Create**
-   - Review all configurations
-   - Click **Create knowledge base**
-   - Wait for creation to complete (status: "Ready" or "Available")
-
-8. **Sync Data Source**
-   - Select your knowledge base
-   - Click **Sync** in the data source section
-   - Wait for initial sync to complete
-
-#### API Setup (Advanced)
-
-Create via AWS CLI or SDK:
+### Bedrock
 
 ```bash
-# Example using AWS CLI
-aws bedrock-agent create-knowledge-base \
-  --name "MyKnowledgeBase" \
-  --description "Swarmee River KB" \
-  --role-arn "arn:aws:iam::ACCOUNT:role/AmazonBedrockExecutionRoleForKnowledgeBase" \
-  --knowledge-base-configuration '{
-    "type": "VECTOR",
-    "vectorKnowledgeBaseConfiguration": {
-      "embeddingModelArn": "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
-    }
-  }' \
-  --storage-configuration '{
-    "type": "OPENSEARCH_SERVERLESS",
-    "opensearchServerlessConfiguration": {
-      "collectionArn": "arn:aws:aoss:us-east-1:ACCOUNT:collection/YOUR_COLLECTION",
-      "vectorIndexName": "bedrock-knowledge-base-index",
-      "fieldMapping": {
-        "vectorField": "bedrock-knowledge-base-default-vector",
-        "textField": "AMAZON_BEDROCK_TEXT_CHUNK",
-        "metadataField": "AMAZON_BEDROCK_METADATA"
-      }
-    }
-  }'
-```
-For more set up details, please see [AWS Bedrock Knowledgebase](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base-create.html)
-
-#### Get Your Knowledge Base ID
-
-After creation, find your Knowledge Base ID:
-- **Console**: Copy from the knowledge base details page
-- **CLI**: `aws bedrock-agent list-knowledge-bases`
-
-The ID format: `ABCDEFGHIJ` (10 characters)
-
-### Use your KnowledgeBase
-
-```bash
-# Load and extend tools from your knowledge base
-swarmee --kb YOUR_KB_ID "Load my data_visualizer tool and add 3D plotting capabilities"
-
-# Or set a default knowledge base via environment variable
-export STRANDS_KNOWLEDGE_BASE_ID="YOUR_KB_ID"
-swarmee "Find my most recent agent configuration and make it more efficient"
+export SWARMEE_MODEL_PROVIDER="bedrock"
+export AWS_REGION="us-east-2"
+# Optional: override model
+export STRANDS_MODEL_ID="us.anthropic.claude-sonnet-4-20250514-v1:0"
+swarmee
 ```
 
-Features:
-- 🔄 Retrieve previously created tools and agent configurations
-- 💾 Persistent storage for your custom tools and agents
-- 🛠️ Ability to iteratively improve tools across sessions
-- 🔍 Find and extend tools built in previous sessions
-
-## Model Configuration
-
-### Optimized Defaults
-
-Swarmee River defaults to an optimized Bedrock configuration when using `--model-provider bedrock`:
-
-```json
-{
-    "model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-    "max_tokens": 32767,
-    "boto_client_config": {
-        "read_timeout": 900,
-        "connect_timeout": 900,
-        "retries": {
-            "max_attempts": 3,
-            "mode": "adaptive"
-        }
-    },
-    "additional_request_fields": {
-        "anthropic_beta": ["interleaved-thinking-2025-05-14"],
-        "thinking": {
-            "type": "enabled",
-            "budget_tokens": 2048
-        }
-    }
-}
-```
-
-These settings provide:
-- Claude Sonnet 4 (latest high-performance model)
-- Maximum token output (32,768 tokens)
-- Extended timeouts (15 minutes) for complex operations
-- Automatic retries with adaptive backoff
-- Interleaved thinking capability for real-time reasoning during responses
-- Enabled thinking capability with 2,048 token budget for recursive reasoning
-
-You can customize these values using environment variables:
-
-```bash
-# Maximum tokens for responses
-export STRANDS_MAX_TOKENS=32000
-
-# Budget for agent thinking/reasoning
-export STRANDS_BUDGET_TOKENS=1024
-```
-
-## Custom Model Provider
-
-You can configure Swarmee to use a different model provider with specific settings by passing in the following arguments:
-
-```bash
-swarmee --model-provider <NAME> --model-config <JSON|FILE>
-```
-
-As an example, if you wanted to use the packaged Ollama provider with a specific model id, you would run:
-
-```bash
-swarmee --model-provider ollama --model-config '{"model_id": "<ID>"}'
-```
-
-Swarmee River is packaged with `bedrock`, `ollama`, and `openai`.
-
-### OpenAI (low-cost default)
-
-Create a local `.env` file with your key:
+### OpenAI
 
 ```bash
 echo "OPENAI_API_KEY=..." > .env
 echo "OPENAI_BASE_URL=https://api.openai.com/v1" >> .env
-```
-
-Then run:
-
-```bash
-swarmee --model-provider openai "Hello from gpt-5-nano"
+swarmee --model-provider openai "Hello"
 ```
 
 Tip: if you see a `max_tokens` / output token limit error, increase the output cap:
@@ -402,72 +187,123 @@ Tip: if you see a `max_tokens` / output token limit error, increase the output c
 swarmee --model-provider openai --max-output-tokens 1024 "List your tools (briefly)"
 ```
 
-To override the model/limits:
+### Ollama
 
 ```bash
-swarmee --model-provider openai --model-config '{"model_id":"gpt-5-nano","params":{"max_completion_tokens":256}}' "Summarize this repo"
+swarmee --model-provider ollama --model-config '{"model_id": "llama3.1"}' "Hello"
 ```
 
-If you have implemented a custom model provider ([instructions](https://strandsagents.com/latest/user-guide/concepts/model-providers/custom_model_provider/)) and would like to use it with Swarmee, create a python module under the directory "$CWD/.models" and expose an `instance` function that returns an instance of your provider. As an example, assume you have:
+### GitHub Copilot (enterprise)
 
 ```bash
-$ cat ./.models/custom_model.py
-from mymodels import CustomModel
-
-def instance(**config):
-    return CustomModel(**config)
+echo "SWARMEE_MODEL_PROVIDER=github_copilot" > .env
+echo "GITHUB_TOKEN=..." >> .env
+echo "SWARMEE_GITHUB_COPILOT_MODEL_ID=gpt-4o" >> .env
+swarmee
 ```
 
-You can then use it with Swarmee by running:
+For OpenCode-like auth UX:
 
 ```bash
-$ swarmee --model-provider custom_model --model-config <JSON|FILE>
+# Device-code login (opens browser, stores auth in ~/.local/share/swarmee/auth.json)
+swarmee connect
+
+# Manage credentials
+swarmee auth list
+swarmee auth login github_copilot
+swarmee auth logout github_copilot
 ```
 
-## Custom System Prompts
+In REPL/TUI, use `:connect` / `:auth ...` or `/connect` / `/auth ...`.
+
+### Custom Model Provider
 
 ```bash
-# Via environment variable
-export SWARMEE_SYSTEM_PROMPT="You are a Python expert."
-
-# Or local file
-echo "You are a security expert." > .prompt
+# .models/custom_model.py — expose an `instance` function
+swarmee --model-provider custom_model --model-config '{"key": "value"}'
 ```
 
-## 🌍 Environment Variables Configuration
+See the [Strands custom provider guide](https://strandsagents.com/latest/user-guide/concepts/model-providers/custom_model_provider/) for the interface.
 
-Swarmee River provides customization through environment variables (Strands variables still work where applicable):
+### Orchestrator Prompt Asset
 
-| Environment Variable | Description | Default | 
-|----------------------|-------------|---------|
-| STRANDS_MODEL_ID | Claude model ID to use for inference | us.anthropic.claude-sonnet-4-20250514-v1:0 |
-| STRANDS_MAX_TOKENS | Maximum tokens for agent responses | 32768 |
-| STRANDS_BUDGET_TOKENS | Token budget for agent thinking/reasoning | 2048 |
-| STRANDS_THINKING_TYPE | Type of thinking capability | enabled |
-| STRANDS_ANTHROPIC_BETA | Anthropic beta features (comma-separated) | interleaved-thinking-2025-05-14 |
-| STRANDS_CACHE_TOOLS | Tool caching strategy | default |
-| STRANDS_SYSTEM_PROMPT | Custom system prompt (overrides .prompt file) | None |
-| STRANDS_KNOWLEDGE_BASE_ID | Default Knowledge Base ID | None |
-| STRANDS_TOOL_CONSOLE_MODE | Enable rich console UI | enabled |
-| BYPASS_TOOL_CONSENT | Skip tool confirmation prompts | false |
+```bash
+# Manage orchestrator prompt refs from the fixed Orchestrator row in Agents > Builder.
+# Prompts are stored in .swarmee/prompts.json.
+```
 
-Swarmee-specific variables (selected):
+## Integrated Tools
 
-| Environment Variable | Description | Default |
-|----------------------|-------------|---------|
-| SWARMEE_SYSTEM_PROMPT | Custom system prompt | None |
-| SWARMEE_KNOWLEDGE_BASE_ID | Default Knowledge Base ID | None |
-| SWARMEE_CONTEXT_MANAGER | `summarize` / `sliding` / `none` | summarize |
-| SWARMEE_CONTEXT_BUDGET_TOKENS | Prompt budget before summarization (approx) | 20000 |
-| SWARMEE_PREFLIGHT_PRINT | Print startup preflight snapshot in interactive mode | false |
-| SWARMEE_ENABLE_SOPS | Allow only these SOPs (comma-separated) | None |
-| SWARMEE_DISABLE_SOPS | Block these SOPs (comma-separated) | None |
-| SWARMEE_LOG_EVENTS | Enable JSONL event logging | true |
-| SWARMEE_LOG_S3_BUCKET | Optional S3 bucket for log uploads | None |
+Swarmee includes 30+ built-in tools across these categories:
 
-## Exit
+- **File operations** — read, write, list, search, glob, patch
+- **Shell / code execution** — shell, Python REPL, editor
+- **HTTP / APIs** — http_request, use_aws
+- **Git** — git operations, project_context
+- **Artifacts & memory** — artifact store, todoread/todowrite, knowledge base retrieve/store, journal
+- **Multi-agent delegation** — strand (nested agent), swarm (multi-agent), use_agent/use_llm (summary-only)
+- **Utilities** — calculator, current_time, environment, welcome, stop
+- **Optional (strands_tools pack)** — Slack, generate_image, image_reader, nova_reels, memory, workflow, cron, speak
 
-Type `exit`, `quit`, or press `Ctrl+C`/`Ctrl+D`
+Every tool declares `read`, `write`, and/or `execute` **permissions** used for plan-mode gating (only read tools allowed during planning), TUI access-class badges, and safety policy enforcement. See [`docs/tool_permissions.md`](docs/tool_permissions.md) for the full reference, permission table, and guide to annotating new tools.
+
+Hot-load your own tools by placing Python files in `./tools/`. Full tool catalog: [`docs/opencode-port/tool_catalog.md`](docs/opencode-port/tool_catalog.md).
+
+Install the optional Strands Tools pack:
+
+```bash
+pip install "swarmee-river[strands_tools]"
+```
+
+## Integrations
+
+### Knowledge Base (Amazon Bedrock)
+
+Swarmee can retrieve previously stored tools, agent configurations, and conversation summaries from an Amazon Bedrock Knowledge Base, and save new content back to it.
+
+```bash
+# Pass KB ID at runtime
+swarmee --kb YOUR_KB_ID "Load my data_visualizer tool and add 3D plotting"
+
+# Or set a default
+export STRANDS_KNOWLEDGE_BASE_ID="YOUR_KB_ID"
+swarmee "Find my most recent agent configuration and make it more efficient"
+```
+
+For KB setup, see the [AWS Bedrock Knowledge Base documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base-create.html). In the TUI, set the KB via an agent profile's `knowledge_base_id` field.
+
+### Jupyter Notebook
+
+```bash
+pip install "swarmee-river[jupyter]"
+```
+
+```python
+%load_ext swarmee_river.jupyter
+
+%%swarmee
+Review this notebook and suggest improvements to the code.
+```
+
+Flags: `--yes` (auto-approve), `--plan` (force plan mode), `--no-context` (skip notebook injection).
+
+Example notebook: `examples/notebooks/swarmee_magic_demo.ipynb`
+
+### Office Documents
+
+```bash
+pip install "swarmee-river[office]"
+```
+
+Enables reading and writing Word, Excel, and PowerPoint files via the bundled office tools.
+
+### Snowflake
+
+```bash
+pip install "swarmee-river[snowflake]"
+```
+
+Enables the Snowflake connector for data query tools.
 
 ## Contributing ❤️
 

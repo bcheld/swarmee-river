@@ -163,3 +163,37 @@ def test_tool_consent_invocation_state_can_disable_session_auto_approve():
 
     assert event.cancel_tool
     assert "non-interactive" in str(event.cancel_tool)
+
+
+def test_tool_consent_session_override_allow_short_circuits_prompt() -> None:
+    safety = SafetyConfig(tool_consent="ask", tool_rules=[ToolRule(tool="shell", default="ask", remember=True)])
+    calls: list[str] = []
+
+    def _prompt(_text: str) -> str:
+        calls.append("asked")
+        return "n"
+
+    hook = ToolConsentHooks(safety, interactive=True, auto_approve=False, prompt=_prompt)
+    event = SimpleNamespace(
+        tool_use={"name": "shell"},
+        invocation_state={"swarmee": {"session_safety_overrides": {"tool_consent": "allow"}}},
+        cancel_tool=False,
+    )
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool is False
+    assert calls == []
+
+
+def test_tool_consent_session_override_deny_blocks_tool() -> None:
+    safety = SafetyConfig(tool_consent="ask", tool_rules=[ToolRule(tool="shell", default="allow", remember=True)])
+    hook = ToolConsentHooks(safety, interactive=True, auto_approve=True, prompt=lambda _text: "y")
+    event = SimpleNamespace(
+        tool_use={"name": "shell"},
+        invocation_state={"swarmee": {"session_safety_overrides": {"tool_consent": "deny"}}},
+        cancel_tool=False,
+    )
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool
+    assert "session safety override" in str(event.cancel_tool)

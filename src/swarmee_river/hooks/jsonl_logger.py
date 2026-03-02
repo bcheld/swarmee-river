@@ -269,7 +269,30 @@ class JSONLLoggerHooks(HookProvider):
 
         messages = event_messages(event)
         msg_count = len(messages) if isinstance(messages, list) else None
-        self._log("before_model_call", {"invocation_id": inv_id, "model_call_id": call_id, "messages": msg_count})
+
+        # Context composition metrics for LLM call inspector.
+        message_breakdown: dict[str, int] | None = None
+        if isinstance(messages, list):
+            breakdown: dict[str, int] = {}
+            for msg in messages:
+                role = str(msg.get("role", "unknown")).strip() if isinstance(msg, dict) else "unknown"
+                breakdown[role] = breakdown.get(role, 0) + 1
+            message_breakdown = breakdown
+
+        payload: dict[str, Any] = {
+            "invocation_id": inv_id,
+            "model_call_id": call_id,
+            "messages": msg_count,
+        }
+        # Propagate context metadata injected by swarmee.py run_agent().
+        for key in ("system_prompt_chars", "tool_count", "tool_schema_chars", "model_id"):
+            value = sw.get(key)
+            if value is not None:
+                payload[key] = value
+        if message_breakdown:
+            payload["message_breakdown"] = message_breakdown
+
+        self._log("before_model_call", payload)
         event.invocation_state["swarmee_model_call_id"] = call_id
 
     def after_model_call(self, event: AfterModelCallEvent) -> None:
@@ -287,16 +310,17 @@ class JSONLLoggerHooks(HookProvider):
         usage = _extract_usage_payload(event)
         if usage is not None and self.redact:
             usage = _redact_obj(usage, self._secrets)
-        self._log(
-            "after_model_call",
-            {
-                "invocation_id": inv_id,
-                "model_call_id": call_id,
-                "duration_s": duration_s,
-                "response": resp_summary,
-                "usage": usage,
-            },
-        )
+        payload_out: dict[str, Any] = {
+            "invocation_id": inv_id,
+            "model_call_id": call_id,
+            "duration_s": duration_s,
+            "response": resp_summary,
+            "usage": usage,
+        }
+        model_id = sw.get("model_id")
+        if model_id is not None:
+            payload_out["model_id"] = model_id
+        self._log("after_model_call", payload_out)
 
     def _upload_to_s3(self) -> None:
         if not self.s3_bucket:

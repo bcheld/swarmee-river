@@ -9,12 +9,8 @@ from typing import Any, Optional
 from strands import tool
 
 from swarmee_river.artifacts import ArtifactStore
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n… (truncated to {max_chars} chars) …"
+from swarmee_river.tool_permissions import set_permissions
+from swarmee_river.utils.text_utils import truncate
 
 
 def _recommended_commands(root: Path) -> list[str]:
@@ -77,6 +73,7 @@ def run_checks(
                 cwd=str(root),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 errors="replace",
                 timeout=timeout_s,
                 check=False,
@@ -113,7 +110,7 @@ def run_checks(
 
         ok = exit_code == 0
         overall_ok = overall_ok and ok
-        output = _truncate(combined, max_chars) if combined else "(no output)"
+        output = truncate(combined, max_chars) if combined else "(no output)"
         if artifact_path:
             output += f"\n(full output: {artifact_path})"
         results.append(f"$ {cmd}\nexit_code: {exit_code} (duration_s={duration_s})\n{output}")
@@ -122,3 +119,6 @@ def run_checks(
         "status": "success" if overall_ok else "error",
         "content": [{"text": "\n\n".join(results)}],
     }
+
+
+set_permissions(run_checks, "execute")

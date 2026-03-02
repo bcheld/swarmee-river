@@ -4,24 +4,54 @@ import os
 from pathlib import Path
 
 
+def scope_root(*, cwd: Path | None = None) -> Path:
+    """
+    Resolve the default Swarmee scope root.
+
+    Priority:
+    1) Nearest ancestor containing `.swarmee`
+    2) Git repository root (nearest ancestor containing `.git`)
+    3) User home directory when no repository is detected
+    """
+    base = (cwd or Path.cwd()).expanduser().resolve()
+
+    # 1) Check for explicit .swarmee directory
+    for candidate in (base, *base.parents):
+        swarmee_marker = candidate / ".swarmee"
+        if swarmee_marker.is_dir():
+            return candidate
+
+    # 2) Check for git repository
+    for candidate in (base, *base.parents):
+        git_marker = candidate / ".git"
+        if git_marker.exists():
+            return candidate
+
+    # 3) Fallback to home directory
+    return Path.home().expanduser().resolve()
+
+
 def state_dir(*, cwd: Path | None = None) -> Path:
     """
     Return the base directory for Swarmee runtime state (artifacts/logs/sessions/project map).
 
-    Default: `<cwd>/.swarmee`
+    Default:
+    - `<git-repo-root>/.swarmee` when running inside a git repository
+    - `~/.swarmee` when no repository is detected
     Override: `SWARMEE_STATE_DIR`
 
     Notes:
     - If SWARMEE_STATE_DIR is relative, it is interpreted relative to `cwd` (or Path.cwd()).
     - This does not create directories; callers should mkdir as needed.
     """
-    base = (cwd or Path.cwd()).expanduser().resolve()
+    base = scope_root(cwd=cwd)
+    relative_base = (cwd or Path.cwd()).expanduser().resolve()
 
     raw = os.getenv("SWARMEE_STATE_DIR")
     if isinstance(raw, str) and raw.strip():
         p = Path(raw.strip()).expanduser()
         if not p.is_absolute():
-            p = (base / p).expanduser()
+            p = (relative_base / p).expanduser()
         return p.resolve()
 
     return base / ".swarmee"

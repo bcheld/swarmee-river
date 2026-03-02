@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.utils.provider_utils import normalize_provider_name
+
 
 def _truthy(value: str | None) -> bool:
     if value is None:
@@ -13,20 +15,19 @@ def _truthy(value: str | None) -> bool:
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
 
 
-def _default_settings_path() -> Path:
-    return Path.cwd() / ".swarmee" / "settings.json"
-
-
-def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Deep merge two dicts (override wins). Lists are replaced, not merged."""
+def deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = dict(base)
     for key, value in override.items():
         out_value = out.get(key)
         if isinstance(value, dict) and isinstance(out_value, dict):
-            out[key] = _deep_merge_dict(out_value, value)
+            out[key] = deep_merge_dict(out_value, value)
         else:
             out[key] = value
     return out
+
+
+def _default_settings_path() -> Path:
+    return Path.cwd() / ".swarmee" / "settings.json"
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ class ModelTier:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], *, default_provider: str | None = None) -> "ModelTier":
-        provider = str(raw.get("provider") or default_provider or "").strip()
+        provider = normalize_provider_name(raw.get("provider") or default_provider)
         model_id = raw.get("model_id")
         display_name = raw.get("display_name")
         description = raw.get("description")
@@ -156,6 +157,7 @@ class ModelsConfig:
     providers: dict[str, ProviderModels] = field(default_factory=dict)
     auto_escalation: AutoEscalation = field(default_factory=AutoEscalation)
     availability: dict[str, Any] = field(default_factory=dict)
+    hidden_tiers: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ModelsConfig":
@@ -176,18 +178,37 @@ class ModelsConfig:
             for provider_name, provider_value in providers_raw.items():
                 if not isinstance(provider_name, str) or not isinstance(provider_value, dict):
                     continue
-                key = provider_name.strip().lower()
+                key = normalize_provider_name(provider_name.strip())
                 providers[key] = ProviderModels.from_dict(provider_value, provider=key)
 
         auto = raw.get("auto_escalation")
         availability = raw.get("availability")
+        hidden_tiers_raw = raw.get("hidden_tiers")
+        hidden_tiers: list[str] = []
+        if isinstance(hidden_tiers_raw, list):
+            seen_hidden: set[str] = set()
+            for item in hidden_tiers_raw:
+                token = str(item or "").strip().lower()
+                if "|" not in token:
+                    continue
+                provider_name, tier_name = token.split("|", 1)
+                provider_name = normalize_provider_name(provider_name.strip())
+                tier_name = tier_name.strip().lower()
+                if not provider_name or not tier_name:
+                    continue
+                key = f"{provider_name}|{tier_name}"
+                if key in seen_hidden:
+                    continue
+                seen_hidden.add(key)
+                hidden_tiers.append(key)
         return cls(
-            provider=str(provider).strip().lower() if isinstance(provider, str) and provider.strip() else None,
+            provider=normalize_provider_name(provider) if isinstance(provider, str) and provider.strip() else None,
             default_tier=default_tier,
             tiers=tiers,
             providers=providers,
             auto_escalation=AutoEscalation.from_dict(auto) if isinstance(auto, dict) else AutoEscalation(),
             availability=availability if isinstance(availability, dict) else {},
+            hidden_tiers=hidden_tiers,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -197,6 +218,7 @@ class ModelsConfig:
             "providers": {k: v.to_dict() for k, v in self.providers.items()},
             "auto_escalation": self.auto_escalation.to_dict(),
             "availability": self.availability,
+            "hidden_tiers": list(self.hidden_tiers),
         }
         if self.provider:
             out["provider"] = self.provider
@@ -282,19 +304,83 @@ class SafetyConfig:
 
 @dataclass(frozen=True)
 class PackEntry:
-    name: str
-    path: str
+    type: str = "path_pack"
+    name: str = ""
+    path: str = ""
     enabled: bool = True
+    id: str = ""
+    provider: str | None = None
+    tier: str | None = None
+    system_prompt_snippets: list[str] = field(default_factory=list)
+    context_sources: list[dict[str, Any]] = field(default_factory=list)
+    active_sops: list[str] = field(default_factory=list)
+    knowledge_base_id: str | None = None
+    agents: list[dict[str, Any]] = field(default_factory=list)
+    auto_delegate_assistive: bool = True
+    team_presets: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "PackEntry":
+        entry_type = str(raw.get("type") or "").strip().lower()
+        if entry_type not in {"path_pack", "agent_bundle"}:
+            entry_type = "path_pack" if str(raw.get("path") or "").strip() else "agent_bundle"
         name = str(raw.get("name") or "").strip()
         path = str(raw.get("path") or "").strip()
         enabled = raw.get("enabled")
-        return cls(name=name, path=path, enabled=bool(enabled) if isinstance(enabled, bool) else True)
+        bundle_id = str(raw.get("id") or "").strip()
+        provider_raw = str(raw.get("provider") or "").strip().lower()
+        tier_raw = str(raw.get("tier") or "").strip().lower()
+        snippets_raw = raw.get("system_prompt_snippets")
+        context_sources_raw = raw.get("context_sources")
+        active_sops_raw = raw.get("active_sops")
+        agents_raw = raw.get("agents")
+        team_presets_raw = raw.get("team_presets")
+        auto_delegate_raw = raw.get("auto_delegate_assistive", True)
+        return cls(
+            type=entry_type,
+            name=name,
+            path=path,
+            enabled=bool(enabled) if isinstance(enabled, bool) else True,
+            id=bundle_id,
+            provider=provider_raw or None,
+            tier=tier_raw or None,
+            system_prompt_snippets=[str(item).strip() for item in snippets_raw if str(item).strip()]
+            if isinstance(snippets_raw, list)
+            else [],
+            context_sources=[dict(item) for item in context_sources_raw if isinstance(item, dict)]
+            if isinstance(context_sources_raw, list)
+            else [],
+            active_sops=[str(item).strip() for item in active_sops_raw if str(item).strip()]
+            if isinstance(active_sops_raw, list)
+            else [],
+            knowledge_base_id=str(raw.get("knowledge_base_id") or "").strip() or None,
+            agents=[dict(item) for item in agents_raw if isinstance(item, dict)]
+            if isinstance(agents_raw, list)
+            else [],
+            auto_delegate_assistive=bool(auto_delegate_raw) if isinstance(auto_delegate_raw, bool) else True,
+            team_presets=[dict(item) for item in team_presets_raw if isinstance(item, dict)]
+            if isinstance(team_presets_raw, list)
+            else [],
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "path": self.path, "enabled": self.enabled}
+        if self.type == "agent_bundle":
+            return {
+                "type": "agent_bundle",
+                "id": self.id,
+                "name": self.name,
+                "provider": self.provider,
+                "tier": self.tier,
+                "system_prompt_snippets": list(self.system_prompt_snippets),
+                "context_sources": [dict(item) for item in self.context_sources],
+                "active_sops": list(self.active_sops),
+                "knowledge_base_id": self.knowledge_base_id,
+                "agents": [dict(item) for item in self.agents],
+                "auto_delegate_assistive": bool(self.auto_delegate_assistive),
+                "team_presets": [dict(item) for item in self.team_presets],
+                "enabled": bool(self.enabled),
+            }
+        return {"type": "path_pack", "name": self.name, "path": self.path, "enabled": self.enabled}
 
 
 @dataclass(frozen=True)
@@ -368,7 +454,9 @@ class HarnessConfig:
         return cls(tier_profiles=tier_profiles)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tier_profiles": {k: v.to_dict() for k, v in self.tier_profiles.items()}}
+        return {
+            "tier_profiles": {k: v.to_dict() for k, v in self.tier_profiles.items()},
+        }
 
 
 @dataclass(frozen=True)
@@ -413,7 +501,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
     Environment overrides:
     - SWARMEE_MODEL_TIER: force the active tier in the CLI
     - SWARMEE_TIER_AUTO: enable/disable auto escalation
-    - SWARMEE_MODEL_PROVIDER: choose the default provider (bedrock|openai|ollama)
+    - SWARMEE_MODEL_PROVIDER: choose the default provider (bedrock|openai|ollama|github_copilot)
     """
     settings_path = path or _default_settings_path()
     raw: dict[str, Any] = {}
@@ -424,7 +512,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
             raw = {}
 
     defaults = default_settings_template().to_dict()
-    merged = _deep_merge_dict(defaults, raw) if raw else defaults
+    merged = deep_merge_dict(defaults, raw) if raw else defaults
     settings = SwarmeeSettings.from_dict(merged)
 
     # Apply env overrides into the returned structure (does not persist to disk).
@@ -435,12 +523,13 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
     models = settings.models
     if forced_provider and forced_provider.strip():
         models = ModelsConfig(
-            provider=forced_provider.strip().lower(),
+            provider=normalize_provider_name(forced_provider.strip()),
             default_tier=models.default_tier,
             tiers=models.tiers,
             providers=models.providers,
             auto_escalation=models.auto_escalation,
             availability=models.availability,
+            hidden_tiers=models.hidden_tiers,
         )
 
     if forced_tier and forced_tier.strip():
@@ -451,6 +540,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
             providers=models.providers,
             auto_escalation=models.auto_escalation,
             availability=models.availability,
+            hidden_tiers=models.hidden_tiers,
         )
 
     if tier_auto is not None:
@@ -466,6 +556,37 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
             providers=models.providers,
             auto_escalation=auto,
             availability=models.availability,
+            hidden_tiers=models.hidden_tiers,
+        )
+
+    hidden_tiers = list(models.hidden_tiers)
+    if hidden_tiers:
+        hidden_keys = {str(item).strip().lower() for item in hidden_tiers if str(item).strip()}
+        filtered_providers: dict[str, ProviderModels] = {}
+        for provider_name, provider in models.providers.items():
+            filtered_tiers: dict[str, ModelTier] = {}
+            for tier_name, tier in provider.tiers.items():
+                if f"{provider_name}|{tier_name}".lower() in hidden_keys:
+                    continue
+                filtered_tiers[tier_name] = tier
+            if filtered_tiers:
+                filtered_providers[provider_name] = ProviderModels(
+                    display_name=provider.display_name,
+                    description=provider.description,
+                    tiers=filtered_tiers,
+                    extra=provider.extra,
+                )
+        selected_provider = models.provider
+        if selected_provider and selected_provider not in filtered_providers:
+            selected_provider = None
+        models = ModelsConfig(
+            provider=selected_provider,
+            default_tier=models.default_tier,
+            tiers=models.tiers,
+            providers=filtered_providers,
+            auto_escalation=models.auto_escalation,
+            availability=models.availability,
+            hidden_tiers=hidden_tiers,
         )
 
     if models is not settings.models:
@@ -507,22 +628,22 @@ def default_settings_template() -> SwarmeeSettings:
                     tiers={
                         "fast": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-                            display_name="Claude Sonnet 4 (fast)",
+                            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                            display_name="Claude Haiku 4.5 (fast)",
                             description=(
                                 "Lower latency / lower cost default (override via SWARMEE_BEDROCK_FAST_MODEL_ID)."
                             ),
                         ),
                         "balanced": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-                            display_name="Claude Sonnet 4 (balanced)",
+                            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                            display_name="Claude Haiku 4.5 (fast)",
                             description="Default tier for most coding and analysis work.",
                         ),
                         "deep": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-                            display_name="Claude Sonnet 4 (deep)",
+                            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                            display_name="Claude Sonnet 4.5 (deep)",
                             description=(
                                 "Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID)."
                             ),
@@ -537,8 +658,8 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "long": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-                            display_name="Claude Sonnet 4 (long)",
+                            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                            display_name="Claude Sonnet 4.5 (long)",
                             description=(
                                 "Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID)."
                             ),
@@ -563,14 +684,14 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "deep": ModelTier(
                             provider="openai",
-                            model_id="gpt-5",
-                            display_name="GPT-5",
+                            model_id="gpt-5.2",
+                            display_name="GPT-5.2",
                             description="Stronger reasoning; slower / more expensive.",
                         ),
                         "long": ModelTier(
                             provider="openai",
-                            model_id="gpt-5",
-                            display_name="GPT-5 (long)",
+                            model_id="gpt-5.2",
+                            display_name="GPT-5.2 (long)",
                             description="Long-form outputs (override via SWARMEE_OPENAI_LONG_MODEL_ID).",
                         ),
                     },
@@ -602,6 +723,46 @@ def default_settings_template() -> SwarmeeSettings:
                             model_id="llama3.1",
                             display_name="llama3.1",
                             description="Local long tier (override via SWARMEE_OLLAMA_LONG_MODEL_ID).",
+                        ),
+                    },
+                ),
+                "github_copilot": ProviderModels(
+                    display_name="GitHub Copilot",
+                    description=(
+                        "OpenAI-compatible endpoint for GitHub Copilot. "
+                        "Uses SWARMEE_GITHUB_COPILOT_API_KEY or GITHUB_TOKEN."
+                    ),
+                    tiers={
+                        "fast": ModelTier(
+                            provider="github_copilot",
+                            model_id="gpt-4o-mini",
+                            display_name="GPT-4o mini (Copilot)",
+                            description=(
+                                "Lower latency default for Copilot (override via SWARMEE_GITHUB_COPILOT_FAST_MODEL_ID)."
+                            ),
+                        ),
+                        "balanced": ModelTier(
+                            provider="github_copilot",
+                            model_id="gpt-4o",
+                            display_name="GPT-4o (Copilot)",
+                            description="Default Copilot tier for most coding tasks.",
+                        ),
+                        "deep": ModelTier(
+                            provider="github_copilot",
+                            model_id="gpt-5",
+                            display_name="GPT-5 (Copilot)",
+                            description=(
+                                "Stronger reasoning where available "
+                                "(override via SWARMEE_GITHUB_COPILOT_DEEP_MODEL_ID)."
+                            ),
+                        ),
+                        "long": ModelTier(
+                            provider="github_copilot",
+                            model_id="gpt-5",
+                            display_name="GPT-5 (Copilot long)",
+                            description=(
+                                "Long-form outputs on Copilot (override via SWARMEE_GITHUB_COPILOT_LONG_MODEL_ID)."
+                            ),
                         ),
                     },
                 ),

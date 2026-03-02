@@ -13,14 +13,22 @@ from typing import Any
 from strands import Agent
 
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
+from swarmee_river.context.prompt_cache import format_system_reminder, inject_system_reminder
 from swarmee_river.packs import enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
 from swarmee_river.project_map import build_context_snapshot
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
+from swarmee_river.runtime_service.client import (
+    RuntimeServiceClient,
+    default_session_id_for_cwd,
+    ensure_runtime_broker,
+    shutdown_runtime_broker,
+)
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
 from swarmee_river.tools import get_tools
-from swarmee_river.utils.env_utils import load_env_file
+from swarmee_river.utils.agent_runtime_utils import plan_json_for_execution, render_plan_text
+from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt
 from swarmee_river.utils.provider_utils import resolve_model_provider
 
@@ -61,6 +69,8 @@ _TOOL_USAGE_RULES = (
     "- Do not use shell for ls/find/sed/cat/grep/rg when file tools can do it.\n"
     "- Reserve shell for real command execution tasks."
 )
+_RUNTIME_TEXT_DELTA_EVENTS = {"text_delta", "message_delta", "output_text_delta", "delta"}
+_RUNTIME_TEXT_COMPLETE_EVENTS = {"text_complete", "message_complete", "output_text_complete", "complete"}
 
 
 @dataclass(frozen=True)
@@ -79,12 +89,6 @@ class _NotebookRuntime:
     base_system_prompt: str
     artifact_store: ArtifactStore
     knowledge_base_id: str | None
-
-
-def _truthy(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
 
 
 def _strip_markdown_images(markdown: str) -> str:
@@ -212,6 +216,14 @@ def _runtime_fingerprint() -> str:
         "SWARMEE_MAX_TOKENS",
         "OPENAI_API_KEY",
         "SWARMEE_OPENAI_MODEL_ID",
+        "SWARMEE_GITHUB_COPILOT_API_KEY",
+        "SWARMEE_GITHUB_COPILOT_MODEL_ID",
+        "SWARMEE_GITHUB_COPILOT_BASE_URL",
+        "SWARMEE_GITHUB_COPILOT_CLIENT_ID",
+        "SWARMEE_AUTH_PATH",
+        "SWARMEE_OPENCODE_AUTH_PATH",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
         "STRANDS_MODEL_ID",
         "SWARMEE_OLLAMA_HOST",
         "SWARMEE_OLLAMA_MODEL_ID",
@@ -283,6 +295,135 @@ def _run_coroutine(coro: Any) -> Any:
     return out.get("result")
 
 
+def _extract_runtime_text_chunk(event: dict[str, Any]) -> str:
+    for key in ("data", "text", "delta", "content", "output_text", "outputText", "textDelta"):
+        value = event.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _should_use_runtime_broker() -> bool:
+    raw = os.getenv("SWARMEE_NOTEBOOK_USE_RUNTIME")
+    if raw is None:
+        return True
+    return truthy(raw)
+
+
+def _run_swarmee_via_runtime(
+    prompt: str,
+    *,
+    force_plan: bool,
+    auto_approve: bool,
+) -> str:
+    attach_cwd = Path.cwd().resolve()
+    discovery = ensure_runtime_broker(cwd=attach_cwd)
+
+    session_id = (os.getenv("SWARMEE_SESSION_ID") or "").strip() or default_session_id_for_cwd(attach_cwd)
+    client = RuntimeServiceClient.from_discovery_file(discovery)
+    client.connect()
+
+    try:
+        hello = client.hello(client_name="swarmee-notebook", surface="jupyter")
+        if hello is None:
+            raise RuntimeError("runtime broker closed connection during hello")
+        if str(hello.get("event", "")).strip().lower() == "error":
+            raise RuntimeError(str(hello.get("message", hello)).strip() or "runtime hello failed")
+
+        attach = client.attach(session_id=session_id, cwd=str(attach_cwd))
+        if attach is None:
+            raise RuntimeError("runtime broker closed connection during attach")
+        if str(attach.get("event", "")).strip().lower() == "error":
+            raise RuntimeError(str(attach.get("message", attach)).strip() or "runtime attach failed")
+
+        query_payload: dict[str, Any] = {"cmd": "query", "text": prompt}
+        if force_plan:
+            query_payload["mode"] = "plan"
+        query_payload["auto_approve"] = bool(auto_approve)
+        client.send_command(query_payload)
+
+        delta_chunks: list[str] = []
+        final_chunks: list[str] = []
+        plan_rendered = ""
+        errors: list[str] = []
+        turn_complete_seen = False
+
+        while True:
+            event = client.read_event()
+            if event is None:
+                break
+            etype = str(event.get("event", "")).strip().lower()
+
+            if etype in _RUNTIME_TEXT_DELTA_EVENTS:
+                chunk = _extract_runtime_text_chunk(event)
+                if chunk:
+                    delta_chunks.append(chunk)
+                continue
+
+            if etype in _RUNTIME_TEXT_COMPLETE_EVENTS:
+                chunk = _extract_runtime_text_chunk(event)
+                if chunk:
+                    final_chunks.append(chunk)
+                continue
+
+            if etype == "replay_turn":
+                role = str(event.get("role", "")).strip().lower()
+                if role == "assistant":
+                    replay_text = str(event.get("text", "")).strip()
+                    if replay_text:
+                        final_chunks.append(replay_text)
+                continue
+
+            if etype == "plan":
+                rendered = event.get("rendered")
+                if isinstance(rendered, str) and rendered.strip():
+                    plan_rendered = rendered.strip()
+                continue
+
+            if etype == "error":
+                error_text = str(event.get("message", event.get("text", ""))).strip()
+                if error_text:
+                    errors.append(error_text)
+                continue
+
+            if etype == "turn_complete":
+                turn_complete_seen = True
+                status = str(event.get("exit_status", "ok")).strip().lower()
+                if status not in {"ok", "interrupted"} and not errors:
+                    errors.append(f"runtime turn finished with status={status}")
+                break
+
+        delta_text = "".join(delta_chunks).strip()
+        final_text = "\n".join(
+            chunk.strip() for chunk in final_chunks if isinstance(chunk, str) and chunk.strip()
+        ).strip()
+
+        output_parts: list[str] = []
+        if delta_text:
+            output_parts.append(delta_text)
+        if final_text and (not delta_text or final_text not in delta_text):
+            output_parts.append(final_text)
+        if plan_rendered and not output_parts:
+            output_parts.append(plan_rendered)
+        if errors and not output_parts:
+            output_parts.append("\n".join(errors))
+        if errors and output_parts:
+            output_parts.append("\n".join(errors))
+        if not output_parts and not turn_complete_seen:
+            raise RuntimeError("runtime broker connection closed before turn_complete")
+
+        return "\n\n".join(part for part in output_parts if part).strip()
+    finally:
+        client.close()
+
+
+def _shutdown_runtime_from_notebook() -> str:
+    stopped = shutdown_runtime_broker(cwd=Path.cwd().resolve())
+    if stopped:
+        return "Runtime daemon stopped."
+    return "Runtime daemon is not running."
+
+
 def _invoke_agent(
     runtime: _NotebookRuntime,
     query: str,
@@ -335,31 +476,6 @@ def _invoke_agent(
     return _run_coroutine(runtime.agent.invoke_async(invoke_query, **invoke_kwargs))
 
 
-def _render_plan(plan: WorkPlan) -> str:
-    lines: list[str] = ["Proposed plan:", f"- Summary: {plan.summary}"]
-    if plan.assumptions:
-        lines.append("- Assumptions:")
-        lines.extend([f"  - {a}" for a in plan.assumptions])
-    if plan.questions:
-        lines.append("- Questions:")
-        lines.extend([f"  - {q}" for q in plan.questions])
-    if plan.steps:
-        lines.append("- Steps:")
-        for i, step in enumerate(plan.steps, start=1):
-            lines.append(f"  {i}. {step.description}")
-            if step.files_to_read:
-                lines.append(f"     - read: {', '.join(step.files_to_read)}")
-            if step.files_to_edit:
-                lines.append(f"     - edit: {', '.join(step.files_to_edit)}")
-            if step.tools_expected:
-                lines.append(f"     - tools: {', '.join(step.tools_expected)}")
-            if step.commands_expected:
-                lines.append(f"     - cmds: {', '.join(step.commands_expected)}")
-            if step.risks:
-                lines.append(f"     - risks: {', '.join(step.risks)}")
-    return "\n".join(lines).strip()
-
-
 def _get_or_create_runtime() -> _NotebookRuntime:
     global _RUNTIME_SINGLETON, _RUNTIME_FINGERPRINT
 
@@ -388,7 +504,7 @@ def _get_or_create_runtime() -> _NotebookRuntime:
     tools_dict = get_tools()
     for name, tool_obj in load_enabled_pack_tools(settings).items():
         tools_dict.setdefault(name, tool_obj)
-    tools = list(tools_dict.values())
+    tools = [tools_dict[name] for name in sorted(tools_dict)]
 
     artifact_store = ArtifactStore()
 
@@ -479,17 +595,13 @@ def _execute_with_plan(runtime: _NotebookRuntime, prompt: str, plan: WorkPlan, *
         }
     }
 
-    plan_json_for_execution = json.dumps(plan.model_dump(exclude={"confirmation_prompt"}), indent=2, ensure_ascii=False)
+    plan_json_payload = plan_json_for_execution(plan)
     approved_plan_section = (
-        "Approved Plan (execute ONLY this plan; if you need changes, regenerate the plan):\n" + plan_json_for_execution
+        "Approved Plan (execute ONLY this plan; if you need changes, regenerate the plan):\n" + plan_json_payload
     )
-
-    prev_system_prompt = runtime.agent.system_prompt
-    runtime.agent.system_prompt = "\n\n".join([runtime.base_system_prompt, approved_plan_section]).strip()
-    try:
-        return _invoke_agent(runtime, prompt, invocation_state=invocation_state)
-    finally:
-        runtime.agent.system_prompt = prev_system_prompt
+    reminder = format_system_reminder([approved_plan_section])
+    query = inject_system_reminder(user_query=prompt, reminder=reminder)
+    return _invoke_agent(runtime, query, invocation_state=invocation_state)
 
 
 def _run_swarmee(
@@ -500,12 +612,22 @@ def _run_swarmee(
     force_plan: bool,
     auto_approve: bool,
 ) -> str:
-    runtime = _get_or_create_runtime()
-
     prompt = user_prompt.strip()
     if include_context:
         notebook_context = _collect_notebook_context(ipython)
         prompt = _format_prompt(notebook_context=notebook_context, user_prompt=prompt)
+
+    if _should_use_runtime_broker():
+        try:
+            return _run_swarmee_via_runtime(
+                prompt,
+                force_plan=force_plan,
+                auto_approve=auto_approve,
+            )
+        except Exception as exc:
+            return f"Error: runtime broker invocation failed: {exc}"
+
+    runtime = _get_or_create_runtime()
 
     intent = "work" if force_plan else classify_intent(user_prompt)
     if intent == "work":
@@ -517,7 +639,7 @@ def _run_swarmee(
                 "Fix: increase SWARMEE_MAX_TOKENS / STRANDS_MAX_TOKENS, or ask for a shorter plan."
             )
 
-        rendered = _render_plan(plan)
+        rendered = render_plan_text(plan)
         if not auto_approve:
             return rendered + "\n\nPlan generated. Re-run with `%%swarmee --yes` to execute."
 
@@ -544,7 +666,7 @@ def _run_swarmee(
     return str(result)
 
 
-def _parse_magic_line(line: str) -> tuple[bool, bool, bool, str]:
+def _parse_magic_line(line: str) -> tuple[bool, bool, bool, bool, str]:
     """
     Parse a `%%swarmee` magic line.
 
@@ -552,13 +674,15 @@ def _parse_magic_line(line: str) -> tuple[bool, bool, bool, str]:
     - --yes: auto-approve plan + tool consent for this invocation
     - --plan: force plan mode even for "info" prompts
     - --no-context: do not inject notebook context
+    - --daemon-stop: stop the shared runtime daemon for this scope
 
-    Returns: (auto_approve, force_plan, no_context, extra_text)
+    Returns: (auto_approve, force_plan, no_context, daemon_stop, extra_text)
     """
     tokens = shlex.split(line or "")
     auto_approve = False
     force_plan = False
     no_context = False
+    daemon_stop = False
     extra: list[str] = []
 
     for tok in tokens:
@@ -571,9 +695,12 @@ def _parse_magic_line(line: str) -> tuple[bool, bool, bool, str]:
         if tok == "--no-context":
             no_context = True
             continue
+        if tok == "--daemon-stop":
+            daemon_stop = True
+            continue
         extra.append(tok)
 
-    return auto_approve, force_plan, no_context, " ".join(extra).strip()
+    return auto_approve, force_plan, no_context, daemon_stop, " ".join(extra).strip()
 
 
 def load_ipython_extension(ipython: Any) -> None:
@@ -587,8 +714,12 @@ def load_ipython_extension(ipython: Any) -> None:
         @cell_magic  # type: ignore[untyped-decorator]
         def swarmee(self, line: str, cell: str) -> str:
             # Allow disabling notebook context for quick one-offs.
-            auto_approve, force_plan, no_context, extra = _parse_magic_line(line)
-            include_context = (not no_context) and (not _truthy(os.getenv("SWARMEE_NOTEBOOK_NO_CONTEXT")))
+            auto_approve, force_plan, no_context, daemon_stop, extra = _parse_magic_line(line)
+            if daemon_stop:
+                text = _shutdown_runtime_from_notebook()
+                print(text)
+                return text
+            include_context = (not no_context) and (not truthy(os.getenv("SWARMEE_NOTEBOOK_NO_CONTEXT")))
 
             prompt = cell
             if extra:

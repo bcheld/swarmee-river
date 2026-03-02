@@ -10,6 +10,7 @@ from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.opencode_aliases import canonical_tool_name, equivalent_tool_names, normalize_tool_name
 from swarmee_river.permissions import evaluate_declarative_rule_action
 from swarmee_river.settings import SafetyConfig
+from swarmee_river.tool_permissions import STRANDS_TOOL_PERMISSIONS, get_permissions
 from swarmee_river.utils.env_utils import csv_env, truthy_env
 
 _WINDOWS_POSIX_BIASED_TOKENS = {
@@ -94,6 +95,54 @@ def _matches_tool_set(tool_name: str, configured_tools: set[str]) -> bool:
     return bool(equivalent_tool_names(tool_name).intersection(configured_tools))
 
 
+# Hardcoded fallback used when permission-based derivation is unavailable.
+_FALLBACK_PLAN_MODE_ALLOWED_TOOLS: set[str] = {
+    "retrieve",
+    "sop",
+    "project_context",
+    "file_read",
+    "file_list",
+    "file_search",
+    "read",
+    "grep",
+    "list",
+    "glob",
+    "todoread",
+}
+
+
+def _build_plan_mode_allowlist(tools_dict: dict[str, Any]) -> set[str]:
+    """Derive the plan-mode tool allowlist from declared permissions.
+
+    Returns tool names that have only ``"read"`` permission or no permissions
+    (informational tools like ``plan_progress``, ``think``, ``stop``).
+    Tools with ``"write"`` or ``"execute"`` permission are excluded.
+
+    Always includes ``"project_context"`` regardless of permission since plan
+    mode restricts it separately via action allowlist.
+    """
+    allowed: set[str] = set()
+    for name, tool_obj in tools_dict.items():
+        # 1) Declared .permissions attribute.
+        declared = get_permissions(tool_obj)
+        if declared is not None:
+            perms = declared
+        else:
+            # 2) SDK fallback map.
+            sdk = STRANDS_TOOL_PERMISSIONS.get(name)
+            if sdk is not None:
+                perms = sdk
+            else:
+                # Unknown tool — skip it (conservative).
+                continue
+        if "write" in perms or "execute" in perms:
+            continue
+        allowed.add(name)
+    # project_context is restricted separately via action allowlist.
+    allowed.add("project_context")
+    return allowed
+
+
 class ToolPolicyHooks(HookProvider):
     """
     Simple guardrails for tool use in enterprise environments.
@@ -110,21 +159,22 @@ class ToolPolicyHooks(HookProvider):
         self.swarm_enabled = truthy_env("SWARMEE_SWARM_ENABLED", True)
         self._safety = safety
         # Plan mode should stay read-only to prevent the model from mutating the repo while planning.
-        # We allow repo inspection tools so plans can be grounded in reality.
-        self.plan_mode_allowed_tools = {
-            "retrieve",
-            "sop",
-            "project_context",
-            "file_read",
-            "file_list",
-            "file_search",
-            "read",
-            "grep",
-            "list",
-            "glob",
-            "todoread",
-        }
+        # Derived from permission metadata when tools are available; falls back to a hardcoded set.
+        self._plan_mode_allowed_tools_cached: set[str] | None = None
         self.plan_mode_project_context_actions = {"summary", "files", "tree", "search", "read", "git_status"}
+
+    @property
+    def plan_mode_allowed_tools(self) -> set[str]:
+        if self._plan_mode_allowed_tools_cached is not None:
+            return self._plan_mode_allowed_tools_cached
+        try:
+            from swarmee_river.tools import get_tools
+
+            tools_dict = get_tools()
+            self._plan_mode_allowed_tools_cached = _build_plan_mode_allowlist(tools_dict)
+        except Exception:
+            self._plan_mode_allowed_tools_cached = set(_FALLBACK_PLAN_MODE_ALLOWED_TOOLS)
+        return self._plan_mode_allowed_tools_cached
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, BeforeToolCallEvent, self.before_tool_call)
@@ -220,6 +270,10 @@ class ToolPolicyHooks(HookProvider):
             event.cancel_tool = "Tool 'WorkPlan' is only allowed in plan mode."
             return
 
+        # Plan progress reporting should remain available while executing.
+        if mode == "execute" and name == "plan_progress":
+            return
+
         if mode == "execute" and sw.get("enforce_plan"):
             allowed_tools = sw.get("allowed_tools")
             if isinstance(allowed_tools, (list, tuple, set)):
@@ -234,20 +288,41 @@ class ToolPolicyHooks(HookProvider):
         if mode == "execute":
             profile = sw.get("tool_profile")
             tier = sw.get("tier")
+            allow_set: set[str] = set()
+            block_set: set[str] = set()
+            allow_source = "tier"
+            block_source = "tier"
             if isinstance(profile, dict):
                 allow = profile.get("tool_allowlist")
                 block = profile.get("tool_blocklist")
                 allow_set = {str(x).strip() for x in allow if str(x).strip()} if isinstance(allow, list) else set()
                 block_set = {str(x).strip() for x in block if str(x).strip()} if isinstance(block, list) else set()
 
-                if allow_set and not _matches_tool_set(name, allow_set):
+            overrides = sw.get("session_safety_overrides", {}) if isinstance(sw, dict) else {}
+            if isinstance(overrides, dict):
+                override_allow = overrides.get("tool_allowlist")
+                override_block = overrides.get("tool_blocklist")
+                if isinstance(override_allow, list):
+                    allow_set = {str(x).strip() for x in override_allow if str(x).strip()}
+                    allow_source = "session"
+                if isinstance(override_block, list):
+                    block_set = {str(x).strip() for x in override_block if str(x).strip()}
+                    block_source = "session"
+
+            if allow_set and not _matches_tool_set(name, allow_set):
+                if allow_source == "session":
+                    event.cancel_tool = f"Tool '{name}' blocked by session tool_allowlist override."
+                else:
                     suffix = f" (tier={tier})" if tier else ""
                     event.cancel_tool = f"Tool '{name}' blocked by tier tool_allowlist{suffix}."
-                    return
-                if _matches_tool_set(name, block_set):
+                return
+            if _matches_tool_set(name, block_set):
+                if block_source == "session":
+                    event.cancel_tool = f"Tool '{name}' blocked by session tool_blocklist override."
+                else:
                     suffix = f" (tier={tier})" if tier else ""
                     event.cancel_tool = f"Tool '{name}' blocked by tier tool_blocklist{suffix}."
-                    return
+                return
 
         if self.enabled_tools and not _matches_tool_set(name, self.enabled_tools):
             event.cancel_tool = f"Tool '{name}' blocked by SWARMEE_ENABLE_TOOLS policy."

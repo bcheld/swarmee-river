@@ -16,6 +16,8 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
+
 SOPRecord = dict[str, Any]
 
 
@@ -253,3 +255,6 @@ def run_sop(
     )
     body = record.get("body", "")
     return {"status": "success", "content": [{"text": header + "\n" + body}]}
+
+
+set_permissions(sop, "read")

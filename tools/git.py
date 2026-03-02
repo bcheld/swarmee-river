@@ -12,6 +12,9 @@ from typing import Any, Optional
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
+from swarmee_river.utils.text_utils import truncate
+
 
 def _run(cmd: list[str], *, cwd: Path, timeout_s: int) -> tuple[int, str, str]:
     try:
@@ -20,6 +23,7 @@ def _run(cmd: list[str], *, cwd: Path, timeout_s: int) -> tuple[int, str, str]:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=timeout_s,
             check=False,
@@ -45,6 +49,7 @@ def _run_streaming(
             "stdout": subprocess.PIPE,
             "stderr": subprocess.STDOUT,
             "text": True,
+            "encoding": "utf-8",
             "errors": "replace",
             "bufsize": 1,
         }
@@ -138,6 +143,7 @@ def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 errors="replace",
                 check=False,
             )
@@ -153,12 +159,6 @@ def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
     with contextlib.suppress(Exception):
         if proc.poll() is None:
             proc.kill()
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n… (truncated to {max_chars} chars) …"
 
 
 @tool
@@ -196,23 +196,23 @@ def git(
     if action == "status":
         code, out, err = _run(["git", "status", "--porcelain=v1", "-b"], cwd=base, timeout_s=timeout_s)
         text = out.strip() if out.strip() else err.strip()
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "diff":
         code, out, err = _run(["git", "diff", *path_args], cwd=base, timeout_s=timeout_s)
         text = out if out else err
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "diff_staged":
         code, out, err = _run(["git", "diff", "--staged", *path_args], cwd=base, timeout_s=timeout_s)
         text = out if out else err
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "log":
         n = max(1, int(max_lines))
         code, out, err = _run(["git", "log", "--oneline", "-n", str(n)], cwd=base, timeout_s=timeout_s)
         text = out if out else err
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "branch":
         code1, out1, err1 = _run(["git", "branch", "--show-current"], cwd=base, timeout_s=timeout_s)
@@ -222,21 +222,21 @@ def git(
             text += f"current: {out1.strip()}\n"
         text += out2 if out2 else (err2 or err1)
         code = 0 if (code1 == 0 and code2 == 0) else 1
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "checkout":
         if not ref or not ref.strip():
             return {"status": "error", "content": [{"text": "ref is required for action=checkout"}]}
         code, out, err = _run(["git", "checkout", ref.strip()], cwd=base, timeout_s=timeout_s)
         text = out.strip() if out.strip() else err.strip()
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "add":
         if not paths:
             return {"status": "error", "content": [{"text": "paths is required for action=add"}]}
         code, out, err = _run(["git", "add", "--", *paths], cwd=base, timeout_s=timeout_s)
         text = out.strip() if out.strip() else err.strip()
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "commit":
         if not message or not message.strip():
@@ -248,32 +248,35 @@ def git(
         duration_s = round(time.monotonic() - t0, 2)
         print(f"[git] commit finished in {duration_s}s (exit_code={code})")
         text = out.strip() if out.strip() else err.strip()
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "restore":
         if not paths:
             return {"status": "error", "content": [{"text": "paths is required for action=restore"}]}
         code, out, err = _run(["git", "restore", "--", *paths], cwd=base, timeout_s=timeout_s)
         text = out.strip() if out.strip() else err.strip()
-        return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+        return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
 
     if action == "stash":
         sub = (stash_action or "list").strip().lower()
         if sub == "list":
             code, out, err = _run(["git", "stash", "list"], cwd=base, timeout_s=timeout_s)
             text = out.strip() if out.strip() else err.strip()
-            return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+            return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
         if sub == "push":
             args = ["git", "stash", "push"]
             if message and message.strip():
                 args.extend(["-m", message.strip()])
             code, out, err = _run(args, cwd=base, timeout_s=timeout_s)
             text = out.strip() if out.strip() else err.strip()
-            return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+            return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
         if sub == "pop":
             code, out, err = _run(["git", "stash", "pop"], cwd=base, timeout_s=timeout_s)
             text = out.strip() if out.strip() else err.strip()
-            return {"status": "success" if code == 0 else "error", "content": [{"text": _truncate(text, max_chars)}]}
+            return {"status": "success" if code == 0 else "error", "content": [{"text": truncate(text, max_chars)}]}
         return {"status": "error", "content": [{"text": "Unknown stash_action. Use list|push|pop."}]}
 
     return {"status": "error", "content": [{"text": f"Unknown action: {action}"}]}
+
+
+set_permissions(git, "execute")

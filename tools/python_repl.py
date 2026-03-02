@@ -7,6 +7,8 @@ from typing import Any
 
 from strands import tool
 
+from swarmee_river.tool_permissions import set_permissions
+
 _REPL_GLOBALS: dict[str, Any] = {"__name__": "__swarmee_python_repl__"}
 
 
@@ -40,3 +42,6 @@ def python_repl(code: str) -> dict[str, Any]:
         combined += f"STDERR:\n{stderr}\n"
 
     return {"status": status, "content": [{"text": combined.strip() or "(no output)"}]}
+
+
+set_permissions(python_repl, "execute")
