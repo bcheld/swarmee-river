@@ -3106,8 +3106,8 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
         align: center middle;
     }
     ToolTagManagerScreen #tool_tag_manager_container {
-        width: 96;
-        max-width: 96%;
+        width: 112;
+        max-width: 98%;
         max-height: 94%;
         border: round $accent;
         background: $surface;
@@ -3131,14 +3131,77 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
         width: 1fr;
         margin: 0 1 0 0;
     }
-    ToolTagManagerScreen #tool_tag_manager_controls Button {
+    ToolTagManagerScreen #tool_tag_manager_add,
+    ToolTagManagerScreen #tool_tag_manager_rename,
+    ToolTagManagerScreen #tool_tag_manager_delete {
         width: auto;
+        height: 1;
+        min-height: 1;
         margin: 0 1 0 0;
     }
-    ToolTagManagerScreen #tool_tag_manager_table {
-        height: 1fr;
-        min-height: 10;
+    ToolTagManagerScreen #tool_tag_manager_list_header {
+        layout: horizontal;
+        height: auto;
+        padding: 0 1;
+        background: #3a4350;
+        color: $text;
         margin: 0 0 1 0;
+    }
+    ToolTagManagerScreen #tool_tag_manager_list {
+        height: 1fr;
+        min-height: 12;
+        margin: 0 0 1 0;
+        border: round #4a5461;
+        scrollbar-background: #2f2f2f;
+        scrollbar-background-hover: #3a3a3a;
+        scrollbar-background-active: #454545;
+        scrollbar-color: #7f7f7f;
+        scrollbar-color-hover: #999999;
+        scrollbar-color-active: #b3b3b3;
+    }
+    ToolTagManagerScreen .tool-tag-row {
+        layout: horizontal;
+        height: auto;
+        padding: 0 1;
+        margin: 0;
+    }
+    ToolTagManagerScreen .tool-tag-row-even {
+        background: #222831;
+    }
+    ToolTagManagerScreen .tool-tag-row-odd {
+        background: #293240;
+    }
+    ToolTagManagerScreen .tool-tag-row-associated {
+        background: #1f3b2d;
+    }
+    ToolTagManagerScreen .tool-tag-cell {
+        height: auto;
+        padding: 0 1 0 0;
+    }
+    ToolTagManagerScreen .tool-tag-name {
+        width: 2fr;
+    }
+    ToolTagManagerScreen .tool-tag-access {
+        width: 9;
+        color: $text-muted;
+    }
+    ToolTagManagerScreen .tool-tag-source {
+        width: 10;
+        color: $text-muted;
+    }
+    ToolTagManagerScreen .tool-tag-action-cell {
+        width: 1fr;
+    }
+    ToolTagManagerScreen .tool-tag-action-tags {
+        width: 1fr;
+        color: $text-muted;
+        padding: 0 1 0 0;
+    }
+    ToolTagManagerScreen .tool-tag-action {
+        width: 9;
+        min-width: 8;
+        height: 1;
+        margin: 0;
     }
     ToolTagManagerScreen #tool_tag_manager_status {
         height: auto;
@@ -3157,20 +3220,35 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
 
     def __init__(self, catalog: list[dict[str, Any]], **kwargs: object) -> None:
         super().__init__(**kwargs)
+        from swarmee_river.tui.tooling_handlers import build_tool_table_rows
+
         self._catalog = [dict(item) for item in catalog if isinstance(item, dict)]
-        self._tool_names = sorted(
-            {str(item.get("name", "")).strip() for item in self._catalog if str(item.get("name", "")).strip()},
-            key=str.lower,
-        )
+        ordered_catalog: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for item in self._catalog:
+            tool_name = str(item.get("name", "")).strip()
+            if not tool_name or tool_name in seen_names:
+                continue
+            seen_names.add(tool_name)
+            ordered_catalog.append(item)
+
+        self._tool_names: list[str] = []
+        self._tool_meta_by_name: dict[str, dict[str, str]] = {}
         self._tool_tags: dict[str, list[str]] = {}
-        for tool_name in self._tool_names:
-            entry = next(
-                (item for item in self._catalog if str(item.get("name", "")).strip() == tool_name),
-                {},
-            )
-            self._tool_tags[tool_name] = self._normalize_tags(entry.get("tags", []))
+        for tool_name, access, source, _ in build_tool_table_rows(ordered_catalog):
+            resolved_name = str(tool_name or "").strip()
+            if not resolved_name:
+                continue
+            entry = next((item for item in ordered_catalog if str(item.get("name", "")).strip() == resolved_name), {})
+            self._tool_names.append(resolved_name)
+            self._tool_tags[resolved_name] = self._normalize_tags(entry.get("tags", []))
+            self._tool_meta_by_name[resolved_name] = {
+                "access": str(access or ""),
+                "source": str(source or ""),
+            }
         self._all_tags = self._collect_all_tags()
         self._selected_tag = self._all_tags[0] if self._all_tags else ""
+        self._row_button_to_tool: dict[str, str] = {}
 
     @staticmethod
     def _normalize_tags(raw_tags: Any) -> list[str]:
@@ -3228,22 +3306,47 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
             self._selected_tag = ""
             selector.value = self._NO_TAG_VALUE
 
-    def _refresh_tool_table(self) -> None:
-        table = self.query_one("#tool_tag_manager_table", DataTable)
-        if not table.columns:
-            table.add_column("Tool", key="tool")
-            table.add_column("Tagged", key="tagged", width=8)
-        cursor_coordinate = getattr(table, "cursor_coordinate", None)
-        previous_row = int(getattr(cursor_coordinate, "row", 0) or 0)
-        table.clear()
-        selected_lower = self._selected_tag_lower()
-        for tool_name in self._tool_names:
-            has_tag = any(str(tag).strip().lower() == selected_lower for tag in self._tool_tags.get(tool_name, []))
-            table.add_row(tool_name, "[x]" if has_tag else "[ ]", key=tool_name)
-        if self._tool_names:
-            target_row = min(max(previous_row, 0), len(self._tool_names) - 1)
+    def _refresh_tool_rows(self) -> None:
+        container = self.query_one("#tool_tag_manager_list", VerticalScroll)
+        self._row_button_to_tool = {}
+        for child in list(container.children):
             with contextlib.suppress(Exception):
-                table.move_cursor(row=target_row)
+                child.remove()
+
+        selected_lower = self._selected_tag_lower()
+        for index, tool_name in enumerate(self._tool_names):
+            tags = list(self._tool_tags.get(tool_name, []))
+            has_selected_tag = bool(
+                selected_lower and any(str(tag).strip().lower() == selected_lower for tag in tags)
+            )
+            row_classes = "tool-tag-row " + ("tool-tag-row-even" if index % 2 == 0 else "tool-tag-row-odd")
+            if has_selected_tag:
+                row_classes += " tool-tag-row-associated"
+
+            row = Horizontal(classes=row_classes)
+            container.mount(row)
+            meta = self._tool_meta_by_name.get(tool_name, {"access": "", "source": ""})
+            row.mount(Static(tool_name, classes="tool-tag-cell tool-tag-name", markup=False))
+            row.mount(Static(meta.get("access", ""), classes="tool-tag-cell tool-tag-access", markup=False))
+            row.mount(Static(meta.get("source", ""), classes="tool-tag-cell tool-tag-source", markup=False))
+            tag_text = ", ".join(tags)
+            action_cell = Horizontal(classes="tool-tag-cell tool-tag-action-cell")
+            row.mount(action_cell)
+            action_cell.mount(Static(tag_text, classes="tool-tag-action-tags", markup=False))
+
+            button_id = f"tool_tag_toggle_{index}"
+            self._row_button_to_tool[button_id] = tool_name
+            button_label = "Remove" if has_selected_tag else "Add"
+            button_variant = "warning" if has_selected_tag else "success"
+            action_cell.mount(
+                Button(
+                    button_label,
+                    id=button_id,
+                    variant=button_variant,
+                    compact=True,
+                    classes="tool-tag-action",
+                )
+            )
 
     def add_tag(self, tag_name: str) -> bool:
         token = str(tag_name or "").strip()
@@ -3344,19 +3447,9 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
     def build_result_payload(self) -> dict[str, Any]:
         return {"tool_tags": {name: list(tags) for name, tags in self._tool_tags.items()}}
 
-    def _toggle_selected_row(self) -> None:
-        if not self._selected_tag:
-            self._set_status("Select or add a tag first.")
-            return
-        table = self.query_one("#tool_tag_manager_table", DataTable)
-        cursor = getattr(table, "cursor_coordinate", None)
-        row_index = int(getattr(cursor, "row", -1) or -1)
-        if row_index < 0 or row_index >= len(self._tool_names):
-            return
-        tool_name = self._tool_names[row_index]
-        if self.toggle_tool_for_selected_tag(tool_name):
-            self._refresh_tool_table()
-            self._set_status(f"Toggled '{self._selected_tag}' for {tool_name}.")
+    def _resolve_tag_for_row_action(self) -> str | None:
+        selected = str(self._selected_tag or "").strip()
+        return selected or None
 
     def compose(self):  # type: ignore[override]
         options: list[tuple[str, str]] = (
@@ -3367,13 +3460,18 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
             yield Static("Tag Manager", id="tool_tag_manager_title")
             with Horizontal(id="tool_tag_manager_controls"):
                 yield Select(options, id="tool_tag_manager_select", value=selected_value)
-                yield Input(placeholder="Tag name", id="tool_tag_manager_input")
-                yield Button("Add", id="tool_tag_manager_add", variant="success")
-                yield Button("Rename", id="tool_tag_manager_rename", variant="warning")
-                yield Button("Delete", id="tool_tag_manager_delete", variant="error")
-            yield DataTable(id="tool_tag_manager_table", cursor_type="row")
+                yield Input(placeholder="Type a tag name", id="tool_tag_manager_input")
+                yield Button("Add", id="tool_tag_manager_add", variant="success", compact=True)
+                yield Button("Rename", id="tool_tag_manager_rename", variant="warning", compact=True)
+                yield Button("Delete", id="tool_tag_manager_delete", variant="error", compact=True)
+            with Horizontal(id="tool_tag_manager_list_header"):
+                yield Static("Name", classes="tool-tag-cell tool-tag-name")
+                yield Static("Access", classes="tool-tag-cell tool-tag-access")
+                yield Static("Source", classes="tool-tag-cell tool-tag-source")
+                yield Static("Tags", classes="tool-tag-cell tool-tag-action-cell")
+            yield VerticalScroll(id="tool_tag_manager_list")
             yield Static(
-                "Select a tag, then press Enter/Space on a tool row to toggle association.",
+                "Select a tag and use row buttons to add/remove associations.",
                 id="tool_tag_manager_status",
             )
             with Horizontal(id="tool_tag_manager_buttons"):
@@ -3382,9 +3480,9 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
 
     def on_mount(self) -> None:
         self._refresh_tag_select()
-        self._refresh_tool_table()
+        self._refresh_tool_rows()
         with contextlib.suppress(Exception):
-            self.query_one("#tool_tag_manager_table", DataTable).focus()
+            self.query_one("#tool_tag_manager_select", Select).focus()
 
     def on_select_changed(self, event: Any) -> None:
         select_id = str(getattr(getattr(event, "select", None), "id", "")).strip()
@@ -3395,16 +3493,7 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
             self._selected_tag = ""
         else:
             self._selected_tag = value
-        self._refresh_tool_table()
-
-    def on_data_table_row_selected(self, event: Any) -> None:
-        table = getattr(event, "data_table", None)
-        if table is None:
-            return
-        table_id = str(getattr(table, "id", "")).strip()
-        if table_id != "tool_tag_manager_table":
-            return
-        self._toggle_selected_row()
+        self._refresh_tool_rows()
 
     def on_button_pressed(self, event: Any) -> None:
         button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
@@ -3413,14 +3502,30 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
             if not tag_name:
                 self._set_status("Enter a tag name to add.")
                 return
-            added = self.add_tag(tag_name)
+            created = self.add_tag(tag_name)
             self._refresh_tag_select()
-            self._refresh_tool_table()
+            self._refresh_tool_rows()
             self.query_one("#tool_tag_manager_input", Input).value = ""
-            if added:
-                self._set_status(f"Added tag '{tag_name}'.")
+            if created:
+                self._set_status(f"Added tag '{self._selected_tag}'.")
             else:
-                self._set_status(f"Tag '{tag_name}' already exists; selected it.")
+                self._set_status(f"Selected existing tag '{self._selected_tag}'.")
+            return
+        if button_id in self._row_button_to_tool:
+            resolved_tag = self._resolve_tag_for_row_action()
+            if not resolved_tag:
+                self._set_status("Select a tag before toggling, or add one first.")
+                return
+            self._selected_tag = resolved_tag
+            tool_name = self._row_button_to_tool[button_id]
+            selected_lower = self._selected_tag_lower()
+            already_associated = any(
+                str(tag).strip().lower() == selected_lower for tag in self._tool_tags.get(tool_name, [])
+            )
+            if self.toggle_tool_for_selected_tag(tool_name):
+                self._refresh_tool_rows()
+                action = "Removed" if already_associated else "Added"
+                self._set_status(f"{action} '{self._selected_tag}' for {tool_name}.")
             return
         if button_id == "tool_tag_manager_rename":
             tag_name = str(self.query_one("#tool_tag_manager_input", Input).value or "").strip()
@@ -3432,7 +3537,7 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
                 return
             if self.rename_selected_tag(tag_name):
                 self._refresh_tag_select()
-                self._refresh_tool_table()
+                self._refresh_tool_rows()
                 self.query_one("#tool_tag_manager_input", Input).value = ""
                 self._set_status(f"Renamed tag to '{tag_name}'.")
             return
@@ -3443,7 +3548,7 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
             deleted_tag = self._selected_tag
             if self.delete_selected_tag():
                 self._refresh_tag_select()
-                self._refresh_tool_table()
+                self._refresh_tool_rows()
                 self._set_status(f"Deleted tag '{deleted_tag}'.")
             else:
                 self._set_status(f"Tag '{deleted_tag}' removed.")
@@ -3456,11 +3561,6 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
 
     def on_key(self, event: Any) -> None:
         key = str(getattr(event, "key", "")).lower()
-        if key in {"space", "spacebar"}:
-            event.stop()
-            event.prevent_default()
-            self._toggle_selected_row()
-            return
         if key == "escape":
             event.stop()
             event.prevent_default()
