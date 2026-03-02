@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from swarmee_river.packs import PATH_PACK_TYPE
 from swarmee_river.settings import PackEntry, PacksConfig, SwarmeeSettings, save_settings
 
 
@@ -203,10 +204,15 @@ def handle_pack_command(*, args: list[str], settings: SwarmeeSettings, settings_
 
     if not sub or sub[0] in {"list", "ls"}:
         lines = ["# Packs", ""]
-        if not settings.packs.installed:
+        installed_path_packs = [
+            p
+            for p in settings.packs.installed
+            if str(getattr(p, "type", PATH_PACK_TYPE)).strip().lower() == PATH_PACK_TYPE
+        ]
+        if not installed_path_packs:
             lines.append("No packs installed.")
         else:
-            for p in settings.packs.installed:
+            for p in installed_path_packs:
                 lines.append(f"- {p.name} ({'enabled' if p.enabled else 'disabled'}) -> {p.path}")
         return "\n".join(lines)
 
@@ -226,8 +232,12 @@ def handle_pack_command(*, args: list[str], settings: SwarmeeSettings, settings_
                     name = meta["name"].strip()
             except Exception:
                 pass
-        installed = [p for p in settings.packs.installed if p.name != name]
-        installed.append(PackEntry(name=name, path=str(pack_dir.resolve()), enabled=True))
+        installed = [
+            p
+            for p in settings.packs.installed
+            if not (str(getattr(p, "type", PATH_PACK_TYPE)).strip().lower() == PATH_PACK_TYPE and p.name == name)
+        ]
+        installed.append(PackEntry(type=PATH_PACK_TYPE, name=name, path=str(pack_dir.resolve()), enabled=True))
         _persist(installed)
         return f"Installed pack: {name} -> {pack_dir.resolve()}"
 
@@ -238,8 +248,8 @@ def handle_pack_command(*, args: list[str], settings: SwarmeeSettings, settings_
         found = False
         updated: list[PackEntry] = []
         for p in settings.packs.installed:
-            if p.name == target:
-                updated.append(PackEntry(name=p.name, path=p.path, enabled=(sub[0] == "enable")))
+            if str(getattr(p, "type", PATH_PACK_TYPE)).strip().lower() == PATH_PACK_TYPE and p.name == target:
+                updated.append(PackEntry(type=PATH_PACK_TYPE, name=p.name, path=p.path, enabled=(sub[0] == "enable")))
                 found = True
             else:
                 updated.append(p)

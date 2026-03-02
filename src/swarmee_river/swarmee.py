@@ -129,7 +129,15 @@ from swarmee_river.interrupts import (
     interrupt_watcher_from_env,
     pause_active_interrupt_watcher_for_input,
 )
-from swarmee_river.packs import enabled_sop_paths, enabled_system_prompts, load_enabled_pack_tools
+from swarmee_river.packs import (
+    find_agent_bundle,
+    enabled_sop_paths,
+    enabled_system_prompts,
+    list_agent_bundles,
+    load_enabled_pack_tools,
+    with_deleted_agent_bundle,
+    with_upserted_agent_bundle,
+)
 from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
 from swarmee_river.prompt_assets import (
     PromptAsset,
@@ -156,7 +164,7 @@ from swarmee_river.session.graph_index import (
     write_session_graph_index,
 )
 from swarmee_river.session.store import SessionStore
-from swarmee_river.settings import SwarmeeSettings, load_settings
+from swarmee_river.settings import SwarmeeSettings, load_settings, save_settings
 from swarmee_river.tools import get_tools
 from swarmee_river.utils.agent_runtime_utils import (
     build_base_system_prompt,
@@ -1948,6 +1956,63 @@ def _build_agent_runtime(
             "team_presets": [dict(item) for item in normalized.team_presets],
         }
 
+    def get_bundles_payload() -> dict[str, Any]:
+        nonlocal settings
+        settings = load_settings(settings_path)
+        return {
+            "event": "bundles_catalog",
+            "bundles": list_agent_bundles(settings),
+        }
+
+    def set_bundle(raw_bundle: Any) -> dict[str, Any]:
+        nonlocal settings
+        if not isinstance(raw_bundle, dict):
+            raise ValueError("set_bundle.bundle must be an object")
+        bundle_id = str(raw_bundle.get("id", "")).strip()
+        if not bundle_id:
+            raise ValueError("set_bundle.bundle.id is required")
+        bundle_name = str(raw_bundle.get("name", "")).strip() or bundle_id
+        normalized = AgentProfile.from_dict(
+            {
+                "id": bundle_id,
+                "name": bundle_name,
+                "provider": raw_bundle.get("provider"),
+                "tier": raw_bundle.get("tier"),
+                "system_prompt_snippets": raw_bundle.get("system_prompt_snippets") or [],
+                "context_sources": raw_bundle.get("context_sources") or [],
+                "active_sops": raw_bundle.get("active_sops") or [],
+                "knowledge_base_id": raw_bundle.get("knowledge_base_id"),
+                "agents": raw_bundle.get("agents") or [],
+                "auto_delegate_assistive": raw_bundle.get("auto_delegate_assistive", True),
+                "team_presets": raw_bundle.get("team_presets") or [],
+            }
+        )
+        settings = with_upserted_agent_bundle(settings, normalized.to_dict())
+        save_settings(settings, settings_path)
+        return get_bundles_payload()
+
+    def delete_bundle(bundle_id: str) -> dict[str, Any]:
+        nonlocal settings
+        token = str(bundle_id or "").strip()
+        if not token:
+            raise ValueError("delete_bundle.id is required")
+        if find_agent_bundle(settings, token) is None:
+            raise ValueError(f"Bundle not found: {token}")
+        settings = with_deleted_agent_bundle(settings, token)
+        save_settings(settings, settings_path)
+        return get_bundles_payload()
+
+    def apply_bundle(bundle_id: str) -> dict[str, Any]:
+        nonlocal settings
+        token = str(bundle_id or "").strip()
+        if not token:
+            raise ValueError("apply_bundle.id is required")
+        settings = load_settings(settings_path)
+        bundle = find_agent_bundle(settings, token)
+        if bundle is None:
+            raise ValueError(f"Bundle not found: {token}")
+        return apply_profile(bundle)
+
     return {
         "selected_provider": selected_provider,
         "provider_notice": provider_notice,
@@ -1973,6 +2038,10 @@ def _build_agent_runtime(
         "get_prompt_assets_payload": get_prompt_assets_payload,
         "set_prompt_asset": set_prompt_asset,
         "delete_prompt_asset": delete_prompt_asset,
+        "get_bundles_payload": get_bundles_payload,
+        "set_bundle": set_bundle,
+        "delete_bundle": delete_bundle,
+        "apply_bundle": apply_bundle,
     }
 
 
@@ -2958,6 +3027,10 @@ def main() -> None:
     _get_prompt_assets_payload = runtime["get_prompt_assets_payload"]
     _set_prompt_asset = runtime["set_prompt_asset"]
     _delete_prompt_asset = runtime["delete_prompt_asset"]
+    _get_bundles_payload = runtime["get_bundles_payload"]
+    _set_bundle = runtime["set_bundle"]
+    _delete_bundle = runtime["delete_bundle"]
+    _apply_bundle = runtime["apply_bundle"]
 
     def _best_effort_retrieve(query_text: str, *, warn_on_error: bool) -> None:
         kb_for_turn = _current_knowledge_base_id()
@@ -3405,6 +3478,82 @@ def main() -> None:
                 ):
                     _write_stdout_jsonl(after_model_info)
                 _write_stdout_jsonl({"event": "profile_applied", "profile": applied_profile})
+                continue
+
+            if cmd == "get_bundles":
+                _write_stdout_jsonl(_get_bundles_payload())
+                continue
+
+            if cmd == "set_bundle":
+                raw_bundle = payload.get("bundle")
+                if not isinstance(raw_bundle, dict):
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "set_bundle.bundle is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    catalog_event = _set_bundle(raw_bundle)
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+                _write_stdout_jsonl(catalog_event)
+                continue
+
+            if cmd == "delete_bundle":
+                raw_id = payload.get("id")
+                if not isinstance(raw_id, str) or not raw_id.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "delete_bundle.id is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    catalog_event = _delete_bundle(raw_id.strip())
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+                _write_stdout_jsonl(catalog_event)
+                continue
+
+            if cmd == "apply_bundle":
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot apply bundle while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                raw_id = payload.get("id")
+                if not isinstance(raw_id, str) or not raw_id.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "apply_bundle.id is required",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                before_model_info = _current_model_info_event()
+                try:
+                    applied_bundle = _apply_bundle(raw_id.strip())
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
+                    continue
+                with contextlib.suppress(Exception):
+                    session_store.save(active_session_id, meta=ctx.build_session_meta())
+                after_model_info = _current_model_info_event()
+                if (
+                    before_model_info.get("provider") != after_model_info.get("provider")
+                    or before_model_info.get("tier") != after_model_info.get("tier")
+                    or before_model_info.get("model_id") != after_model_info.get("model_id")
+                ):
+                    _write_stdout_jsonl(after_model_info)
+                _write_stdout_jsonl({"event": "bundle_applied", "bundle": applied_bundle, "profile": applied_bundle})
                 continue
 
             if cmd == "set_safety_overrides":

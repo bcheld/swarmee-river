@@ -304,19 +304,83 @@ class SafetyConfig:
 
 @dataclass(frozen=True)
 class PackEntry:
-    name: str
-    path: str
+    type: str = "path_pack"
+    name: str = ""
+    path: str = ""
     enabled: bool = True
+    id: str = ""
+    provider: str | None = None
+    tier: str | None = None
+    system_prompt_snippets: list[str] = field(default_factory=list)
+    context_sources: list[dict[str, Any]] = field(default_factory=list)
+    active_sops: list[str] = field(default_factory=list)
+    knowledge_base_id: str | None = None
+    agents: list[dict[str, Any]] = field(default_factory=list)
+    auto_delegate_assistive: bool = True
+    team_presets: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "PackEntry":
+        entry_type = str(raw.get("type") or "").strip().lower()
+        if entry_type not in {"path_pack", "agent_bundle"}:
+            entry_type = "path_pack" if str(raw.get("path") or "").strip() else "agent_bundle"
         name = str(raw.get("name") or "").strip()
         path = str(raw.get("path") or "").strip()
         enabled = raw.get("enabled")
-        return cls(name=name, path=path, enabled=bool(enabled) if isinstance(enabled, bool) else True)
+        bundle_id = str(raw.get("id") or "").strip()
+        provider_raw = str(raw.get("provider") or "").strip().lower()
+        tier_raw = str(raw.get("tier") or "").strip().lower()
+        snippets_raw = raw.get("system_prompt_snippets")
+        context_sources_raw = raw.get("context_sources")
+        active_sops_raw = raw.get("active_sops")
+        agents_raw = raw.get("agents")
+        team_presets_raw = raw.get("team_presets")
+        auto_delegate_raw = raw.get("auto_delegate_assistive", True)
+        return cls(
+            type=entry_type,
+            name=name,
+            path=path,
+            enabled=bool(enabled) if isinstance(enabled, bool) else True,
+            id=bundle_id,
+            provider=provider_raw or None,
+            tier=tier_raw or None,
+            system_prompt_snippets=[str(item).strip() for item in snippets_raw if str(item).strip()]
+            if isinstance(snippets_raw, list)
+            else [],
+            context_sources=[dict(item) for item in context_sources_raw if isinstance(item, dict)]
+            if isinstance(context_sources_raw, list)
+            else [],
+            active_sops=[str(item).strip() for item in active_sops_raw if str(item).strip()]
+            if isinstance(active_sops_raw, list)
+            else [],
+            knowledge_base_id=str(raw.get("knowledge_base_id") or "").strip() or None,
+            agents=[dict(item) for item in agents_raw if isinstance(item, dict)]
+            if isinstance(agents_raw, list)
+            else [],
+            auto_delegate_assistive=bool(auto_delegate_raw) if isinstance(auto_delegate_raw, bool) else True,
+            team_presets=[dict(item) for item in team_presets_raw if isinstance(item, dict)]
+            if isinstance(team_presets_raw, list)
+            else [],
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "path": self.path, "enabled": self.enabled}
+        if self.type == "agent_bundle":
+            return {
+                "type": "agent_bundle",
+                "id": self.id,
+                "name": self.name,
+                "provider": self.provider,
+                "tier": self.tier,
+                "system_prompt_snippets": list(self.system_prompt_snippets),
+                "context_sources": [dict(item) for item in self.context_sources],
+                "active_sops": list(self.active_sops),
+                "knowledge_base_id": self.knowledge_base_id,
+                "agents": [dict(item) for item in self.agents],
+                "auto_delegate_assistive": bool(self.auto_delegate_assistive),
+                "team_presets": [dict(item) for item in self.team_presets],
+                "enabled": bool(self.enabled),
+            }
+        return {"type": "path_pack", "name": self.name, "path": self.path, "enabled": self.enabled}
 
 
 @dataclass(frozen=True)

@@ -646,6 +646,29 @@ class RuntimeServiceServer:
                 await self._send_error(client, "invalid_profile", "set_profile.profile must be an object")
                 return
             forwarded = {"cmd": "set_profile", "profile": profile}
+        elif cmd == "get_bundles":
+            forwarded = {"cmd": "get_bundles"}
+        elif cmd == "set_bundle":
+            bundle = payload.get("bundle")
+            if not isinstance(bundle, dict):
+                await self._send_error(client, "invalid_bundle", "set_bundle.bundle must be an object")
+                return
+            forwarded = {"cmd": "set_bundle", "bundle": bundle}
+        elif cmd == "delete_bundle":
+            bundle_id = payload.get("id")
+            if not isinstance(bundle_id, str) or not bundle_id.strip():
+                await self._send_error(client, "invalid_bundle_id", "delete_bundle.id is required")
+                return
+            forwarded = {"cmd": "delete_bundle", "id": bundle_id.strip()}
+        elif cmd == "apply_bundle":
+            if session.query_active:
+                await self._send_error(client, "query_active", "Cannot apply bundle while a query is running")
+                return
+            bundle_id = payload.get("id")
+            if not isinstance(bundle_id, str) or not bundle_id.strip():
+                await self._send_error(client, "invalid_bundle_id", "apply_bundle.id is required")
+                return
+            forwarded = {"cmd": "apply_bundle", "id": bundle_id.strip()}
         elif cmd == "set_safety_overrides":
             if session.query_active:
                 await self._send_error(client, "query_active", "Cannot set safety overrides while a query is running")
@@ -767,6 +790,10 @@ class RuntimeServiceServer:
             "set_sop",
             "set_tier",
             "set_profile",
+            "get_bundles",
+            "set_bundle",
+            "delete_bundle",
+            "apply_bundle",
             "set_safety_overrides",
             "connect",
             "auth",

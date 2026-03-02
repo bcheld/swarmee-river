@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from swarmee_river.profiles.models import AgentProfile
 from swarmee_river.state_paths import state_dir
 
 _CATALOG_VERSION = 1
+_LEGACY_DELETE_SENTINEL = "legacy_profiles_deleted_v1"
 
 
 def _profiles_root(*, root_dir: Path | None = None) -> Path:
@@ -107,3 +109,25 @@ def delete_profile(profile_id: str, *, root_dir: Path | None = None) -> bool:
 
     _write_catalog(_catalog_path(root_dir=root_dir), kept)
     return True
+
+
+def delete_legacy_profiles_on_first_launch(*, root_dir: Path | None = None) -> bool:
+    """
+    Delete legacy profile catalog once and drop a sentinel marker.
+
+    Returns True when a legacy profile file existed and was removed.
+    """
+    base = root_dir if root_dir is not None else state_dir()
+    sentinel = base / _LEGACY_DELETE_SENTINEL
+    if sentinel.exists():
+        return False
+    catalog = _catalog_path(root_dir=root_dir)
+    removed = False
+    if catalog.exists() and catalog.is_file():
+        with contextlib.suppress(Exception):
+            catalog.unlink()
+            removed = True
+    with contextlib.suppress(Exception):
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("deleted\n", encoding="utf-8")
+    return removed

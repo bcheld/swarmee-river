@@ -96,12 +96,10 @@ class ToolingState:
 @dataclass
 class AgentStudioState:
     view_mode: str = "overview"
-    saved_profiles: list[Any] = field(default_factory=list)
+    saved_bundles: list[dict[str, Any]] = field(default_factory=list)
     effective_profile: Any = None
     draft_dirty: bool = False
     form_syncing: bool = False
-    profile_select_syncing: bool = False
-    selected_profile_id: str | None = None
     agents: list[dict[str, Any]] = field(default_factory=list)
     activated_items: list[dict[str, Any]] = field(default_factory=list)
     activated_selected_item_id: str | None = None
@@ -122,12 +120,20 @@ class AgentStudioState:
 
 
 @dataclass
+class BundlesState:
+    catalog: list[dict[str, Any]] = field(default_factory=list)
+    selected_bundle_id: str | None = None
+    form_syncing: bool = False
+
+
+@dataclass
 class AppState:
     daemon: DaemonState = field(default_factory=DaemonState)
     plan: PlanState = field(default_factory=PlanState)
     artifacts: ArtifactsState = field(default_factory=ArtifactsState)
     session: SessionState = field(default_factory=SessionState)
     agent_studio: AgentStudioState = field(default_factory=AgentStudioState)
+    bundles: BundlesState = field(default_factory=BundlesState)
     tooling: ToolingState = field(default_factory=ToolingState)
     engage_view_mode: str = "plan"
     tooling_view_mode: str = "tools"
@@ -138,6 +144,7 @@ __all__ = [
     "AgentStudioState",
     "AppState",
     "ArtifactsState",
+    "BundlesState",
     "DaemonState",
     "PlanState",
     "SessionState",

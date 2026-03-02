@@ -124,6 +124,9 @@ from swarmee_river.tui.transport import (
     _build_swarmee_subprocess_env as _transport_build_swarmee_subprocess_env,
 )
 from swarmee_river.tui.transport import (
+    _SocketTransport as _transport_SocketTransport,
+)
+from swarmee_river.tui.transport import (
     send_daemon_command as _transport_send_daemon_command,
 )
 from swarmee_river.tui.transport import (
@@ -237,6 +240,9 @@ _COMPAT_REEXPORTS = (
     session_timeline_actions,
     summarize_session_timeline_event,
 )
+
+# Backwards-compatible alias used by tests and older imports.
+_SocketTransport = _transport_SocketTransport
 
 
 def _sanitize_profile_token(value: str) -> str:
@@ -690,6 +696,7 @@ def run_tui() -> int:
     TextArea = textual_widgets.TextArea
 
     from swarmee_river.tui.views.agents import wire_agents_widgets
+    from swarmee_river.tui.views.bundles import wire_bundles_widgets
     from swarmee_river.tui.views.engage import wire_engage_widgets
     from swarmee_river.tui.views.scaffold import wire_scaffold_widgets
     from swarmee_river.tui.views.settings import (
@@ -1220,6 +1227,7 @@ def run_tui() -> int:
         #session_artifacts_table,
         #agent_overview_table,
         #agent_builder_table,
+        #bundles_table,
         #settings_models_table,
         #settings_env_table {
             height: 2fr;
@@ -1240,6 +1248,7 @@ def run_tui() -> int:
         #session_artifacts_table > .datatable--cursor,
         #agent_overview_table > .datatable--cursor,
         #agent_builder_table > .datatable--cursor,
+        #bundles_table > .datatable--cursor,
         #settings_models_table > .datatable--cursor,
         #settings_env_table > .datatable--cursor {
             background: $accent 30%;
@@ -1254,6 +1263,7 @@ def run_tui() -> int:
         #session_artifacts_table > .datatable--header,
         #agent_overview_table > .datatable--header,
         #agent_builder_table > .datatable--header,
+        #bundles_table > .datatable--header,
         #settings_models_table > .datatable--header,
         #settings_env_table > .datatable--header {
             background: #2f2f2f;
@@ -1607,46 +1617,55 @@ def run_tui() -> int:
             margin: 0 1 0 0;
         }
 
-        #agent_overview_view, #agent_builder_view {
+        #agent_overview_view, #agent_builder_view, #bundles_panel {
             height: 1fr;
             layout: vertical;
         }
 
-        #agent_summary_header, #agent_builder_profile_header, #agent_builder_agents_header {
+        #agent_builder_scroll {
+            height: 1fr;
+            scrollbar-background: #2f2f2f;
+            scrollbar-color: #7f7f7f;
+        }
+
+        #agent_builder_help, #bundles_help {
+            height: auto;
+            color: $text-muted;
+            margin: 0 0 1 0;
+        }
+
+        #agent_summary_header, #agent_builder_agents_header {
             height: auto;
             color: $text-muted;
             padding: 0 0 1 0;
         }
 
-        #agent_overview_table, #agent_builder_table {
+        #agent_overview_table, #agent_builder_table, #bundles_table {
             width: 1fr;
             margin: 0 0 1 0;
             min-height: 8;
         }
 
-        #agent_overview_detail, #agent_builder_agent_detail {
+        #agent_overview_detail, #agent_builder_agent_detail, #bundles_detail {
             height: 1fr;
         }
 
-        #agent_builder_profile_row, #agent_profile_meta_row, #agent_builder_agent_meta_row, #agent_builder_model_row,
-        #agent_builder_agent_actions, #agent_profile_actions, #agent_builder_prompt_asset_meta_row,
-        #agent_builder_prompt_asset_actions {
+        #agent_builder_agent_meta_row, #agent_builder_model_row, #agent_builder_agent_actions,
+        #agent_builder_run_actions,
+        #agent_builder_prompt_asset_meta_row, #agent_builder_prompt_asset_actions,
+        #agent_builder_tools_row, #agent_builder_sops_row, #agent_builder_kb_row,
+        #bundles_meta_row, #bundles_actions_primary, #bundles_actions_secondary {
             height: auto;
             layout: horizontal;
             margin: 0 0 1 0;
         }
 
-        #agent_builder_profile_row Select, #agent_builder_profile_row Button {
+        #agent_builder_agent_id, #agent_builder_agent_name, #bundle_id, #bundle_name {
             width: 1fr;
             margin: 0 1 0 0;
         }
 
-        #agent_profile_id, #agent_profile_name, #agent_builder_agent_id, #agent_builder_agent_name {
-            width: 1fr;
-            margin: 0 1 0 0;
-        }
-
-        #agent_profile_name, #agent_builder_agent_name {
+        #agent_builder_agent_name, #bundle_name {
             margin: 0;
         }
 
@@ -1659,11 +1678,23 @@ def run_tui() -> int:
         #agent_builder_agent_prompt_refs,
         #agent_builder_prompt_asset_name,
         #agent_builder_prompt_asset_id,
-        #agent_builder_prompt_asset_tags,
-        #agent_builder_agent_tools,
-        #agent_builder_agent_sops,
-        #agent_builder_agent_kb {
+        #agent_builder_prompt_asset_tags {
             margin: 0 0 1 0;
+        }
+
+        #agent_builder_tools_row Static,
+        #agent_builder_sops_row Static,
+        #agent_builder_kb_row Static {
+            width: 1fr;
+            margin: 0 1 0 0;
+            color: $text-muted;
+        }
+
+        #agent_builder_tools_row Button,
+        #agent_builder_sops_row Button,
+        #agent_builder_kb_row Button {
+            width: auto;
+            min-width: 12;
         }
 
         #agent_builder_prompt_asset_meta_row Input, #agent_builder_prompt_asset_actions Button {
@@ -1684,21 +1715,27 @@ def run_tui() -> int:
             margin: 0;
         }
 
-        #agent_profile_actions Button, #agent_builder_agent_actions Button {
+        #agent_builder_agent_actions Button,
+        #agent_builder_run_actions Button,
+        #bundles_actions_primary Button,
+        #bundles_actions_secondary Button {
             width: 1fr;
             margin: 0 1 0 0;
         }
 
-        #agent_profile_actions Button:last-child, #agent_builder_agent_actions Button:last-child {
+        #agent_builder_agent_actions Button:last-child,
+        #agent_builder_run_actions Button:last-child,
+        #bundles_actions_primary Button:last-child,
+        #bundles_actions_secondary Button:last-child {
             margin: 0;
         }
 
-        #agent_profile_status, #agent_overview_status, #agent_builder_status {
+        #agent_profile_status, #agent_overview_status, #agent_builder_status, #bundles_status {
             height: auto;
             color: $text-muted;
         }
 
-        #agent_builder_auto_delegate, #agent_builder_agent_activated {
+        #agent_builder_agent_activated {
             margin: 0 0 1 0;
         }
 
@@ -1732,6 +1769,10 @@ def run_tui() -> int:
         .layout-narrow #tooling_view_switch,
         .layout-narrow #tooling_prompt_actions,
         .layout-narrow #session_view_switch,
+        .layout-narrow #agent_builder_agent_actions,
+        .layout-narrow #agent_builder_run_actions,
+        .layout-narrow #bundles_actions_primary,
+        .layout-narrow #bundles_actions_secondary,
         .layout-narrow #settings_general_runtime_row,
         .layout-narrow #settings_general_features_row,
         .layout-narrow #settings_general_guardrails_row,
@@ -1744,6 +1785,10 @@ def run_tui() -> int:
         .layout-narrow #engage_view_switch Button,
         .layout-narrow #tooling_view_switch Button,
         .layout-narrow #session_view_switch Button,
+        .layout-narrow #agent_builder_agent_actions Button,
+        .layout-narrow #agent_builder_run_actions Button,
+        .layout-narrow #bundles_actions_primary Button,
+        .layout-narrow #bundles_actions_secondary Button,
         .layout-narrow #settings_general_runtime_row Button,
         .layout-narrow #settings_general_features_row Button,
         .layout-narrow #settings_general_guardrails_row Button,
@@ -1758,6 +1803,10 @@ def run_tui() -> int:
         .layout-narrow #engage_view_switch Button:last-child,
         .layout-narrow #tooling_view_switch Button:last-child,
         .layout-narrow #session_view_switch Button:last-child,
+        .layout-narrow #agent_builder_agent_actions Button:last-child,
+        .layout-narrow #agent_builder_run_actions Button:last-child,
+        .layout-narrow #bundles_actions_primary Button:last-child,
+        .layout-narrow #bundles_actions_secondary Button:last-child,
         .layout-narrow #settings_general_runtime_row Button:last-child,
         .layout-narrow #settings_general_features_row Button:last-child,
         .layout-narrow #settings_general_guardrails_row Button:last-child,
@@ -1976,11 +2025,12 @@ def run_tui() -> int:
         _agent_view_builder_button: Any = None  # Button | None
         _agent_overview_view: Any = None  # Vertical | None
         _agent_builder_view: Any = None  # Vertical | None
+        _agent_builder_scroll: Any = None  # VerticalScroll | None
         _agent_overview_header: Any = None  # SidebarHeader | None
         _agent_overview_table: Any = None  # DataTable | None
         _agent_overview_detail: Any = None  # SidebarDetail | None
         _agent_overview_status: Any = None  # Static | None
-        _agent_profile_select: Any = None  # Select | None
+        _agent_profile_select: Any = None  # Select | None (legacy)
         _agent_builder_auto_delegate_checkbox: Any = None  # Checkbox | None
         _agent_builder_table: Any = None  # DataTable | None
         _agent_builder_detail: Any = None  # SidebarDetail | None
@@ -1994,9 +2044,12 @@ def run_tui() -> int:
         _agent_builder_prompt_asset_tags_input: Any = None  # Input | None
         _agent_builder_agent_provider_select: Any = None  # Select | None
         _agent_builder_agent_tier_select: Any = None  # Select | None
-        _agent_builder_agent_tools_input: Any = None  # Input | None
-        _agent_builder_agent_sops_input: Any = None  # Input | None
-        _agent_builder_agent_kb_input: Any = None  # Input | None
+        _agent_builder_tools_summary: Any = None  # Static | None
+        _agent_builder_sops_summary: Any = None  # Static | None
+        _agent_builder_kb_summary: Any = None  # Static | None
+        _agent_builder_tools_draft: list[str] = []
+        _agent_builder_sops_draft: list[str] = []
+        _agent_builder_kb_draft: str = ""
         _agent_builder_agent_activated_checkbox: Any = None  # Checkbox | None
         _agent_builder_status: Any = None  # Static | None
         _agent_profile_view: Any = None  # Vertical | None
@@ -2022,6 +2075,14 @@ def run_tui() -> int:
         _agent_profile_id_input: Any = None  # Input | None
         _agent_profile_name_input: Any = None  # Input | None
         _agent_profile_status: Any = None  # Static | None
+        # Bundles tab
+        _bundles_panel: Any = None  # Vertical | None
+        _bundles_header: Any = None  # SidebarHeader | None
+        _bundles_table: Any = None  # DataTable | None
+        _bundles_detail: Any = None  # SidebarDetail | None
+        _bundle_id_input: Any = None  # Input | None
+        _bundle_name_input: Any = None  # Input | None
+        _bundles_status: Any = None  # Static | None
         # Engage tab
         _engage_view_plan_button: Any = None
         _engage_view_session_button: Any = None
@@ -2197,6 +2258,7 @@ def run_tui() -> int:
             self._prompt_metrics = self.query_one("#prompt_metrics", ContextBudgetBar)
             wire_engage_widgets(self)
             wire_agents_widgets(self)
+            wire_bundles_widgets(self)
             wire_scaffold_widgets(self)
             wire_settings_widgets(self)
 
@@ -2224,20 +2286,24 @@ def run_tui() -> int:
             self._set_context_add_mode(None)
 
         def _initialize_agent_studio(self) -> None:
+            self._bootstrap_legacy_profiles_cleanup()
             self._refresh_context_sop_options()
             self._render_context_sources_panel()
             self._refresh_sop_catalog()
             self._refresh_tooling_sops_table()
-            self._reload_saved_profiles()
+            self._reload_saved_bundles()
             self._refresh_agent_tool_catalog()
             self._set_agent_tools_override_form_values(self.state.agent_studio.session_safety_overrides)
             self._set_agent_studio_view_mode("overview")
-            if self.state.agent_studio.saved_profiles:
-                self._load_profile_into_draft(self.state.agent_studio.saved_profiles[0])
+            if self.state.agent_studio.saved_bundles:
+                first_bundle = self.state.agent_studio.saved_bundles[0]
+                self._load_bundle_into_draft(first_bundle)
+                self.state.bundles.selected_bundle_id = str(first_bundle.get("id", "")).strip() or None
             else:
-                self._new_agent_profile_draft(announce=False)
+                self._new_agent_builder_draft_from_session(announce=False)
             self._render_agent_builder_panel()
             self._render_agent_overview_panel()
+            self._render_bundles_panel()
             # Tooling tab initialization
             self._refresh_tooling_prompts_list()
             self._refresh_tooling_tools_list()
@@ -2250,6 +2316,7 @@ def run_tui() -> int:
             self._refresh_plan_actions_visibility()
             self._refresh_settings_general()
             self._refresh_settings_models()
+            self._render_bundles_panel()
             self.title = "Swarmee"
             self.sub_title = self._current_model_summary()
             self._update_prompt_placeholder()
@@ -2264,7 +2331,9 @@ def run_tui() -> int:
             fallback_notice = resolve_model_fallback_notice()
             if fallback_notice:
                 self._write_transcript(f"[model] {fallback_notice}")
-            self._write_transcript("Tips: use /commands in the prompt and the Agent tab for profile actions.")
+            self._write_transcript(
+                "Tips: use /commands in the prompt, Builder for roster edits, and Bundles for save/apply."
+            )
             transcript = self.query_one("#transcript", VerticalScroll)
             with contextlib.suppress(Exception):
                 transcript.scroll_end(animate=False)
@@ -2521,10 +2590,6 @@ def run_tui() -> int:
                     row = self.query_one(f"#plan_step_row_{index}", PlanStepRow)
                     row.toggle_comment_visibility()
                 return
-            if checkbox_id == "agent_builder_auto_delegate":
-                self.state.agent_studio.auto_delegate_assistive = bool(getattr(event, "value", False))
-                self._set_agent_draft_dirty(True, note="Assistive delegation preference updated.")
-                return
             if checkbox_id == "agent_builder_agent_activated":
                 if self.state.agent_studio.builder_form_syncing:
                     return
@@ -2565,17 +2630,6 @@ def run_tui() -> int:
                 self._refresh_settings_models()
                 self._refresh_agent_summary()
                 self._write_transcript_line("[settings] saved model defaults.")
-                return
-            if select_id == "agent_profile_select":
-                if self.state.agent_studio.profile_select_syncing:
-                    return
-                selected_id = str(getattr(event, "value", "")).strip()
-                if not selected_id or selected_id == _AGENT_PROFILE_SELECT_NONE:
-                    self._new_agent_profile_draft(announce=False)
-                    return
-                profile = self._lookup_saved_profile(selected_id)
-                if profile is not None:
-                    self._load_profile_into_draft(profile)
                 return
             if select_id in {"agent_builder_agent_provider", "agent_builder_agent_tier"}:
                 if self.state.agent_studio.builder_form_syncing:
@@ -2784,6 +2838,12 @@ def run_tui() -> int:
                     selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
                     self._set_agent_builder_selection(self._agent_builder_item_by_id(selected_id))
                 return
+            if table is not None and table is self._bundles_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._set_bundle_selection(self._bundle_by_id(selected_id))
+                return
             if table is not None and table is self._settings_models_table:
                 row_key = getattr(event, "row_key", None)
                 if row_key is not None:
@@ -2860,6 +2920,12 @@ def run_tui() -> int:
                 if row_key is not None:
                     selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
                     self._set_agent_builder_selection(self._agent_builder_item_by_id(selected_id))
+                return
+            if table is not None and table is self._bundles_table:
+                row_key = getattr(event, "row_key", None)
+                if row_key is not None:
+                    selected_id = str(row_key.value if hasattr(row_key, "value") else row_key).strip()
+                    self._set_bundle_selection(self._bundle_by_id(selected_id))
                 return
             if table is not None and table is self._settings_models_table:
                 row_key = getattr(event, "row_key", None)
@@ -2941,11 +3007,6 @@ def run_tui() -> int:
             # Plan step comments — no action needed on change
             if input_id.startswith("plan_step_comment_"):
                 return
-            if input_id in {"agent_profile_id", "agent_profile_name"}:
-                if self.state.agent_studio.form_syncing:
-                    return
-                self._set_agent_draft_dirty(True)
-                return
             if input_id in {
                 "agent_tools_override_consent",
                 "agent_tools_override_allowlist",
@@ -2969,14 +3030,16 @@ def run_tui() -> int:
                 "agent_builder_prompt_asset_name",
                 "agent_builder_prompt_asset_id",
                 "agent_builder_prompt_asset_tags",
-                "agent_builder_agent_tools",
-                "agent_builder_agent_sops",
-                "agent_builder_agent_kb",
             }:
                 if self.state.agent_studio.builder_form_syncing:
                     return
                 self._set_agent_builder_status("Agent draft changes pending.")
                 self._set_agent_draft_dirty(True)
+                return
+            if input_id in {"bundle_id", "bundle_name"}:
+                if self.state.bundles.form_syncing:
+                    return
+                self._set_bundles_status("Bundle draft changes pending.")
                 return
             if input_id in {
                 "settings_safety_tool_consent",
@@ -3270,8 +3333,20 @@ def run_tui() -> int:
             if button_id == "agent_view_builder":
                 self._set_agent_studio_view_mode("builder")
                 return
-            if button_id == "agent_profile_new_from_current":
-                self._new_agent_profile_draft(announce=True)
+            if button_id == "bundle_new":
+                self._new_bundle_draft()
+                return
+            if button_id == "bundle_save":
+                self._save_bundle_from_draft()
+                return
+            if button_id == "bundle_delete":
+                self._delete_selected_bundle()
+                return
+            if button_id == "bundle_load_draft":
+                self._load_selected_bundle_into_draft()
+                return
+            if button_id == "bundle_apply":
+                self._apply_bundle_selection()
                 return
             if button_id == "agent_builder_agent_new":
                 self._new_agent_builder_draft()
@@ -3290,6 +3365,15 @@ def run_tui() -> int:
                 return
             if button_id == "agent_builder_run_now":
                 self._insert_activated_agents_run_prompt(run_now=True)
+                return
+            if button_id == "agent_builder_edit_tools":
+                self._edit_agent_builder_capability("tools")
+                return
+            if button_id == "agent_builder_edit_sops":
+                self._edit_agent_builder_capability("sops")
+                return
+            if button_id == "agent_builder_edit_kb":
+                self._edit_agent_builder_capability("kb")
                 return
             if button_id == "session_view_timeline":
                 self._set_session_view_mode("timeline")
@@ -3352,18 +3436,6 @@ def run_tui() -> int:
                 return
             if button_id == "plan_action_clear":
                 self._dispatch_plan_action("clearplan")
-                return
-            if button_id == "agent_profile_new":
-                self._new_agent_profile_draft()
-                return
-            if button_id == "agent_profile_save":
-                self._save_agent_profile_draft()
-                return
-            if button_id == "agent_profile_delete":
-                self._delete_selected_agent_profile()
-                return
-            if button_id == "agent_profile_apply":
-                self._apply_agent_profile_draft()
                 return
 
         def _handle_user_input(self, text: str) -> None:

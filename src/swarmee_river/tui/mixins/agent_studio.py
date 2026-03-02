@@ -5,8 +5,19 @@ import json as _json
 import uuid
 from typing import Any
 
-from swarmee_river.profiles import AgentProfile, delete_profile, list_profiles, save_profile
+from swarmee_river.packs import (
+    AGENT_BUNDLE_TYPE,
+    PATH_PACK_TYPE,
+    find_agent_bundle,
+    list_agent_bundles,
+    list_pack_catalog,
+    with_deleted_agent_bundle,
+    with_upserted_agent_bundle,
+)
+from swarmee_river.profiles import AgentProfile
+from swarmee_river.profiles import delete_legacy_profiles_on_first_launch as _delete_legacy_profiles_on_first_launch
 from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID, normalize_agent_definitions
+from swarmee_river.settings import load_settings, save_settings
 from swarmee_river.tools import get_tools
 from swarmee_river.tui.agent_studio import (
     _normalized_tool_name_list,
@@ -55,6 +66,14 @@ def _default_profile_name() -> str:
     return f"Profile {ts.strftime('%Y-%m-%d %H:%M')}"
 
 
+def _default_bundle_id() -> str:
+    return _default_profile_id().replace("profile-", "bundle-", 1)
+
+
+def _default_bundle_name() -> str:
+    return _default_profile_name().replace("Profile ", "Bundle ", 1)
+
+
 def _default_team_preset_id() -> str:
     from datetime import datetime
 
@@ -100,9 +119,11 @@ class AgentStudioMixin:
         target = str(profile_id or "").strip()
         if not target:
             return None
-        for profile in self.state.agent_studio.saved_profiles:
-            if profile.id == target:
-                return profile
+        for bundle in self.state.agent_studio.saved_bundles:
+            if str(bundle.get("id", "")).strip() != target:
+                continue
+            with contextlib.suppress(Exception):
+                return AgentProfile.from_dict(bundle)
         return None
 
     def _set_agent_form_values(self, *, profile_id: str, profile_name: str) -> None:
@@ -525,6 +546,12 @@ class AgentStudioMixin:
 
     def _set_agent_builder_form_values(self, agent_def: dict[str, Any] | None) -> None:
         normalized = normalize_agent_definition(agent_def) if isinstance(agent_def, dict) else None
+        tools = _normalized_tool_name_list(normalized.get("tool_names")) if normalized else []
+        sops = _normalized_tool_name_list(normalized.get("sop_names")) if normalized else []
+        kb_id = str(normalized.get("knowledge_base_id", "")).strip() if normalized else ""
+        self._agent_builder_tools_draft = list(tools)
+        self._agent_builder_sops_draft = list(sops)
+        self._agent_builder_kb_draft = kb_id
         self.state.agent_studio.builder_form_syncing = True
         try:
             if self._agent_builder_agent_id_input is not None:
@@ -564,23 +591,65 @@ class AgentStudioMixin:
                 tier = str(normalized.get("tier", "")).strip().lower() if normalized else ""
                 with contextlib.suppress(Exception):
                     self._agent_builder_agent_tier_select.value = tier or "__inherit__"
-            if self._agent_builder_agent_tools_input is not None:
-                tools = _normalized_tool_name_list(normalized.get("tool_names")) if normalized else []
-                self._agent_builder_agent_tools_input.value = ", ".join(tools)
-            if self._agent_builder_agent_sops_input is not None:
-                sops = _normalized_tool_name_list(normalized.get("sop_names")) if normalized else []
-                self._agent_builder_agent_sops_input.value = ", ".join(sops)
-            if self._agent_builder_agent_kb_input is not None:
-                self._agent_builder_agent_kb_input.value = (
-                    str(normalized.get("knowledge_base_id", "")).strip() if normalized else ""
-                )
             if self._agent_builder_agent_activated_checkbox is not None:
                 self._agent_builder_agent_activated_checkbox.value = (
                     bool(normalized.get("activated")) if normalized else False
                 )
         finally:
             self.state.agent_studio.builder_form_syncing = False
+        self._refresh_agent_builder_capability_summaries()
         self._set_agent_builder_row_controls(normalized)
+
+    def _refresh_agent_builder_capability_summaries(self) -> None:
+        tools = list(getattr(self, "_agent_builder_tools_draft", []) or [])
+        sops = list(getattr(self, "_agent_builder_sops_draft", []) or [])
+        kb_id = str(getattr(self, "_agent_builder_kb_draft", "") or "").strip()
+        if self._agent_builder_tools_summary is not None:
+            self._agent_builder_tools_summary.update(f"Tools: {', '.join(tools)}" if tools else "Tools: inherit")
+        if self._agent_builder_sops_summary is not None:
+            self._agent_builder_sops_summary.update(f"SOPs: {', '.join(sops)}" if sops else "SOPs: inherit")
+        if self._agent_builder_kb_summary is not None:
+            self._agent_builder_kb_summary.update(f"KB: {kb_id}" if kb_id else "KB: inherit")
+
+    def _edit_agent_builder_capability(self, capability: str) -> None:
+        from swarmee_river.tui.widgets import TableCellEditScreen
+
+        key = str(capability or "").strip().lower()
+        if key == "tools":
+            initial = ", ".join(list(getattr(self, "_agent_builder_tools_draft", []) or []))
+            title = "Edit Agent Tools"
+            help_text = "Comma-separated tool names or @tag refs. Leave empty to inherit."
+        elif key == "sops":
+            initial = ", ".join(list(getattr(self, "_agent_builder_sops_draft", []) or []))
+            title = "Edit Agent SOPs"
+            help_text = "Comma-separated SOP names. Leave empty to inherit."
+        elif key == "kb":
+            initial = str(getattr(self, "_agent_builder_kb_draft", "") or "").strip()
+            title = "Edit Agent KB"
+            help_text = "Knowledge base ID (single value). Leave empty to inherit."
+        else:
+            return
+        self.push_screen(
+            TableCellEditScreen(title, initial, help_text=help_text),
+            callback=lambda result: self._apply_agent_builder_capability_edit(key, result),
+        )
+
+    def _apply_agent_builder_capability_edit(self, capability: str, value: str | None) -> None:
+        if value is None:
+            return
+        key = str(capability or "").strip().lower()
+        text = str(value).strip()
+        if key == "tools":
+            self._agent_builder_tools_draft = self._parse_agent_tools_csv_list(text)
+        elif key == "sops":
+            self._agent_builder_sops_draft = self._parse_agent_tools_csv_list(text)
+        elif key == "kb":
+            self._agent_builder_kb_draft = text
+        else:
+            return
+        self._refresh_agent_builder_capability_summaries()
+        self._set_agent_builder_status("Agent draft changes pending.")
+        self._set_agent_draft_dirty(True)
 
     def _agent_builder_form_payload(self) -> dict[str, Any] | None:
         raw_name = str(getattr(self._agent_builder_agent_name_input, "value", "")).strip()
@@ -590,8 +659,9 @@ class AgentStudioMixin:
         selected_id = str(self.state.agent_studio.builder_selected_item_id or "").strip().lower()
         is_orchestrator = self._is_orchestrator_agent_id(selected_id)
         raw_id = str(getattr(self._agent_builder_agent_id_input, "value", "")).strip()
-        tools = self._parse_agent_tools_csv_list(str(getattr(self._agent_builder_agent_tools_input, "value", "")))
-        sops = self._parse_agent_tools_csv_list(str(getattr(self._agent_builder_agent_sops_input, "value", "")))
+        tools = list(getattr(self, "_agent_builder_tools_draft", []) or [])
+        sops = list(getattr(self, "_agent_builder_sops_draft", []) or [])
+        kb_id = str(getattr(self, "_agent_builder_kb_draft", "") or "").strip() or None
         prompt_refs = self._parse_prompt_refs_csv_list(
             str(getattr(self._agent_builder_agent_prompt_refs_input, "value", ""))
         )
@@ -608,7 +678,7 @@ class AgentStudioMixin:
                 "tier": None if tier == "__inherit__" else tier,
                 "tool_names": tools,
                 "sop_names": sops,
-                "knowledge_base_id": str(getattr(self._agent_builder_agent_kb_input, "value", "")).strip() or None,
+                "knowledge_base_id": kb_id,
                 "activated": False
                 if is_orchestrator
                 else bool(getattr(self._agent_builder_agent_activated_checkbox, "value", False)),
@@ -788,8 +858,6 @@ class AgentStudioMixin:
             self._set_agent_builder_selection(selected_item)
         else:
             self._set_agent_builder_selection(items[0] if items else None)
-        if self._agent_builder_auto_delegate_checkbox is not None:
-            self._agent_builder_auto_delegate_checkbox.value = bool(self.state.agent_studio.auto_delegate_assistive)
         self._render_agent_overview_panel()
 
     def _new_agent_builder_draft(self) -> None:
@@ -940,6 +1008,13 @@ class AgentStudioMixin:
         text = message.strip() if isinstance(message, str) else ""
         widget.update(text)
 
+    def _set_bundles_status(self, message: str) -> None:
+        widget = self._bundles_status
+        if widget is None:
+            return
+        text = message.strip() if isinstance(message, str) else ""
+        widget.update(text)
+
     def _set_agent_draft_dirty(self, dirty: bool, *, note: str | None = None) -> None:
         self.state.agent_studio.draft_dirty = bool(dirty)
         if self.state.agent_studio.draft_dirty:
@@ -950,45 +1025,7 @@ class AgentStudioMixin:
             self._set_agent_status(f"{base} {note.strip()}")
         else:
             self._set_agent_status(base)
-        self._reload_saved_profiles()
-
-    def _reload_saved_profiles(self, *, selected_id: str | None = None) -> None:
-        self.state.agent_studio.saved_profiles = sorted(
-            list_profiles(),
-            key=lambda item: (item.name.lower(), item.id.lower()),
-        )
-        selector = self._agent_profile_select
-        if selector is None:
-            return
-
-        options: list[tuple[str, str]] = [("Current draft / session", _AGENT_PROFILE_SELECT_NONE)]
-        for profile in self.state.agent_studio.saved_profiles:
-            model_summary = "/".join(
-                part for part in [str(profile.provider or "").strip(), str(profile.tier or "").strip()] if part
-            )
-            label = profile.name
-            if model_summary:
-                label = f"{profile.name} ({model_summary})"
-            options.append((label, profile.id))
-
-        current_value = str(getattr(selector, "value", "")).strip()
-        candidate = selected_id if selected_id else current_value
-        saved_ids = {profile.id for profile in self.state.agent_studio.saved_profiles}
-        if candidate == _AGENT_PROFILE_SELECT_NONE:
-            pass
-        elif candidate not in saved_ids:
-            candidate = (
-                self.state.agent_studio.saved_profiles[0].id
-                if self.state.agent_studio.saved_profiles
-                else _AGENT_PROFILE_SELECT_NONE
-            )
-
-        self.state.agent_studio.profile_select_syncing = True
-        try:
-            selector.set_options(options)
-            selector.value = candidate
-        finally:
-            self.state.agent_studio.profile_select_syncing = False
+        self._reload_saved_bundles()
 
     def _refresh_agent_summary(self) -> None:
         from swarmee_river.tui.widgets import render_agent_profile_summary_text
@@ -1005,67 +1042,52 @@ class AgentStudioMixin:
             self.state.agent_studio.auto_delegate_assistive = bool(effective.auto_delegate_assistive)
         self._render_agent_overview_panel()
 
-    def _new_agent_profile_draft(self, *, announce: bool = True) -> None:
+    def _new_agent_builder_draft_from_session(self, *, announce: bool = True) -> None:
         snapshot = self._session_effective_profile()
-        draft = AgentProfile(
-            id=_default_profile_id(),
-            name=_default_profile_name(),
-            provider=snapshot.provider,
-            tier=snapshot.tier,
-            system_prompt_snippets=list(snapshot.system_prompt_snippets),
-            context_sources=[dict(source) for source in snapshot.context_sources],
-            active_sops=list(snapshot.active_sops),
-            knowledge_base_id=snapshot.knowledge_base_id,
-            agents=normalize_agent_definitions(snapshot.agents),
-            auto_delegate_assistive=bool(snapshot.auto_delegate_assistive),
-            team_presets=normalize_team_presets(snapshot.team_presets),
+        self.state.agent_studio.team_presets = normalize_team_presets(snapshot.team_presets)
+        self.state.agent_studio.team_selected_item_id = None
+        self.state.agent_studio.agents = normalize_agent_definitions(snapshot.agents)
+        self.state.agent_studio.builder_selected_item_id = None
+        self.state.agent_studio.auto_delegate_assistive = bool(snapshot.auto_delegate_assistive)
+        self._render_agent_builder_panel()
+        if announce:
+            self._set_agent_draft_dirty(True, note="New builder draft from current session.")
+        else:
+            self._set_agent_draft_dirty(True)
+
+    def _load_bundle_into_draft(self, bundle: dict[str, Any]) -> None:
+        normalized = AgentProfile.from_dict(
+            {
+                "id": str(bundle.get("id", "")).strip() or _default_bundle_id(),
+                "name": str(bundle.get("name", "")).strip() or _default_bundle_name(),
+                "provider": bundle.get("provider"),
+                "tier": bundle.get("tier"),
+                "system_prompt_snippets": bundle.get("system_prompt_snippets") or [],
+                "context_sources": bundle.get("context_sources") or [],
+                "active_sops": bundle.get("active_sops") or [],
+                "knowledge_base_id": bundle.get("knowledge_base_id"),
+                "agents": bundle.get("agents") or [],
+                "auto_delegate_assistive": bundle.get("auto_delegate_assistive", True),
+                "team_presets": bundle.get("team_presets") or [],
+            }
         )
-        selector = self._agent_profile_select
-        if selector is not None:
-            self.state.agent_studio.profile_select_syncing = True
-            try:
-                selector.value = _AGENT_PROFILE_SELECT_NONE
-            finally:
-                self.state.agent_studio.profile_select_syncing = False
-        self.state.agent_studio.team_presets = normalize_team_presets(draft.team_presets)
+        self.state.agent_studio.effective_profile = normalized
+        self.state.agent_studio.team_presets = normalize_team_presets(normalized.team_presets)
         self.state.agent_studio.team_selected_item_id = None
-        self.state.agent_studio.agents = normalize_agent_definitions(draft.agents)
+        self.state.agent_studio.agents = normalize_agent_definitions(normalized.agents)
         self.state.agent_studio.builder_selected_item_id = None
-        self.state.agent_studio.auto_delegate_assistive = bool(draft.auto_delegate_assistive)
+        self.state.agent_studio.auto_delegate_assistive = bool(normalized.auto_delegate_assistive)
         self._render_agent_builder_panel()
-        self._set_agent_form_values(profile_id=draft.id, profile_name=draft.name)
-        self._set_agent_draft_dirty(True, note=("New profile draft." if announce else None))
+        self._set_agent_draft_dirty(False, note=f"Loaded bundle '{normalized.name}'.")
 
-    def _load_profile_into_draft(self, profile: AgentProfile) -> None:
-        selector = self._agent_profile_select
-        if selector is not None:
-            self.state.agent_studio.profile_select_syncing = True
-            try:
-                selector.value = profile.id
-            finally:
-                self.state.agent_studio.profile_select_syncing = False
-        self.state.agent_studio.team_presets = normalize_team_presets(profile.team_presets)
-        self.state.agent_studio.team_selected_item_id = None
-        self.state.agent_studio.agents = normalize_agent_definitions(profile.agents)
-        self.state.agent_studio.builder_selected_item_id = None
-        self.state.agent_studio.auto_delegate_assistive = bool(profile.auto_delegate_assistive)
-        self._render_agent_builder_panel()
-        self._set_agent_form_values(profile_id=profile.id, profile_name=profile.name)
-        self._set_agent_draft_dirty(False, note=f"Loaded profile '{profile.name}'.")
-
-    def _profile_from_draft(self) -> AgentProfile:
-        selected_profile = self._lookup_saved_profile(self._selected_agent_profile_id())
-        seed = selected_profile if selected_profile is not None else self._session_effective_profile()
-
-        raw_id = str(getattr(self._agent_profile_id_input, "value", "")).strip()
-        raw_name = str(getattr(self._agent_profile_name_input, "value", "")).strip()
-        profile_id = _sanitize_profile_token(raw_id or seed.id or _default_profile_id())
-        profile_name = raw_name or seed.name or _default_profile_name()
-
+    def _bundle_from_draft(self, *, bundle_id: str, bundle_name: str) -> dict[str, Any]:
+        seed = self._session_effective_profile()
+        token = _sanitize_profile_token(bundle_id or seed.id or _default_bundle_id())
+        title = bundle_name.strip() or seed.name or _default_bundle_name()
         return AgentProfile.from_dict(
             {
-                "id": profile_id,
-                "name": profile_name,
+                "id": token,
+                "name": title,
                 "provider": seed.provider,
                 "tier": seed.tier,
                 "system_prompt_snippets": list(seed.system_prompt_snippets),
@@ -1076,47 +1098,253 @@ class AgentStudioMixin:
                 "auto_delegate_assistive": bool(self.state.agent_studio.auto_delegate_assistive),
                 "team_presets": normalize_team_presets(self.state.agent_studio.team_presets),
             }
+        ).to_dict()
+
+    def _set_bundle_form_values(self, *, bundle_id: str, bundle_name: str) -> None:
+        self.state.bundles.form_syncing = True
+        try:
+            if self._bundle_id_input is not None:
+                self._bundle_id_input.value = bundle_id
+            if self._bundle_name_input is not None:
+                self._bundle_name_input.value = bundle_name
+        finally:
+            self.state.bundles.form_syncing = False
+
+    def _bundle_by_id(self, bundle_id: str | None) -> dict[str, Any] | None:
+        target = str(bundle_id or "").strip().lower()
+        if not target:
+            return None
+        for bundle in self.state.bundles.catalog:
+            if str(bundle.get("id", "")).strip().lower() == target:
+                return bundle
+        return None
+
+    def _set_bundle_selection(self, bundle: dict[str, Any] | None) -> None:
+        detail = self._bundles_detail
+        if detail is None:
+            return
+        if bundle is None:
+            self.state.bundles.selected_bundle_id = None
+            detail.set_preview("(no bundles)")
+            detail.set_actions([])
+            return
+        bundle_id = str(bundle.get("id", "")).strip()
+        bundle_type = str(bundle.get("type", AGENT_BUNDLE_TYPE)).strip().lower() or AGENT_BUNDLE_TYPE
+        self.state.bundles.selected_bundle_id = bundle_id or None
+        if bundle_type == PATH_PACK_TYPE:
+            path = str(bundle.get("path", "")).strip() or "(missing)"
+            enabled = "yes" if bool(bundle.get("enabled", True)) else "no"
+            detail.set_preview(
+                "\n".join(
+                    [
+                        "Type: path_pack",
+                        f"Name: {str(bundle.get('name', '')).strip() or bundle_id}",
+                        f"Path: {path}",
+                        f"Enabled: {enabled}",
+                    ]
+                )
+            )
+            detail.set_actions([])
+            self._set_bundle_form_values(
+                bundle_id="",
+                bundle_name="",
+            )
+            return
+        provider = str(bundle.get("provider", "")).strip() or "auto"
+        tier = str(bundle.get("tier", "")).strip() or "auto"
+        bundle_payload = bundle.get("bundle") if isinstance(bundle.get("bundle"), dict) else bundle
+        agents = bundle_payload.get("agents") if isinstance(bundle_payload.get("agents"), list) else []
+        active_agents = sum(
+            1
+            for item in agents
+            if isinstance(item, dict)
+            and str(item.get("id", "")).strip().lower() != ORCHESTRATOR_AGENT_ID
+            and bool(item.get("activated"))
+        )
+        detail.set_preview(
+            "\n".join(
+                [
+                    "Type: agent_bundle",
+                    f"Name: {str(bundle.get('name', '')).strip() or bundle_id}",
+                    f"ID: {bundle_id}",
+                    f"Model: {provider}/{tier}",
+                    f"Agents: {len(agents)} ({active_agents} activated)",
+                ]
+            )
+        )
+        detail.set_actions([])
+        self._set_bundle_form_values(
+            bundle_id=bundle_id,
+            bundle_name=str(bundle.get("name", "")).strip() or bundle_id,
         )
 
-    def _save_agent_profile_draft(self) -> None:
-        profile = self._profile_from_draft()
-        saved = save_profile(profile)
-        self._reload_saved_profiles(selected_id=saved.id)
-        self._set_agent_form_values(profile_id=saved.id, profile_name=saved.name)
-        self._set_agent_draft_dirty(False, note=f"Saved profile '{saved.name}'.")
+    def _render_bundles_panel(self) -> None:
+        table = self._bundles_table
+        bundles = list(self.state.bundles.catalog)
+        selected_id = self.state.bundles.selected_bundle_id
+        if self._bundles_header is not None:
+            self._bundles_header.set_badges([f"bundles {len(bundles)}"])
+        if table is None:
+            self._set_bundle_selection(bundles[0] if bundles else None)
+            return
+        if not table.columns:
+            table.add_column("Type", key="type", width=12)
+            table.add_column("Name", key="name")
+            table.add_column("ID", key="id")
+            table.add_column("Model", key="model", width=20)
+            table.add_column("Agents", key="agents", width=10)
+        rows: list[tuple[str, str, str, str, str, str]] = []
+        for bundle in bundles:
+            bundle_id = str(bundle.get("id", "")).strip()
+            if not bundle_id:
+                continue
+            bundle_type = str(bundle.get("type", AGENT_BUNDLE_TYPE)).strip().lower() or AGENT_BUNDLE_TYPE
+            model = "/".join(
+                part for part in [str(bundle.get("provider", "")).strip(), str(bundle.get("tier", "")).strip()] if part
+            ) or ("-" if bundle_type == PATH_PACK_TYPE else "auto")
+            bundle_payload = bundle.get("bundle") if isinstance(bundle.get("bundle"), dict) else bundle
+            agents = bundle_payload.get("agents") if isinstance(bundle_payload.get("agents"), list) else []
+            rows.append(
+                (
+                    bundle_id,
+                    "bundle" if bundle_type == AGENT_BUNDLE_TYPE else "pack",
+                    str(bundle.get("name", "")).strip() or bundle_id,
+                    bundle_id,
+                    model,
+                    str(len(agents)),
+                )
+            )
+        table.clear()
+        for row_id, row_type, name, bundle_id, model, agent_count in rows:
+            table.add_row(row_type, name, bundle_id, model, agent_count, key=row_id)
+        if not selected_id and rows:
+            selected_id = rows[0][0]
+        if selected_id and rows:
+            for index, (row_id, _t, _n, _id, _m, _a) in enumerate(rows):
+                if row_id == selected_id:
+                    with contextlib.suppress(Exception):
+                        table.move_cursor(row=index)
+                    break
+        elif rows:
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=0)
+        cursor = getattr(table, "cursor_coordinate", None)
+        row_index = int(getattr(cursor, "row", -1) or -1)
+        active_id = rows[row_index][0] if 0 <= row_index < len(rows) else selected_id
+        self._set_bundle_selection(self._bundle_by_id(active_id))
 
-    def _delete_selected_agent_profile(self) -> None:
-        selected_id = self._selected_agent_profile_id()
+    def _reload_saved_bundles(self, *, selected_id: str | None = None) -> None:
+        settings = load_settings()
+        self.state.bundles.catalog = list_pack_catalog(settings)
+        self.state.agent_studio.saved_bundles = list_agent_bundles(settings)
+        if selected_id:
+            self.state.bundles.selected_bundle_id = selected_id
+        self._render_bundles_panel()
+
+    def _new_bundle_draft(self) -> None:
+        bundle_id = _default_bundle_id()
+        bundle_name = _default_bundle_name()
+        self.state.bundles.selected_bundle_id = None
+        self._set_bundle_form_values(bundle_id=bundle_id, bundle_name=bundle_name)
+        self._set_bundles_status("New bundle draft.")
+
+    def _save_bundle_from_draft(self) -> None:
+        raw_id = str(getattr(self._bundle_id_input, "value", "")).strip()
+        raw_name = str(getattr(self._bundle_name_input, "value", "")).strip()
+        bundle = self._bundle_from_draft(bundle_id=raw_id, bundle_name=raw_name)
+        settings = load_settings()
+        updated = with_upserted_agent_bundle(settings, bundle)
+        save_settings(updated)
+        proc = self.state.daemon.proc
+        if self.state.daemon.ready and proc is not None and proc.poll() is None and not self.state.daemon.query_active:
+            _transport_send_daemon_command(proc, {"cmd": "set_bundle", "bundle": bundle})
+        saved_id = str(bundle.get("id", "")).strip()
+        self._reload_saved_bundles(selected_id=saved_id)
+        self._set_bundle_form_values(
+            bundle_id=saved_id,
+            bundle_name=str(bundle.get("name", "")).strip() or saved_id,
+        )
+        self._set_bundles_status(f"Saved bundle '{bundle.get('name', saved_id)}'.")
+        self._set_agent_draft_dirty(False, note=f"Bundle '{bundle.get('name', saved_id)}' saved.")
+
+    def _delete_selected_bundle(self) -> None:
+        selected_id = str(self.state.bundles.selected_bundle_id or "").strip()
         if not selected_id:
-            self._notify("Select a saved profile first.", severity="warning")
+            self._notify("Select a bundle first.", severity="warning")
             return
-        removed = delete_profile(selected_id)
-        if not removed:
-            self._notify("Profile not found.", severity="warning")
+        selected = self._bundle_by_id(selected_id)
+        if selected is None or str(selected.get("type", AGENT_BUNDLE_TYPE)).strip().lower() != AGENT_BUNDLE_TYPE:
+            self._notify("Selected row is a path pack (read-only here).", severity="warning")
             return
-        self._reload_saved_profiles()
-        if self.state.agent_studio.saved_profiles:
-            self._load_profile_into_draft(self.state.agent_studio.saved_profiles[0])
-            self._set_agent_draft_dirty(False, note=f"Deleted profile '{selected_id}'.")
-        else:
-            self._new_agent_profile_draft(announce=False)
-            self._set_agent_draft_dirty(True, note=f"Deleted profile '{selected_id}'.")
+        settings = load_settings()
+        if find_agent_bundle(settings, selected_id) is None:
+            self._notify("Bundle not found.", severity="warning")
+            return
+        updated = with_deleted_agent_bundle(settings, selected_id)
+        save_settings(updated)
+        proc = self.state.daemon.proc
+        if self.state.daemon.ready and proc is not None and proc.poll() is None and not self.state.daemon.query_active:
+            _transport_send_daemon_command(proc, {"cmd": "delete_bundle", "id": selected_id})
+        self.state.bundles.selected_bundle_id = None
+        self._reload_saved_bundles()
+        self._set_bundles_status(f"Deleted bundle '{selected_id}'.")
 
-    def _apply_agent_profile_draft(self) -> None:
+    def _load_selected_bundle_into_draft(self) -> None:
+        selected_id = str(self.state.bundles.selected_bundle_id or "").strip()
+        if not selected_id:
+            self._notify("Select a bundle first.", severity="warning")
+            return
+        bundle = self._bundle_by_id(selected_id)
+        if bundle is None or str(bundle.get("type", AGENT_BUNDLE_TYPE)).strip().lower() != AGENT_BUNDLE_TYPE:
+            self._notify("Bundle not found.", severity="warning")
+            return
+        payload = bundle.get("bundle") if isinstance(bundle.get("bundle"), dict) else bundle
+        self._load_bundle_into_draft(payload)
+        self._set_bundles_status(f"Loaded bundle '{bundle.get('name', selected_id)}' into Builder.")
+
+    def _apply_bundle_selection(self) -> None:
         if self.state.daemon.query_active:
-            self._write_transcript_line("[agent] cannot apply profile while a run is active.")
+            self._write_transcript_line("[bundle] cannot apply while a run is active.")
             return
         if not self.state.daemon.ready:
-            self._write_transcript_line("[agent] daemon is not ready.")
+            self._write_transcript_line("[bundle] daemon is not ready.")
             return
         proc = self.state.daemon.proc
         if proc is None or proc.poll() is not None:
-            self._write_transcript_line("[agent] daemon is not running.")
+            self._write_transcript_line("[bundle] daemon is not running.")
             self.state.daemon.ready = False
             return
-        profile = self._profile_from_draft()
-        payload = {"cmd": "set_profile", "profile": profile.to_dict()}
-        if not _transport_send_daemon_command(proc, payload):
-            self._write_transcript_line("[agent] failed to send set_profile.")
+        selected_id = str(self.state.bundles.selected_bundle_id or "").strip()
+        if not selected_id:
+            self._notify("Select a bundle first.", severity="warning")
             return
-        self._set_agent_status(f"Applying profile '{profile.name}'...")
+        selected = self._bundle_by_id(selected_id)
+        if selected is None or str(selected.get("type", AGENT_BUNDLE_TYPE)).strip().lower() != AGENT_BUNDLE_TYPE:
+            self._notify("Selected row is a path pack (not applicable).", severity="warning")
+            return
+        payload = {"cmd": "apply_bundle", "id": selected_id}
+        if not _transport_send_daemon_command(proc, payload):
+            self._write_transcript_line("[bundle] failed to send apply_bundle.")
+            return
+        self._set_bundles_status(f"Applying bundle '{selected_id}'...")
+
+    def _bootstrap_legacy_profiles_cleanup(self) -> None:
+        removed = _delete_legacy_profiles_on_first_launch()
+        if removed:
+            self._write_transcript_line("[agent] legacy profile catalog deleted; use Bundles tab going forward.")
+
+    # Backwards-compatible wrappers while callers are being migrated.
+    def _reload_saved_profiles(self, *, selected_id: str | None = None) -> None:
+        self._reload_saved_bundles(selected_id=selected_id)
+
+    def _new_agent_profile_draft(self, *, announce: bool = True) -> None:
+        self._new_agent_builder_draft_from_session(announce=announce)
+
+    def _save_agent_profile_draft(self) -> None:
+        self._save_bundle_from_draft()
+
+    def _delete_selected_agent_profile(self) -> None:
+        self._delete_selected_bundle()
+
+    def _apply_agent_profile_draft(self) -> None:
+        self._apply_bundle_selection()

@@ -182,25 +182,43 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
 
 
 def _handle_agent_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
-    if etype == "profile_applied":
+    if etype in {"profile_applied", "bundle_applied"}:
         raw_profile = event.get("profile")
+        if not isinstance(raw_profile, dict):
+            raw_profile = event.get("bundle")
         try:
             applied_profile = AgentProfile.from_dict(raw_profile)
         except Exception:
-            app._write_transcript_line("[agent] received invalid profile_applied payload.")
+            app._write_transcript_line(f"[agent] received invalid {etype} payload.")
             return True
         app.state.agent_studio.effective_profile = applied_profile
         app._refresh_agent_summary()
-        app._reload_saved_profiles(selected_id=applied_profile.id)
+        app._reload_saved_bundles(selected_id=applied_profile.id)
+        app.state.bundles.selected_bundle_id = applied_profile.id
         app.state.agent_studio.agents = [dict(item) for item in applied_profile.agents]
         app.state.agent_studio.auto_delegate_assistive = bool(applied_profile.auto_delegate_assistive)
         app._render_agent_builder_panel()
         app._render_agent_overview_panel()
+        app._render_bundles_panel()
         app.state.agent_studio.team_presets = normalize_team_presets(applied_profile.team_presets)
         app.state.agent_studio.team_selected_item_id = None
         app._render_agent_team_panel()
-        app._set_agent_form_values(profile_id=applied_profile.id, profile_name=applied_profile.name)
-        app._set_agent_draft_dirty(False, note=f"Applied profile '{applied_profile.name}'.")
+        app._set_bundle_form_values(bundle_id=applied_profile.id, bundle_name=applied_profile.name)
+        if etype == "bundle_applied":
+            app._set_bundles_status(f"Applied bundle '{applied_profile.name}'.")
+        app._set_agent_draft_dirty(False, note=f"Applied bundle '{applied_profile.name}'.")
+        return True
+
+    if etype == "bundles_catalog":
+        bundles_raw = event.get("bundles")
+        if isinstance(bundles_raw, list):
+            app.state.bundles.catalog = [dict(item) for item in bundles_raw if isinstance(item, dict)]
+            app.state.agent_studio.saved_bundles = [
+                dict(item)
+                for item in bundles_raw
+                if isinstance(item, dict) and str(item.get("type", "agent_bundle")).strip().lower() == "agent_bundle"
+            ]
+            app._render_bundles_panel()
         return True
 
     if etype == "safety_overrides":
