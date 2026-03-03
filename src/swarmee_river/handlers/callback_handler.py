@@ -1041,17 +1041,79 @@ class TuiCallbackHandler:
             self._reset_turn_state()
 
 
-# ---------------------------------------------------------------------------
-# Module-level handler selection: TuiCallbackHandler when SWARMEE_TUI_EVENTS
-# is set (subprocess launched by the TUI), otherwise the standard CLI handler.
-# ---------------------------------------------------------------------------
+def _resolve_handler_mode() -> str:
+    return "tui" if truthy_env("SWARMEE_TUI_EVENTS", False) else "cli"
 
-if truthy_env("SWARMEE_TUI_EVENTS", False):
-    callback_handler_instance: CallbackHandler | TuiCallbackHandler = TuiCallbackHandler()
-else:
-    callback_handler_instance = CallbackHandler()
 
-callback_handler = callback_handler_instance.callback_handler
+def _build_handler_for_mode(mode: str) -> CallbackHandler | TuiCallbackHandler:
+    if mode == "tui":
+        return TuiCallbackHandler()
+    return CallbackHandler()
+
+
+class CallbackHandlerDispatcher:
+    """Stable callback proxy that can rebind handler mode safely at runtime."""
+
+    def __init__(self) -> None:
+        self._forced_mode: str | None = None
+        self._active_mode: str | None = None
+        self._delegate: CallbackHandler | TuiCallbackHandler | None = None
+        self._ensure_delegate()
+
+    def _target_mode(self) -> str:
+        if self._forced_mode in {"cli", "tui"}:
+            return self._forced_mode
+        return _resolve_handler_mode()
+
+    def _ensure_delegate(self) -> CallbackHandler | TuiCallbackHandler:
+        target_mode = self._target_mode()
+        if self._delegate is not None and self._active_mode == target_mode:
+            return self._delegate
+
+        previous_interrupt = self._delegate.interrupt_event if self._delegate is not None else None
+        if isinstance(self._delegate, CallbackHandler):
+            with contextlib.suppress(Exception):
+                self._delegate.callback_handler(force_stop=True)
+
+        self._delegate = _build_handler_for_mode(target_mode)
+        self._active_mode = target_mode
+        self._delegate.interrupt_event = previous_interrupt
+        return self._delegate
+
+    def configure_mode(self, *, tui_events: bool | None = None) -> None:
+        self._forced_mode = None if tui_events is None else ("tui" if tui_events else "cli")
+        self._ensure_delegate()
+
+    @property
+    def interrupt_event(self) -> Event | None:
+        return self._ensure_delegate().interrupt_event
+
+    @interrupt_event.setter
+    def interrupt_event(self, event: Event | None) -> None:
+        self._ensure_delegate().interrupt_event = event
+
+    def callback_handler(self, *args: Any, **kwargs: Any) -> None:
+        self._ensure_delegate().callback_handler(*args, **kwargs)
+
+    def cleanup(self) -> None:
+        delegate = self._ensure_delegate()
+        if isinstance(delegate, CallbackHandler):
+            with contextlib.suppress(Exception):
+                delegate.callback_handler(force_stop=True)
+            for spinner in list(_ACTIVE_TOOL_SPINNERS):
+                with contextlib.suppress(Exception):
+                    spinner.stop()
+
+
+callback_handler_instance = CallbackHandlerDispatcher()
+
+
+def configure_callback_handler_mode(*, tui_events: bool | None = None) -> None:
+    callback_handler_instance.configure_mode(tui_events=tui_events)
+
+
+def callback_handler(*args: Any, **kwargs: Any) -> None:
+    callback_handler_instance.callback_handler(*args, **kwargs)
 
 
 def set_interrupt_event(event: Event | None) -> None:
@@ -1059,12 +1121,7 @@ def set_interrupt_event(event: Event | None) -> None:
 
 
 def _cleanup_spinners_at_exit() -> None:
-    if isinstance(callback_handler_instance, CallbackHandler):
-        with contextlib.suppress(Exception):
-            callback_handler_instance.callback_handler(force_stop=True)
-        for spinner in list(_ACTIVE_TOOL_SPINNERS):
-            with contextlib.suppress(Exception):
-                spinner.stop()
+    callback_handler_instance.cleanup()
 
 
 atexit.register(_cleanup_spinners_at_exit)

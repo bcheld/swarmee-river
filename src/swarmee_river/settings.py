@@ -30,6 +30,51 @@ def _default_settings_path() -> Path:
     return Path.cwd() / ".swarmee" / "settings.json"
 
 
+def _load_settings_payload(path: Path | None = None) -> dict[str, Any]:
+    settings_path = path or _default_settings_path()
+    if not settings_path.exists() or not settings_path.is_file():
+        return {}
+    try:
+        payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def normalize_project_env_overrides(raw_env: Any) -> dict[str, str]:
+    if not isinstance(raw_env, dict):
+        return {}
+    resolved: dict[str, str] = {}
+    for raw_key, raw_value in raw_env.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        resolved[key] = value
+    return resolved
+
+
+def load_project_env_overrides(path: Path | None = None) -> dict[str, str]:
+    payload = _load_settings_payload(path)
+    return normalize_project_env_overrides(payload.get("env"))
+
+
+def apply_project_env_overrides(path: Path | None = None, *, overwrite: bool = True) -> dict[str, str]:
+    applied: dict[str, str] = {}
+    for key, value in load_project_env_overrides(path).items():
+        if not overwrite and key in os.environ:
+            continue
+        os.environ[key] = value
+        applied[key] = value
+    return applied
+
+
 @dataclass(frozen=True)
 class ModelTier:
     provider: str = ""
@@ -171,7 +216,11 @@ class DefaultModelSelection:
     def from_dict(cls, raw: dict[str, Any]) -> "DefaultModelSelection":
         provider_raw = raw.get("provider")
         tier_raw = raw.get("tier")
-        provider = normalize_provider_name(provider_raw) if isinstance(provider_raw, str) and provider_raw.strip() else None
+        provider = (
+            normalize_provider_name(provider_raw)
+            if isinstance(provider_raw, str) and provider_raw.strip()
+            else None
+        )
         tier = str(tier_raw or "balanced").strip().lower() or "balanced"
         return cls(provider=provider, tier=tier)
 
@@ -553,12 +602,7 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
     - SWARMEE_MODEL_PROVIDER: choose the default provider (bedrock|openai|ollama|github_copilot)
     """
     settings_path = path or _default_settings_path()
-    raw: dict[str, Any] = {}
-    if settings_path.exists() and settings_path.is_file():
-        try:
-            raw = json.loads(settings_path.read_text(encoding="utf-8"))
-        except Exception:
-            raw = {}
+    raw = _load_settings_payload(settings_path)
 
     defaults = default_settings_template().to_dict()
     merged = deep_merge_dict(defaults, raw) if raw else defaults

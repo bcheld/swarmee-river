@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from swarmee_river.tui.mixins.settings import SettingsMixin
@@ -126,6 +127,12 @@ class _SettingsHarness(SettingsMixin):
         self._settings_diag_retention_input = None
         self._settings_diag_max_bytes_input = None
         self._settings_diag_status = None
+        self.state = SimpleNamespace(
+            daemon=SimpleNamespace(
+                model_provider_override=None,
+                model_tier_override=None,
+            )
+        )
 
     def query_one(self, selector: str, _widget_type: Any = None) -> _Widget:
         return self._widgets[selector]
@@ -234,6 +241,26 @@ def test_save_model_unhides_hidden_tier_and_updates_row() -> None:
     assert balanced["model_id"] == "gpt-5-custom"
     assert balanced["display_name"] == "Custom"
     assert balanced["description"] == "Custom tier description"
+
+
+def test_model_env_overrides_merge_project_env_and_model_overrides() -> None:
+    harness = _SettingsHarness(
+        {
+            "models": {},
+            "env": {
+                "AWS_PROFILE": "ds-pr",
+                "SWARMEE_MODEL_PROVIDER": "bedrock",
+            },
+        }
+    )
+    harness.state.daemon.model_provider_override = "openai"
+    harness.state.daemon.model_tier_override = "deep"
+
+    overrides = harness._model_env_overrides()
+
+    assert overrides["AWS_PROFILE"] == "ds-pr"
+    assert overrides["SWARMEE_MODEL_PROVIDER"] == "openai"
+    assert overrides["SWARMEE_MODEL_TIER"] == "deep"
 
 
 def test_apply_bedrock_runtime_settings_persists_values() -> None:

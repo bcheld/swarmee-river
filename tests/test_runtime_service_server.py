@@ -133,7 +133,8 @@ def test_runtime_service_startup_and_basic_commands(monkeypatch, tmp_path: Path)
             assert isinstance(discovery["started_at"], str) and discovery["started_at"]
             assert discovery["schema_version"] == "2"
             assert isinstance(discovery["broker_log_path"], str) and discovery["broker_log_path"]
-            assert isinstance(discovery["session_events_path"], str) and "{session_id}" in discovery["session_events_path"]
+            assert isinstance(discovery["session_events_path"], str)
+            assert "{session_id}" in discovery["session_events_path"]
 
             reader, writer = await asyncio.open_connection("127.0.0.1", service.port)
             try:
@@ -229,6 +230,214 @@ def test_runtime_service_attach_tracks_per_session_clients(monkeypatch, tmp_path
             assert attach2["clients"] == 2
             assert session_id in service.sessions
             assert len(service.sessions[session_id].client_ids) == 2
+
+            writer1.close()
+            await writer1.wait_closed()
+            writer2.close()
+            await writer2.wait_closed()
+            del reader1
+            del reader2
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_runtime_service_attach_env_overrides_applied_to_session_process(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "attach-env-token"
+    session_id = "session-env"
+    attach_cwd = tmp_path / "repo"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _hello_and_attach(
+        *,
+        port: int,
+        env_overrides: dict[str, str] | None = None,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, dict[str, Any]]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            json.dumps({"cmd": "hello", "token": token, "client_name": "test", "surface": "tests"}).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+
+        payload: dict[str, Any] = {"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)}
+        if env_overrides:
+            payload["env_overrides"] = env_overrides
+        writer.write(json.dumps(payload).encode("utf-8") + b"\n")
+        await writer.drain()
+        attached_event = await _read_event(reader)
+        assert attached_event["event"] == "attached"
+        return reader, writer, attached_event
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader, writer, attached = await _hello_and_attach(
+                port=service.port,
+                env_overrides={"AWS_PROFILE": "ds-pr"},
+            )
+            assert attached["startup_outcome"] == "ok"
+            assert len(fake_popen.instances) == 1
+            env = fake_popen.instances[0].kwargs.get("env")
+            assert isinstance(env, dict)
+            assert env.get("AWS_PROFILE") == "ds-pr"
+            writer.close()
+            await writer.wait_closed()
+            del reader
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_runtime_service_attach_env_change_restarts_idle_session(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "attach-env-restart-token"
+    session_id = "session-restart"
+    attach_cwd = tmp_path / "repo"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _hello_and_attach(
+        *,
+        port: int,
+        env_overrides: dict[str, str],
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, dict[str, Any]]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            json.dumps({"cmd": "hello", "token": token, "client_name": "test", "surface": "tests"}).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+
+        writer.write(
+            json.dumps(
+                {
+                    "cmd": "attach",
+                    "session_id": session_id,
+                    "cwd": str(attach_cwd),
+                    "env_overrides": env_overrides,
+                }
+            ).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        attached_event = await _read_event(reader)
+        assert attached_event["event"] == "attached"
+        return reader, writer, attached_event
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader1, writer1, attached1 = await _hello_and_attach(
+                port=service.port,
+                env_overrides={"AWS_PROFILE": "first"},
+            )
+            assert attached1["startup_outcome"] == "ok"
+            assert len(fake_popen.instances) == 1
+
+            reader2, writer2, attached2 = await _hello_and_attach(
+                port=service.port,
+                env_overrides={"AWS_PROFILE": "second"},
+            )
+            assert attached2["startup_outcome"] == "restarted_for_env"
+            assert len(fake_popen.instances) == 2
+            env = fake_popen.instances[-1].kwargs.get("env")
+            assert isinstance(env, dict)
+            assert env.get("AWS_PROFILE") == "second"
+
+            writer1.close()
+            await writer1.wait_closed()
+            writer2.close()
+            await writer2.wait_closed()
+            del reader1
+            del reader2
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_runtime_service_attach_env_change_deferred_while_query_active(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "attach-env-deferred-token"
+    session_id = "session-deferred"
+    attach_cwd = tmp_path / "repo"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _hello_and_attach(
+        *,
+        port: int,
+        env_overrides: dict[str, str],
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, dict[str, Any]]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            json.dumps({"cmd": "hello", "token": token, "client_name": "test", "surface": "tests"}).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+
+        writer.write(
+            json.dumps(
+                {
+                    "cmd": "attach",
+                    "session_id": session_id,
+                    "cwd": str(attach_cwd),
+                    "env_overrides": env_overrides,
+                }
+            ).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        attached_event = await _read_event(reader)
+        assert attached_event["event"] == "attached"
+        return reader, writer, attached_event
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader1, writer1, attached1 = await _hello_and_attach(
+                port=service.port,
+                env_overrides={"AWS_PROFILE": "first"},
+            )
+            assert attached1["startup_outcome"] == "ok"
+            assert len(fake_popen.instances) == 1
+            service.sessions[session_id].query_active = True
+
+            reader2, writer2, attached2 = await _hello_and_attach(
+                port=service.port,
+                env_overrides={"AWS_PROFILE": "second"},
+            )
+            assert attached2["startup_outcome"] == "env_refresh_deferred"
+            warning_event = await _read_event(reader2)
+            assert warning_event.get("event") == "warning"
+            assert "env refresh deferred" in str(warning_event.get("text", "")).lower()
+            assert len(fake_popen.instances) == 1
 
             writer1.close()
             await writer1.wait_closed()
@@ -713,7 +922,9 @@ def test_runtime_service_interrupt_watchdog_ignores_force_restart_env(monkeypatc
 
                 assert warning_event is not None
                 assert warning_event.get("force_restart") is False
-                assert len(fake_popen.instances) == 1, "session daemon should not restart even when env requests force_restart"
+                assert (
+                    len(fake_popen.instances) == 1
+                ), "session daemon should not restart even when env requests force_restart"
                 assert first_proc.returncode is None
             finally:
                 writer.close()

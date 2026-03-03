@@ -974,6 +974,47 @@ def test_socket_transport_send_command_forwards_set_profile():
     assert client.commands == [payload]
 
 
+def test_socket_transport_connect_forwards_attach_env_overrides(tmp_path):
+    discovery_path = tmp_path / "runtime.json"
+    discovery_path.write_text("{}", encoding="utf-8")
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.attach_payload: dict[str, object] | None = None
+
+        def connect(self) -> None:
+            return None
+
+        def hello(self, *, client_name: str, surface: str):
+            return {"event": "hello_ack", "pid": 321}
+
+        def attach(self, *, session_id: str, cwd: str, env_overrides: dict[str, str] | None = None):
+            self.attach_payload = {
+                "session_id": session_id,
+                "cwd": cwd,
+                "env_overrides": dict(env_overrides or {}),
+            }
+            return {"event": "attached", "session_id": session_id}
+
+        def close(self) -> None:
+            return None
+
+    fake_client = FakeClient()
+    transport = tui_app._SocketTransport.connect(
+        session_id="sess-1",
+        cwd=tmp_path,
+        client_name="test",
+        surface="tui",
+        env_overrides={"AWS_PROFILE": "ds-pr"},
+        runtime_discovery_path_fn=lambda *, cwd=None: discovery_path,
+        client_from_discovery_fn=lambda _path: fake_client,
+    )
+
+    assert transport.pid == 321
+    assert fake_client.attach_payload is not None
+    assert fake_client.attach_payload["env_overrides"] == {"AWS_PROFILE": "ds-pr"}
+
+
 def test_detect_consent_prompt_matches_cli_prompt():
     assert tui_app.detect_consent_prompt("~ consent> ") is not None
     assert tui_app.detect_consent_prompt("Allow tool 'shell'? [y/n]") is not None

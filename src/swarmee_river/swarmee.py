@@ -50,7 +50,11 @@ from strands import Agent
 from strands.types.exceptions import MaxTokensReachedException
 from swarmee_river.utils.user_input import get_user_input
 
-from swarmee_river.handlers.callback_handler import callback_handler, set_interrupt_event
+from swarmee_river.handlers.callback_handler import (
+    callback_handler,
+    configure_callback_handler_mode,
+    set_interrupt_event,
+)
 
 try:
     from prompt_toolkit import HTML as _PromptHTML, PromptSession as _PromptSession
@@ -168,7 +172,7 @@ from swarmee_river.session.graph_index import (
     write_session_graph_index,
 )
 from swarmee_river.session.store import SessionStore
-from swarmee_river.settings import SwarmeeSettings, load_settings, save_settings
+from swarmee_river.settings import SwarmeeSettings, apply_project_env_overrides, load_settings, save_settings
 from swarmee_river.tools import get_tools
 from swarmee_river.utils.agent_runtime_utils import (
     build_base_system_prompt,
@@ -2909,6 +2913,7 @@ def main() -> None:
         help="OS-separated directories containing `*.sop.md` files (overrides SWARMEE_SOP_PATHS)",
     )
     args, extra_args = parser.parse_known_args()
+    configure_callback_handler_mode(tui_events=True if args.tui_daemon else None)
 
     # Load .env early for local dev credentials/config.
     load_env_file()
@@ -2953,8 +2958,10 @@ def main() -> None:
         args.knowledge_base_id or os.getenv("SWARMEE_KNOWLEDGE_BASE_ID") or os.getenv("STRANDS_KNOWLEDGE_BASE_ID")
     )
 
-    settings = load_settings()
     settings_path_for_project = Path.cwd() / ".swarmee" / "settings.json"
+    if args.tui_daemon:
+        apply_project_env_overrides(settings_path_for_project, overwrite=True)
+    settings = load_settings(settings_path_for_project)
     auto_approve = args.yes or truthy(os.getenv("SWARMEE_AUTO_APPROVE", "false"))
     # Explicit opt-in to launch the full-screen Textual UI.
     if command == "tui":

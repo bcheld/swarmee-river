@@ -19,8 +19,8 @@ from swarmee_river.tui.model_select import (
     resolve_model_config_summary,
 )
 from swarmee_river.tui.views.settings import (
-    build_models_table_rows,
     build_env_table_rows,
+    build_models_table_rows,
     env_category_options,
     env_spec_by_key,
 )
@@ -387,7 +387,8 @@ class SettingsMixin:
                 tier_options = [("Tier: (none configured)", "__none__")]
             tier_select.set_options(tier_options)
             with contextlib.suppress(Exception):
-                tier_select.value = tier_default if tier_default in {value for _label, value in tier_options} else tier_options[0][1]
+                tier_values = {value for _label, value in tier_options}
+                tier_select.value = tier_default if tier_default in tier_values else tier_options[0][1]
         finally:
             self.state.daemon.model_select_syncing = False
 
@@ -426,7 +427,9 @@ class SettingsMixin:
             tier_count = sum(len(provider.tiers) for provider in settings.models.providers.values())
             with contextlib.suppress(Exception):
                 summary_widget.update(
-                    f"Default provider: {provider_label} | Default tier: {tier_default} | Providers: {provider_count} | Tiers: {tier_count}"
+                    "Default provider: "
+                    f"{provider_label} | Default tier: {tier_default} | "
+                    f"Providers: {provider_count} | Tiers: {tier_count}"
                 )
 
         auth_widget = self._settings_auth_status
@@ -506,19 +509,10 @@ class SettingsMixin:
         save_settings(parsed, path=path)
 
     def _project_settings_env_overrides(self) -> dict[str, str]:
+        from swarmee_river.settings import normalize_project_env_overrides
+
         payload, _path = self._load_project_settings_payload()
-        env_payload = payload.get("env")
-        if not isinstance(env_payload, dict):
-            return {}
-        resolved: dict[str, str] = {}
-        for raw_key, raw_value in env_payload.items():
-            key = str(raw_key).strip()
-            if not key:
-                continue
-            if raw_value is None:
-                continue
-            resolved[key] = str(raw_value).strip()
-        return resolved
+        return normalize_project_env_overrides(payload.get("env"))
 
     def _apply_project_settings_env_overrides(self) -> None:
         env_overrides = self._project_settings_env_overrides()
@@ -978,7 +972,7 @@ class SettingsMixin:
         )
 
     def _model_env_overrides(self) -> dict[str, str]:
-        overrides: dict[str, str] = {}
+        overrides: dict[str, str] = dict(self._project_settings_env_overrides())
         if self.state.daemon.model_provider_override:
             overrides["SWARMEE_MODEL_PROVIDER"] = self.state.daemon.model_provider_override
         if self.state.daemon.model_tier_override:

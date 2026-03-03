@@ -452,6 +452,43 @@ class TestTuiDaemonMode:
         assert len(model_events) >= 2
         assert any(event.get("tier") == "deep" for event in model_events)
 
+    def test_tui_daemon_applies_project_env_overrides_before_loading_settings(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"shutdown"}\n'))
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        observed: dict[str, str] = {}
+
+        def _fake_apply(path, overwrite=True):
+            del path
+            assert overwrite is True
+            os.environ["AWS_PROFILE"] = "ds-pr"
+            return {"AWS_PROFILE": "ds-pr"}
+
+        def _fake_load_settings(path=None):
+            observed["aws_profile_during_load"] = os.getenv("AWS_PROFILE", "")
+            from swarmee_river.settings import default_settings_template
+
+            return default_settings_template()
+
+        monkeypatch.setattr(swarmee, "apply_project_env_overrides", _fake_apply)
+        monkeypatch.setattr(swarmee, "load_settings", _fake_load_settings)
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert observed.get("aws_profile_during_load") == "ds-pr"
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert any(event.get("event") == "ready" for event in events)
+        assert any(event.get("event") == "model_info" for event in events)
+
     def test_tui_daemon_connect_bedrock_rebuilds_active_model(
         self,
         mock_agent,

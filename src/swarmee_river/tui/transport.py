@@ -96,6 +96,7 @@ class _SocketTransport(_DaemonTransport):
         cwd: Path,
         client_name: str,
         surface: str,
+        env_overrides: dict[str, str] | None = None,
         runtime_discovery_path_fn: Callable[..., Path] = runtime_discovery_path,
         client_from_discovery_fn: Callable[[Path], RuntimeServiceClient] = RuntimeServiceClient.from_discovery_file,
     ) -> _SocketTransport:
@@ -111,7 +112,7 @@ class _SocketTransport(_DaemonTransport):
             client.close()
             raise RuntimeError(message)
 
-        attach = client.attach(session_id=session_id, cwd=str(cwd)) or {}
+        attach = client.attach(session_id=session_id, cwd=str(cwd), env_overrides=env_overrides) or {}
         if str(attach.get("event", "")).strip().lower() == "error":
             message = str(attach.get("message", attach)).strip() or "attach failed"
             client.close()

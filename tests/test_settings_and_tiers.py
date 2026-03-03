@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from swarmee_river.session.models import SessionModelManager
-from swarmee_river.settings import load_settings
+from swarmee_river.settings import apply_project_env_overrides, load_project_env_overrides, load_settings
 
 
 def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path, monkeypatch) -> None:
@@ -19,6 +20,47 @@ def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path, monkeypat
     assert settings.models.providers["openai"].tiers["fast"].model_id == "gpt-5-nano"
     assert settings.models.providers["openai"].tiers["fast"].display_name
     assert settings.models.default_selection.tier == settings.models.default_tier
+
+
+def test_load_project_env_overrides_parses_env_section(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "env": {
+                    "AWS_PROFILE": " ds-pr ",
+                    "EMPTY_VALUE": "   ",
+                    "NULL_VALUE": None,
+                    "  ": "ignored",
+                    "SWARMEE_MODEL_PROVIDER": "bedrock",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overrides = load_project_env_overrides(settings_path)
+    assert overrides == {
+        "AWS_PROFILE": "ds-pr",
+        "SWARMEE_MODEL_PROVIDER": "bedrock",
+    }
+
+
+def test_apply_project_env_overrides_honors_overwrite_flag(tmp_path: Path, monkeypatch) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"env": {"AWS_PROFILE": "profile-from-settings"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AWS_PROFILE", "existing-profile")
+
+    applied_no_overwrite = apply_project_env_overrides(settings_path, overwrite=False)
+    assert applied_no_overwrite == {}
+    assert (os.getenv("AWS_PROFILE") or "") == "existing-profile"
+
+    applied_overwrite = apply_project_env_overrides(settings_path, overwrite=True)
+    assert applied_overwrite == {"AWS_PROFILE": "profile-from-settings"}
+    assert (os.getenv("AWS_PROFILE") or "") == "profile-from-settings"
 
 
 def test_load_settings_env_overrides_provider(tmp_path: Path, monkeypatch) -> None:
@@ -59,7 +101,14 @@ def test_auto_escalation_uses_explicit_order_only(tmp_path: Path, monkeypatch) -
     monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
-        json.dumps({"models": {"provider": "openai", "auto_escalation": {"enabled": True, "order": ["coding", "deep"]}}}),
+        json.dumps(
+            {
+                "models": {
+                    "provider": "openai",
+                    "auto_escalation": {"enabled": True, "order": ["coding", "deep"]},
+                }
+            }
+        ),
         encoding="utf-8",
     )
     settings = load_settings(settings_path)

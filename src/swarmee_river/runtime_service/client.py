@@ -370,8 +370,17 @@ class RuntimeServiceClient:
         )
         return self.read_event()
 
-    def attach(self, *, session_id: str, cwd: str) -> dict[str, Any] | None:
-        self.send_command({"cmd": "attach", "session_id": session_id, "cwd": cwd})
+    def attach(
+        self,
+        *,
+        session_id: str,
+        cwd: str,
+        env_overrides: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        payload: dict[str, Any] = {"cmd": "attach", "session_id": session_id, "cwd": cwd}
+        if env_overrides:
+            payload["env_overrides"] = dict(env_overrides)
+        self.send_command(payload)
         return self.read_event()
 
     def shutdown_service(self) -> dict[str, Any] | None:

@@ -232,8 +232,8 @@ def test_runtime_broker_smoke_broadcast_and_controller_gating(monkeypatch, tmp_p
         assert hello1 is not None and str(hello1.get("event", "")).lower() == "hello_ack"
         assert hello2 is not None and str(hello2.get("event", "")).lower() == "hello_ack"
 
-        attach1 = client1.attach(session_id=session_id, cwd=cwd)
-        attach2 = client2.attach(session_id=session_id, cwd=cwd)
+        attach1 = client1.attach(session_id=session_id, cwd=cwd, env_overrides={"AWS_PROFILE": "smoke-profile"})
+        attach2 = client2.attach(session_id=session_id, cwd=cwd, env_overrides={"AWS_PROFILE": "smoke-profile"})
         assert attach1 is not None and str(attach1.get("event", "")).lower() == "attached"
         assert attach2 is not None and str(attach2.get("event", "")).lower() == "attached"
 

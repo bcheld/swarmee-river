@@ -195,6 +195,7 @@ class DaemonMixin:
                     cwd=Path.cwd(),
                     client_name="swarmee-tui",
                     surface="tui",
+                    env_overrides=self._model_env_overrides(),
                 )
             except Exception as exc:
                 if broker_error is None:

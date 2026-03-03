@@ -48,10 +48,28 @@ def _interrupt_timeout_seconds() -> float:
     return value
 
 
+def _normalize_env_overrides(raw_env: Any) -> dict[str, str]:
+    if not isinstance(raw_env, dict):
+        return {}
+    resolved: dict[str, str] = {}
+    for raw_key, raw_value in raw_env.items():
+        key = str(raw_key or "").strip()
+        if not key or "=" in key or "\x00" in key:
+            continue
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value or "\x00" in value:
+            continue
+        resolved[key] = value
+    return resolved
+
+
 @dataclass
 class SessionState:
     session_id: str
     cwd: str = ""
+    env_overrides: dict[str, str] = field(default_factory=dict)
     client_ids: set[str] = field(default_factory=set)
     process: subprocess.Popen[str] | None = None
     stdout_task: asyncio.Task[None] | None = None
@@ -435,6 +453,8 @@ class RuntimeServiceServer:
     async def _start_session_process(self, session: SessionState) -> None:
         command = [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
         env = dict(os.environ)
+        if session.env_overrides:
+            env.update(session.env_overrides)
         env["SWARMEE_TUI_EVENTS"] = "1"
         env["SWARMEE_SPINNERS"] = "0"
         env["SWARMEE_LOG_EVENTS"] = "1"
@@ -630,8 +650,16 @@ class RuntimeServiceServer:
 
         self._detach_client_from_session(client)
         session = self._sessions.get(session_id)
+        has_env_overrides = "env_overrides" in payload
+        requested_env_overrides = _normalize_env_overrides(payload.get("env_overrides"))
+        startup_outcome = "ok"
+        defer_env_refresh = False
         if session is None:
-            session = SessionState(session_id=session_id, cwd=cwd)
+            session = SessionState(
+                session_id=session_id,
+                cwd=cwd,
+                env_overrides=(requested_env_overrides if has_env_overrides else {}),
+            )
             self._sessions[session_id] = session
         elif session.cwd != cwd:
             await self._send_error(
@@ -641,6 +669,14 @@ class RuntimeServiceServer:
                 detail=f"existing={session.cwd} requested={cwd}",
             )
             return
+        elif has_env_overrides and requested_env_overrides != session.env_overrides:
+            if session.query_active:
+                defer_env_refresh = True
+                startup_outcome = "env_refresh_deferred"
+            else:
+                session.env_overrides = requested_env_overrides
+                startup_outcome = "restarted_for_env"
+                await self._stop_session_process(session)
 
         try:
             await self._ensure_session_process(session)
@@ -660,10 +696,21 @@ class RuntimeServiceServer:
                 "session_id": session_id,
                 "cwd": session.cwd,
                 "clients": len(session.client_ids),
-                "startup_outcome": "ok",
+                "startup_outcome": startup_outcome,
                 "session_pid": session.process.pid if session.process is not None else None,
             },
         )
+        if defer_env_refresh:
+            await self._send_event(
+                client,
+                {
+                    "event": "warning",
+                    "text": (
+                        "Session env overrides changed while a query is active; "
+                        "env refresh deferred until the session is idle."
+                    ),
+                },
+            )
 
     async def _handle_ping(self, client: ClientState) -> None:
         if not client.authenticated:

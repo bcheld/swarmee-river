@@ -3,6 +3,7 @@
 Unit tests for the callback_handler module.
 """
 
+import importlib
 import time
 from threading import Event
 from unittest import mock
@@ -11,6 +12,7 @@ from colorama import Fore
 from rich.status import Status
 
 import swarmee_river
+import swarmee_river.handlers.callback_handler as callback_module
 from swarmee_river.handlers.callback_handler import CallbackHandler, ToolSpinner, format_message
 
 
@@ -631,3 +633,55 @@ class TestCallbackHandler:
             result=object(),
             some_future_field={"x": 1},
         )
+
+
+def test_callback_handler_mode_can_be_reconfigured_after_import(monkeypatch):
+    monkeypatch.setenv("SWARMEE_TUI_EVENTS", "0")
+    module = importlib.reload(callback_module)
+    writer_spy = mock.Mock()
+    monkeypatch.setattr(module, "write_stdout_jsonl", writer_spy)
+
+    module.callback_handler(data="cli delta")
+    assert writer_spy.call_count == 0
+
+    module.configure_callback_handler_mode(tui_events=True)
+    module.callback_handler(data="tui delta")
+    assert any(
+        call.args
+        and isinstance(call.args[0], dict)
+        and call.args[0].get("event") == "text_delta"
+        and call.args[0].get("data") == "tui delta"
+        for call in writer_spy.call_args_list
+    )
+
+
+def test_callback_handler_lazy_env_resolution(monkeypatch):
+    monkeypatch.setenv("SWARMEE_TUI_EVENTS", "0")
+    module = importlib.reload(callback_module)
+    writer_spy = mock.Mock()
+    monkeypatch.setattr(module, "write_stdout_jsonl", writer_spy)
+
+    monkeypatch.setenv("SWARMEE_TUI_EVENTS", "1")
+    module.configure_callback_handler_mode(tui_events=None)
+    module.callback_handler(data="lazy tui delta")
+
+    assert any(
+        call.args
+        and isinstance(call.args[0], dict)
+        and call.args[0].get("event") == "text_delta"
+        and call.args[0].get("data") == "lazy tui delta"
+        for call in writer_spy.call_args_list
+    )
+
+
+def test_callback_handler_instance_identity_and_interrupt_are_stable(monkeypatch):
+    monkeypatch.setenv("SWARMEE_TUI_EVENTS", "0")
+    module = importlib.reload(callback_module)
+    instance = module.callback_handler_instance
+    interrupt_event = Event()
+    instance.interrupt_event = interrupt_event
+
+    module.configure_callback_handler_mode(tui_events=True)
+
+    assert module.callback_handler_instance is instance
+    assert module.callback_handler_instance.interrupt_event is interrupt_event
