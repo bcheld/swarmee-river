@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from swarmee_river.runtime_service.client import (
+    RuntimeDiscovery,
+    RuntimeServiceClient,
     default_session_id_for_cwd,
     ensure_runtime_broker,
     load_runtime_discovery,
@@ -129,3 +132,40 @@ def test_shutdown_runtime_broker_sends_shutdown_service(monkeypatch: pytest.Monk
 
     assert shutdown_runtime_broker(cwd=tmp_path, timeout_s=0.5) is True
     assert fake_client.commands == [{"cmd": "shutdown_service"}]
+
+
+def test_runtime_client_close_does_not_block_on_stream_close() -> None:
+    class _BlockingStream:
+        def close(self) -> None:
+            time.sleep(0.4)
+
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self.shutdown_called = False
+            self.close_called = False
+
+        def shutdown(self, _how: int) -> None:
+            self.shutdown_called = True
+
+        def close(self) -> None:
+            self.close_called = True
+
+    client = RuntimeServiceClient(
+        discovery=RuntimeDiscovery(host="127.0.0.1", port=1, token="tok"),
+        timeout_s=1.0,
+    )
+    fake_socket = _FakeSocket()
+    client._sock = fake_socket  # type: ignore[assignment]
+    client._reader = _BlockingStream()
+    client._writer = _BlockingStream()
+
+    started = time.monotonic()
+    client.close()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.35
+    assert fake_socket.shutdown_called is True
+    assert fake_socket.close_called is True
+    assert client._sock is None
+    assert client._reader is None
+    assert client._writer is None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -94,3 +95,16 @@ def test_after_model_call_logs_model_id(tmp_path: Path, monkeypatch: pytest.Monk
     assert data["event"] == "after_model_call"
     assert data["model_id"] == "anthropic.claude-3-5-sonnet"
     assert data["usage"]["input_tokens"] == 1000
+
+
+def test_jsonl_logger_treats_nul_dir_as_null_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWARMEE_LOG_EVENTS", "true")
+    monkeypatch.setenv("SWARMEE_LOG_REDACT", "false")
+    monkeypatch.setenv("SWARMEE_LOG_DIR", "NUL")
+
+    hook = JSONLLoggerHooks()
+    hook._log("test", {"value": "hello"})  # noqa: SLF001
+
+    assert hook._log_path == Path(os.devnull)  # noqa: SLF001
+    assert not (tmp_path / "NUL").exists()

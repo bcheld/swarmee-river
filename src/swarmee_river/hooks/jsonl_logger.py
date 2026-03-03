@@ -125,6 +125,13 @@ def _extract_usage_payload(event: Any) -> Any:
     return None
 
 
+def _is_null_log_sink(raw: str | None) -> bool:
+    token = str(raw or "").strip().lower()
+    if not token:
+        return False
+    return token in {"nul", "nul:", "/dev/null", r"\\.\nul"}
+
+
 class JSONLLoggerHooks(HookProvider):
     """
     Lightweight JSONL logging of model/tool/invocation events for performance monitoring and replay.
@@ -138,11 +145,13 @@ class JSONLLoggerHooks(HookProvider):
         self.enabled = diagnostics_events_enabled()
         self.redact = diagnostics_redact_enabled()
         self._secrets = _secret_values_from_env()
+        raw_log_dir = os.getenv(
+            "SWARMEE_LOG_DIR",
+            str(_default_logs_dir()),
+        )
+        self._discard_output = _is_null_log_sink(raw_log_dir)
         self.log_dir = Path(
-            os.getenv(
-                "SWARMEE_LOG_DIR",
-                str(_default_logs_dir()),
-            )
+            os.devnull if self._discard_output else raw_log_dir
         )
         self.session_id = os.getenv("SWARMEE_SESSION_ID", uuid.uuid4().hex)
         self.max_field_chars = int(os.getenv("SWARMEE_LOG_MAX_FIELD_CHARS", "8000"))
@@ -152,9 +161,12 @@ class JSONLLoggerHooks(HookProvider):
         self.s3_prefix = os.getenv("SWARMEE_LOG_S3_PREFIX", "swarmee/logs").strip("/")
 
         self._lock = threading.Lock()
-        self._log_path = self.log_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{self.session_id}.jsonl"
-        with contextlib.suppress(Exception):
-            sweep_retention()
+        if self._discard_output:
+            self._log_path = Path(os.devnull)
+        else:
+            self._log_path = self.log_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{self.session_id}.jsonl"
+            with contextlib.suppress(Exception):
+                sweep_retention()
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, BeforeInvocationEvent, self.before_invocation)
@@ -165,6 +177,8 @@ class JSONLLoggerHooks(HookProvider):
         register_hook_callback(registry, AfterModelCallEvent, self.after_model_call)
 
     def _write_append(self, line: str) -> None:
+        if self._discard_output:
+            return
         self.log_dir.mkdir(parents=True, exist_ok=True)
         with self._lock:
             with self._log_path.open("a", encoding="utf-8") as f:
@@ -339,7 +353,7 @@ class JSONLLoggerHooks(HookProvider):
         self._log("after_model_call", payload_out)
 
     def _upload_to_s3(self) -> None:
-        if not self.s3_bucket:
+        if not self.s3_bucket or self._discard_output:
             return
         try:
             import boto3

@@ -303,34 +303,51 @@ class RuntimeServiceClient:
         self._reader = sock.makefile("r", encoding="utf-8", errors="replace", newline="\n")
         self._writer = sock.makefile("w", encoding="utf-8", errors="replace", newline="\n")
 
+    @staticmethod
+    def _close_stream_nonblocking(stream: Any, *, timeout_s: float = 0.05) -> None:
+        def _run_close() -> None:
+            with contextlib.suppress(Exception):
+                stream.close()
+
+        closer = threading.Thread(
+            target=_run_close,
+            name="swarmee-runtime-client-close",
+            daemon=True,
+        )
+        closer.start()
+        with contextlib.suppress(Exception):
+            closer.join(timeout=max(0.0, float(timeout_s)))
+
     def close(self) -> None:
+        # Snapshot then clear references first so concurrent callers observe
+        # closed state immediately, even if lower-level stream close blocks.
+        sock = self._sock
+        reader = self._reader
+        writer = self._writer
+        self._sock = None
+        self._reader = None
+        self._writer = None
+
         # Shutdown the socket first to interrupt any blocking recv() in reader
-        # threads.  BufferedReader.close() needs the buffer lock, but a blocked
-        # readline() holds it — shutdown(SHUT_RDWR) causes recv() to return
-        # immediately, releasing the lock so close() can proceed.
-        if self._sock is not None:
+        # threads.
+        if sock is not None:
             try:
-                self._sock.shutdown(socket.SHUT_RDWR)
+                sock.shutdown(socket.SHUT_RDWR)
             except Exception:
                 pass
-        if self._writer is not None:
+
+        # Buffered file wrappers can block on internal locks while another
+        # thread sits in readline(). Close them in short-lived daemon threads.
+        if writer is not None:
+            self._close_stream_nonblocking(writer)
+        if reader is not None:
+            self._close_stream_nonblocking(reader)
+
+        if sock is not None:
             try:
-                self._writer.close()
+                sock.close()
             except Exception:
                 pass
-            self._writer = None
-        if self._reader is not None:
-            try:
-                self._reader.close()
-            except Exception:
-                pass
-            self._reader = None
-        if self._sock is not None:
-            try:
-                self._sock.close()
-            except Exception:
-                pass
-            self._sock = None
 
     def send_command(self, payload: dict[str, Any]) -> None:
         writer = self._writer
