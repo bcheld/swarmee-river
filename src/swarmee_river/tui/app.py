@@ -1905,6 +1905,44 @@ def run_tui() -> int:
             min-width: 24;
         }
 
+        Select > SelectCurrent {
+            border: tall #4a5568;
+            background: #1f2733;
+            color: $text;
+        }
+
+        Select:focus > SelectCurrent,
+        Select.-expanded > SelectCurrent {
+            border: tall $accent;
+            background: #253244;
+        }
+
+        SelectCurrent .arrow {
+            color: $accent;
+        }
+
+        Select > SelectOverlay {
+            border: tall #4a5568;
+            background: #141a23;
+            color: $text;
+            max-height: 14;
+        }
+
+        Select > SelectOverlay > .option-list--option {
+            color: $text;
+        }
+
+        Select > SelectOverlay > .option-list--option-highlighted {
+            background: #324760;
+            color: $text;
+            text-style: bold;
+        }
+
+        Select > SelectOverlay > .option-list--option-hover {
+            background: #2a3b52;
+            color: $text;
+        }
+
         Footer {
             color: $text-muted;
             background: #1f1f1f;

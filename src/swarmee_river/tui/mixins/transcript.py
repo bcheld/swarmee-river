@@ -39,6 +39,24 @@ class TranscriptMixin:
                     method()
                     break
 
+    def _is_transcript_following_tail(self, *, threshold: float = 0.95) -> bool:
+        from textual.containers import VerticalScroll
+        from textual.widgets import TextArea
+
+        if self._transcript_mode == "text":
+            return self._get_scroll_proportion(self.query_one("#transcript_text", TextArea)) >= threshold
+        return self._get_scroll_proportion(self.query_one("#transcript", VerticalScroll)) >= threshold
+
+    def _sync_live_transcript_after_append(self, *, follow_tail: bool) -> None:
+        from textual.containers import VerticalScroll
+
+        if self._transcript_mode == "text":
+            self._sync_transcript_text_widget(scroll_to_end=follow_tail)
+            return
+        if follow_tail:
+            with contextlib.suppress(Exception):
+                self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+
     def _get_scroll_proportion(self, widget: Any) -> float:
         """Get 0.0-1.0 proportion of current scroll position."""
         try:

@@ -39,9 +39,25 @@ DEFAULT_PROVIDER_PRICING: dict[str, TokenPricing] = {
 
 # Exact model_id overrides (highest priority).
 DEFAULT_MODEL_PRICING: dict[str, TokenPricing] = {
-    # Examples (set to your actual defaults):
-    # "gpt-5-mini": TokenPricing(input_per_1m=..., output_per_1m=14, cached_input_per_1m=0.175),
-    # "us.anthropic.claude-sonnet-4-20250514-v1:0": TokenPricing(input_per_1m=..., output_per_1m=...),
+    # OpenAI list pricing (openai.com/api/pricing, checked 2026-03-03).
+    "gpt-5-nano": TokenPricing(input_per_1m=0.05, output_per_1m=0.4, cached_input_per_1m=0.005),
+    "gpt-5-mini": TokenPricing(input_per_1m=0.25, output_per_1m=2.0, cached_input_per_1m=0.025),
+    "gpt-5.2": TokenPricing(input_per_1m=1.75, output_per_1m=14.0, cached_input_per_1m=0.175),
+    # gpt-5.3-codex is mapped to GPT-5.2 rates until OpenAI publishes distinct pricing.
+    "gpt-5.3-codex": TokenPricing(input_per_1m=1.75, output_per_1m=14.0, cached_input_per_1m=0.175),
+    # Bedrock Anthropic defaults for configured model IDs.
+    # AWS model IDs from docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html
+    # Pricing baselines from Anthropic published rates until AWS exposes per-model entries for these revisions.
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0": TokenPricing(
+        input_per_1m=1.0,
+        output_per_1m=5.0,
+        cached_input_per_1m=0.1,
+    ),
+    "us.anthropic.claude-opus-4-6-v1:0": TokenPricing(
+        input_per_1m=15.0,
+        output_per_1m=75.0,
+        cached_input_per_1m=1.5,
+    ),
     "us.anthropic.claude-sonnet-4-20250514-v1:0": TokenPricing(input_per_1m=1, output_per_1m=4),
 }
 

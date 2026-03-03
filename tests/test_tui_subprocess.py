@@ -16,6 +16,7 @@ from swarmee_river.tui.mixins.context_sources import ContextSourcesMixin
 from swarmee_river.tui.mixins.daemon import DaemonMixin
 from swarmee_river.tui.mixins.plan import PlanMixin
 from swarmee_river.tui.mixins.session import SessionMixin
+from swarmee_river.tui.mixins.tools import ToolsMixin
 from swarmee_river.tui.state import AppState
 
 
@@ -3050,6 +3051,175 @@ def test_warning_event_handler_uses_connect_popup_instead_of_toast() -> None:
     assert len(notifications) == 0
     assert popup_lines == ["visit URL and enter code ABCD-EFGH"]
     assert "WARN:" in issues[0]
+
+
+def test_usage_event_handler_computes_fallback_cost_when_event_omits_cost(monkeypatch) -> None:
+    from swarmee_river.tui.event_router import _handle_usage_and_compaction_events
+
+    monkeypatch.setenv("SWARMEE_PRICE_OPENAI_INPUT_PER_1M", "2")
+    monkeypatch.setenv("SWARMEE_PRICE_OPENAI_OUTPUT_PER_1M", "8")
+    monkeypatch.delenv("SWARMEE_PRICE_OPENAI_CACHED_INPUT_PER_1M", raising=False)
+
+    status_calls: list[tuple[dict[str, object] | None, float | None]] = []
+
+    class _StatusBar:
+        def set_usage(self, usage, *, cost_usd=None) -> None:  # noqa: ANN001
+            status_calls.append((usage, cost_usd))
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    last_usage=None,
+                    last_cost_usd=None,
+                    last_prompt_tokens_est=None,
+                    last_budget_tokens=None,
+                )
+            )
+            self._status_bar = _StatusBar()
+            self.refresh_calls = 0
+
+        def _refresh_prompt_metrics(self) -> None:
+            self.refresh_calls += 1
+
+    app = FakeApp()
+    event = {"usage": {"input_tokens": 1000, "output_tokens": 500}, "provider": "openai", "model_id": "gpt-5-mini"}
+    handled = _handle_usage_and_compaction_events(app, "usage", event)
+    assert handled is True
+    assert app.state.daemon.last_usage == {"input_tokens": 1000, "output_tokens": 500}
+    assert app.state.daemon.last_cost_usd == 0.006
+    assert status_calls == [({"input_tokens": 1000, "output_tokens": 500}, 0.006)]
+    assert app.refresh_calls == 1
+
+
+def test_usage_event_handler_prefers_event_cost_over_fallback(monkeypatch) -> None:
+    from swarmee_river.tui.event_router import _handle_usage_and_compaction_events
+
+    monkeypatch.setenv("SWARMEE_PRICE_OPENAI_INPUT_PER_1M", "999")
+    monkeypatch.setenv("SWARMEE_PRICE_OPENAI_OUTPUT_PER_1M", "999")
+
+    status_costs: list[float | None] = []
+
+    class _StatusBar:
+        def set_usage(self, _usage, *, cost_usd=None) -> None:
+            status_costs.append(cost_usd)
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    last_usage=None,
+                    last_cost_usd=None,
+                    last_prompt_tokens_est=None,
+                    last_budget_tokens=None,
+                )
+            )
+            self._status_bar = _StatusBar()
+
+        def _refresh_prompt_metrics(self) -> None:
+            return None
+
+    app = FakeApp()
+    handled = _handle_usage_and_compaction_events(
+        app,
+        "usage",
+        {"usage": {"input_tokens": 1000, "output_tokens": 500}, "provider": "openai", "cost_usd": 0.1234},
+    )
+    assert handled is True
+    assert app.state.daemon.last_cost_usd == 0.1234
+    assert status_costs == [0.1234]
+
+
+def test_flush_streaming_buffer_keeps_transcript_follow_state() -> None:
+    class _AssistantMessage:
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        def append_delta(self, text: str) -> None:
+            self.chunks.append(text)
+
+    class _ToolsHarness(ToolsMixin):
+        def __init__(self) -> None:
+            self._streaming_buffer = ["hello"]
+            self._current_assistant_chunks: list[str] = []
+            self._active_assistant_message = _AssistantMessage()
+            self._current_assistant_model = None
+            self._current_assistant_timestamp = None
+            self._assistant_placeholder_written = False
+            self.follow_calls: list[bool] = []
+            self.fallback: list[str] = []
+
+        def _is_transcript_following_tail(self, *, threshold: float = 0.95) -> bool:
+            del threshold
+            return True
+
+        def _sync_live_transcript_after_append(self, *, follow_tail: bool) -> None:
+            self.follow_calls.append(follow_tail)
+
+        def _mount_transcript_widget(self, _renderable, *, plain_text=None) -> None:  # noqa: ANN001
+            del plain_text
+            return None
+
+        def _record_transcript_fallback(self, text: str) -> None:
+            self.fallback.append(text)
+
+    app = _ToolsHarness()
+    app._flush_streaming_buffer()
+    assert app._current_assistant_chunks == ["hello"]
+    assert app._active_assistant_message.chunks == ["hello"]
+    assert app.follow_calls == [True]
+    assert app.fallback == ["hello"]
+
+
+def test_flush_tool_progress_render_keeps_transcript_follow_state() -> None:
+    class _ToolWidget:
+        def __init__(self) -> None:
+            self.outputs: list[tuple[str, str]] = []
+
+        def append_output(self, content: str, *, stream: str = "stdout") -> None:
+            self.outputs.append((content, stream))
+
+    class _ToolsHarness(ToolsMixin):
+        def __init__(self) -> None:
+            self.follow_calls: list[bool] = []
+            self.fallback: list[str] = []
+            self._tool_blocks = {
+                "tool-1": {
+                    "tool_use_id": "tool-1",
+                    "tool": "shell",
+                    "start_rendered": True,
+                    "widget": _ToolWidget(),
+                    "pending_output": "line\n",
+                    "pending_stream": "stdout",
+                    "last_progress_render_mono": 0.0,
+                }
+            }
+
+        def _is_transcript_following_tail(self, *, threshold: float = 0.95) -> bool:
+            del threshold
+            return False
+
+        def _sync_live_transcript_after_append(self, *, follow_tail: bool) -> None:
+            self.follow_calls.append(follow_tail)
+
+        def _mount_transcript_widget(self, _renderable, *, plain_text=None) -> None:  # noqa: ANN001
+            del plain_text
+            return None
+
+        def _record_transcript_fallback(self, text: str) -> None:
+            self.fallback.append(text)
+
+        def _emit_tool_start_line(self, _tool_use_id: str) -> bool:
+            return True
+
+    app = _ToolsHarness()
+    rendered = app._flush_tool_progress_render("tool-1", force=True)
+    assert rendered is True
+    record = app._tool_blocks["tool-1"]
+    assert record["widget"].outputs == [("line\n", "stdout")]
+    assert record["pending_output"] == ""
+    assert app.follow_calls == [False]
+    assert app.fallback == ["line\n"]
 
 
 def test_streaming_handler_llm_start_triggers_thinking_indicator() -> None:

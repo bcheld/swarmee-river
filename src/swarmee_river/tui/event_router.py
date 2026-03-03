@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json as _json
+import os
 from typing import Any
 
 from swarmee_river.error_classification import (
@@ -15,6 +16,7 @@ from swarmee_river.error_classification import (
     classify_error_message,
     normalize_error_category,
 )
+from swarmee_river.pricing import resolve_pricing
 from swarmee_river.profiles import AgentProfile
 from swarmee_river.tui.agent_studio import normalize_session_safety_overrides, normalize_team_presets
 from swarmee_river.tui.event_types import extract_tui_text_chunk
@@ -22,6 +24,116 @@ from swarmee_river.tui.text_sanitize import sanitize_output_text
 
 _TRANSIENT_TOAST_TIMEOUT_S = 5.0
 _FATAL_TOAST_TIMEOUT_S = 3600.0
+
+
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except Exception:
+            return None
+    return None
+
+
+def _extract_usage_counts(usage: dict[str, Any]) -> tuple[int, int, int]:
+    input_tokens = (
+        _as_int(usage.get("input_tokens"))
+        or _as_int(usage.get("prompt_tokens"))
+        or _as_int(usage.get("inputTokens"))
+        or _as_int(usage.get("promptTokens"))
+        or 0
+    )
+    output_tokens = (
+        _as_int(usage.get("output_tokens"))
+        or _as_int(usage.get("completion_tokens"))
+        or _as_int(usage.get("outputTokens"))
+        or _as_int(usage.get("completionTokens"))
+        or 0
+    )
+
+    cached = 0
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, dict):
+        details = usage.get("promptTokensDetails")
+    if isinstance(details, dict):
+        cached = _as_int(details.get("cached_tokens")) or _as_int(details.get("cachedTokens")) or 0
+    cached = cached or _as_int(usage.get("cache_read_input_tokens")) or _as_int(usage.get("cacheReadInputTokens")) or 0
+    return input_tokens, output_tokens, cached
+
+
+def _compute_usage_cost_fallback(event: dict[str, Any]) -> float | None:
+    usage = event.get("usage")
+    if not isinstance(usage, dict):
+        return None
+
+    provider = str(event.get("provider", "")).strip().lower()
+    model_id = str(event.get("model_id", "")).strip() or None
+    pricing = resolve_pricing(provider=provider or None, model_id=model_id)
+
+    provider_key = provider.upper() if provider else ""
+    provider_input = _as_float(os.getenv(f"SWARMEE_PRICE_{provider_key}_INPUT_PER_1M")) if provider_key else None
+    provider_output = _as_float(os.getenv(f"SWARMEE_PRICE_{provider_key}_OUTPUT_PER_1M")) if provider_key else None
+    provider_cached = (
+        _as_float(os.getenv(f"SWARMEE_PRICE_{provider_key}_CACHED_INPUT_PER_1M")) if provider_key else None
+    )
+
+    default_input = pricing.input_per_1m if pricing is not None else None
+    default_output = pricing.output_per_1m if pricing is not None else None
+    default_cached = pricing.cached_input_per_1m if pricing is not None else None
+
+    input_rate = (
+        provider_input
+        if provider_input is not None
+        else default_input
+        if default_input is not None
+        else _as_float(os.getenv("SWARMEE_PRICE_INPUT_PER_1M"))
+    )
+    output_rate = (
+        provider_output
+        if provider_output is not None
+        else default_output
+        if default_output is not None
+        else _as_float(os.getenv("SWARMEE_PRICE_OUTPUT_PER_1M"))
+    )
+    cached_rate = (
+        provider_cached
+        if provider_cached is not None
+        else default_cached
+        if default_cached is not None
+        else _as_float(os.getenv("SWARMEE_PRICE_CACHED_INPUT_PER_1M"))
+    )
+    if cached_rate is None:
+        cached_rate = input_rate
+
+    if input_rate is None and output_rate is None:
+        return None
+
+    input_tokens, output_tokens, cached_tokens = _extract_usage_counts(usage)
+    billable_input = max(0, input_tokens - cached_tokens)
+    cost = 0.0
+    if input_rate is not None:
+        cost += (billable_input / 1_000_000.0) * input_rate
+    if cached_rate is not None and cached_tokens:
+        cost += (cached_tokens / 1_000_000.0) * cached_rate
+    if output_rate is not None:
+        cost += (output_tokens / 1_000_000.0) * output_rate
+    return round(cost, 6)
 
 
 def classify_tui_error_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -264,7 +376,10 @@ def _handle_usage_and_compaction_events(app: Any, etype: str, event: dict[str, A
         usage = event.get("usage")
         app.state.daemon.last_usage = usage if isinstance(usage, dict) else None
         cost = event.get("cost_usd")
-        app.state.daemon.last_cost_usd = float(cost) if isinstance(cost, (int, float)) else None
+        if isinstance(cost, (int, float)):
+            app.state.daemon.last_cost_usd = float(cost)
+        else:
+            app.state.daemon.last_cost_usd = _compute_usage_cost_fallback(event)
         if app._status_bar is not None:
             app._status_bar.set_usage(app.state.daemon.last_usage, cost_usd=app.state.daemon.last_cost_usd)
         app._refresh_prompt_metrics()

@@ -37,6 +37,7 @@ class ToolsMixin:
 
         if not self._streaming_buffer:
             return
+        follow_tail = self._is_transcript_following_tail()
         text = "".join(self._streaming_buffer)
         self._streaming_buffer = []
         if not text:
@@ -51,6 +52,7 @@ class ToolsMixin:
         with contextlib.suppress(Exception):
             self._active_assistant_message.append_delta(text)
         self._record_transcript_fallback(text)
+        self._sync_live_transcript_after_append(follow_tail=follow_tail)
         self._assistant_placeholder_written = True
 
     def _cancel_tool_progress_flush_timer(self) -> None:
@@ -225,6 +227,7 @@ class ToolsMixin:
         record = self._tool_blocks.get(tool_use_id)
         if record is None:
             return False
+        follow_tail = self._is_transcript_following_tail()
         if not bool(record.get("start_rendered")):
             self._emit_tool_start_line(tool_use_id)
         widget = record.get("widget")
@@ -243,6 +246,7 @@ class ToolsMixin:
                         plain_text=pending,
                     )
                 self._record_transcript_fallback(pending)
+                self._sync_live_transcript_after_append(follow_tail=follow_tail)
                 record["pending_output"] = ""
                 record["pending_stream"] = "stdout"
                 record["last_progress_render_mono"] = now
@@ -267,6 +271,7 @@ class ToolsMixin:
                 render_tool_heartbeat_line(tool_name, elapsed_s=elapsed_s, tool_use_id=tool_use_id),
                 plain_text=f"⚙ {tool_name} running... ({elapsed_s:.1f}s)",
             )
+        self._sync_live_transcript_after_append(follow_tail=follow_tail)
         record["last_progress_render_mono"] = now
         record["last_heartbeat_rendered_s"] = elapsed_s
         return True
