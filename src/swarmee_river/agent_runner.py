@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import faulthandler
 import inspect
 import logging
@@ -11,6 +12,8 @@ import threading
 import time
 import warnings
 from collections.abc import Callable
+from collections.abc import Awaitable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from swarmee_river.interrupts import AgentInterruptedError
@@ -46,6 +49,28 @@ def _resolve_windows_event_loop_policy() -> str:
     if raw in {"auto", "selector", "proactor"}:
         return raw
     return "auto"
+
+
+def _resolve_agent_invoke_mode() -> str:
+    raw = str(os.getenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")).strip().lower()
+    if raw in {"isolated", "direct"}:
+        return raw
+    return "isolated"
+
+
+def _run_coroutine_isolated(
+    async_factory: Callable[[], Awaitable[Any]],
+    *,
+    invocation_state: dict[str, Any] | None = None,
+) -> Any:
+    def _execute() -> Any:
+        _mark_invoke_stage(invocation_state, "invoke_worker_asyncio_run_start")
+        return asyncio.run(async_factory())
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="swarmee-agent-invoke") as executor:
+        context = contextvars.copy_context()
+        future = executor.submit(context.run, _execute)
+        return future.result()
 
 
 def _ensure_invoke_diag(invocation_state: dict[str, Any] | None) -> dict[str, Any]:
@@ -189,7 +214,7 @@ def invoke_agent(
     structured_output_model: type[Any] | None = None,
     structured_output_prompt: str | None = None,
 ) -> Any:
-    _mark_invoke_stage(invocation_state, "pre_asyncio_run")
+    _mark_invoke_stage(invocation_state, "pre_invoke_dispatch")
     monitor_stop, monitor_thread = _start_stall_monitor(
         callback_handler=callback_handler,
         invocation_state=invocation_state,
@@ -299,7 +324,12 @@ def invoke_agent(
 
     try:
         with _windows_loop_policy_context():
-            return asyncio.run(_invoke())
+            invoke_mode = _resolve_agent_invoke_mode()
+            if invoke_mode == "direct":
+                _mark_invoke_stage(invocation_state, "invoke_mode_direct_start")
+                return asyncio.run(_invoke())
+            _mark_invoke_stage(invocation_state, "invoke_mode_isolated_submit")
+            return _run_coroutine_isolated(lambda: _invoke(), invocation_state=invocation_state)
     except KeyboardInterrupt:
         _mark_invoke_stage(invocation_state, "keyboard_interrupt")
         raise AgentInterruptedError("Interrupted by user") from None
