@@ -774,18 +774,7 @@ class TuiCallbackHandler:
         if not text:
             return False
 
-        delta = text
-        snapshot = self._assistant_text_snapshot
-        if snapshot:
-            if text.startswith(snapshot):
-                delta = text[len(snapshot) :]
-                self._assistant_text_snapshot = text
-            elif snapshot.endswith(text):
-                delta = ""
-            else:
-                self._assistant_text_snapshot = snapshot + text
-        else:
-            self._assistant_text_snapshot = text
+        delta = self._merge_assistant_text_snapshot(text)
 
         if not delta:
             return False
@@ -793,6 +782,40 @@ class TuiCallbackHandler:
         self._consume_text_for_plan_markers(delta)
         self._saw_text_delta = True
         return True
+
+    @staticmethod
+    def _longest_suffix_prefix_overlap(left: str, right: str) -> int:
+        max_len = min(len(left), len(right))
+        for size in range(max_len, 0, -1):
+            if left.endswith(right[:size]):
+                return size
+        return 0
+
+    def _merge_assistant_text_snapshot(self, incoming: str) -> str:
+        text = str(incoming or "")
+        if not text:
+            return ""
+        snapshot = self._assistant_text_snapshot
+        if not snapshot:
+            self._assistant_text_snapshot = text
+            return text
+        if text == snapshot:
+            return ""
+        if text.startswith(snapshot):
+            delta = text[len(snapshot) :]
+            self._assistant_text_snapshot = text
+            return delta
+        if snapshot.startswith(text):
+            return ""
+
+        overlap = self._longest_suffix_prefix_overlap(snapshot, text)
+        if overlap > 0:
+            delta = text[overlap:]
+            self._assistant_text_snapshot = snapshot + delta
+            return delta
+
+        self._assistant_text_snapshot = snapshot + text
+        return text
 
     def _extract_text_from_assistant_message(self, message: dict[str, Any]) -> str | None:
         if message.get("role") != "assistant":
@@ -878,21 +901,18 @@ class TuiCallbackHandler:
 
         emitted_stream_text = False
         if data:
-            self._emit({"event": "text_delta", "data": data})
-            self._consume_text_for_plan_markers(data)
-            self._saw_text_delta = True
-            self._assistant_text_snapshot += data
-            emitted_stream_text = True
+            emitted_stream_text = self._emit_assistant_message_text(data) or emitted_stream_text
 
-        if not emitted_stream_text:
-            emitted_stream_text = self._emit_assistant_message_text(self._extract_text_from_assistant_message(message))
+        emitted_stream_text = (
+            self._emit_assistant_message_text(self._extract_text_from_assistant_message(message)) or emitted_stream_text
+        )
 
         if not emitted_stream_text and extra_event_fields:
             self._emit_assistant_message_text(self._extract_text_from_extra_fields(extra_event_fields))
 
-        if complete:
+        should_emit_complete = bool(complete)
+        if should_emit_complete:
             self._flush_plan_marker_buffer()
-            self._emit({"event": "text_complete"})
 
         if current_tool_use:
             raw_tool_id = current_tool_use.get("toolUseId")
@@ -1012,6 +1032,9 @@ class TuiCallbackHandler:
                 self._consume_text_for_plan_markers(result)
 
         self._emit_tool_heartbeats()
+
+        if should_emit_complete and not emitted_text_fallback and self._saw_text_delta:
+            self._emit({"event": "text_complete"})
 
         if emitted_text_fallback:
             self._flush_plan_marker_buffer()

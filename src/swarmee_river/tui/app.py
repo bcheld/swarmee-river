@@ -2008,11 +2008,13 @@ def run_tui() -> int:
         _current_assistant_chunks: list[str] = []
         _streaming_buffer: list[str] = []
         _streaming_flush_timer: Any = None
+        _streaming_last_flush_mono: float = 0.0
         _tool_progress_pending_ids: set[str] = set()
         _tool_progress_flush_timer: Any = None
         _current_assistant_model: str | None = None
         _current_assistant_timestamp: str | None = None
         _assistant_placeholder_written: bool = False
+        _stream_render_warning_emitted_turn: bool = False
         _active_assistant_message: Any = None  # AssistantMessage | None
         _active_reasoning_block: Any = None  # ReasoningBlock | None
         _current_thinking: bool = False
@@ -2227,6 +2229,10 @@ def run_tui() -> int:
         _auth_connect_screen: Any = None
         _auth_connect_provider: str | None = None
         _auth_connect_capture_warnings: bool = False
+        _thread_dispatch_backlog: Any = None  # deque[(callback, args, kwargs, attempts)] | None
+        _thread_dispatch_dropped_total: int = 0
+        _thread_dispatch_dropped_pending: int = 0
+        _thread_dispatch_last_warning_mono: float = 0.0
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)

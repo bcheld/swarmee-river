@@ -343,6 +343,50 @@ def test_assistant_message_cumulative_text_is_delta_deduped():
     ]
 
 
+def test_assistant_message_cumulative_text_partial_overlap_emits_only_new_suffix():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(message={"role": "assistant", "content": [{"text": "abc123"}]})
+        h.callback_handler(message={"role": "assistant", "content": [{"text": "123xyz"}]})
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "abc123"},
+        {"event": "text_delta", "data": "xyz"},
+    ]
+
+
+def test_assistant_message_shorter_rewind_is_ignored_without_corrupting_snapshot():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(message={"role": "assistant", "content": [{"text": "hello world"}]})
+        h.callback_handler(message={"role": "assistant", "content": [{"text": "world"}]})
+        h.callback_handler(message={"role": "assistant", "content": [{"text": "hello world!"}]})
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "hello world"},
+        {"event": "text_delta", "data": "!"},
+    ]
+
+
+def test_data_and_message_in_same_callback_emit_monotonic_delta():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(
+            data="hel",
+            message={"role": "assistant", "content": [{"text": "hello"}]},
+        ),
+    )
+    assert events == [
+        {"event": "text_delta", "data": "hel"},
+        {"event": "text_delta", "data": "lo"},
+    ]
+
+
 def test_extra_event_fields_text_emits_text_delta():
     h = TuiCallbackHandler()
     events = _capture_events(h, lambda: h.callback_handler(delta="hello from extra"))
@@ -436,6 +480,21 @@ def test_plan_marker_buffer_flushes_on_text_complete():
         for event in events
     )
     assert any(event.get("event") == "text_complete" for event in events)
+
+
+def test_complete_with_fallback_text_emits_single_text_complete():
+    h = TuiCallbackHandler()
+    events = _capture_events(h, lambda: h.callback_handler(result="final response", complete=True))
+    assert events == [
+        {"event": "text_delta", "data": "final response"},
+        {"event": "text_complete"},
+    ]
+
+
+def test_complete_with_no_text_emits_no_text_complete():
+    h = TuiCallbackHandler()
+    events = _capture_events(h, lambda: h.callback_handler(complete=True))
+    assert events == []
 
 
 def test_plan_step_updates_emitted_from_plan_progress_tool():

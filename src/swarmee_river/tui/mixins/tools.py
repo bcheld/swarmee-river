@@ -23,8 +23,14 @@ class ToolsMixin:
 
     def _schedule_streaming_flush(self) -> None:
         if self._streaming_flush_timer is None:
+            now = time.monotonic()
+            last_flush = float(getattr(self, "_streaming_last_flush_mono", 0.0) or 0.0)
+            if last_flush <= 0.0 or (now - last_flush) >= _STREAMING_FLUSH_INTERVAL_S:
+                self._flush_streaming_buffer()
+                return
+            delay = max(0.01, _STREAMING_FLUSH_INTERVAL_S - (now - last_flush))
             self._streaming_flush_timer = self.set_timer(
-                _STREAMING_FLUSH_INTERVAL_S,
+                delay,
                 self._on_streaming_flush_timer,
             )
 
@@ -49,11 +55,50 @@ class ToolsMixin:
                 timestamp=self._current_assistant_timestamp,
             )
             self._mount_transcript_widget(self._active_assistant_message)
-        with contextlib.suppress(Exception):
+        append_failed = False
+        try:
             self._active_assistant_message.append_delta(text)
+        except Exception:
+            append_failed = True
+        if append_failed:
+            self._recover_assistant_stream_render()
         self._record_transcript_fallback(text)
         self._sync_live_transcript_after_append(follow_tail=follow_tail)
-        self._assistant_placeholder_written = True
+        self._assistant_placeholder_written = self._active_assistant_message is not None
+        self._streaming_last_flush_mono = time.monotonic()
+
+    def _recover_assistant_stream_render(self) -> None:
+        from swarmee_river.tui.widgets import AssistantMessage
+
+        recovered = False
+        existing = self._active_assistant_message
+        self._active_assistant_message = None
+        with contextlib.suppress(Exception):
+            if existing is not None:
+                existing.remove()
+        try:
+            rebuilt = AssistantMessage(
+                model=self._current_assistant_model,
+                timestamp=self._current_assistant_timestamp,
+            )
+            full_text = "".join(self._current_assistant_chunks)
+            if full_text:
+                rebuilt.append_delta(full_text)
+            self._mount_transcript_widget(rebuilt)
+            self._active_assistant_message = rebuilt
+            recovered = True
+        except Exception:
+            self._active_assistant_message = None
+        self._warn_stream_render_failure(recovered=recovered)
+
+    def _warn_stream_render_failure(self, *, recovered: bool) -> None:
+        if bool(getattr(self, "_stream_render_warning_emitted_turn", False)):
+            return
+        self._stream_render_warning_emitted_turn = True
+        if recovered:
+            self._write_transcript_line("[stream] recovered assistant render after a transient UI update failure.")
+        else:
+            self._write_transcript_line("[stream] assistant render degraded; response text will appear on finalize.")
 
     def _cancel_tool_progress_flush_timer(self) -> None:
         timer = self._tool_progress_flush_timer

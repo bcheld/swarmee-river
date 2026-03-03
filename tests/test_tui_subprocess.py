@@ -17,6 +17,7 @@ from swarmee_river.tui.mixins.daemon import DaemonMixin
 from swarmee_river.tui.mixins.plan import PlanMixin
 from swarmee_river.tui.mixins.session import SessionMixin
 from swarmee_river.tui.mixins.tools import ToolsMixin
+from swarmee_river.tui.mixins.transcript import TranscriptMixin
 from swarmee_river.tui.state import AppState
 
 
@@ -3220,6 +3221,145 @@ def test_flush_tool_progress_render_keeps_transcript_follow_state() -> None:
     assert record["pending_output"] == ""
     assert app.follow_calls == [False]
     assert app.fallback == ["line\n"]
+
+
+def test_call_from_thread_safe_retries_backlog_and_eventually_delivers_callback() -> None:
+    class _Harness(TranscriptMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(daemon=SimpleNamespace(is_shutting_down=False))
+            self.failures_remaining = 1
+            self.values: list[str] = []
+            self.lines: list[str] = []
+
+        def call_from_thread(self, callback, *args, **kwargs) -> None:  # noqa: ANN001
+            if self.failures_remaining > 0:
+                self.failures_remaining -= 1
+                raise RuntimeError("busy")
+            callback(*args, **kwargs)
+
+        def _write_transcript_line(self, line: str) -> None:
+            self.lines.append(line)
+
+    app = _Harness()
+    app._call_from_thread_safe(app.values.append, "first")
+    assert app.values == ["first"]
+    app._call_from_thread_safe(app.values.append, "second")
+    assert app.values == ["first", "second"]
+    assert app._thread_dispatch_dropped_total == 0
+
+
+def test_call_from_thread_safe_drops_overflow_and_emits_throttled_warning() -> None:
+    class _Harness(TranscriptMixin):
+        _THREAD_DISPATCH_QUEUE_MAX = 1
+        _THREAD_DISPATCH_MAX_ATTEMPTS = 2
+        _THREAD_DISPATCH_WARN_INTERVAL_S = 0.0
+
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(daemon=SimpleNamespace(is_shutting_down=False))
+            self.failures_remaining = 99
+            self.values: list[str] = []
+            self.lines: list[str] = []
+
+        def call_from_thread(self, callback, *args, **kwargs) -> None:  # noqa: ANN001
+            if self.failures_remaining > 0:
+                self.failures_remaining -= 1
+                raise RuntimeError("still busy")
+            callback(*args, **kwargs)
+
+        def _write_transcript_line(self, line: str) -> None:
+            self.lines.append(line)
+
+    app = _Harness()
+    app._call_from_thread_safe(app.values.append, "one")
+    app._call_from_thread_safe(app.values.append, "two")
+    app._call_from_thread_safe(app.values.append, "three")
+    assert app._thread_dispatch_dropped_total >= 1
+
+    app.failures_remaining = 0
+    app._call_from_thread_safe(app.values.append, "four")
+    assert "four" in app.values
+    assert any("dropped" in line for line in app.lines)
+
+
+def test_flush_streaming_buffer_append_failure_degrades_to_finalize_path() -> None:
+    class _BrokenMessage:
+        def append_delta(self, _text: str) -> None:
+            raise RuntimeError("render failed")
+
+        def remove(self) -> None:
+            return None
+
+    class _ToolsHarness(ToolsMixin):
+        def __init__(self) -> None:
+            self._streaming_buffer = ["hello"]
+            self._current_assistant_chunks: list[str] = []
+            self._active_assistant_message = _BrokenMessage()
+            self._current_assistant_model = "openai/fast"
+            self._current_assistant_timestamp = "10:00 AM"
+            self._assistant_placeholder_written = False
+            self._streaming_last_flush_mono = 0.0
+            self._stream_render_warning_emitted_turn = False
+            self.fallback: list[str] = []
+            self.lines: list[str] = []
+
+        def _is_transcript_following_tail(self, *, threshold: float = 0.95) -> bool:
+            del threshold
+            return True
+
+        def _sync_live_transcript_after_append(self, *, follow_tail: bool) -> None:
+            del follow_tail
+            return None
+
+        def _mount_transcript_widget(self, _renderable, *, plain_text=None) -> None:  # noqa: ANN001
+            del plain_text
+            raise RuntimeError("mount failed")
+
+        def _record_transcript_fallback(self, text: str) -> None:
+            self.fallback.append(text)
+
+        def _write_transcript_line(self, line: str) -> None:
+            self.lines.append(line)
+
+    app = _ToolsHarness()
+    app._flush_streaming_buffer()
+    assert app._current_assistant_chunks == ["hello"]
+    assert app._active_assistant_message is None
+    assert app._assistant_placeholder_written is False
+    assert app.fallback == ["hello"]
+    assert any("degraded" in line for line in app.lines)
+
+
+def test_schedule_streaming_flush_immediate_first_chunk_then_debounced(monkeypatch) -> None:
+    class _Timer:
+        def stop(self) -> None:
+            return None
+
+    class _ToolsHarness(ToolsMixin):
+        def __init__(self) -> None:
+            self._streaming_flush_timer = None
+            self._streaming_last_flush_mono = 0.0
+            self.flush_calls = 0
+            self.timer_delays: list[float] = []
+
+        def _flush_streaming_buffer(self) -> None:
+            self.flush_calls += 1
+            self._streaming_last_flush_mono = 100.0
+
+        def set_timer(self, delay: float, _callback):  # noqa: ANN001
+            self.timer_delays.append(delay)
+            return _Timer()
+
+    app = _ToolsHarness()
+    monkeypatch.setattr("swarmee_river.tui.mixins.tools.time.monotonic", lambda: 100.0)
+    app._schedule_streaming_flush()
+    assert app.flush_calls == 1
+    assert app.timer_delays == []
+
+    monkeypatch.setattr("swarmee_river.tui.mixins.tools.time.monotonic", lambda: 100.02)
+    app._schedule_streaming_flush()
+    assert app.flush_calls == 1
+    assert len(app.timer_delays) == 1
+    assert app.timer_delays[0] > 0.0
 
 
 def test_streaming_handler_llm_start_triggers_thinking_indicator() -> None:

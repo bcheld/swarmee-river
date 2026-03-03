@@ -265,9 +265,11 @@ class DaemonMixin:
         self._current_assistant_chunks = []
         self._streaming_buffer = []
         self._cancel_streaming_flush_timer()
+        self._streaming_last_flush_mono = 0.0
         self._current_assistant_model = None
         self._current_assistant_timestamp = None
         self._assistant_placeholder_written = False
+        self._stream_render_warning_emitted_turn = False
         self._active_assistant_message = None
         self._active_reasoning_block = None
         self._reset_thinking_state()

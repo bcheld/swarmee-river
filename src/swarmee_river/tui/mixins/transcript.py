@@ -1,12 +1,91 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
+import time
+from collections import deque
 from typing import Any
 
 from swarmee_river.tui.text_sanitize import sanitize_output_text
 
 
 class TranscriptMixin:
+    _THREAD_DISPATCH_QUEUE_MAX = 256
+    _THREAD_DISPATCH_MAX_ATTEMPTS = 5
+    _THREAD_DISPATCH_WARN_INTERVAL_S = 5.0
+
+    def _ensure_thread_dispatch_state(self) -> None:
+        if getattr(self, "_thread_dispatch_backlog", None) is None:
+            self._thread_dispatch_backlog = deque()
+        if not hasattr(self, "_thread_dispatch_dropped_total"):
+            self._thread_dispatch_dropped_total = 0
+        if not hasattr(self, "_thread_dispatch_dropped_pending"):
+            self._thread_dispatch_dropped_pending = 0
+        if not hasattr(self, "_thread_dispatch_last_warning_mono"):
+            self._thread_dispatch_last_warning_mono = 0.0
+
+    def _dispatch_via_call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> bool:
+        try:
+            result = self.call_from_thread(callback, *args, **kwargs)
+        except Exception:
+            return False
+        if inspect.iscoroutine(result):
+            with contextlib.suppress(Exception):
+                result.close()
+            try:
+                callback(*args, **kwargs)
+            except Exception:
+                return False
+        return True
+
+    def _record_thread_dispatch_drop(self) -> None:
+        self._ensure_thread_dispatch_state()
+        self._thread_dispatch_dropped_total += 1
+        self._thread_dispatch_dropped_pending += 1
+
+    def _emit_thread_dispatch_warning_if_due(self) -> None:
+        self._ensure_thread_dispatch_state()
+        pending = int(getattr(self, "_thread_dispatch_dropped_pending", 0) or 0)
+        if pending <= 0 or self.state.daemon.is_shutting_down:
+            return
+        now = time.monotonic()
+        last = float(getattr(self, "_thread_dispatch_last_warning_mono", 0.0) or 0.0)
+        if (now - last) < float(getattr(self, "_THREAD_DISPATCH_WARN_INTERVAL_S", 5.0)):
+            return
+        message = f"[tui] dropped {pending} daemon event(s) due to UI dispatch failures."
+        if not self._dispatch_via_call_from_thread(self._write_transcript_line, message):
+            return
+        self._thread_dispatch_dropped_pending = 0
+        self._thread_dispatch_last_warning_mono = now
+
+    def _drain_thread_dispatch_backlog(self) -> None:
+        self._ensure_thread_dispatch_state()
+        queue = self._thread_dispatch_backlog
+        max_attempts = int(getattr(self, "_THREAD_DISPATCH_MAX_ATTEMPTS", 5))
+        while queue:
+            callback, args, kwargs, attempts = queue[0]
+            if self.state.daemon.is_shutting_down:
+                queue.clear()
+                return
+            if not self._dispatch_via_call_from_thread(callback, *args, **kwargs):
+                attempts += 1
+                if attempts >= max_attempts:
+                    queue.popleft()
+                    self._record_thread_dispatch_drop()
+                    continue
+                queue[0] = (callback, args, kwargs, attempts)
+                break
+            queue.popleft()
+
+    def _enqueue_thread_dispatch_backlog(self, callback: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        self._ensure_thread_dispatch_state()
+        queue = self._thread_dispatch_backlog
+        max_items = int(getattr(self, "_THREAD_DISPATCH_QUEUE_MAX", 256))
+        if len(queue) >= max_items:
+            queue.popleft()
+            self._record_thread_dispatch_drop()
+        queue.append((callback, args, kwargs, 1))
+
     def _record_transcript_fallback(self, text: str) -> None:
         clean = sanitize_output_text(text).rstrip("\n")
         if not clean:
@@ -167,12 +246,14 @@ class TranscriptMixin:
         self._mount_transcript_widget(render_system_message(line), plain_text=line)
 
     def _call_from_thread_safe(self, callback: Any, *args: Any, **kwargs: Any) -> None:
-        import contextlib as _ctx
-
         if self.state.daemon.is_shutting_down:
             return
-        with _ctx.suppress(Exception):
-            self.call_from_thread(callback, *args, **kwargs)
+        self._ensure_thread_dispatch_state()
+        self._drain_thread_dispatch_backlog()
+        if not self._dispatch_via_call_from_thread(callback, *args, **kwargs):
+            self._enqueue_thread_dispatch_backlog(callback, args, kwargs)
+            self._drain_thread_dispatch_backlog()
+        self._emit_thread_dispatch_warning_if_due()
 
     def _write_user_input(self, text: str) -> None:
         from swarmee_river.tui.widgets import render_user_message
