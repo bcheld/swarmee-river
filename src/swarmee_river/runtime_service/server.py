@@ -48,6 +48,30 @@ def _interrupt_timeout_seconds() -> float:
     return value
 
 
+def _bedrock_stall_warn_seconds() -> float:
+    raw = os.environ.get("SWARMEE_BEDROCK_STALL_WARN_SEC", "90")
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        return 90.0
+    if value <= 0:
+        return 90.0
+    return value
+
+
+def _bedrock_stall_hard_fail_seconds() -> float | None:
+    raw = str(os.environ.get("SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC", "")).strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 def _normalize_env_overrides(raw_env: Any) -> dict[str, str]:
     if not isinstance(raw_env, dict):
         return {}
@@ -80,6 +104,13 @@ class SessionState:
     started_new_session: bool = False
     idle_timeout_task: asyncio.Task[None] | None = None
     interrupt_watchdog_task: asyncio.Task[None] | None = None
+    query_stall_watchdog_task: asyncio.Task[None] | None = None
+    stall_restart_task: asyncio.Task[None] | None = None
+    last_session_event_mono: float = field(default_factory=time.monotonic)
+    last_query_start_mono: float = 0.0
+    last_query_stall_warn_mono: float = 0.0
+    pending_stall_restart: bool = False
+    provider_hint: str = ""
 
 
 class RuntimeServiceServer:
@@ -342,6 +373,128 @@ class RuntimeServiceServer:
             },
         )
 
+    def _cancel_query_stall_watchdog(self, session: SessionState) -> None:
+        task = session.query_stall_watchdog_task
+        current_task = asyncio.current_task()
+        if task is not None and not task.done() and task is not current_task:
+            task.cancel()
+        session.query_stall_watchdog_task = None
+
+    def _arm_query_stall_watchdog(self, session: SessionState) -> None:
+        self._cancel_query_stall_watchdog(session)
+        if not session.query_active:
+            return
+        warn_sec = _bedrock_stall_warn_seconds()
+        hard_fail_sec = _bedrock_stall_hard_fail_seconds()
+        if warn_sec <= 0 and hard_fail_sec is None:
+            return
+        now = time.monotonic()
+        session.last_query_start_mono = now
+        session.last_session_event_mono = now
+        session.last_query_stall_warn_mono = 0.0
+        session.query_stall_watchdog_task = asyncio.ensure_future(
+            self._query_stall_watchdog(
+                session,
+                warn_sec=warn_sec,
+                hard_fail_sec=hard_fail_sec,
+            )
+        )
+
+    async def _query_stall_watchdog(
+        self,
+        session: SessionState,
+        *,
+        warn_sec: float,
+        hard_fail_sec: float | None,
+    ) -> None:
+        interval_basis = min(warn_sec, hard_fail_sec) if hard_fail_sec is not None else warn_sec
+        interval = max(0.25, min(2.0, float(interval_basis) / 4.0))
+        try:
+            while session.query_active:
+                await asyncio.sleep(interval)
+                if not session.query_active:
+                    return
+                now = time.monotonic()
+                last_session_event = max(session.last_session_event_mono, session.last_query_start_mono)
+                stalled_for = max(0.0, now - last_session_event)
+                provider_hint = (session.provider_hint or "unknown").strip().lower() or "unknown"
+
+                if stalled_for >= warn_sec and (now - session.last_query_stall_warn_mono) >= warn_sec:
+                    session.last_query_stall_warn_mono = now
+                    await self._broadcast_session_event(
+                        session,
+                        {
+                            "event": "warning",
+                            "text": (
+                                f"No daemon events for {stalled_for:.1f}s while query is active "
+                                f"(provider={provider_hint})."
+                            ),
+                            "query_stall_elapsed_sec": round(stalled_for, 2),
+                            "query_stall_warn_sec": warn_sec,
+                            "provider": provider_hint,
+                            "force_restart": False,
+                            "forced_restart_triggered": False,
+                        },
+                    )
+
+                if hard_fail_sec is None or stalled_for < hard_fail_sec:
+                    continue
+
+                session.pending_stall_restart = True
+                await self._broadcast_session_event(
+                    session,
+                    {
+                        "event": "warning",
+                        "text": (
+                            f"Query stall hard-fail threshold reached ({hard_fail_sec:.1f}s); "
+                            "daemon restart deferred until turn completion."
+                        ),
+                        "query_stall_elapsed_sec": round(stalled_for, 2),
+                        "query_stall_hard_fail_sec": hard_fail_sec,
+                        "provider": provider_hint,
+                        "force_restart": False,
+                        "forced_restart_triggered": False,
+                    },
+                )
+                return
+        except asyncio.CancelledError:
+            return
+
+    def _schedule_pending_stall_restart(self, session: SessionState) -> None:
+        if not session.pending_stall_restart or session.query_active:
+            return
+        existing = session.stall_restart_task
+        if existing is not None and not existing.done():
+            return
+        session.pending_stall_restart = False
+        session.stall_restart_task = asyncio.ensure_future(self._restart_session_after_stall(session))
+
+    async def _restart_session_after_stall(self, session: SessionState) -> None:
+        try:
+            await self._stop_session_process(session)
+            await self._ensure_session_process(session)
+            await self._broadcast_session_event(
+                session,
+                {
+                    "event": "warning",
+                    "text": "Session daemon restarted after query stall hard-fail threshold.",
+                    "forced_restart_triggered": True,
+                    "force_restart": False,
+                },
+            )
+        except Exception as exc:
+            await self._broadcast_session_event(
+                session,
+                {
+                    "event": "warning",
+                    "text": f"Failed to restart session daemon after stall detection: {exc}",
+                    "forced_restart_triggered": False,
+                    "force_restart": False,
+                },
+            )
+        finally:
+            session.stall_restart_task = None
+
     async def _idle_session_cleanup(self, session: SessionState) -> None:
         try:
             await asyncio.sleep(_SESSION_IDLE_TIMEOUT_S)
@@ -394,6 +547,13 @@ class RuntimeServiceServer:
 
     async def _stop_session_process(self, session: SessionState) -> None:
         self._cancel_interrupt_watchdog(session)
+        self._cancel_query_stall_watchdog(session)
+        stall_restart_task = session.stall_restart_task
+        current_task = asyncio.current_task()
+        if stall_restart_task is not None and not stall_restart_task.done() and stall_restart_task is not current_task:
+            stall_restart_task.cancel()
+        if stall_restart_task is not current_task:
+            session.stall_restart_task = None
         process = session.process
         if process is None:
             session.stdout_task = None
@@ -401,6 +561,7 @@ class RuntimeServiceServer:
             session.consent_pending = False
             session.controller_client_id = None
             session.started_new_session = False
+            session.pending_stall_restart = False
             return
 
         if process.poll() is None and process.stdin is not None:
@@ -449,6 +610,7 @@ class RuntimeServiceServer:
         session.consent_pending = False
         session.controller_client_id = None
         session.started_new_session = False
+        session.pending_stall_restart = False
 
     async def _start_session_process(self, session: SessionState) -> None:
         command = [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
@@ -525,9 +687,14 @@ class RuntimeServiceServer:
             session.consent_pending = True
         elif event_type == "turn_complete":
             self._cancel_interrupt_watchdog(session)
+            self._cancel_query_stall_watchdog(session)
             session.query_active = False
             session.consent_pending = False
             session.controller_client_id = None
+        elif event_type == "model_info":
+            provider = str(payload.get("provider", "")).strip().lower()
+            if provider:
+                session.provider_hint = provider
 
         outgoing = dict(payload)
         outgoing.setdefault("session_id", session.session_id)
@@ -542,6 +709,9 @@ class RuntimeServiceServer:
                 session.client_ids.discard(client_id)
                 continue
             await self._send_event(client, outgoing)
+
+        if event_type == "turn_complete":
+            self._schedule_pending_stall_restart(session)
 
     async def _session_stdout_reader(self, *, session: SessionState, process: subprocess.Popen[str]) -> None:
         stdout = process.stdout
@@ -560,6 +730,7 @@ class RuntimeServiceServer:
                 parsed = self._parse_session_output_line(line)
                 if parsed is None:
                     continue
+                session.last_session_event_mono = time.monotonic()
                 await self._broadcast_session_event(session, parsed)
         except asyncio.CancelledError:
             raise
@@ -571,12 +742,14 @@ class RuntimeServiceServer:
                     await asyncio.to_thread(process.wait)
             if session.process is process:
                 self._cancel_interrupt_watchdog(session)
+                self._cancel_query_stall_watchdog(session)
                 session.process = None
                 session.stdout_task = None
                 session.query_active = False
                 session.consent_pending = False
                 session.controller_client_id = None
                 session.started_new_session = False
+                session.pending_stall_restart = False
             code = process.poll()
             await self._broadcast_session_event(
                 session,
@@ -752,7 +925,12 @@ class RuntimeServiceServer:
             session.controller_client_id = client.client_id
             session.query_active = True
             session.consent_pending = False
+            session.pending_stall_restart = False
+            session.last_query_start_mono = time.monotonic()
+            session.last_session_event_mono = session.last_query_start_mono
+            session.last_query_stall_warn_mono = 0.0
             self._cancel_interrupt_watchdog(session)
+            self._cancel_query_stall_watchdog(session)
         elif cmd == "consent_response":
             choice = payload.get("choice")
             if not isinstance(choice, str) or not choice.strip():
@@ -900,9 +1078,16 @@ class RuntimeServiceServer:
         try:
             await self._ensure_session_process(session)
             await self._forward_to_session(session, forwarded)
+            if cmd == "query":
+                self._arm_query_stall_watchdog(session)
             if cmd == "interrupt":
                 self._arm_interrupt_watchdog(session)
         except Exception as exc:
+            if cmd == "query":
+                session.query_active = False
+                session.consent_pending = False
+                session.controller_client_id = None
+                self._cancel_query_stall_watchdog(session)
             await self._send_error(
                 client,
                 "session_proxy_failed",

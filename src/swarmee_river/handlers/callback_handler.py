@@ -74,6 +74,50 @@ def _message_content_blocks(message: Any) -> list[dict[str, Any]]:
     return [item for item in raw_content if isinstance(item, dict)]
 
 
+def _ensure_invoke_diag(invocation_state: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(invocation_state, dict):
+        return {}
+    sw = invocation_state.get("swarmee")
+    if not isinstance(sw, dict):
+        sw = {}
+        invocation_state["swarmee"] = sw
+    diag = sw.get("invoke_diag")
+    if not isinstance(diag, dict):
+        diag = {}
+        sw["invoke_diag"] = diag
+    now = time.monotonic()
+    diag.setdefault("invoke_start_mono", now)
+    diag.setdefault("last_callback_mono", now)
+    return diag
+
+
+def _mark_invoke_diag(
+    invocation_state: dict[str, Any] | None,
+    *,
+    stage: str | None = None,
+    saw_callback: bool = False,
+    saw_text_delta: bool = False,
+    saw_complete: bool = False,
+) -> None:
+    diag = _ensure_invoke_diag(invocation_state)
+    if not diag:
+        return
+    now = time.monotonic()
+    if saw_callback:
+        diag["last_callback_mono"] = now
+        callback_count = int(diag.get("callback_count", 0) or 0)
+        diag["callback_count"] = callback_count + 1
+    if stage:
+        normalized_stage = str(stage).strip()
+        if normalized_stage:
+            diag["stage"] = normalized_stage
+            diag["stage_mono"] = now
+    if saw_text_delta and "first_text_delta_mono" not in diag:
+        diag["first_text_delta_mono"] = now
+    if saw_complete:
+        diag["complete_mono"] = now
+
+
 def format_message(message: str, color: str | None = None, max_length: int = 50) -> str:
     """Format message with color and length control."""
     if len(message) > max_length:
@@ -186,13 +230,13 @@ class CallbackHandler:
         # Future-compatible callback shape support:
         # Strands may add event fields (or merge invocation_state keys into callback kwargs).
         # Keep these accepted and ignored unless needed by this handler.
-        del invocation_state
         del structured_output_model
         del structured_output_prompt
         del result
-        del extra_event_fields
         message = message if isinstance(message, dict) else {}
         current_tool_use = current_tool_use if isinstance(current_tool_use, dict) else {}
+        warning_text = extra_event_fields.pop("warning_text", None)
+        _mark_invoke_diag(invocation_state, saw_callback=True)
 
         # Cleanup calls (e.g., from top-level exception handlers) should never re-raise an interrupt.
         if force_stop:
@@ -225,12 +269,14 @@ class CallbackHandler:
                     console=console,
                 )
                 self.thinking_spinner.start()
+                _mark_invoke_diag(invocation_state, stage="init_event_loop")
 
             if reasoningText:
                 _safe_print(reasoningText, end="")
 
             if start_event_loop and self.thinking_spinner is not None and truthy_env("SWARMEE_SPINNERS", True):
                 self.thinking_spinner.update("[blue] thinking...[/blue]")
+                _mark_invoke_diag(invocation_state, stage="start_event_loop")
         except BaseException:
             pass
 
@@ -241,8 +287,12 @@ class CallbackHandler:
                 f"[red]Throttled! Waiting [bold]{event_loop_throttled_delay} seconds[/bold] before retrying...[/red]"
             )
 
+        if isinstance(warning_text, str) and warning_text.strip():
+            _safe_print(f"[warn] {warning_text.strip()}")
+
         # Handle regular output
         if data:
+            _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
             # Print to stdout
             if complete:
                 _safe_print(f"{Fore.WHITE}{data}{Style.RESET_ALL}")
@@ -324,6 +374,9 @@ class CallbackHandler:
                         del self.tool_histories[tool_id]
                         self.current_spinner = None
                         self.current_tool = None
+
+        if complete:
+            _mark_invoke_diag(invocation_state, stage="complete", saw_complete=True)
 
 
 class TuiCallbackHandler:
@@ -878,15 +931,21 @@ class TuiCallbackHandler:
         del console
         message = message if isinstance(message, dict) else {}
         current_tool_use = current_tool_use if isinstance(current_tool_use, dict) else {}
+        warning_text = extra_event_fields.pop("warning_text", None)
+        warning_metadata = extra_event_fields.pop("warning_metadata", None)
+
+        _mark_invoke_diag(invocation_state, saw_callback=True)
 
         self._update_plan_metadata_from_invocation_state(invocation_state)
 
         if init_event_loop:
             self._reset_turn_state()
             self._emit_llm_start_if_needed()
+            _mark_invoke_diag(invocation_state, stage="init_event_loop")
 
         if start_event_loop:
             self._emit_llm_start_if_needed()
+            _mark_invoke_diag(invocation_state, stage="start_event_loop")
 
         if force_stop:
             self._reset_turn_state()
@@ -896,9 +955,19 @@ class TuiCallbackHandler:
             self._reset_turn_state()
             return
 
+        if isinstance(warning_text, str) and warning_text.strip():
+            payload: dict[str, Any] = {"event": "warning", "text": warning_text.strip()}
+            if isinstance(warning_metadata, dict):
+                for key, value in warning_metadata.items():
+                    token = str(key).strip()
+                    if token and token not in {"event", "text"}:
+                        payload[token] = value
+            self._emit(payload)
+
         if reasoningText:
             self._emit({"event": "thinking", "text": str(reasoningText)})
 
+        saw_text_before = self._saw_text_delta
         emitted_stream_text = False
         if data:
             emitted_stream_text = self._emit_assistant_message_text(data) or emitted_stream_text
@@ -910,9 +979,13 @@ class TuiCallbackHandler:
         if not emitted_stream_text and extra_event_fields:
             self._emit_assistant_message_text(self._extract_text_from_extra_fields(extra_event_fields))
 
+        if self._saw_text_delta and not saw_text_before:
+            _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
+
         should_emit_complete = bool(complete)
         if should_emit_complete:
             self._flush_plan_marker_buffer()
+            _mark_invoke_diag(invocation_state, stage="complete", saw_complete=True)
 
         if current_tool_use:
             raw_tool_id = current_tool_use.get("toolUseId")

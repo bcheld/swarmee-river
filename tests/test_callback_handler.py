@@ -212,6 +212,14 @@ class TestCallbackHandler:
             handler.callback_handler(data="Test data", complete=False)
             mock_print.assert_called_once()
 
+    def test_callback_handler_warning_text_prints_warning(self):
+        handler = CallbackHandler()
+        with mock.patch("builtins.print") as mock_print:
+            handler.callback_handler(warning_text="stalled")
+            assert mock_print.call_count == 1
+            args, _kwargs = mock_print.call_args
+            assert "[warn] stalled" in str(args[0])
+
     def test_callback_handler_current_tool_use_new(self):
         """Test callback_handler with new tool use."""
         handler = CallbackHandler()

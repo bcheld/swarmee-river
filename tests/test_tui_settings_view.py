@@ -33,6 +33,9 @@ def test_env_var_specs_include_bedrock_and_interrupt_runtime_controls() -> None:
     assert "SWARMEE_BEDROCK_READ_TIMEOUT_SEC" in keys
     assert "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC" in keys
     assert "SWARMEE_BEDROCK_MAX_RETRIES" in keys
+    assert "SWARMEE_BEDROCK_STALL_WARN_SEC" in keys
+    assert "SWARMEE_BEDROCK_STALL_DIAG_DUMP" in keys
+    assert "SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC" in keys
     assert "SWARMEE_INTERRUPT_TIMEOUT_SEC" in keys
     assert "SWARMEE_INTERRUPT_FORCE_RESTART" in keys
 
@@ -64,6 +67,9 @@ def test_bedrock_runtime_category_filters_to_expected_keys() -> None:
         "SWARMEE_BEDROCK_READ_TIMEOUT_SEC",
         "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC",
         "SWARMEE_BEDROCK_MAX_RETRIES",
+        "SWARMEE_BEDROCK_STALL_WARN_SEC",
+        "SWARMEE_BEDROCK_STALL_DIAG_DUMP",
+        "SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC",
     }
 
 

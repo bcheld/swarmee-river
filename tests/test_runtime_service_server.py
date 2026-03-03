@@ -935,6 +935,171 @@ def test_runtime_service_interrupt_watchdog_ignores_force_restart_env(monkeypatc
     asyncio.run(_scenario())
 
 
+def test_runtime_service_query_stall_watchdog_warns_and_resets_on_event(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "query-stall-token"
+    session_id = "query-stall-session"
+    attach_cwd = tmp_path / "workspace"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _connect_and_attach(*, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            json.dumps(
+                {"cmd": "hello", "token": token, "client_name": "controller", "surface": "tests"},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+
+        writer.write(
+            json.dumps({"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)}, ensure_ascii=False).encode(
+                "utf-8"
+            )
+            + b"\n"
+        )
+        await writer.drain()
+        attached_event = await _read_event(reader)
+        assert attached_event["event"] == "attached"
+        return reader, writer
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        monkeypatch.setenv("SWARMEE_BEDROCK_STALL_WARN_SEC", "0.05")
+        monkeypatch.delenv("SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC", raising=False)
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader, writer = await _connect_and_attach(port=service.port)
+            try:
+                assert len(fake_popen.instances) == 1
+                proc = fake_popen.instances[0]
+                writer.write(json.dumps({"cmd": "query", "text": "long running"}).encode("utf-8") + b"\n")
+                await writer.drain()
+
+                warning_event: dict[str, Any] | None = None
+                deadline = asyncio.get_running_loop().time() + 2.0
+                while asyncio.get_running_loop().time() < deadline:
+                    event = await _read_event(reader)
+                    if str(event.get("event", "")).lower() != "warning":
+                        continue
+                    if "no daemon events" in str(event.get("text", "")).lower():
+                        warning_event = event
+                        break
+                assert warning_event is not None
+                assert float(warning_event.get("query_stall_warn_sec", 0.0)) == 0.05
+                assert len(fake_popen.instances) == 1
+
+                session = service.sessions[session_id]
+                before_mono = session.last_session_event_mono
+                proc.stdout.feed(json.dumps({"event": "text_delta", "data": "ok"}))
+                text_event = await _read_event(reader)
+                assert text_event.get("event") == "text_delta"
+                assert session.last_session_event_mono > before_mono
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_runtime_service_query_stall_hard_fail_restarts_after_turn_complete(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "query-stall-hard-fail-token"
+    session_id = "query-stall-hard-fail-session"
+    attach_cwd = tmp_path / "workspace"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _connect_and_attach(*, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            json.dumps(
+                {"cmd": "hello", "token": token, "client_name": "controller", "surface": "tests"},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+
+        writer.write(
+            json.dumps({"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)}, ensure_ascii=False).encode(
+                "utf-8"
+            )
+            + b"\n"
+        )
+        await writer.drain()
+        attached_event = await _read_event(reader)
+        assert attached_event["event"] == "attached"
+        return reader, writer
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        monkeypatch.setenv("SWARMEE_BEDROCK_STALL_WARN_SEC", "0.03")
+        monkeypatch.setenv("SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC", "0.08")
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader, writer = await _connect_and_attach(port=service.port)
+            try:
+                assert len(fake_popen.instances) == 1
+                first_proc = fake_popen.instances[0]
+                writer.write(json.dumps({"cmd": "query", "text": "hang please"}).encode("utf-8") + b"\n")
+                await writer.drain()
+
+                hard_fail_warning: dict[str, Any] | None = None
+                deadline = asyncio.get_running_loop().time() + 2.0
+                while asyncio.get_running_loop().time() < deadline:
+                    event = await _read_event(reader)
+                    if str(event.get("event", "")).lower() != "warning":
+                        continue
+                    if "hard-fail threshold" in str(event.get("text", "")).lower():
+                        hard_fail_warning = event
+                        break
+                assert hard_fail_warning is not None
+                assert len(fake_popen.instances) == 1
+
+                first_proc.stdout.feed(json.dumps({"event": "turn_complete", "exit_status": "error"}))
+                turn_complete_event = await _read_event(reader)
+                assert turn_complete_event.get("event") == "turn_complete"
+
+                restart_warning: dict[str, Any] | None = None
+                deadline = asyncio.get_running_loop().time() + 2.0
+                while asyncio.get_running_loop().time() < deadline:
+                    event = await _read_event(reader)
+                    if str(event.get("event", "")).lower() != "warning":
+                        continue
+                    if "restarted after query stall" in str(event.get("text", "")).lower():
+                        restart_warning = event
+                        break
+                assert restart_warning is not None
+                assert restart_warning.get("forced_restart_triggered") is True
+                assert len(fake_popen.instances) == 2
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
 def test_runtime_service_interrupt_timeout_precedence(monkeypatch) -> None:
     import swarmee_river.runtime_service.server as server_module
 
@@ -947,6 +1112,20 @@ def test_runtime_service_interrupt_timeout_precedence(monkeypatch) -> None:
 
     monkeypatch.setenv("SWARMEE_INTERRUPT_TIMEOUT_SEC", "1.5")
     assert server_module._interrupt_timeout_seconds() == 1.5
+
+
+def test_runtime_service_bedrock_stall_timeout_parsing(monkeypatch) -> None:
+    import swarmee_river.runtime_service.server as server_module
+
+    monkeypatch.delenv("SWARMEE_BEDROCK_STALL_WARN_SEC", raising=False)
+    monkeypatch.delenv("SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC", raising=False)
+    assert server_module._bedrock_stall_warn_seconds() == 90.0
+    assert server_module._bedrock_stall_hard_fail_seconds() is None
+
+    monkeypatch.setenv("SWARMEE_BEDROCK_STALL_WARN_SEC", "7")
+    monkeypatch.setenv("SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC", "12")
+    assert server_module._bedrock_stall_warn_seconds() == 7.0
+    assert server_module._bedrock_stall_hard_fail_seconds() == 12.0
 
 
 def test_runtime_service_proxies_auth_and_connect_commands(monkeypatch, tmp_path: Path) -> None:

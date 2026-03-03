@@ -497,6 +497,33 @@ def test_complete_with_no_text_emits_no_text_complete():
     assert events == []
 
 
+def test_warning_text_extra_field_emits_warning_event():
+    h = TuiCallbackHandler()
+    events = _capture_events(h, lambda: h.callback_handler(warning_text="bedrock stalled"))
+    assert events == [{"event": "warning", "text": "bedrock stalled"}]
+
+
+def test_invoke_diag_markers_recorded_in_invocation_state():
+    h = TuiCallbackHandler()
+    invocation_state: dict[str, object] = {"swarmee": {"provider": "bedrock"}}
+
+    def run():
+        h.callback_handler(init_event_loop=True, invocation_state=invocation_state)
+        h.callback_handler(start_event_loop=True, invocation_state=invocation_state)
+        h.callback_handler(data="hello", invocation_state=invocation_state)
+        h.callback_handler(complete=True, invocation_state=invocation_state)
+
+    _capture_events(h, run)
+    sw_state = invocation_state.get("swarmee")
+    assert isinstance(sw_state, dict)
+    diag = sw_state.get("invoke_diag")
+    assert isinstance(diag, dict)
+    assert diag.get("stage") == "complete"
+    assert float(diag.get("callback_count", 0)) >= 4
+    assert isinstance(diag.get("first_text_delta_mono"), float)
+    assert isinstance(diag.get("complete_mono"), float)
+
+
 def test_plan_step_updates_emitted_from_plan_progress_tool():
     h = TuiCallbackHandler()
 
