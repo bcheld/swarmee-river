@@ -9,10 +9,6 @@ from typing import Any
 
 from swarmee_river.diagnostics import (
     create_support_bundle,
-    diagnostics_level,
-    diagnostics_max_bytes,
-    diagnostics_redact_enabled,
-    diagnostics_retention_days,
 )
 from swarmee_river.tui.commands import _MODEL_USAGE_TEXT
 from swarmee_river.tui.model_select import (
@@ -58,7 +54,6 @@ class SettingsMixin:
     }
     _INTERRUPT_CONTROL_DEFAULTS: dict[str, str] = {
         "SWARMEE_INTERRUPT_TIMEOUT_SEC": "2.0",
-        "SWARMEE_INTERRUPT_FORCE_RESTART": "true",
     }
     _DIAGNOSTICS_DEFAULTS: dict[str, str] = {
         "SWARMEE_DIAG_LEVEL": "baseline",
@@ -89,7 +84,6 @@ class SettingsMixin:
         if normalized == "models":
             self._refresh_settings_models()
         if normalized == "advanced":
-            self._refresh_settings_diagnostics_controls()
             self._refresh_settings_env_list()
             self._refresh_settings_env_detail(self._settings_env_selected_key)
             self._set_agent_tools_override_form_values(self.state.agent_studio.session_safety_overrides)
@@ -127,52 +121,12 @@ class SettingsMixin:
 
     def _refresh_settings_interrupt_control_controls(self) -> None:
         timeout_widget = self._settings_interrupt_timeout_input
-        restart_widget = self._settings_interrupt_force_restart_select
         if timeout_widget is not None:
             with contextlib.suppress(Exception):
                 timeout_widget.value = (
                     os.environ.get("SWARMEE_INTERRUPT_TIMEOUT_SEC")
                     or os.environ.get("SWARMEE_INTERRUPT_TIMEOUT")
                     or self._INTERRUPT_CONTROL_DEFAULTS["SWARMEE_INTERRUPT_TIMEOUT_SEC"]
-                )
-        if restart_widget is not None:
-            raw = (
-                os.environ.get("SWARMEE_INTERRUPT_FORCE_RESTART")
-                or self._INTERRUPT_CONTROL_DEFAULTS["SWARMEE_INTERRUPT_FORCE_RESTART"]
-            ).strip().lower()
-            value = "false" if raw in {"false", "0", "no", "off", "disabled"} else "true"
-            with contextlib.suppress(Exception):
-                restart_widget.value = value
-
-    def _refresh_settings_diagnostics_controls(self) -> None:
-        level_widget = self._settings_diag_level_select
-        redact_widget = self._settings_diag_redact_toggle
-        retention_widget = self._settings_diag_retention_input
-        max_bytes_widget = self._settings_diag_max_bytes_input
-        status_widget = self._settings_diag_status
-
-        level = diagnostics_level()
-        redact = diagnostics_redact_enabled()
-        retention_days = diagnostics_retention_days()
-        max_bytes = diagnostics_max_bytes()
-
-        if level_widget is not None:
-            with contextlib.suppress(Exception):
-                level_widget.value = level if level in {"baseline", "verbose"} else "baseline"
-        if redact_widget is not None:
-            redact_widget.label = f"Redact Diagnostics: {'On' if redact else 'Off'}"
-            redact_widget.variant = "success" if redact else "default"
-        if retention_widget is not None:
-            with contextlib.suppress(Exception):
-                retention_widget.value = str(retention_days)
-        if max_bytes_widget is not None:
-            with contextlib.suppress(Exception):
-                max_bytes_widget.value = str(max_bytes)
-        if status_widget is not None:
-            with contextlib.suppress(Exception):
-                status_widget.update(
-                    f"Diagnostics active | level={level} redact={'on' if redact else 'off'} "
-                    f"retention={retention_days}d max_bytes={max_bytes}"
                 )
 
     def _parse_positive_float_setting(self, raw: str, *, label: str) -> float | None:
@@ -196,17 +150,6 @@ class SettingsMixin:
         if value < 0:
             self._write_transcript_line(f"[settings] {label} must be >= 0.")
             return None
-        return value
-
-    def _parse_positive_int_with_min(self, raw: str, *, label: str, minimum: int) -> int | None:
-        token = str(raw or "").strip()
-        if not token or not token.isdigit():
-            self._write_transcript_line(f"[settings] invalid {label}: {token or '(blank)'}")
-            return None
-        value = int(token)
-        if value < minimum:
-            self._write_transcript_line(f"[settings] {label} clamped to minimum {minimum}.")
-            return minimum
         return value
 
     def _apply_bedrock_runtime_settings(self) -> None:
@@ -246,15 +189,12 @@ class SettingsMixin:
         timeout_s = self._parse_positive_float_setting(timeout_raw, label="interrupt timeout")
         if timeout_s is None:
             return
-        restart_raw = str(getattr(self._settings_interrupt_force_restart_select, "value", "true")).strip().lower()
-        restart_value = "false" if restart_raw in {"false", "0", "no", "off", "disabled"} else "true"
         self._persist_project_setting_env_override("SWARMEE_INTERRUPT_TIMEOUT_SEC", str(timeout_s))
-        self._persist_project_setting_env_override("SWARMEE_INTERRUPT_FORCE_RESTART", restart_value)
         self._refresh_settings_general()
         self._refresh_settings_env_list()
         self._refresh_settings_env_detail(self._settings_env_selected_key)
         self._write_transcript_line(
-            f"[settings] interrupt control updated (timeout={timeout_s}s force_restart={restart_value})."
+            f"[settings] interrupt control updated (timeout={timeout_s}s)."
         )
 
     def _reset_interrupt_control_settings(self) -> None:
@@ -265,66 +205,14 @@ class SettingsMixin:
         self._refresh_settings_env_detail(self._settings_env_selected_key)
         self._write_transcript_line("[settings] interrupt control reset to defaults.")
 
-    def _toggle_diagnostics_redact(self) -> None:
-        current = diagnostics_redact_enabled()
-        new_value = "false" if current else "true"
-        self._persist_project_setting_env_override("SWARMEE_DIAG_REDACT", new_value)
-        # Keep legacy flag source-compatible.
-        self._persist_project_setting_env_override("SWARMEE_LOG_REDACT", new_value)
-        self._refresh_settings_diagnostics_controls()
-        self._refresh_settings_general()
-        self._refresh_settings_env_list()
-        self._refresh_settings_env_detail(self._settings_env_selected_key)
-        self._write_transcript_line(f"[settings] diagnostics redact {new_value}.")
-
-    def _apply_diagnostics_settings(self) -> None:
-        level_raw = str(getattr(self._settings_diag_level_select, "value", "baseline")).strip().lower()
-        level = level_raw if level_raw in {"baseline", "verbose"} else "baseline"
-        redact = "true" if diagnostics_redact_enabled() else "false"
-        retention_raw = str(getattr(self._settings_diag_retention_input, "value", "")).strip()
-        max_bytes_raw = str(getattr(self._settings_diag_max_bytes_input, "value", "")).strip()
-
-        retention_days = self._parse_positive_int_with_min(retention_raw, label="retention days", minimum=1)
-        if retention_days is None:
-            return
-        max_bytes = self._parse_positive_int_with_min(max_bytes_raw, label="max bytes", minimum=1024 * 1024)
-        if max_bytes is None:
-            return
-
-        self._persist_project_setting_env_override("SWARMEE_DIAG_LEVEL", level)
-        self._persist_project_setting_env_override("SWARMEE_DIAG_REDACT", redact)
-        self._persist_project_setting_env_override("SWARMEE_DIAG_RETENTION_DAYS", str(retention_days))
-        self._persist_project_setting_env_override("SWARMEE_DIAG_MAX_BYTES", str(max_bytes))
-
-        # Keep legacy logging flags source-compatible for older code paths.
-        self._persist_project_setting_env_override("SWARMEE_LOG_EVENTS", "true")
-        self._persist_project_setting_env_override("SWARMEE_LOG_REDACT", redact)
-
-        self._refresh_settings_diagnostics_controls()
-        self._refresh_settings_general()
-        self._refresh_settings_env_list()
-        self._refresh_settings_env_detail(self._settings_env_selected_key)
-        self._write_transcript_line(
-            "[settings] diagnostics updated "
-            f"(level={level} redact={redact} retention={retention_days}d max_bytes={max_bytes})."
-        )
-
     def _create_diagnostics_bundle(self) -> None:
         try:
             bundle_path = create_support_bundle(cwd=Path.cwd())
         except Exception as exc:
             self._write_transcript_line(f"[settings] failed to create support bundle: {exc}")
-            status_widget = self._settings_diag_status
-            if status_widget is not None:
-                with contextlib.suppress(Exception):
-                    status_widget.update(f"Support bundle failed: {exc}")
             return
         self._add_artifact_paths([str(bundle_path)])
         self._write_transcript_line(f"[settings] support bundle created: {bundle_path}")
-        status_widget = self._settings_diag_status
-        if status_widget is not None:
-            with contextlib.suppress(Exception):
-                status_widget.update(f"Support bundle: {bundle_path}")
 
     def _refresh_plan_actions_visibility(self) -> None:
         """Show plan action buttons only when a plan is pending approval."""

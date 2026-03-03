@@ -3270,12 +3270,6 @@ def run_tui() -> int:
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] log redact {new_val}.")
                 return
-            if button_id == "settings_diag_redact_toggle":
-                self._toggle_diagnostics_redact()
-                return
-            if button_id == "settings_diag_apply":
-                self._apply_diagnostics_settings()
-                return
             if button_id == "settings_diag_bundle":
                 self._create_diagnostics_bundle()
                 return

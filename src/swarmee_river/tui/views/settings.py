@@ -97,7 +97,6 @@ _CHOICE_MAP: dict[str, tuple[str, ...]] = {
     "SWARMEE_FREEZE_TOOLS": ("true", "false"),
     "SWARMEE_CACHE_SAFE_SUMMARY": ("false", "true"),
     "SWARMEE_TIER_AUTO": ("false", "true"),
-    "SWARMEE_INTERRUPT_FORCE_RESTART": ("true", "false"),
     "STRANDS_THINKING_TYPE": ("enabled", "disabled"),
     "STRANDS_TOOL_CONSOLE_MODE": ("enabled", "disabled"),
     "BYPASS_TOOL_CONSENT": ("false", "true"),
@@ -313,15 +312,6 @@ def compose_settings_tab() -> Iterator[Any]:
                     )
                 with Horizontal(id="settings_interrupt_control_row"):
                     yield Input(placeholder="Interrupt Timeout (sec)", id="settings_interrupt_timeout_input")
-                    yield Select(
-                        options=[
-                            ("Force Restart: true", "true"),
-                            ("Force Restart: false", "false"),
-                        ],
-                        allow_blank=False,
-                        id="settings_interrupt_force_restart_select",
-                        compact=True,
-                    )
                 with Horizontal(id="settings_interrupt_control_actions"):
                     yield Button("Apply", id="settings_interrupt_control_apply", compact=True, variant="success")
                     yield Button(
@@ -426,35 +416,13 @@ def compose_settings_tab() -> Iterator[Any]:
             # -- Advanced sub-view (all env vars by category) ----------------
             with Vertical(id="settings_advanced_view"):
                 yield Static("Advanced Configuration", id="settings_env_header")
-                yield Static("Diagnostics", id="settings_diag_header")
-                with Horizontal(id="settings_diag_row"):
-                    yield Select(
-                        options=[
-                            ("Diagnostics Level: baseline", "baseline"),
-                            ("Diagnostics Level: verbose", "verbose"),
-                        ],
-                        allow_blank=False,
-                        id="settings_diag_level_select",
-                        compact=True,
-                    )
-                    yield Button(
-                        "Redact Diagnostics: On",
-                        id="settings_diag_redact_toggle",
-                        compact=True,
-                        variant="default",
-                    )
-                with Horizontal(id="settings_diag_limits_row"):
-                    yield Input(placeholder="Retention Days", id="settings_diag_retention_input")
-                    yield Input(placeholder="Max Bytes", id="settings_diag_max_bytes_input")
                 with Horizontal(id="settings_diag_actions"):
-                    yield Button("Apply Diagnostics", id="settings_diag_apply", compact=True, variant="success")
                     yield Button(
                         "Create Support Bundle",
                         id="settings_diag_bundle",
                         compact=True,
                         variant="primary",
                     )
-                yield Static("", id="settings_diag_status")
                 yield Select(options=env_category_options(), allow_blank=False, id="settings_env_category")
                 yield DataTable(id="settings_env_table", cursor_type="row")
                 yield Static("", id="settings_env_detail")
@@ -503,11 +471,11 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_auth_status = app.query_one("#settings_auth_status", Static)
     app._settings_aws_profile_input = app.query_one("#settings_aws_profile_input", Input)
     app._settings_env_category_select = app.query_one("#settings_env_category", Select)
-    app._settings_diag_level_select = app.query_one("#settings_diag_level_select", Select)
-    app._settings_diag_redact_toggle = app.query_one("#settings_diag_redact_toggle", Button)
-    app._settings_diag_retention_input = app.query_one("#settings_diag_retention_input", Input)
-    app._settings_diag_max_bytes_input = app.query_one("#settings_diag_max_bytes_input", Input)
-    app._settings_diag_status = app.query_one("#settings_diag_status", Static)
+    app._settings_diag_level_select = None
+    app._settings_diag_redact_toggle = None
+    app._settings_diag_retention_input = None
+    app._settings_diag_max_bytes_input = None
+    app._settings_diag_status = None
     app._settings_env_detail = app.query_one("#settings_env_detail", Static)
     app._settings_env_value_select = app.query_one("#settings_env_value_select", Select)
     app._settings_env_value_input = app.query_one("#settings_env_value_input", Input)
@@ -519,7 +487,7 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_toggle_bypass_consent_button = app.query_one("#settings_toggle_bypass_consent", Button)
     app._settings_toggle_esc_interrupt_button = app.query_one("#settings_toggle_esc_interrupt", Button)
     app._settings_interrupt_timeout_input = app.query_one("#settings_interrupt_timeout_input", Input)
-    app._settings_interrupt_force_restart_select = app.query_one("#settings_interrupt_force_restart_select", Select)
+    app._settings_interrupt_force_restart_select = None
     app._settings_general_context_manager_select = app.query_one("#settings_general_context_manager", Select)
     app._settings_general_preflight_select = app.query_one("#settings_general_preflight", Select)
     app._settings_general_preflight_level_select = app.query_one("#settings_general_preflight_level", Select)

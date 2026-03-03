@@ -48,11 +48,6 @@ def _interrupt_timeout_seconds() -> float:
     return value
 
 
-def _interrupt_force_restart_enabled() -> bool:
-    raw = (os.environ.get("SWARMEE_INTERRUPT_FORCE_RESTART") or "true").strip().lower()
-    return raw not in {"false", "0", "no", "off", "disabled"}
-
-
 @dataclass
 class SessionState:
     session_id: str
@@ -307,64 +302,27 @@ class RuntimeServiceServer:
         timeout_s = _interrupt_timeout_seconds()
         if timeout_s <= 0:
             return
-        force_restart = _interrupt_force_restart_enabled()
         session.interrupt_watchdog_task = asyncio.ensure_future(
-            self._interrupt_watchdog(session, timeout_s=timeout_s, force_restart=force_restart)
+            self._interrupt_watchdog(session, timeout_s=timeout_s)
         )
 
-    async def _interrupt_watchdog(self, session: SessionState, *, timeout_s: float, force_restart: bool) -> None:
+    async def _interrupt_watchdog(self, session: SessionState, *, timeout_s: float) -> None:
         try:
             await asyncio.sleep(timeout_s)
         except asyncio.CancelledError:
             return
         if not session.query_active:
             return
-        if not force_restart:
-            await self._broadcast_session_event(
-                session,
-                {
-                    "event": "warning",
-                    "text": "Interrupt timeout reached; waiting for graceful shutdown.",
-                    "interrupt_timeout_sec": timeout_s,
-                    "force_restart": False,
-                },
-            )
-            return
         await self._broadcast_session_event(
             session,
             {
                 "event": "warning",
-                "text": "Interrupt timeout reached; restarting runtime session.",
+                "text": "Interrupt timeout reached; waiting for graceful shutdown.",
                 "interrupt_timeout_sec": timeout_s,
-                "force_restart": True,
-                "forced_restart_triggered": True,
+                "force_restart": False,
+                "forced_restart_triggered": False,
             },
         )
-        await self._stop_session_process(session)
-        await self._broadcast_session_event(
-            session,
-            {
-                "event": "turn_complete",
-                "exit_status": "interrupted",
-                "reason": "interrupt_timeout",
-                "interrupt_timeout_sec": timeout_s,
-                "force_restart": True,
-                "forced_restart_triggered": True,
-            },
-        )
-        try:
-            await self._start_session_process(session)
-        except Exception as exc:
-            await self._broadcast_session_event(
-                session,
-                {
-                    "event": "warning",
-                    "text": f"Failed to restart session runtime after interrupt timeout: {exc}",
-                    "interrupt_timeout_sec": timeout_s,
-                    "force_restart": True,
-                    "forced_restart_triggered": True,
-                },
-            )
 
     async def _idle_session_cleanup(self, session: SessionState) -> None:
         try:
