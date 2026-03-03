@@ -6,6 +6,7 @@ Swarmee - A minimal CLI interface for Swarmee River (built on Strands)
 
 import argparse
 import asyncio
+import csv
 import contextlib
 import json
 import os
@@ -2179,6 +2180,73 @@ def _build_daemon_command_parser() -> argparse.ArgumentParser:
 
 
 def _runtime_broker_pids() -> list[int]:
+    def _collect_pids_from_entries(entries: list[tuple[str, str]]) -> list[int]:
+        pids: list[int] = []
+        self_pid = os.getpid()
+        for pid_text, command in entries:
+            if "swarmee_river.swarmee" not in command:
+                continue
+            if re.search(r"(?:^|\s)serve(?:\s|$)", command) is None:
+                continue
+            try:
+                pid = int(str(pid_text).strip())
+            except ValueError:
+                continue
+            if pid <= 0 or pid == self_pid:
+                continue
+            pids.append(pid)
+        return sorted(set(pids))
+
+    if os.name == "nt":
+        windows_commands: list[list[str]] = [
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation",
+            ],
+            ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:CSV"],
+        ]
+        for command in windows_commands:
+            try:
+                output = subprocess.check_output(
+                    command,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except Exception:
+                continue
+
+            entries: list[tuple[str, str]] = []
+            with contextlib.suppress(Exception):
+                reader = csv.DictReader(output.splitlines())
+                for row in reader:
+                    if not isinstance(row, dict):
+                        continue
+                    pid_text = str(
+                        row.get("ProcessId")
+                        or row.get("PID")
+                        or row.get("pid")
+                        or row.get("processid")
+                        or ""
+                    ).strip()
+                    command_text = str(
+                        row.get("CommandLine")
+                        or row.get("commandline")
+                        or row.get("Command")
+                        or row.get("command")
+                        or ""
+                    ).strip()
+                    if not pid_text or not command_text:
+                        continue
+                    entries.append((pid_text, command_text))
+
+            pids = _collect_pids_from_entries(entries)
+            if pids:
+                return pids
+        return []
+
     if os.name != "posix":
         return []
     try:
@@ -2191,8 +2259,7 @@ def _runtime_broker_pids() -> list[int]:
     except Exception:
         return []
 
-    pids: list[int] = []
-    self_pid = os.getpid()
+    entries: list[tuple[str, str]] = []
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if not line:
@@ -2201,18 +2268,8 @@ def _runtime_broker_pids() -> list[int]:
         if len(parts) != 2:
             continue
         pid_text, command = parts
-        if "swarmee_river.swarmee" not in command:
-            continue
-        if re.search(r"(?:^|\s)serve(?:\s|$)", command) is None:
-            continue
-        try:
-            pid = int(pid_text)
-        except ValueError:
-            continue
-        if pid <= 0 or pid == self_pid:
-            continue
-        pids.append(pid)
-    return sorted(set(pids))
+        entries.append((pid_text, command))
+    return _collect_pids_from_entries(entries)
 
 
 def _stop_all_runtime_brokers(*, timeout_s: float = 6.0) -> tuple[int, int]:
@@ -2222,9 +2279,15 @@ def _stop_all_runtime_brokers(*, timeout_s: float = 6.0) -> tuple[int, int]:
 
     import signal as _signal
 
+    term_signal = getattr(_signal, "SIGTERM", None)
+    force_signal = getattr(_signal, "SIGKILL", term_signal)
+
+    if term_signal is None:
+        return 0, len(pids)
+
     for pid in pids:
         with contextlib.suppress(Exception):
-            os.kill(pid, _signal.SIGTERM)
+            os.kill(pid, term_signal)
 
     deadline = time.monotonic() + max(0.5, float(timeout_s))
     alive: set[int] = set(pids)
@@ -2239,12 +2302,18 @@ def _stop_all_runtime_brokers(*, timeout_s: float = 6.0) -> tuple[int, int]:
 
     for pid in list(alive):
         with contextlib.suppress(Exception):
-            os.kill(pid, _signal.SIGKILL)
-    for pid in list(alive):
-        with contextlib.suppress(Exception):
-            os.kill(pid, 0)
-            continue
-        alive.discard(pid)
+            if force_signal is not None:
+                os.kill(pid, force_signal)
+
+    force_deadline = time.monotonic() + 1.0
+    while alive and time.monotonic() < force_deadline:
+        for pid in list(alive):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                alive.discard(pid)
+        if alive:
+            time.sleep(0.05)
 
     stopped = len(pids) - len(alive)
     failed = len(alive)

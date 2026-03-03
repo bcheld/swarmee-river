@@ -39,9 +39,31 @@ class _NeverFinishesAgent:
             await asyncio.sleep(0.05)
 
 
+class _SyncRecordingAgent:
+    def __init__(self, *, delay_s: float = 0.0, return_value: str = "sync-ok") -> None:
+        self.delay_s = delay_s
+        self.return_value = return_value
+        self.call_count = 0
+        self.last_query: str | None = None
+        self.last_kwargs: dict[str, Any] | None = None
+
+    async def invoke_async(self, _query: str, *, invocation_state: dict[str, Any]) -> str:
+        del invocation_state
+        raise AssertionError("sync mode should not call invoke_async")
+
+    def __call__(self, query: str, **kwargs: Any) -> str:
+        self.call_count += 1
+        self.last_query = query
+        self.last_kwargs = dict(kwargs)
+        if self.delay_s > 0:
+            time.sleep(self.delay_s)
+        return self.return_value
+
+
 def test_invoke_agent_emits_stall_warning_for_bedrock(monkeypatch) -> None:
     monkeypatch.setenv("SWARMEE_BEDROCK_STALL_WARN_SEC", "0.04")
     monkeypatch.setenv("SWARMEE_BEDROCK_STALL_DIAG_DUMP", "false")
+    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")
 
     callback_calls: list[dict[str, Any]] = []
 
@@ -65,6 +87,7 @@ def test_invoke_agent_emits_stall_warning_for_bedrock(monkeypatch) -> None:
 def test_invoke_agent_stall_warning_is_throttled(monkeypatch) -> None:
     monkeypatch.setenv("SWARMEE_BEDROCK_STALL_WARN_SEC", "0.05")
     monkeypatch.setenv("SWARMEE_BEDROCK_STALL_DIAG_DUMP", "false")
+    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")
 
     callback_calls: list[dict[str, Any]] = []
 
@@ -102,9 +125,113 @@ def test_resolve_agent_invoke_mode_defaults_to_isolated(monkeypatch) -> None:
     assert agent_runner._resolve_agent_invoke_mode() == "isolated"
 
 
+def test_resolve_agent_invoke_mode_defaults_to_sync_for_bedrock(monkeypatch) -> None:
+    monkeypatch.delenv("SWARMEE_AGENT_INVOKE_MODE", raising=False)
+    assert agent_runner._resolve_agent_invoke_mode({"swarmee": {"provider": "bedrock"}}) == "sync"
+
+
 def test_resolve_agent_invoke_mode_invalid_falls_back_to_isolated(monkeypatch) -> None:
     monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "invalid")
     assert agent_runner._resolve_agent_invoke_mode() == "isolated"
+
+
+def test_resolve_agent_invoke_mode_invalid_falls_back_to_sync_for_bedrock(monkeypatch) -> None:
+    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "invalid")
+    assert agent_runner._resolve_agent_invoke_mode({"swarmee": {"provider": "bedrock"}}) == "sync"
+
+
+def test_resolve_agent_invoke_mode_explicit_sync_wins(monkeypatch) -> None:
+    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "sync")
+    assert agent_runner._resolve_agent_invoke_mode({"swarmee": {"provider": "openai"}}) == "sync"
+
+
+def test_invoke_agent_defaults_to_sync_for_bedrock_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("SWARMEE_AGENT_INVOKE_MODE", raising=False)
+    agent = _SyncRecordingAgent()
+    result = agent_runner.invoke_agent(
+        agent,
+        "hello",
+        callback_handler=lambda **_kwargs: None,
+        interrupt_event=threading.Event(),
+        invocation_state={"swarmee": {"provider": "bedrock"}},
+    )
+
+    assert result == "sync-ok"
+    assert agent.call_count == 1
+
+
+def test_invoke_agent_sync_mode_calls_agent_call_and_shapes_query(monkeypatch) -> None:
+    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "sync")
+    agent = _SyncRecordingAgent(return_value="ok")
+
+    class _DummyModel:
+        pass
+
+    result = agent_runner.invoke_agent(
+        agent,
+        "user asks",
+        callback_handler=lambda **_kwargs: None,
+        interrupt_event=threading.Event(),
+        invocation_state={"swarmee": {"provider": "openai"}},
+        system_reminder="system reminder",
+        structured_output_model=_DummyModel,
+        structured_output_prompt="format as schema",
+    )
+
+    assert result == "ok"
+    assert agent.call_count == 1
+    assert agent.last_query == "system reminder\n\nformat as schema\n\nUser request:\nuser asks"
+    assert isinstance(agent.last_kwargs, dict)
+    assert "invocation_state" in agent.last_kwargs
+    assert agent.last_kwargs.get("structured_output_model") is _DummyModel
+    assert "structured_output_prompt" not in agent.last_kwargs
+
+
+def test_invoke_agent_sync_mode_interrupt_pre_set(monkeypatch) -> None:
+    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "sync")
+    agent = _SyncRecordingAgent()
+    callback_calls: list[dict[str, Any]] = []
+    interrupt_event = threading.Event()
+    interrupt_event.set()
+
+    with pytest.raises(AgentInterruptedError):
+        agent_runner.invoke_agent(
+            agent,
+            "hello",
+            callback_handler=lambda **kwargs: callback_calls.append(dict(kwargs)),
+            interrupt_event=interrupt_event,
+            invocation_state={"swarmee": {"provider": "bedrock"}},
+        )
+
+    assert agent.call_count == 0
+    assert any(call.get("force_stop") is True for call in callback_calls)
+
+
+def test_invoke_agent_sync_mode_interrupt_during_call(monkeypatch) -> None:
+    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "sync")
+    agent = _SyncRecordingAgent(delay_s=0.2)
+    callback_calls: list[dict[str, Any]] = []
+    interrupt_event = threading.Event()
+
+    def _trigger_interrupt() -> None:
+        time.sleep(0.05)
+        interrupt_event.set()
+
+    interrupter = threading.Thread(target=_trigger_interrupt, daemon=True)
+    interrupter.start()
+
+    with pytest.raises(AgentInterruptedError):
+        agent_runner.invoke_agent(
+            agent,
+            "hello",
+            callback_handler=lambda **kwargs: callback_calls.append(dict(kwargs)),
+            interrupt_event=interrupt_event,
+            invocation_state={"swarmee": {"provider": "bedrock"}},
+        )
+
+    interrupter.join(timeout=0.3)
+    assert agent.call_count == 1
+    assert any(call.get("force_stop") is True for call in callback_calls)
 
 
 def test_invoke_agent_isolated_mode_runs_in_different_thread(monkeypatch) -> None:

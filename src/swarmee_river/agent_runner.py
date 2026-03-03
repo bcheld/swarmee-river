@@ -51,10 +51,12 @@ def _resolve_windows_event_loop_policy() -> str:
     return "auto"
 
 
-def _resolve_agent_invoke_mode() -> str:
-    raw = str(os.getenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")).strip().lower()
-    if raw in {"isolated", "direct"}:
+def _resolve_agent_invoke_mode(invocation_state: dict[str, Any] | None = None) -> str:
+    raw = str(os.getenv("SWARMEE_AGENT_INVOKE_MODE", "")).strip().lower()
+    if raw in {"sync", "isolated", "direct"}:
         return raw
+    if _is_bedrock_invocation(invocation_state):
+        return "sync"
     return "isolated"
 
 
@@ -71,6 +73,47 @@ def _run_coroutine_isolated(
         context = contextvars.copy_context()
         future = executor.submit(context.run, _execute)
         return future.result()
+
+
+def _build_invoke_request(
+    *,
+    agent: Any,
+    query: str,
+    invocation_state: dict[str, Any],
+    system_reminder: str | None = None,
+    structured_output_model: type[Any] | None = None,
+    structured_output_prompt: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    invoke_kwargs: dict[str, Any] = {"invocation_state": invocation_state}
+    base_query = query
+    reminder_prefix = (system_reminder or "").strip()
+    invoke_query = f"{reminder_prefix}\n\n{base_query}".strip() if reminder_prefix else base_query
+    if structured_output_model is not None:
+        invoke_kwargs["structured_output_model"] = structured_output_model
+
+    supports_structured_output_prompt = True
+    try:
+        invoke_sig = inspect.signature(agent.invoke_async)
+        params = invoke_sig.parameters
+        supports_structured_output_prompt = "structured_output_prompt" in params or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+    except (TypeError, ValueError):
+        supports_structured_output_prompt = True
+
+    if structured_output_prompt is not None and supports_structured_output_prompt:
+        invoke_kwargs["structured_output_prompt"] = structured_output_prompt
+    elif structured_output_prompt is not None:
+        prompt_text = structured_output_prompt.strip()
+        if prompt_text:
+            prefix_parts: list[str] = []
+            if reminder_prefix:
+                prefix_parts.append(reminder_prefix)
+            prefix_parts.append(prompt_text)
+            prefix = "\n\n".join(prefix_parts).strip()
+            invoke_query = f"{prefix}\n\nUser request:\n{base_query}".strip()
+
+    return invoke_query, invoke_kwargs
 
 
 def _ensure_invoke_diag(invocation_state: dict[str, Any] | None) -> dict[str, Any]:
@@ -259,45 +302,32 @@ def invoke_agent(
             _OTEL_DETACH_FILTER_INSTALLED = True
 
         current_task = asyncio.current_task()
+        cancel_wait_event = threading.Event()
 
         async def _canceller() -> None:
-            while not interrupt_event.is_set():
-                await asyncio.sleep(0.05)
+            def _wait_for_interrupt_or_cancel() -> bool:
+                while not cancel_wait_event.is_set():
+                    if interrupt_event.wait(0.1):
+                        return True
+                return False
+
+            interrupted = await asyncio.to_thread(_wait_for_interrupt_or_cancel)
+            if not interrupted:
+                return
             callback_handler(force_stop=True)
             if current_task:
                 current_task.cancel()
 
         canceller_task = asyncio.create_task(_canceller())
         try:
-            invoke_kwargs: dict[str, Any] = {"invocation_state": invocation_state}
-            base_query = query
-            reminder_prefix = (system_reminder or "").strip()
-            invoke_query = f"{reminder_prefix}\n\n{base_query}".strip() if reminder_prefix else base_query
-            if structured_output_model is not None:
-                invoke_kwargs["structured_output_model"] = structured_output_model
-
-            supports_structured_output_prompt = True
-            try:
-                invoke_sig = inspect.signature(agent.invoke_async)
-                params = invoke_sig.parameters
-                supports_structured_output_prompt = "structured_output_prompt" in params or any(
-                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-                )
-            except (TypeError, ValueError):
-                supports_structured_output_prompt = True
-
-            if structured_output_prompt is not None and supports_structured_output_prompt:
-                invoke_kwargs["structured_output_prompt"] = structured_output_prompt
-            elif structured_output_prompt is not None:
-                prompt_text = structured_output_prompt.strip()
-                if prompt_text:
-                    prefix_parts: list[str] = []
-                    if reminder_prefix:
-                        prefix_parts.append(reminder_prefix)
-                    prefix_parts.append(prompt_text)
-                    prefix = "\n\n".join(prefix_parts).strip()
-                    invoke_query = f"{prefix}\n\nUser request:\n{base_query}".strip()
-
+            invoke_query, invoke_kwargs = _build_invoke_request(
+                agent=agent,
+                query=query,
+                invocation_state=invocation_state,
+                system_reminder=system_reminder,
+                structured_output_model=structured_output_model,
+                structured_output_prompt=structured_output_prompt,
+            )
             _mark_invoke_stage(invocation_state, "invoke_async_enter")
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -317,6 +347,7 @@ def invoke_agent(
             _mark_invoke_stage(invocation_state, "invoke_async_error")
             raise
         finally:
+            cancel_wait_event.set()
             canceller_task.cancel()
             with contextlib.suppress(BaseException):
                 await canceller_task
@@ -324,7 +355,60 @@ def invoke_agent(
 
     try:
         with _windows_loop_policy_context():
-            invoke_mode = _resolve_agent_invoke_mode()
+            invoke_mode = _resolve_agent_invoke_mode(invocation_state)
+            if invoke_mode == "sync":
+                if interrupt_event.is_set():
+                    callback_handler(force_stop=True)
+                    raise AgentInterruptedError("Interrupted by user (Esc)")
+                _mark_invoke_stage(invocation_state, "invoke_mode_sync_start")
+                invoke_query, invoke_kwargs = _build_invoke_request(
+                    agent=agent,
+                    query=query,
+                    invocation_state=invocation_state,
+                    system_reminder=system_reminder,
+                    structured_output_model=structured_output_model,
+                    structured_output_prompt=structured_output_prompt,
+                )
+                stop_waiter = threading.Event()
+                interrupted = threading.Event()
+                force_stop_emitted = threading.Event()
+
+                def _emit_force_stop_once() -> None:
+                    if force_stop_emitted.is_set():
+                        return
+                    force_stop_emitted.set()
+                    with contextlib.suppress(Exception):
+                        callback_handler(force_stop=True)
+
+                def _watch_interrupt() -> None:
+                    while not stop_waiter.is_set():
+                        if interrupt_event.wait(0.05):
+                            interrupted.set()
+                            _emit_force_stop_once()
+                            return
+
+                waiter = threading.Thread(target=_watch_interrupt, daemon=True, name="swarmee-sync-interrupt")
+                waiter.start()
+                try:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=_STRANDS_KWARGS_DEPRECATION,
+                            category=UserWarning,
+                        )
+                        response = agent(invoke_query, **invoke_kwargs)
+                except AgentInterruptedError:
+                    raise
+                except Exception as exc:
+                    if interrupted.is_set():
+                        raise AgentInterruptedError("Interrupted by user (Esc)") from exc
+                    raise
+                finally:
+                    stop_waiter.set()
+                    waiter.join(timeout=0.2)
+                if interrupted.is_set():
+                    raise AgentInterruptedError("Interrupted by user (Esc)")
+                return response
             if invoke_mode == "direct":
                 _mark_invoke_stage(invocation_state, "invoke_mode_direct_start")
                 return asyncio.run(_invoke())

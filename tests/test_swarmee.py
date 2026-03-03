@@ -50,6 +50,85 @@ def test_daemon_stop_all_invokes_global_shutdown_helper(monkeypatch, capsys) -> 
     assert "stopped 2 broker(s)." in capsys.readouterr().out
 
 
+def test_runtime_broker_pids_windows_parses_powershell_csv(monkeypatch) -> None:
+    monkeypatch.setattr(swarmee.os, "name", "nt", raising=False)
+    monkeypatch.setattr(swarmee.os, "getpid", lambda: 1111)
+    monkeypatch.setattr(
+        swarmee.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: (
+            '"ProcessId","CommandLine"\n'
+            '"1111","python -m swarmee_river.swarmee serve"\n'
+            '"2222","python -m swarmee_river.swarmee serve --port 0"\n'
+            '"3333","python -m some_other_module serve"\n'
+        ),
+    )
+
+    assert swarmee._runtime_broker_pids() == [2222]
+
+
+def test_runtime_broker_pids_windows_falls_back_to_wmic(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def _check_output(command: list[str], **_kwargs) -> str:
+        calls.append(list(command))
+        if command and command[0].lower() == "powershell":
+            raise RuntimeError("powershell unavailable")
+        return (
+            "Node,CommandLine,ProcessId\n"
+            'HOST,"python -m swarmee_river.swarmee serve",4444\n'
+            'HOST,"python -m unrelated.module run",5555\n'
+        )
+
+    monkeypatch.setattr(swarmee.os, "name", "nt", raising=False)
+    monkeypatch.setattr(swarmee.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(swarmee.subprocess, "check_output", _check_output)
+
+    assert swarmee._runtime_broker_pids() == [4444]
+    assert calls and calls[0][0].lower() == "powershell"
+    assert any(call and call[0].lower() == "wmic" for call in calls)
+
+
+def test_stop_all_runtime_brokers_windows_without_sigkill(monkeypatch) -> None:
+    import signal as _signal
+
+    monkeypatch.setattr(swarmee, "_runtime_broker_pids", lambda: [7001])
+    monkeypatch.delattr(_signal, "SIGKILL", raising=False)
+
+    term_signal = getattr(_signal, "SIGTERM")
+    kill_calls: list[tuple[int, int]] = []
+    state = {"forced": False, "term_count": 0}
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        kill_calls.append((pid, sig))
+        if sig == 0:
+            if state["forced"]:
+                raise OSError("process exited")
+            return
+        if sig == term_signal:
+            state["term_count"] += 1
+            if state["term_count"] >= 2:
+                state["forced"] = True
+            return
+        raise AssertionError(f"unexpected signal {sig}")
+
+    monotonic_value = {"t": 0.0}
+
+    def _fake_monotonic() -> float:
+        monotonic_value["t"] += 0.3
+        return monotonic_value["t"]
+
+    monkeypatch.setattr(swarmee.os, "kill", _fake_kill)
+    monkeypatch.setattr(swarmee.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(swarmee.time, "monotonic", _fake_monotonic)
+
+    stopped, failed = swarmee._stop_all_runtime_brokers(timeout_s=0.1)
+
+    assert (stopped, failed) == (1, 0)
+    non_probe_signals = [sig for _pid, sig in kill_calls if sig != 0]
+    assert non_probe_signals.count(term_signal) >= 2
+
+
 def test_daemon_start_with_all_target_is_rejected(capsys) -> None:
     result = swarmee._run_daemon_command(["start", "all"])
     assert result == 1
