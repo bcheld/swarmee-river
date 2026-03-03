@@ -469,6 +469,7 @@ class DaemonMixin:
             _COMPACT_USAGE_TEXT,
             _CONSENT_USAGE_TEXT,
             _CONTEXT_USAGE_TEXT,
+            _DIAGNOSTICS_USAGE_TEXT,
             _EXPAND_USAGE_TEXT,
             _OPEN_USAGE_TEXT,
             _SEARCH_USAGE_TEXT,
@@ -593,6 +594,20 @@ class DaemonMixin:
                 send_daemon_command(proc, {"cmd": "auth", "action": "logout", "provider": provider})
                 return True
             self._write_transcript_line(_AUTH_USAGE_TEXT)
+            return True
+        if action == "diagnostics_usage":
+            self._write_transcript_line(_DIAGNOSTICS_USAGE_TEXT)
+            return True
+        if action == "diagnostics_bundle":
+            from swarmee_river.diagnostics import create_support_bundle
+
+            try:
+                bundle_path = create_support_bundle(cwd=Path.cwd())
+            except Exception as exc:
+                self._write_transcript_line(f"[diagnostics] failed to create support bundle: {exc}")
+                return True
+            self._add_artifact_paths([str(bundle_path)])
+            self._write_transcript_line(f"[diagnostics] support bundle created: {bundle_path}")
             return True
         if action.startswith("model:"):
             normalized = text.lower()

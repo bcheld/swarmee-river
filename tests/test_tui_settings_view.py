@@ -64,6 +64,12 @@ def test_bedrock_runtime_category_filters_to_expected_keys() -> None:
 class _Widget:
     def __init__(self, value: str = "") -> None:
         self.value = value
+        self.label = value
+        self.variant = "default"
+        self.text = ""
+
+    def update(self, text: str) -> None:
+        self.text = text
 
 
 class _SettingsHarness(SettingsMixin):
@@ -91,12 +97,22 @@ class _SettingsHarness(SettingsMixin):
             "#settings_bedrock_max_retries_input": _Widget("1"),
             "#settings_interrupt_timeout_input": _Widget("2.0"),
             "#settings_interrupt_force_restart_select": _Widget("true"),
+            "#settings_diag_level_select": _Widget("baseline"),
+            "#settings_diag_redact_toggle": _Widget("Redact Diagnostics: On"),
+            "#settings_diag_retention_input": _Widget("7"),
+            "#settings_diag_max_bytes_input": _Widget("52428800"),
+            "#settings_diag_status": _Widget(""),
         }
         self._settings_bedrock_read_timeout_input = self._widgets["#settings_bedrock_read_timeout_input"]
         self._settings_bedrock_connect_timeout_input = self._widgets["#settings_bedrock_connect_timeout_input"]
         self._settings_bedrock_max_retries_input = self._widgets["#settings_bedrock_max_retries_input"]
         self._settings_interrupt_timeout_input = self._widgets["#settings_interrupt_timeout_input"]
         self._settings_interrupt_force_restart_select = self._widgets["#settings_interrupt_force_restart_select"]
+        self._settings_diag_level_select = self._widgets["#settings_diag_level_select"]
+        self._settings_diag_redact_toggle = self._widgets["#settings_diag_redact_toggle"]
+        self._settings_diag_retention_input = self._widgets["#settings_diag_retention_input"]
+        self._settings_diag_max_bytes_input = self._widgets["#settings_diag_max_bytes_input"]
+        self._settings_diag_status = self._widgets["#settings_diag_status"]
 
     def query_one(self, selector: str, _widget_type: Any = None) -> _Widget:
         return self._widgets[selector]
@@ -129,6 +145,9 @@ class _SettingsHarness(SettingsMixin):
 
     def _write_transcript_line(self, text: str) -> None:
         self.messages.append(text)
+
+    def _add_artifact_paths(self, _paths: list[str]) -> None:
+        return None
 
 
 def test_delete_model_hides_row_and_removes_override() -> None:
@@ -232,6 +251,34 @@ def test_apply_interrupt_control_settings_persists_values() -> None:
     assert env_payload["SWARMEE_INTERRUPT_TIMEOUT_SEC"] == "1.5"
     assert env_payload["SWARMEE_INTERRUPT_FORCE_RESTART"] == "false"
     assert harness._refresh_settings_general_calls == 1
+
+
+def test_apply_diagnostics_settings_persists_values(monkeypatch) -> None:
+    monkeypatch.setenv("SWARMEE_DIAG_REDACT", "false")
+    harness = _SettingsHarness({"models": {}, "env": {}}, selected_id=None)
+    harness._settings_diag_level_select.value = "verbose"
+    harness._settings_diag_retention_input.value = "14"
+    harness._settings_diag_max_bytes_input.value = "10485760"
+
+    harness._apply_diagnostics_settings()
+
+    assert harness.saved_payload is not None
+    env_payload = harness.saved_payload.get("env", {})
+    assert env_payload["SWARMEE_DIAG_LEVEL"] == "verbose"
+    assert env_payload["SWARMEE_DIAG_REDACT"] == "false"
+    assert env_payload["SWARMEE_DIAG_RETENTION_DAYS"] == "14"
+    assert env_payload["SWARMEE_DIAG_MAX_BYTES"] == "10485760"
+
+
+def test_apply_diagnostics_settings_rejects_invalid_values() -> None:
+    harness = _SettingsHarness({"models": {}, "env": {}}, selected_id=None)
+    harness._settings_diag_retention_input.value = "bad"
+    harness._settings_diag_max_bytes_input.value = "1024"
+
+    harness._apply_diagnostics_settings()
+
+    assert harness.saved_payload is None
+    assert any("invalid retention days" in msg for msg in harness.messages)
 
 
 def test_apply_bedrock_runtime_settings_rejects_invalid_values() -> None:

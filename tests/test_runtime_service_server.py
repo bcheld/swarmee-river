@@ -131,6 +131,9 @@ def test_runtime_service_startup_and_basic_commands(monkeypatch, tmp_path: Path)
             assert discovery["token"] == token
             assert int(discovery["pid"]) > 0
             assert isinstance(discovery["started_at"], str) and discovery["started_at"]
+            assert discovery["schema_version"] == "2"
+            assert isinstance(discovery["broker_log_path"], str) and discovery["broker_log_path"]
+            assert isinstance(discovery["session_events_path"], str) and "{session_id}" in discovery["session_events_path"]
 
             reader, writer = await asyncio.open_connection("127.0.0.1", service.port)
             try:

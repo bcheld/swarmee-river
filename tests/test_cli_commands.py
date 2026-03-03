@@ -4,7 +4,10 @@ from unittest import mock
 
 from swarmee_river.cli.builtin_commands import register_builtin_commands
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
-from swarmee_river.cli.diagnostics import render_diagnostic_command_for_surface
+from swarmee_river.cli.diagnostics import (
+    render_diagnostic_command_for_surface,
+    render_diagnostics_command_for_surface,
+)
 
 
 def _make_ctx(outputs: list[str]) -> CLIContext:
@@ -78,3 +81,16 @@ def test_render_diagnostic_usage_rewrite_is_generic(monkeypatch) -> None:
     assert "Usage: swarmee status" in cli_text
     assert "Usage: swarmee diff" in cli_text
     assert "Usage: swarmee artifact" in cli_text
+
+
+def test_render_diagnostics_usage_rewrite_is_generic(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "swarmee_river.cli.diagnostics.render_diagnostics_command",
+        lambda **_kwargs: "Usage: diagnostics tail | diagnostics doctor | diagnostics bundle",
+    )
+
+    repl_text = render_diagnostics_command_for_surface(args=[], cwd=mock.MagicMock(), surface="repl")
+    cli_text = render_diagnostics_command_for_surface(args=[], cwd=mock.MagicMock(), surface="cli")
+
+    assert "Usage: :diagnostics tail" in repl_text
+    assert "Usage: swarmee diagnostics tail" in cli_text

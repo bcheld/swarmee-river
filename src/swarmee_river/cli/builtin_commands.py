@@ -18,6 +18,7 @@ from swarmee_river.cli.commands import (
 from swarmee_river.cli.diagnostics import (
     render_config_command_for_surface,
     render_diagnostic_command_for_surface,
+    render_diagnostics_command_for_surface,
 )
 from swarmee_river.utils.provider_utils import normalize_provider_name as normalize_provider_name_runtime
 from tools.sop import run_sop
@@ -371,6 +372,16 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
         )
         return CommandDispatchResult(handled=True)
 
+    def _diagnostics(ctx: CLIContext, inv: CommandInvocation) -> CommandDispatchResult:
+        ctx.output(
+            render_diagnostics_command_for_surface(
+                args=inv.args,
+                cwd=Path.cwd(),
+                surface="repl",
+            )
+        )
+        return CommandDispatchResult(handled=True)
+
     registry.register("help", _help, help="Show available commands")
     registry.register("tools", _tools, help="List available tools")
     registry.register("tier", _tier, help="List/set model tiers", usage="list | set <tier> | auto on|off")
@@ -391,5 +402,11 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     registry.register("artifact", _diagnostic, help="List/get artifacts", usage="list|get")
     registry.register("log", _diagnostic, help="Tail Swarmee logs", usage="tail [--lines N]")
     registry.register("replay", _diagnostic, help="Replay a logged invocation", usage="<invocation_id>")
+    registry.register(
+        "diagnostics",
+        _diagnostics,
+        help="Tail diagnostics, create support bundle, or run doctor report",
+        usage="tail|bundle|doctor",
+    )
     registry.register("exit", _exit, help="Exit the REPL")
     registry.register("quit", _exit, help="Exit the REPL")

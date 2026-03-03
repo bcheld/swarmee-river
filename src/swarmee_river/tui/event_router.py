@@ -174,6 +174,19 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
         app._schedule_session_timeline_refresh()
         return True
 
+    if etype == "startup_outcome":
+        status = str(event.get("status", "ok")).strip().lower()
+        pid = event.get("pid")
+        app._write_transcript_line(
+            f"[daemon] startup outcome: {status}" + (f" (pid={pid})" if isinstance(pid, int) and pid > 0 else "")
+        )
+        return True
+
+    if etype == "shutdown_outcome":
+        status = str(event.get("status", "ok")).strip().lower()
+        app._write_transcript_line(f"[daemon] shutdown outcome: {status}")
+        return True
+
     if etype == "model_info":
         app._handle_model_info(event)
         return True
@@ -612,7 +625,10 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
             )
             auth_hint = "Authentication failed. Verify credentials/permissions for the active provider."
             if is_aws_auth_error:
-                auth_hint = "AWS authentication failed. Open Settings > Models, set AWS profile, then run Connect AWS."
+                auth_hint = (
+                    "AWS authentication failed. Use the default AWS credential chain first "
+                    "(env/profile/process/IMDS). If needed, open Settings > Models and run Connect AWS."
+                )
             app._mount_transcript_widget(
                 app.render_system_message(  # type: ignore[attr-defined]
                     auth_hint

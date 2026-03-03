@@ -73,3 +73,20 @@ def test_main_dispatches_daemon_stop_all(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert exc.value.code == 0
     assert captured["args"] == ["stop", "all"]
+
+
+def test_main_dispatches_diagnostics_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_render(*, args: list[str], cwd, surface: str) -> str:  # noqa: ANN001
+        captured["args"] = list(args)
+        captured["surface"] = surface
+        return "ok"
+
+    monkeypatch.setattr(swarmee, "render_diagnostics_command_for_surface", _fake_render)
+    monkeypatch.setattr(sys, "argv", ["swarmee", "diagnostics", "doctor"])
+
+    swarmee.main()
+
+    assert captured["args"] == ["doctor"]
+    assert captured["surface"] == "cli"

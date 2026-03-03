@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.diagnostics import append_session_issue
 from swarmee_river.session.graph_index import (
     build_session_graph_index,
     load_session_graph_index,
@@ -377,9 +378,13 @@ class SessionMixin:
                 f"{self.state.session.issues_repeat_line}"
             )
             self.state.session.issue_lines.append(repeated)
+            with contextlib.suppress(Exception):
+                append_session_issue(session_id=self.state.daemon.session_id, line=repeated, cwd=Path.cwd())
         self.state.session.issues_repeat_line = line
         self.state.session.issues_repeat_count = 0
         self.state.session.issue_lines.append(line)
+        with contextlib.suppress(Exception):
+            append_session_issue(session_id=self.state.daemon.session_id, line=line, cwd=Path.cwd())
         if len(self.state.session.issue_lines) > 2000:
             self.state.session.issue_lines = self.state.session.issue_lines[-2000:]
         issue_meta = self._session_issue_from_line(line)
@@ -402,6 +407,8 @@ class SessionMixin:
             f"… repeated {self.state.session.issues_repeat_count} more time(s): {self.state.session.issues_repeat_line}"
         )
         self.state.session.issue_lines.append(repeated)
+        with contextlib.suppress(Exception):
+            append_session_issue(session_id=self.state.daemon.session_id, line=repeated, cwd=Path.cwd())
         self.state.session.issues_repeat_line = None
         self.state.session.issues_repeat_count = 0
         self._append_session_issue(

@@ -94,7 +94,7 @@ The TUI is a full-screen Textual application with a multi-panel layout:
 - **Run tab** — plan panel with step-by-step status, approve/replan/cancel actions, and session timeline
 - **Agents tab** — agent profile builder: define system prompt snippets, context sources, active SOPs, tool policy, knowledge base, and agent team presets; apply profiles to the live session
 - **Tools tab** — browse available tools with access-class metadata; manage prompt templates; import from S3
-- **Settings tab** — model tier configuration, environment overrides, orchestrator status
+- **Settings tab** — model tier configuration, diagnostics controls (Settings > Advanced), environment overrides, orchestrator status
 
 The TUI connects to a shared runtime daemon so multiple clients can attach to the same session.
 
@@ -116,6 +116,11 @@ swarmee attach --tail
 swarmee daemon status
 swarmee daemon start
 swarmee daemon stop
+
+# Diagnostics
+swarmee diagnostics tail
+swarmee diagnostics doctor
+swarmee diagnostics bundle
 ```
 
 Discovery file lives at `.swarmee/runtime.json` (or under `SWARMEE_STATE_DIR`). `swarmee attach` defaults to `SWARMEE_SESSION_ID` when set; otherwise it derives a stable session ID from the current working directory.
@@ -142,6 +147,7 @@ Discovery file lives at `.swarmee/runtime.json` (or under `SWARMEE_STATE_DIR`). 
 
 **Observability**
 - JSONL event logs under `.swarmee/logs/` (optional S3 upload)
+- Diagnostics files and support bundles under `.swarmee/diagnostics/`
 - Artifact store under `.swarmee/artifacts/` indexed by `index.jsonl`
 - Session persistence: save/load full conversation state across runs
 - REPL replay: `:replay <invocation_id>` reconstructs any logged invocation
@@ -172,6 +178,8 @@ export AWS_REGION="us-east-2"
 export STRANDS_MODEL_ID="us.anthropic.claude-sonnet-4-20250514-v1:0"
 swarmee
 ```
+
+Bedrock auth is credential-chain-first (env/profile/process/IMDS). Use `AWS_PROFILE` only when you want explicit profile-based login.
 
 ### OpenAI
 

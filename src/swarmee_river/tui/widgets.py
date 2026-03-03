@@ -2147,6 +2147,7 @@ class CommandPalette(Static):
         ("/sop", "Browse and toggle SOPs"),
         ("/connect", "Connect provider auth (Copilot/AWS)"),
         ("/auth", "List/logout provider auth"),
+        ("/diagnostics bundle", "Create support bundle"),
         ("/copy", "Copy transcript"),
         ("/copy plan", "Copy plan text"),
         ("/copy issues", "Copy issues"),

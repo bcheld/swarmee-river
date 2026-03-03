@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.diagnostics import (
+    create_support_bundle,
+    render_diagnostics_doctor,
+    render_diagnostics_tail,
+)
 from swarmee_river.state_paths import artifacts_dir as _default_artifacts_dir
 from swarmee_river.state_paths import logs_dir as _default_logs_dir
 
@@ -203,6 +208,10 @@ def render_effective_config(
                     continue
 
     env_keys = [
+        "SWARMEE_DIAG_LEVEL",
+        "SWARMEE_DIAG_REDACT",
+        "SWARMEE_DIAG_RETENTION_DAYS",
+        "SWARMEE_DIAG_MAX_BYTES",
         "SWARMEE_MODEL_PROVIDER",
         "SWARMEE_MODEL_TIER",
         "SWARMEE_TIER_AUTO",
@@ -216,6 +225,7 @@ def render_effective_config(
         "SWARMEE_PROJECT_MAP",
         "SWARMEE_LOG_EVENTS",
         "SWARMEE_LOG_DIR",
+        "SWARMEE_LOG_REDACT",
         "SWARMEE_LOG_MAX_FIELD_CHARS",
         "SWARMEE_OPENAI_REASONING_EFFORT",
         "OPENAI_API_KEY",
@@ -464,6 +474,41 @@ def render_diagnostic_command_for_surface(*, cmd: str, args: list[str], cwd: Pat
 
     for command_name in ("status", "diff", "artifact", "log", "replay"):
         text = text.replace(f"Usage: {command_name}", f"Usage: {prefix}{command_name}")
+    return text
+
+
+def render_diagnostics_command(*, args: list[str], cwd: Path) -> str:
+    sub = list(args or [])
+    command = sub[0].strip().lower() if sub else "tail"
+    rest = sub[1:] if len(sub) > 1 else []
+
+    if command == "tail":
+        line_count = 100
+        if "--lines" in rest:
+            try:
+                idx = rest.index("--lines")
+                line_count = int(rest[idx + 1])
+            except Exception:
+                line_count = 100
+        return render_diagnostics_tail(cwd=cwd, lines=line_count)
+
+    if command == "doctor":
+        return render_diagnostics_doctor(cwd=cwd)
+
+    if command == "bundle":
+        path = create_support_bundle(cwd=cwd)
+        return f"Created support bundle: {path}"
+
+    return "Usage: diagnostics tail [--lines N] | diagnostics doctor | diagnostics bundle"
+
+
+def render_diagnostics_command_for_surface(*, args: list[str], cwd: Path, surface: str = "raw") -> str:
+    text = render_diagnostics_command(args=args, cwd=cwd)
+    kind = (surface or "raw").strip().lower()
+    if kind == "repl":
+        return text.replace("Usage: diagnostics", "Usage: :diagnostics")
+    if kind == "cli":
+        return text.replace("Usage: diagnostics", "Usage: swarmee diagnostics")
     return text
 
 

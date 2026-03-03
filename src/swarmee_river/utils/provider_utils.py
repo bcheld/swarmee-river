@@ -48,14 +48,43 @@ def has_aws_credentials() -> bool:
     This does not make a network request; it only inspects configured
     credential sources (env, profiles, process providers, etc.).
     """
+    has_credentials, _source = resolve_aws_auth_source()
+    return has_credentials
+
+
+def resolve_aws_auth_source() -> tuple[bool, str]:
+    """
+    Return whether AWS credentials resolve and the normalized source label.
+
+    Source labels are normalized for diagnostics:
+    - env
+    - profile
+    - process
+    - imds
+    - unknown
+    """
     try:
         import botocore.session
 
         session = botocore.session.get_session()
         credentials = session.get_credentials()
-        return credentials is not None
+        if credentials is None:
+            return False, "unknown"
+        raw_method = str(getattr(credentials, "method", "") or "").strip().lower()
     except Exception:
-        return False
+        return False, "unknown"
+
+    if raw_method in {"env"}:
+        return True, "env"
+    if raw_method in {"shared-credentials-file", "config-file", "assume-role"}:
+        return True, "profile"
+    if raw_method in {"custom-process"}:
+        return True, "process"
+    if raw_method in {"iam-role", "container-role", "ec2-credentials-file"}:
+        return True, "imds"
+    if raw_method:
+        return True, raw_method
+    return True, "unknown"
 
 
 def resolve_model_provider(

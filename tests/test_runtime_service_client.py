@@ -26,11 +26,14 @@ def test_default_session_id_for_cwd_is_stable(tmp_path: Path) -> None:
 def test_load_runtime_discovery_round_trip(tmp_path: Path) -> None:
     discovery_path = tmp_path / "runtime.json"
     payload = {
+        "schema_version": "2",
         "host": "127.0.0.1",
         "port": 7342,
         "token": "abc123",
         "pid": 999,
         "started_at": "2026-02-23T00:00:00Z",
+        "broker_log_path": "/tmp/broker.log",
+        "session_events_path": "/tmp/sessions/{session_id}.jsonl",
     }
     discovery_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -40,6 +43,9 @@ def test_load_runtime_discovery_round_trip(tmp_path: Path) -> None:
     assert discovery.token == "abc123"
     assert discovery.pid == 999
     assert discovery.started_at == "2026-02-23T00:00:00Z"
+    assert discovery.schema_version == "2"
+    assert discovery.broker_log_path == "/tmp/broker.log"
+    assert discovery.session_events_path == "/tmp/sessions/{session_id}.jsonl"
 
 
 def test_ensure_runtime_broker_returns_existing_discovery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

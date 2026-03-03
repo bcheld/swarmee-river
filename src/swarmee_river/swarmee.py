@@ -31,6 +31,9 @@ _ROOT_HELP_EPILOG = (
     "  swarmee broker stop              Alias for 'swarmee daemon stop'\n"
     "  swarmee serve                    Run runtime broker in foreground\n"
     "  swarmee attach [--tail]          Attach to runtime broker session\n"
+    "  swarmee diagnostics tail         Tail persisted diagnostics\n"
+    "  swarmee diagnostics bundle       Create a redacted support bundle\n"
+    "  swarmee diagnostics doctor       Print runtime/auth diagnostics report\n"
     "\n"
     "TUI command: swarmee tui"
 )
@@ -113,6 +116,7 @@ from swarmee_river.cli.commands import CLIContext, CommandRegistry, handle_pack_
 from swarmee_river.cli.diagnostics import (
     render_config_command_for_surface,
     render_diagnostic_command_for_surface,
+    render_diagnostics_command_for_surface,
 )
 from swarmee_river.cli.repl import run_repl
 from swarmee_river.context.prompt_cache import PromptCacheState
@@ -175,7 +179,7 @@ from swarmee_river.utils.agent_runtime_utils import (
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
-from swarmee_river.utils.provider_utils import resolve_model_provider
+from swarmee_river.utils.provider_utils import resolve_aws_auth_source, resolve_model_provider
 from swarmee_river.utils.stdio_utils import configure_stdio_for_utf8, write_stdout_jsonl
 from swarmee_river.utils.welcome_utils import render_goodbye_message, render_welcome_message
 from tools.sop import run_sop
@@ -754,55 +758,77 @@ def _connect_aws_credentials(
     *,
     profile: str | None,
     emit: Callable[[str], None],
-) -> None:
+) -> str:
     aws_path = shutil.which("aws")
     if not aws_path:
         raise RuntimeError("AWS CLI was not found on PATH. Install AWS CLI v2 and configure a profile.")
+    explicit_profile = str(profile or "").strip()
+    if explicit_profile:
+        os.environ["AWS_PROFILE"] = explicit_profile
+        emit(f"Checking AWS credentials for profile '{explicit_profile}'...")
+        ok, check_message = _run_aws_identity_check(profile=explicit_profile)
+        if ok:
+            has_creds, source = resolve_aws_auth_source()
+            resolved_source = source if has_creds else "profile"
+            emit(f"AWS credentials already valid for profile '{explicit_profile}' (source={resolved_source}).")
+            return resolved_source
+        emit(f"AWS credentials unavailable for profile '{explicit_profile}'. Starting aws sso login...")
+        login_cmd = [aws_path, "sso", "login", "--profile", explicit_profile]
+        login_env = dict(os.environ)
+        login_env["AWS_PROFILE"] = explicit_profile
+        try:
+            process = subprocess.Popen(
+                login_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=login_env,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Failed to start AWS SSO login: {exc}") from exc
 
-    resolved_profile = (profile or os.getenv("AWS_PROFILE") or "default").strip() or "default"
-    os.environ["AWS_PROFILE"] = resolved_profile
+        try:
+            if process.stdout is not None:
+                for raw_line in process.stdout:
+                    line = str(raw_line or "").strip()
+                    if line:
+                        emit(f"[aws] {line}")
+        finally:
+            return_code = process.wait()
 
-    ok, check_message = _run_aws_identity_check(profile=resolved_profile)
+        if return_code != 0:
+            suffix = f" Last check: {check_message}" if check_message else ""
+            raise RuntimeError(f"AWS SSO login failed for profile '{explicit_profile}'.{suffix}")
+
+        ok_after, verify_message = _run_aws_identity_check(profile=explicit_profile)
+        if not ok_after:
+            raise RuntimeError(
+                f"AWS login completed but credentials are still unavailable for profile '{explicit_profile}': "
+                f"{verify_message}"
+            )
+        has_creds, source = resolve_aws_auth_source()
+        resolved_source = source if has_creds else "profile"
+        emit(f"AWS credentials refreshed for profile '{explicit_profile}' (source={resolved_source}).")
+        return resolved_source
+
+    emit("Checking AWS credentials via default credential chain...")
+    ok, check_message = _run_aws_identity_check(profile=None)
     if ok:
-        emit(f"AWS credentials already valid for profile '{resolved_profile}'.")
-        return
+        has_creds, source = resolve_aws_auth_source()
+        resolved_source = source if has_creds else "unknown"
+        emit(f"AWS credentials available via default chain (source={resolved_source}).")
+        return resolved_source
 
-    emit(f"AWS credentials unavailable for profile '{resolved_profile}'. Starting aws sso login...")
-    login_cmd = [aws_path, "sso", "login", "--profile", resolved_profile]
-    login_env = dict(os.environ)
-    login_env["AWS_PROFILE"] = resolved_profile
-
-    try:
-        process = subprocess.Popen(
-            login_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=login_env,
-        )
-    except Exception as exc:
-        raise RuntimeError(f"Failed to start AWS SSO login: {exc}") from exc
-
-    try:
-        if process.stdout is not None:
-            for raw_line in process.stdout:
-                line = str(raw_line or "").strip()
-                if line:
-                    emit(f"[aws] {line}")
-    finally:
-        return_code = process.wait()
-
-    if return_code != 0:
-        suffix = f" Last check: {check_message}" if check_message else ""
-        raise RuntimeError(f"AWS SSO login failed for profile '{resolved_profile}'.{suffix}")
-
-    ok_after, verify_message = _run_aws_identity_check(profile=resolved_profile)
-    if not ok_after:
-        raise RuntimeError(
-            f"AWS login completed but credentials are still unavailable for profile '{resolved_profile}': "
-            f"{verify_message}"
-        )
-    emit(f"AWS credentials refreshed for profile '{resolved_profile}'.")
+    has_creds, source = resolve_aws_auth_source()
+    if has_creds:
+        emit(f"AWS credentials resolved from botocore source '{source}', but sts get-caller-identity failed.")
+        return source
+    raise RuntimeError(
+        "AWS credentials are unavailable in the default credential chain. "
+        "Use `swarmee connect aws <profile>` for SSO locally, or rely on role-based credentials (for example in "
+        "SageMaker) without setting AWS_PROFILE."
+        + (f" Last check: {check_message}" if check_message else "")
+    )
 
 
 def _handle_auth_cli_command(command: str, args: list[str]) -> tuple[bool, str]:
@@ -811,9 +837,11 @@ def _handle_auth_cli_command(command: str, args: list[str]) -> tuple[bool, str]:
         provider = normalize_provider_name(args[0] if args else "github_copilot")
         if provider == "bedrock":
             profile = args[1] if len(args) >= 2 else None
-            _connect_aws_credentials(profile=profile, emit=lambda line: print(line))
-            resolved_profile = (str(profile or os.getenv("AWS_PROFILE") or "default")).strip() or "default"
-            return True, f"AWS credentials connected for profile '{resolved_profile}'."
+            source = _connect_aws_credentials(profile=profile, emit=lambda line: print(line))
+            resolved_profile = str(profile or "").strip()
+            if resolved_profile:
+                return True, f"AWS credentials connected for profile '{resolved_profile}' (source={source})."
+            return True, f"AWS credentials connected via default chain (source={source})."
         if provider != "github_copilot":
             return True, "Usage: swarmee connect [github_copilot] | swarmee connect aws [profile]"
         result = login_device_flow(status=lambda line: print(line), open_browser=True)
@@ -2899,6 +2927,11 @@ def main() -> None:
         raise SystemExit(_run_daemon_command([*sub, *extra_args]))
     if command == "session":
         raise SystemExit(_run_session_command([*sub, *extra_args]))
+    if command == "diagnostics":
+        if extra_args:
+            sub = [*sub, *extra_args]
+        print(render_diagnostics_command_for_surface(args=sub, cwd=Path.cwd(), surface="cli"))
+        return
     if extra_args:
         parser.error(f"unrecognized arguments: {' '.join(extra_args)}")
 
@@ -3688,9 +3721,17 @@ def main() -> None:
                     if provider == "bedrock":
                         requested_profile = payload.get("profile")
                         profile = str(requested_profile).strip() if isinstance(requested_profile, str) else ""
-                        _connect_aws_credentials(
+                        source = _connect_aws_credentials(
                             profile=profile or None,
                             emit=lambda line: _write_stdout_jsonl({"event": "warning", "text": line}),
+                        )
+                        _write_stdout_jsonl(
+                            {
+                                "event": "warning",
+                                "text": f"AWS auth source: {source}",
+                                "auth_source": source,
+                                "provider": "bedrock",
+                            }
                         )
                         _write_stdout_jsonl(_current_model_info_event())
                         continue

@@ -298,15 +298,20 @@ When Strands hooks are available, Swarmee enables JSONL logging by default:
   - `invocation_id`: unique per model invocation (written into `invocation_state["swarmee"]`)
 
 Controls (see `env.example`):
-- `SWARMEE_LOG_EVENTS=true|false`
+- `SWARMEE_DIAG_LEVEL=baseline|verbose`
+- `SWARMEE_DIAG_REDACT=true|false`
+- `SWARMEE_DIAG_RETENTION_DAYS=<int>`
+- `SWARMEE_DIAG_MAX_BYTES=<int>`
+- Legacy aliases still supported: `SWARMEE_LOG_EVENTS`, `SWARMEE_LOG_REDACT`, `SWARMEE_LOG_MAX_FIELD_CHARS`
 - `SWARMEE_LOG_DIR=...`
-- `SWARMEE_LOG_MAX_FIELD_CHARS=...`
-- `SWARMEE_LOG_REDACT=true|false`
 - Optional S3 upload: `SWARMEE_LOG_S3_BUCKET`, `SWARMEE_LOG_S3_PREFIX`
+
+TUI users can configure these in **Settings > Advanced** and create a support bundle directly from that panel.
 
 Replay UX:
 - `:log tail` shows the latest log file tail (`src/swarmee_river/cli/diagnostics.py::render_log_tail`)
 - `:replay <invocation_id>` reconstructs the sequence of logged events (`src/swarmee_river/cli/diagnostics.py::render_replay_invocation`)
+- `:diagnostics tail|bundle|doctor` provides persisted diagnostics and support bundles
 
 ### Conversation summarization / history management
 

@@ -90,9 +90,9 @@ def test_default_model_config_bedrock_uses_responsive_defaults(monkeypatch):
     config = swarmee_river.utils.model_utils.default_model_config("bedrock")
     boto_config = config["boto_client_config"]
 
-    assert boto_config.read_timeout == 60.0
-    assert boto_config.connect_timeout == 10.0
-    assert boto_config.retries["max_attempts"] == 1
+    assert boto_config.read_timeout == 45.0
+    assert boto_config.connect_timeout == 5.0
+    assert boto_config.retries["max_attempts"] == 2
 
 
 def test_default_model_config_bedrock_honors_timeout_and_retry_env(monkeypatch):
@@ -116,9 +116,9 @@ def test_default_model_config_bedrock_invalid_env_falls_back(monkeypatch):
     config = swarmee_river.utils.model_utils.default_model_config("bedrock")
     boto_config = config["boto_client_config"]
 
-    assert boto_config.read_timeout == 60.0
-    assert boto_config.connect_timeout == 10.0
-    assert boto_config.retries["max_attempts"] == 1
+    assert boto_config.read_timeout == 45.0
+    assert boto_config.connect_timeout == 5.0
+    assert boto_config.retries["max_attempts"] == 2
 
 
 def test_default_model_config_openai_includes_max_retries_default_zero(monkeypatch):

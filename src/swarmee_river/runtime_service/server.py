@@ -8,6 +8,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,23 @@ class RuntimeServiceServer:
 
         default_runtime_file = state_dir() / "runtime.json"
         self.runtime_file = runtime_file or default_runtime_file
+        state_root = self.runtime_file.parent
+        raw_broker_log = str(os.getenv("SWARMEE_BROKER_LOG_PATH", "")).strip()
+        if raw_broker_log:
+            broker_path = Path(raw_broker_log).expanduser()
+            if not broker_path.is_absolute():
+                broker_path = (state_root / broker_path).resolve()
+            self.broker_log_path = broker_path
+        else:
+            self.broker_log_path = state_root / "diagnostics" / "broker.log"
+        raw_events_template = str(os.getenv("SWARMEE_DIAG_SESSION_EVENTS_PATH", "")).strip()
+        if raw_events_template:
+            events_template = Path(raw_events_template).expanduser()
+            if not events_template.is_absolute():
+                events_template = (state_root / events_template).resolve()
+            self.session_events_path_template = str(events_template)
+        else:
+            self.session_events_path_template = str(state_root / "diagnostics" / "sessions" / "{session_id}.jsonl")
 
         self._server: asyncio.AbstractServer | None = None
         self._stopped = asyncio.Event()
@@ -165,11 +183,14 @@ class RuntimeServiceServer:
 
     def _write_discovery_file(self) -> None:
         payload = {
+            "schema_version": "2",
             "host": self.host,
             "port": int(self.port),
             "token": self.token,
             "pid": int(self.pid),
             "started_at": self.started_at,
+            "broker_log_path": str(self.broker_log_path),
+            "session_events_path": str(self.session_events_path_template),
         }
         self.runtime_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", "utf-8")
 
@@ -208,6 +229,30 @@ class RuntimeServiceServer:
 
     async def _send_error(self, client: ClientState, code: str, message: str, *, detail: str | None = None) -> None:
         await self._send_event(client, make_error_event(code, message, detail=detail))
+
+    def _session_events_path(self, session_id: str) -> Path:
+        safe_session_id = (
+            "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "-" for ch in session_id) or "unknown"
+        )
+        template = str(self.session_events_path_template)
+        if "{session_id}" in template:
+            path = Path(template.replace("{session_id}", safe_session_id))
+        else:
+            candidate = Path(template)
+            if candidate.suffix:
+                path = candidate
+            else:
+                path = candidate / f"{safe_session_id}.jsonl"
+        return path
+
+    def _persist_session_event(self, session_id: str, payload: dict[str, Any]) -> None:
+        path = self._session_events_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        event_payload = dict(payload)
+        event_payload.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event_payload, ensure_ascii=False))
+            handle.write("\n")
 
     async def _detach_and_close_client(self, client: ClientState) -> None:
         self._detach_client_from_session(client)
@@ -435,6 +480,8 @@ class RuntimeServiceServer:
         env["SWARMEE_TUI_EVENTS"] = "1"
         env["SWARMEE_SPINNERS"] = "0"
         env["SWARMEE_LOG_EVENTS"] = "1"
+        env.setdefault("SWARMEE_DIAG_LEVEL", "baseline")
+        env.setdefault("SWARMEE_DIAG_REDACT", "true")
         env["SWARMEE_SESSION_ID"] = session.session_id
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -508,6 +555,8 @@ class RuntimeServiceServer:
         outgoing.setdefault("session_id", session.session_id)
         if controller_before:
             outgoing.setdefault("controller_client_id", controller_before)
+        with contextlib.suppress(Exception):
+            self._persist_session_event(session.session_id, outgoing)
 
         for client_id in list(session.client_ids):
             client = self._clients.get(client_id)
@@ -653,6 +702,8 @@ class RuntimeServiceServer:
                 "session_id": session_id,
                 "cwd": session.cwd,
                 "clients": len(session.client_ids),
+                "startup_outcome": "ok",
+                "session_pid": session.process.pid if session.process is not None else None,
             },
         )
 
@@ -863,7 +914,7 @@ class RuntimeServiceServer:
                 await self._send_error(client, "not_attached", "Attach to a session first")
             return
         await self._stop_session_process(session)
-        await self._broadcast_session_event(session, {"event": "session_shutdown"})
+        await self._broadcast_session_event(session, {"event": "session_shutdown", "shutdown_outcome": "ok"})
 
     async def _dispatch_command(self, client: ClientState, payload: dict[str, Any]) -> None:
         cmd = str(payload.get("cmd", "")).strip().lower()

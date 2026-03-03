@@ -30,6 +30,15 @@ Redirect runtime state writes (artifacts, logs, sessions, project map) to a writ
 export SWARMEE_STATE_DIR="/tmp/swarmee"
 ```
 
+Diagnostics are enabled by default. Optional tuning:
+
+```bash
+export SWARMEE_DIAG_LEVEL="baseline"       # or verbose
+export SWARMEE_DIAG_REDACT="true"
+export SWARMEE_DIAG_RETENTION_DAYS="7"
+export SWARMEE_DIAG_MAX_BYTES="52428800"
+```
+
 Pick a provider (example: OpenAI):
 
 ```bash
@@ -88,3 +97,4 @@ Refactor this notebook code for clarity.
 Notes:
 - The notebook extension runs **non-interactively by default** (tool consent fails closed) unless you pass `--yes`.
 - Use `%%swarmee --no-context` (or `SWARMEE_NOTEBOOK_NO_CONTEXT=true`) for quick one-offs without notebook context injection.
+- For Bedrock in SageMaker, role-based credentials should resolve through the default AWS credential chain without setting `AWS_PROFILE`.

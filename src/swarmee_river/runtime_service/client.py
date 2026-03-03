@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.diagnostics import broker_log_path, session_events_template
 from swarmee_river.state_paths import scope_root, state_dir
 
 
@@ -23,6 +24,9 @@ class RuntimeDiscovery:
     token: str
     pid: int | None = None
     started_at: str | None = None
+    schema_version: str | None = None
+    broker_log_path: str | None = None
+    session_events_path: str | None = None
 
 
 def default_session_id_for_cwd(cwd: Path) -> str:
@@ -33,6 +37,50 @@ def default_session_id_for_cwd(cwd: Path) -> str:
 
 def runtime_discovery_path(*, cwd: Path | None = None) -> Path:
     return state_dir(cwd=cwd) / "runtime.json"
+
+
+def _runtime_start_lock_path(*, cwd: Path | None = None) -> Path:
+    return state_dir(cwd=cwd) / "runtime.start.lock"
+
+
+@contextlib.contextmanager
+def _runtime_start_lock(*, cwd: Path | None = None) -> Any:
+    path = _runtime_start_lock_path(cwd=cwd)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    locked = False
+    try:
+        if os.name == "posix":
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            locked = True
+        elif os.name == "nt":
+            import msvcrt
+
+            with contextlib.suppress(Exception):
+                if handle.tell() == 0:
+                    handle.write(b"0")
+                    handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            locked = True
+        yield
+    finally:
+        if locked:
+            if os.name == "posix":
+                import fcntl
+
+                with contextlib.suppress(Exception):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            elif os.name == "nt":
+                import msvcrt
+
+                with contextlib.suppress(Exception):
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        with contextlib.suppress(Exception):
+            handle.close()
 
 
 def _discovery_is_reachable(path: Path, *, timeout_s: float = 0.5) -> bool:
@@ -96,40 +144,57 @@ def ensure_runtime_broker(
     if _discovery_is_reachable(discovery):
         return discovery
 
-    # Kill the stale broker process before starting a new one.
-    _kill_stale_broker_process(discovery)
-    with contextlib.suppress(Exception):
-        if discovery.exists():
-            discovery.unlink()
-
-    resolved_state_dir = state_dir(cwd=cwd)
-    resolved_state_dir.mkdir(parents=True, exist_ok=True)
-
-    env = dict(os.environ)
-    env["SWARMEE_STATE_DIR"] = str(resolved_state_dir)
-    popen_kwargs: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "env": env,
-    }
-    if os.name == "posix":
-        popen_kwargs["start_new_session"] = True
-    process = subprocess.Popen(
-        [sys.executable, "-u", "-m", "swarmee_river.swarmee", "serve"],
-        **popen_kwargs,
-    )
-
-    deadline = time.monotonic() + max(0.5, float(timeout_s))
-    interval = max(0.02, float(poll_interval_s))
-    while time.monotonic() < deadline:
+    with _runtime_start_lock(cwd=cwd):
+        # Re-check inside lock in case another process already started it.
         if _discovery_is_reachable(discovery):
             return discovery
-        if process.poll() is not None:
-            raise RuntimeError(f"runtime broker exited during startup (code {process.returncode})")
-        time.sleep(interval)
 
-    raise RuntimeError(f"runtime broker did not become ready within {timeout_s:.1f}s")
+        # Kill the stale broker process before starting a new one.
+        _kill_stale_broker_process(discovery)
+        with contextlib.suppress(Exception):
+            if discovery.exists():
+                discovery.unlink()
+
+        resolved_state_dir = state_dir(cwd=cwd)
+        resolved_state_dir.mkdir(parents=True, exist_ok=True)
+
+        env = dict(os.environ)
+        env["SWARMEE_STATE_DIR"] = str(resolved_state_dir)
+        env["SWARMEE_BROKER_LOG_PATH"] = str(broker_log_path(cwd=cwd))
+        env["SWARMEE_DIAG_SESSION_EVENTS_PATH"] = session_events_template(cwd=cwd)
+
+        broker_log = broker_log_path(cwd=cwd)
+        broker_log.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = broker_log.open("a", encoding="utf-8", errors="replace")
+        popen_kwargs: dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
+            "env": env,
+        }
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-u", "-m", "swarmee_river.swarmee", "serve"],
+                **popen_kwargs,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                log_handle.close()
+
+        deadline = time.monotonic() + max(0.5, float(timeout_s))
+        interval = max(0.02, float(poll_interval_s))
+        while time.monotonic() < deadline:
+            if _discovery_is_reachable(discovery):
+                return discovery
+            if process.poll() is not None:
+                raise RuntimeError(
+                    f"runtime broker exited during startup (code {process.returncode}); see {broker_log}"
+                )
+            time.sleep(interval)
+
+        raise RuntimeError(f"runtime broker did not become ready within {timeout_s:.1f}s; see {broker_log}")
 
 
 def shutdown_runtime_broker(*, cwd: Path | None = None, timeout_s: float = 6.0) -> bool:
@@ -197,7 +262,19 @@ def load_runtime_discovery(path: Path) -> RuntimeDiscovery:
         pid = int(raw_pid.strip())
 
     started_at = str(payload.get("started_at", "")).strip() or None
-    return RuntimeDiscovery(host=host, port=port, token=token, pid=pid, started_at=started_at)
+    schema_version = str(payload.get("schema_version", "")).strip() or None
+    broker_log = str(payload.get("broker_log_path", "")).strip() or None
+    session_events = str(payload.get("session_events_path", "")).strip() or None
+    return RuntimeDiscovery(
+        host=host,
+        port=port,
+        token=token,
+        pid=pid,
+        started_at=started_at,
+        schema_version=schema_version,
+        broker_log_path=broker_log,
+        session_events_path=session_events,
+    )
 
 
 class RuntimeServiceClient:

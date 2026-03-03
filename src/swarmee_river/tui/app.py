@@ -2143,6 +2143,11 @@ def run_tui() -> int:
         _settings_models_detail: Any = None  # Static | None
         _settings_auth_status: Any = None  # Static | None
         _settings_aws_profile_input: Any = None  # Input | None
+        _settings_diag_level_select: Any = None  # Select | None
+        _settings_diag_redact_toggle: Any = None  # Button | None
+        _settings_diag_retention_input: Any = None  # Input | None
+        _settings_diag_max_bytes_input: Any = None  # Input | None
+        _settings_diag_status: Any = None  # Static | None
         _settings_env_category_select: Any = None  # Select | None
         _settings_env_detail: Any = None  # Static | None
         _settings_env_value_select: Any = None  # Select | None
@@ -3226,7 +3231,7 @@ def run_tui() -> int:
                 self._write_transcript_line(f"[settings] swarm {'enabled' if new_val == 'true' else 'disabled'}.")
                 return
             if button_id == "settings_toggle_log_events":
-                cur = (os.environ.get("SWARMEE_LOG_EVENTS") or "").strip().lower()
+                cur = (os.environ.get("SWARMEE_LOG_EVENTS") or "true").strip().lower()
                 new_val = "false" if cur in {"true", "1", "yes", "on"} else "true"
                 self._persist_project_setting_env_override("SWARMEE_LOG_EVENTS", new_val)
                 self._refresh_settings_general()
@@ -3254,11 +3259,25 @@ def run_tui() -> int:
                 self._write_transcript_line(f"[settings] truncate results {new_val}.")
                 return
             if button_id == "settings_toggle_log_redact":
-                cur = (os.environ.get("SWARMEE_LOG_REDACT") or "true").strip().lower()
+                cur = (
+                    os.environ.get("SWARMEE_DIAG_REDACT")
+                    or os.environ.get("SWARMEE_LOG_REDACT")
+                    or "true"
+                ).strip().lower()
                 new_val = "false" if cur not in {"false", "0", "no", "off"} else "true"
+                self._persist_project_setting_env_override("SWARMEE_DIAG_REDACT", new_val)
                 self._persist_project_setting_env_override("SWARMEE_LOG_REDACT", new_val)
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] log redact {new_val}.")
+                return
+            if button_id == "settings_diag_redact_toggle":
+                self._toggle_diagnostics_redact()
+                return
+            if button_id == "settings_diag_apply":
+                self._apply_diagnostics_settings()
+                return
+            if button_id == "settings_diag_bundle":
+                self._create_diagnostics_bundle()
                 return
             if button_id == "settings_toggle_freeze_tools":
                 cur = (os.environ.get("SWARMEE_FREEZE_TOOLS") or "").strip().lower()

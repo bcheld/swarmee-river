@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json as _json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from swarmee_river.diagnostics import session_issues_path
 from swarmee_river.tui.text_sanitize import _extract_paths_from_text, sanitize_output_text
 
 _TRUNCATED_ARTIFACT_RE = re.compile(r"full output saved to (?P<path>[^\]]+)")
@@ -61,7 +63,11 @@ def parse_output_line(line: str) -> ParsedEvent | None:
         return ParsedEvent(kind="error", text=text)
 
     if stripped.startswith("Traceback (most recent call last):"):
-        return ParsedEvent(kind="warning", text="WARN: daemon emitted a Python traceback (details in tui_error.log).")
+        details_path = session_issues_path(os.getenv("SWARMEE_SESSION_ID") or None)
+        return ParsedEvent(
+            kind="warning",
+            text=f"WARN: daemon emitted a Python traceback (details in {details_path}).",
+        )
 
     if _TRACEBACK_FILE_LINE_RE.match(stripped):
         return ParsedEvent(kind="noise", text=text)

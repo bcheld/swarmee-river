@@ -44,10 +44,10 @@ def _default_bedrock_model_config() -> dict[str, Any]:
         "model_id": os.getenv("STRANDS_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
         "max_tokens": _env_int("STRANDS_MAX_TOKENS", 32768, min_value=1),
         "boto_client_config": Config(
-            read_timeout=_bedrock_timeout_seconds("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", 60.0),
-            connect_timeout=_bedrock_timeout_seconds("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", 10.0),
+            read_timeout=_bedrock_timeout_seconds("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", 45.0),
+            connect_timeout=_bedrock_timeout_seconds("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", 5.0),
             retries={
-                "max_attempts": _env_int("SWARMEE_BEDROCK_MAX_RETRIES", 1, min_value=0),
+                "max_attempts": _env_int("SWARMEE_BEDROCK_MAX_RETRIES", 2, min_value=0),
                 "mode": "adaptive",
             },
         ),

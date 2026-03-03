@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -19,9 +20,14 @@ from strands.hooks.events import (
     BeforeToolCallEvent,
 )
 
+from swarmee_river.diagnostics import (
+    diagnostics_events_enabled,
+    diagnostics_level,
+    diagnostics_redact_enabled,
+    sweep_retention,
+)
 from swarmee_river.hooks._compat import event_messages, model_response_payload, register_hook_callback
 from swarmee_river.state_paths import logs_dir as _default_logs_dir
-from swarmee_river.utils.env_utils import truthy_env
 
 
 def _iso_ts() -> str:
@@ -128,8 +134,9 @@ class JSONLLoggerHooks(HookProvider):
     """
 
     def __init__(self) -> None:
-        self.enabled = truthy_env("SWARMEE_LOG_EVENTS", True)
-        self.redact = truthy_env("SWARMEE_LOG_REDACT", True)
+        self.level = diagnostics_level()
+        self.enabled = diagnostics_events_enabled()
+        self.redact = diagnostics_redact_enabled()
         self._secrets = _secret_values_from_env()
         self.log_dir = Path(
             os.getenv(
@@ -139,12 +146,15 @@ class JSONLLoggerHooks(HookProvider):
         )
         self.session_id = os.getenv("SWARMEE_SESSION_ID", uuid.uuid4().hex)
         self.max_field_chars = int(os.getenv("SWARMEE_LOG_MAX_FIELD_CHARS", "8000"))
+        self._write_count = 0
 
         self.s3_bucket = os.getenv("SWARMEE_LOG_S3_BUCKET")
         self.s3_prefix = os.getenv("SWARMEE_LOG_S3_PREFIX", "swarmee/logs").strip("/")
 
         self._lock = threading.Lock()
         self._log_path = self.log_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{self.session_id}.jsonl"
+        with contextlib.suppress(Exception):
+            sweep_retention()
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, BeforeInvocationEvent, self.before_invocation)
@@ -164,11 +174,17 @@ class JSONLLoggerHooks(HookProvider):
     def _log(self, event: str, payload: dict[str, Any]) -> None:
         if not self.enabled:
             return
+        if self.level != "verbose" and event in {"before_invocation", "before_tool_call"}:
+            return
         payload = dict(payload)
         if self.redact:
             payload = _redact_obj(payload, self._secrets)
         payload.update({"ts": _iso_ts(), "event": event, "session_id": self.session_id})
         self._write_append(json.dumps(payload, ensure_ascii=False))
+        self._write_count += 1
+        if self._write_count % 100 == 0:
+            with contextlib.suppress(Exception):
+                sweep_retention()
 
     def before_invocation(self, event: BeforeInvocationEvent) -> None:
         inv_id = uuid.uuid4().hex

@@ -79,3 +79,19 @@ def test_has_github_copilot_token_reads_auth_store(tmp_path, monkeypatch) -> Non
     set_provider_record("github_copilot", {"type": "api", "key": "abc"})
 
     assert provider_utils.has_github_copilot_token() is True
+
+
+def test_resolve_aws_auth_source_maps_profile(monkeypatch) -> None:
+    import botocore.session
+
+    class _Creds:
+        method = "shared-credentials-file"
+
+    class _Session:
+        def get_credentials(self):
+            return _Creds()
+
+    monkeypatch.setattr(botocore.session, "get_session", lambda: _Session())
+    has_creds, source = provider_utils.resolve_aws_auth_source()
+    assert has_creds is True
+    assert source == "profile"
