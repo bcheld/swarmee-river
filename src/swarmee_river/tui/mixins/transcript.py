@@ -239,6 +239,19 @@ class TranscriptMixin:
         with contextlib.suppress(Exception):
             transcript.scroll_end(animate=False)
 
+    def _force_transcript_tail_after_refresh(self) -> None:
+        from textual.containers import VerticalScroll
+
+        def _scroll_to_tail() -> None:
+            if self._transcript_mode == "text":
+                self._scroll_transcript_text_to_end()
+                return
+            with contextlib.suppress(Exception):
+                self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+
+        with contextlib.suppress(Exception):
+            self.call_after_refresh(_scroll_to_tail)
+
     def _write_transcript(self, line: str) -> None:
         """Write a system/info message to the transcript."""
         from swarmee_river.tui.widgets import render_system_message
@@ -261,6 +274,7 @@ class TranscriptMixin:
         timestamp = self._turn_timestamp()
         plain = f"YOU> {text}\n{timestamp}"
         self._mount_transcript_widget(render_user_message(text, timestamp=timestamp), plain_text=plain)
+        self._force_transcript_tail_after_refresh()
 
     def _write_user_message(self, text: str, *, timestamp: str | None = None) -> None:
         from swarmee_river.tui.widgets import render_user_message
@@ -268,6 +282,7 @@ class TranscriptMixin:
         resolved_timestamp = (timestamp or "").strip() or self._turn_timestamp()
         plain = f"YOU> {text}\n{resolved_timestamp}"
         self._mount_transcript_widget(render_user_message(text, timestamp=resolved_timestamp), plain_text=plain)
+        self._force_transcript_tail_after_refresh()
 
     def _write_assistant_message(
         self,

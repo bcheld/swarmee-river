@@ -11,6 +11,8 @@ Run with:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 # The harness fixture is defined in tui_harness.py (auto-discovered via conftest or
@@ -217,6 +219,74 @@ async def test_thinking_bar_stays_visible_briefly_on_immediate_first_delta(tui_a
         await pilot.pause(delay=0.40)
         assert str(app._thinking_bar.styles.display) == "none"
         assert app._active_thinking_indicator is None
+
+
+async def test_model_selector_moves_to_agents_overview_and_updates_runtime_state(tui_app_factory):
+    from textual.containers import Horizontal
+    from textual.widgets import Select
+
+    async with tui_app_factory() as (app, pilot, transport):
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+
+        selector = app.query_one("#model_select", Select)
+        overview_row = app.query_one("#agent_overview_model_row", Horizontal)
+        prompt_bottom = app.query_one("#prompt_bottom", Horizontal)
+
+        assert selector.parent is overview_row
+        assert "model_select" not in {str(getattr(child, "id", "") or "") for child in prompt_bottom.children}
+        assert "prompt_metrics" in {str(getattr(child, "id", "") or "") for child in prompt_bottom.children}
+
+        app.on_select_changed(
+            SimpleNamespace(
+                select=SimpleNamespace(id="model_select", has_focus=True),
+                value="openai|deep",
+            )
+        )
+        assert app.state.daemon.model_provider_override == "openai"
+        assert app.state.daemon.model_tier_override == "deep"
+
+
+async def test_prompt_submit_forces_transcript_scroll_to_tail_when_overflowed(tui_app_factory):
+    from textual.containers import VerticalScroll
+    from textual.widgets import TextArea
+
+    async with tui_app_factory(size=(140, 24)) as (app, pilot, transport):
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+
+        for index in range(90):
+            app._write_transcript_line(f"filler line {index}")
+        await pilot.pause(delay=0.1)
+
+        transcript = app.query_one("#transcript", VerticalScroll)
+        transcript.scroll_to(0, 0, animate=False)
+        await pilot.pause(delay=0.05)
+        assert app._get_scroll_proportion(transcript) < 0.5
+
+        prompt = app.query_one("#prompt", TextArea)
+        prompt.insert("scroll to latest")
+        app.action_submit_prompt()
+
+        reached_tail = await _wait_for(
+            lambda: app._get_scroll_proportion(transcript) > 0.95,
+            pilot=pilot,
+            attempts=30,
+            delay=0.05,
+        )
+        assert reached_tail
+        assert any("YOU> scroll to latest" in line for line in app._transcript_fallback_lines)
+
+
+async def test_settings_general_includes_interrupt_control_label(tui_app_factory):
+    from textual.widgets import Static
+
+    async with tui_app_factory() as (app, pilot, _transport):
+        app._switch_side_tab("tab_settings")
+        await pilot.pause(delay=0.05)
+
+        label = app.query_one("#settings_interrupt_control_label", Static)
+        assert "Interrupt Control" in str(label.render())
 
 
 # ---------------------------------------------------------------------------

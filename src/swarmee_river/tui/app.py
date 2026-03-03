@@ -1182,7 +1182,7 @@ def run_tui() -> int:
         }
 
         /* ── Help text (muted hints below headers) ── */
-        #agent_overview_help, #agent_tools_help, #agent_team_help,
+        #agent_overview_help, #agent_overview_model_help, #agent_tools_help, #agent_team_help,
         #kbs_empty_state {
             height: auto;
             color: $text-muted;
@@ -1646,6 +1646,25 @@ def run_tui() -> int:
             margin: 0 0 1 0;
         }
 
+        #agent_overview_model_row {
+            height: auto;
+            layout: horizontal;
+            align: left middle;
+            margin: 0 0 1 0;
+        }
+
+        #agent_overview_model_label {
+            width: auto;
+            min-width: 13;
+            margin: 0 1 0 0;
+            color: $text-muted;
+        }
+
+        #agent_overview_model_row Select {
+            width: 1fr;
+            min-width: 0;
+        }
+
         #agent_summary_header, #agent_builder_agents_header {
             height: auto;
             color: $text-muted;
@@ -1781,6 +1800,7 @@ def run_tui() -> int:
         .layout-narrow #tooling_view_switch,
         .layout-narrow #tooling_prompt_actions,
         .layout-narrow #session_view_switch,
+        .layout-narrow #agent_overview_model_row,
         .layout-narrow #agent_builder_agent_actions,
         .layout-narrow #agent_builder_run_actions,
         .layout-narrow #bundles_actions_primary,
@@ -1828,6 +1848,17 @@ def run_tui() -> int:
         .layout-narrow #settings_models_actions Button:last-child,
         .layout-narrow #settings_env_actions Button:last-child,
         .layout-narrow #settings_safety_actions Button:last-child {
+            margin-bottom: 0;
+        }
+
+        .layout-narrow #agent_overview_model_row Static,
+        .layout-narrow #agent_overview_model_row Select {
+            width: 1fr;
+            min-width: 0;
+            margin: 0 0 1 0;
+        }
+
+        .layout-narrow #agent_overview_model_row Select:last-child {
             margin-bottom: 0;
         }
 
@@ -1898,11 +1929,6 @@ def run_tui() -> int:
 
         #prompt_metrics {
             width: 1fr;
-        }
-
-        #model_select {
-            width: 34;
-            min-width: 24;
         }
 
         Select > SelectCurrent {
@@ -2265,12 +2291,6 @@ def run_tui() -> int:
                 )
                 with Horizontal(id="prompt_bottom"):
                     yield ContextBudgetBar(id="prompt_metrics")
-                    yield Select(
-                        options=[("Loading model info...", _MODEL_LOADING_VALUE)],
-                        allow_blank=False,
-                        id="model_select",
-                        compact=True,
-                    )
             yield Footer()
 
         def on_mount(self) -> None:
@@ -2810,7 +2830,7 @@ def run_tui() -> int:
             if self._status_bar is not None:
                 self._status_bar.set_model(self._current_model_summary())
             self._refresh_agent_summary()
-            # The model selector is always visible; avoid transient notifications.
+            # Keep selector changes quiet; status/header already reflect updates.
 
         def on_tabbed_content_tab_activated(self, event: Any) -> None:
             """Auto-expand sidebar when Settings tab is active, restore on leave."""

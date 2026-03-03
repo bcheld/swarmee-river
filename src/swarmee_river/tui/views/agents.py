@@ -24,6 +24,18 @@ def compose_agents_tab() -> Iterator[Any]:
                     "Activated agents are available for delegation and swarm runs.",
                     id="agent_overview_help",
                 )
+                with Horizontal(id="agent_overview_model_row"):
+                    yield Static("Runtime Model", id="agent_overview_model_label")
+                    yield Select(
+                        options=[("Loading model info...", "__loading__")],
+                        allow_blank=False,
+                        id="model_select",
+                        compact=True,
+                    )
+                yield Static(
+                    "Applies to orchestrator runs; set provider/tier before sending a prompt.",
+                    id="agent_overview_model_help",
+                )
                 yield TextArea(
                     text="",
                     read_only=True,
