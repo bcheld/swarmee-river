@@ -179,7 +179,7 @@ from swarmee_river.utils.agent_runtime_utils import (
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
-from swarmee_river.utils.provider_utils import resolve_aws_auth_source, resolve_model_provider
+from swarmee_river.utils.provider_utils import has_aws_credentials, resolve_aws_auth_source, resolve_model_provider
 from swarmee_river.utils.stdio_utils import configure_stdio_for_utf8, write_stdout_jsonl
 from swarmee_river.utils.welcome_utils import render_goodbye_message, render_welcome_message
 from tools.sop import run_sop
@@ -213,7 +213,6 @@ _TRANSIENT_RETRY_MAX_ATTEMPTS = 3
 _consent_prompt_session: Any | None = None
 _consent_prompt_lock = threading.Lock()
 _consent_console: Any | None = Console() if Console is not None else None
-_stdout_jsonl_lock = threading.Lock()
 
 
 def _sanitize_context_source_token(value: str) -> str:
@@ -362,7 +361,7 @@ def _normalized_session_safety_overrides_payload(raw_state: Any) -> dict[str, An
 
 
 def _write_stdout_jsonl(event: dict[str, Any]) -> None:
-    write_stdout_jsonl(event, lock=_stdout_jsonl_lock)
+    write_stdout_jsonl(event)
 
 
 configure_stdio_for_utf8()
@@ -3081,6 +3080,15 @@ def main() -> None:
     _delete_bundle = runtime["delete_bundle"]
     _apply_bundle = runtime["apply_bundle"]
 
+    def _active_runtime_provider_name() -> str:
+        tiers = model_manager.list_tiers()
+        current = next((item for item in tiers if item.name == model_manager.current_tier), None)
+        provider = current.provider if current is not None else selected_provider
+        normalized = normalize_provider_name(provider)
+        if normalized:
+            return normalized
+        return normalize_provider_name(selected_provider)
+
     def _best_effort_retrieve(query_text: str, *, warn_on_error: bool) -> None:
         kb_for_turn = _current_knowledge_base_id()
         if not kb_for_turn:
@@ -3291,6 +3299,16 @@ def main() -> None:
                     try:
                         _refresh_query_context(interactive=False)
                         _best_effort_retrieve(query_text, warn_on_error=False)
+                        if _active_runtime_provider_name() == "bedrock" and not has_aws_credentials():
+                            _write_stdout_jsonl(
+                                _build_tui_error_event(
+                                    "AWS credentials are unavailable for Bedrock. "
+                                    "Run connect for bedrock and retry.",
+                                    category_hint=ERROR_CATEGORY_AUTH_ERROR,
+                                )
+                            )
+                            exit_status = "error"
+                            break
 
                         _, response, executed = _run_query_with_optional_plan(
                             query_text=query_text,
@@ -3725,6 +3743,10 @@ def main() -> None:
                             profile=profile or None,
                             emit=lambda line: _write_stdout_jsonl({"event": "warning", "text": line}),
                         )
+                        if _active_runtime_provider_name() == "bedrock":
+                            model_manager.set_tier(ctx.agent, model_manager.current_tier)
+                            agent_kwargs["model"] = ctx.agent.model
+                            _refresh_query_context(interactive=True)
                         _write_stdout_jsonl(
                             {
                                 "event": "warning",

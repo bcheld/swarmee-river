@@ -87,6 +87,15 @@ def test_build_resolved_invocation_state_includes_session_safety_overrides() -> 
     }
 
 
+def test_write_stdout_jsonl_uses_default_shared_lock(monkeypatch) -> None:
+    writer_spy = mock.Mock()
+    monkeypatch.setattr(swarmee, "write_stdout_jsonl", writer_spy)
+
+    swarmee._write_stdout_jsonl({"event": "warning", "text": "test"})
+
+    writer_spy.assert_called_once_with({"event": "warning", "text": "test"})
+
+
 class TestInteractiveMode:
     """Test cases for interactive mode functionality"""
 
@@ -443,6 +452,31 @@ class TestTuiDaemonMode:
         assert len(model_events) >= 2
         assert any(event.get("tier") == "deep" for event in model_events)
 
+    def test_tui_daemon_connect_bedrock_rebuilds_active_model(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(swarmee, "_connect_aws_credentials", lambda **_kwargs: "profile")
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO('{"cmd":"connect","provider":"bedrock","profile":"dev"}\n{"cmd":"shutdown"}\n'),
+        )
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert mock_bedrock.call_count == 2
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        model_events = [event for event in events if event.get("event") == "model_info"]
+        assert len(model_events) >= 2
+
     def test_tui_daemon_query_missing_text_emits_classified_error(
         self,
         mock_agent,
@@ -464,6 +498,31 @@ class TestTuiDaemonMode:
         assert error_events[0].get("message") == "query.text is required"
         assert error_events[0].get("category") == "fatal"
         assert error_events[0].get("retryable") is False
+
+    def test_tui_daemon_query_bedrock_without_credentials_fails_fast(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: False)
+        run_query_spy = mock.Mock(return_value=(None, "ok", True))
+        monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", run_query_spy)
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"query","text":"hello"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert run_query_spy.call_count == 0
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        error_events = [event for event in events if event.get("event") == "error"]
+        assert error_events
+        assert error_events[0].get("category") == "auth_error"
+        assert any(event.get("event") == "turn_complete" and event.get("exit_status") == "error" for event in events)
 
     def test_tui_daemon_retry_tool_without_history_emits_tool_error(
         self,
@@ -939,6 +998,7 @@ class TestTuiDaemonMode:
         monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
         monkeypatch.setattr(swarmee.threading, "Thread", _thread_factory)
         monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: True)
         monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", lambda **_kwargs: (None, "ok", True))
         monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
         monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"query","text":"hello"}\n{"cmd":"shutdown"}\n'))
