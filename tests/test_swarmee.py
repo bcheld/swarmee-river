@@ -101,16 +101,15 @@ def test_stop_all_runtime_brokers_windows_without_sigkill(monkeypatch) -> None:
 
     def _fake_kill(pid: int, sig: int) -> None:
         kill_calls.append((pid, sig))
-        if sig == 0:
-            if state["forced"]:
-                raise OSError("process exited")
-            return
         if sig == term_signal:
             state["term_count"] += 1
             if state["term_count"] >= 2:
                 state["forced"] = True
             return
         raise AssertionError(f"unexpected signal {sig}")
+
+    def _fake_is_process_running(_pid: int) -> bool:
+        return not state["forced"]
 
     monotonic_value = {"t": 0.0}
 
@@ -119,14 +118,15 @@ def test_stop_all_runtime_brokers_windows_without_sigkill(monkeypatch) -> None:
         return monotonic_value["t"]
 
     monkeypatch.setattr(swarmee.os, "kill", _fake_kill)
+    monkeypatch.setattr(swarmee.os, "name", "nt", raising=False)
+    monkeypatch.setattr(swarmee, "_is_process_running", _fake_is_process_running)
     monkeypatch.setattr(swarmee.time, "sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(swarmee.time, "monotonic", _fake_monotonic)
 
     stopped, failed = swarmee._stop_all_runtime_brokers(timeout_s=0.1)
 
     assert (stopped, failed) == (1, 0)
-    non_probe_signals = [sig for _pid, sig in kill_calls if sig != 0]
-    assert non_probe_signals.count(term_signal) >= 2
+    assert [sig for _pid, sig in kill_calls].count(term_signal) >= 2
 
 
 def test_daemon_start_with_all_target_is_rejected(capsys) -> None:

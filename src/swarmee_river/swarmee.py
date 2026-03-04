@@ -2293,9 +2293,7 @@ def _stop_all_runtime_brokers(*, timeout_s: float = 6.0) -> tuple[int, int]:
     alive: set[int] = set(pids)
     while alive and time.monotonic() < deadline:
         for pid in list(alive):
-            try:
-                os.kill(pid, 0)
-            except OSError:
+            if not _is_process_running(pid):
                 alive.discard(pid)
         if alive:
             time.sleep(0.1)
@@ -2308,9 +2306,7 @@ def _stop_all_runtime_brokers(*, timeout_s: float = 6.0) -> tuple[int, int]:
     force_deadline = time.monotonic() + 1.0
     while alive and time.monotonic() < force_deadline:
         for pid in list(alive):
-            try:
-                os.kill(pid, 0)
-            except OSError:
+            if not _is_process_running(pid):
                 alive.discard(pid)
         if alive:
             time.sleep(0.05)
@@ -2318,6 +2314,44 @@ def _stop_all_runtime_brokers(*, timeout_s: float = 6.0) -> tuple[int, int]:
     stopped = len(pids) - len(alive)
     failed = len(alive)
     return stopped, failed
+
+
+def _is_process_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        process_query_limited_information = 0x1000
+        handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+        if not handle:
+            return False
+        kernel32.CloseHandle(handle)
+        return True
+    except Exception:
+        pass
+    try:
+        output = subprocess.check_output(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception:
+        return False
+    lowered = output.strip().lower()
+    if not lowered:
+        return False
+    if "no tasks are running" in lowered:
+        return False
+    return f'"{pid}"' in output
 
 
 def _print_attach_event(event: dict[str, Any], *, streaming_state: dict[str, bool]) -> None:
