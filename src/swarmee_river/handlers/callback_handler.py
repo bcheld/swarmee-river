@@ -1,5 +1,6 @@
 import atexit
 import contextlib
+import logging
 import re
 import sys
 import time
@@ -63,6 +64,33 @@ _TUI_TOOL_HEARTBEAT_INTERVAL_S = 2.0
 _TUI_TOOL_OUTPUT_MAX_CHARS = 4096
 _PLAN_STEP_START_RE = re.compile(r"starting\s+step\s+(?P<num>\d+)\s*:\s*(?P<desc>.*)", re.IGNORECASE)
 _PLAN_STEP_DONE_RE = re.compile(r"completed\s+step\s+(?P<num>\d+)\b", re.IGNORECASE)
+_BEDROCK_STREAM_MARKER_KEYS = {
+    "messageStart",
+    "messageStop",
+    "contentBlockStart",
+    "contentBlockDelta",
+    "contentBlockStop",
+    "metadata",
+}
+_NON_TEXT_EVENT_TOKENS = {
+    "after_invocation",
+    "after_model_call",
+    "after_tool_call",
+    "before_model_call",
+    "complete",
+    "delta",
+    "llm_start",
+    "message_complete",
+    "message_delta",
+    "model_start",
+    "output_text_complete",
+    "output_text_delta",
+    "text_complete",
+    "text_delta",
+    "thinking",
+}
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _message_content_blocks(message: Any) -> list[dict[str, Any]]:
@@ -394,6 +422,9 @@ class TuiCallbackHandler:
         self._plan_total_steps: int = 0
         self._plan_complete_emitted: bool = False
         self._llm_start_emitted: bool = False
+        self._saw_bedrock_stream_chunk: bool = False
+        self._bedrock_stream_markers_seen: set[str] = set()
+        self._bedrock_missing_text_warning_emitted: bool = False
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Write a single JSONL event to stdout."""
@@ -410,6 +441,12 @@ class TuiCallbackHandler:
         self._plan_total_steps = 0
         self._plan_complete_emitted = False
         self._llm_start_emitted = False
+        self._reset_bedrock_stream_state()
+
+    def _reset_bedrock_stream_state(self) -> None:
+        self._saw_bedrock_stream_chunk = False
+        self._bedrock_stream_markers_seen.clear()
+        self._bedrock_missing_text_warning_emitted = False
 
     def _emit_llm_start_if_needed(self) -> None:
         if self._llm_start_emitted:
@@ -801,10 +838,20 @@ class TuiCallbackHandler:
                 return "".join(chunks)
             return None
         if isinstance(result, dict):
+            bedrock_text = self._extract_text_from_bedrock_payload(result)
+            if isinstance(bedrock_text, str) and bedrock_text:
+                return bedrock_text
+
             for key in ("text", "data", "delta", "output_text", "outputText", "textDelta"):
                 text_value = result.get(key)
                 if isinstance(text_value, str) and text_value:
                     return text_value
+            for key in ("delta", "text_delta", "content_delta"):
+                nested = result.get(key)
+                if isinstance(nested, dict):
+                    nested_text = self._extract_text_from_delta_payload(nested)
+                    if isinstance(nested_text, str) and nested_text:
+                        return nested_text
             message = result.get("message")
             if isinstance(message, dict):
                 return self._extract_text_from_result(message)
@@ -816,10 +863,91 @@ class TuiCallbackHandler:
                 if isinstance(extracted, str) and extracted:
                     return extracted
             for key in ("chunk", "event", "response"):
-                extracted = self._extract_text_from_result(result.get(key))
+                nested_value = result.get(key)
+                if key in {"event", "type", "kind"} and isinstance(nested_value, str):
+                    if self._is_non_text_event_token(nested_value):
+                        continue
+                extracted = self._extract_text_from_result(nested_value)
                 if isinstance(extracted, str) and extracted:
                     return extracted
         return None
+
+    @staticmethod
+    def _extract_text_from_delta_payload(delta_payload: dict[str, Any]) -> str | None:
+        for key in ("text", "data", "output_text", "outputText", "textDelta"):
+            value = delta_payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    def _extract_text_from_bedrock_payload(self, payload: Any) -> str | None:
+        if isinstance(payload, list):
+            for item in payload:
+                extracted = self._extract_text_from_bedrock_payload(item)
+                if isinstance(extracted, str) and extracted:
+                    return extracted
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        for key in ("contentBlockDelta", "content_block_delta"):
+            block = payload.get(key)
+            if not isinstance(block, dict):
+                continue
+            delta_value = block.get("delta")
+            if isinstance(delta_value, dict):
+                extracted = self._extract_text_from_delta_payload(delta_value)
+                if isinstance(extracted, str) and extracted:
+                    return extracted
+            if isinstance(delta_value, str) and delta_value:
+                return delta_value
+            extracted = self._extract_text_from_delta_payload(block)
+            if isinstance(extracted, str) and extracted:
+                return extracted
+
+        for key in ("delta", "text_delta", "content_delta"):
+            delta_payload = payload.get(key)
+            if isinstance(delta_payload, dict):
+                extracted = self._extract_text_from_delta_payload(delta_payload)
+                if isinstance(extracted, str) and extracted:
+                    return extracted
+        return None
+
+    def _record_bedrock_stream_markers(self, payload: Any, *, depth: int = 5) -> bool:
+        if depth < 0:
+            return False
+        found = False
+        if isinstance(payload, dict):
+            for key in payload.keys():
+                if key in _BEDROCK_STREAM_MARKER_KEYS:
+                    self._bedrock_stream_markers_seen.add(key)
+                    found = True
+            for value in payload.values():
+                if self._record_bedrock_stream_markers(value, depth=depth - 1):
+                    found = True
+            return found
+        if isinstance(payload, list):
+            for item in payload:
+                if self._record_bedrock_stream_markers(item, depth=depth - 1):
+                    found = True
+        return found
+
+    def _extract_text_from_bedrock_extra_fields(self, extra_fields: dict[str, Any]) -> str | None:
+        candidates: list[Any] = [extra_fields]
+        for key in ("message", "event", "chunk", "content", "response", "payload", "raw_event"):
+            if key in extra_fields:
+                candidates.append(extra_fields.get(key))
+
+        for payload in candidates:
+            extracted = self._extract_text_from_bedrock_payload(payload)
+            if isinstance(extracted, str) and extracted:
+                return extracted
+        return None
+
+    @staticmethod
+    def _is_non_text_event_token(value: str) -> bool:
+        token = value.strip().lower()
+        return token in _NON_TEXT_EVENT_TOKENS
 
     def _emit_assistant_message_text(self, text: str | None) -> bool:
         if not isinstance(text, str):
@@ -888,6 +1016,10 @@ class TuiCallbackHandler:
         return None
 
     def _extract_text_from_extra_fields(self, extra_fields: dict[str, Any]) -> str | None:
+        bedrock_text = self._extract_text_from_bedrock_extra_fields(extra_fields)
+        if isinstance(bedrock_text, str) and bedrock_text:
+            return bedrock_text
+
         for key in (
             "data",
             "text",
@@ -903,8 +1035,18 @@ class TuiCallbackHandler:
             value = extra_fields.get(key)
             if isinstance(value, str) and value:
                 return value
+        for key in ("delta", "text_delta", "content_delta"):
+            nested = extra_fields.get(key)
+            if isinstance(nested, dict):
+                nested_text = self._extract_text_from_delta_payload(nested)
+                if isinstance(nested_text, str) and nested_text:
+                    return nested_text
         for key in ("message", "event", "chunk", "content", "response", "payload"):
-            text = self._extract_text_from_result(extra_fields.get(key))
+            nested = extra_fields.get(key)
+            if key in {"event", "type", "kind"} and isinstance(nested, str):
+                if self._is_non_text_event_token(nested):
+                    continue
+            text = self._extract_text_from_result(nested)
             if isinstance(text, str) and text:
                 return text
         return None
@@ -969,6 +1111,10 @@ class TuiCallbackHandler:
 
         saw_text_before = self._saw_text_delta
         emitted_stream_text = False
+        saw_bedrock_chunk = self._record_bedrock_stream_markers(extra_event_fields)
+        saw_bedrock_chunk = self._record_bedrock_stream_markers(result) or saw_bedrock_chunk
+        if saw_bedrock_chunk:
+            self._saw_bedrock_stream_chunk = True
         if data:
             emitted_stream_text = self._emit_assistant_message_text(data) or emitted_stream_text
 
@@ -976,8 +1122,11 @@ class TuiCallbackHandler:
             self._emit_assistant_message_text(self._extract_text_from_assistant_message(message)) or emitted_stream_text
         )
 
-        if not emitted_stream_text and extra_event_fields:
-            self._emit_assistant_message_text(self._extract_text_from_extra_fields(extra_event_fields))
+        if extra_event_fields:
+            emitted_stream_text = (
+                self._emit_assistant_message_text(self._extract_text_from_extra_fields(extra_event_fields))
+                or emitted_stream_text
+            )
 
         if self._saw_text_delta and not saw_text_before:
             _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
@@ -1106,8 +1255,24 @@ class TuiCallbackHandler:
 
         self._emit_tool_heartbeats()
 
+        if (
+            should_emit_complete
+            and self._saw_bedrock_stream_chunk
+            and not self._saw_text_delta
+            and not self._bedrock_missing_text_warning_emitted
+        ):
+            markers = ", ".join(sorted(self._bedrock_stream_markers_seen)) or "unknown"
+            _LOGGER.warning(
+                "Bedrock stream completed without extractable text delta (markers=%s).",
+                markers,
+            )
+            self._bedrock_missing_text_warning_emitted = True
+
         if should_emit_complete and not emitted_text_fallback and self._saw_text_delta:
             self._emit({"event": "text_complete"})
+
+        if should_emit_complete:
+            self._reset_bedrock_stream_state()
 
         if emitted_text_fallback:
             self._flush_plan_marker_buffer()

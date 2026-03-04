@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import sys
 from threading import Event
 
@@ -393,6 +394,32 @@ def test_extra_event_fields_text_emits_text_delta():
     assert events == [{"event": "text_delta", "data": "hello from extra"}]
 
 
+def test_bedrock_content_block_delta_emits_text_delta():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(event={"contentBlockDelta": {"delta": {"text": "hello from bedrock"}}}),
+    )
+    assert events == [{"event": "text_delta", "data": "hello from bedrock"}]
+
+
+def test_nested_delta_text_payload_emits_text_delta():
+    h = TuiCallbackHandler()
+    events = _capture_events(h, lambda: h.callback_handler(delta={"text": "nested delta text"}))
+    assert events == [{"event": "text_delta", "data": "nested delta text"}]
+
+
+def test_mixed_bedrock_chunks_emit_only_text_chunk():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(event={"contentBlockStart": {"start": {"toolUse": {"toolUseId": "tool-1"}}}})
+        h.callback_handler(event={"contentBlockDelta": {"delta": {"text": "streamed token"}}})
+
+    events = _capture_events(h, run)
+    assert events == [{"event": "text_delta", "data": "streamed token"}]
+
+
 def test_init_event_loop_resets_text_fallback_state():
     h = TuiCallbackHandler()
 
@@ -501,6 +528,20 @@ def test_warning_text_extra_field_emits_warning_event():
     h = TuiCallbackHandler()
     events = _capture_events(h, lambda: h.callback_handler(warning_text="bedrock stalled"))
     assert events == [{"event": "warning", "text": "bedrock stalled"}]
+
+
+def test_bedrock_stream_without_text_logs_warning_once(caplog):
+    h = TuiCallbackHandler()
+    caplog.set_level(logging.WARNING, logger="swarmee_river.handlers.callback_handler")
+
+    def run():
+        h.callback_handler(event={"contentBlockStart": {"start": {"toolUse": {"toolUseId": "tool-1"}}}})
+        h.callback_handler(event={"contentBlockStop": {}}, complete=True)
+
+    events = _capture_events(h, run)
+    assert events == []
+    warning_records = [record for record in caplog.records if "without extractable text delta" in record.getMessage()]
+    assert len(warning_records) == 1
 
 
 def test_invoke_diag_markers_recorded_in_invocation_state():

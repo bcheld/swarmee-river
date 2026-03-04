@@ -15,6 +15,31 @@ _TRUNCATED_ARTIFACT_RE = re.compile(r"full output saved to (?P<path>[^\]]+)")
 _PROVIDER_NOISE_PREFIX = "[provider]"
 _PROVIDER_FALLBACK_PHRASE = "falling back to"
 _TRACEBACK_FILE_LINE_RE = re.compile(r'^File ".*", line \d+')
+_BEDROCK_CHUNK_KEYS = {
+    "messageStart",
+    "messageStop",
+    "contentBlockStart",
+    "contentBlockDelta",
+    "contentBlockStop",
+    "metadata",
+}
+_NON_TEXT_EVENT_TOKENS = {
+    "after_invocation",
+    "after_model_call",
+    "after_tool_call",
+    "before_model_call",
+    "complete",
+    "delta",
+    "llm_start",
+    "message_complete",
+    "message_delta",
+    "model_start",
+    "output_text_complete",
+    "output_text_delta",
+    "text_complete",
+    "text_delta",
+    "thinking",
+}
 
 
 @dataclass(frozen=True)
@@ -110,10 +135,108 @@ def parse_tui_event(line: str) -> dict[str, Any] | None:
 
 def extract_tui_text_chunk(event: dict[str, Any]) -> str:
     """Extract a text chunk from a structured TUI event payload."""
-    for key in ("data", "text", "delta", "content", "output_text", "outputText", "textDelta"):
-        value = event.get(key)
-        if isinstance(value, str):
+    extracted = _extract_text_value(event)
+    if isinstance(extracted, str):
+        return extracted
+    return ""
+
+
+def _extract_text_from_delta_payload(payload: dict[str, Any]) -> str:
+    for key in ("text", "data", "output_text", "outputText", "textDelta"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
             return value
+    return ""
+
+
+def _extract_text_from_bedrock_payload(payload: Any) -> str:
+    if isinstance(payload, list):
+        for item in payload:
+            extracted = _extract_text_from_bedrock_payload(item)
+            if extracted:
+                return extracted
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+
+    for key in ("contentBlockDelta", "content_block_delta"):
+        block = payload.get(key)
+        if not isinstance(block, dict):
+            continue
+        delta_payload = block.get("delta")
+        if isinstance(delta_payload, dict):
+            extracted = _extract_text_from_delta_payload(delta_payload)
+            if extracted:
+                return extracted
+        if isinstance(delta_payload, str) and delta_payload:
+            return delta_payload
+        extracted = _extract_text_from_delta_payload(block)
+        if extracted:
+            return extracted
+
+    for key in ("delta", "text_delta", "content_delta"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            extracted = _extract_text_from_delta_payload(nested)
+            if extracted:
+                return extracted
+    return ""
+
+
+def _extract_text_value(payload: Any, *, depth: int = 5) -> str:
+    if depth < 0:
+        return ""
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, list):
+        for item in payload:
+            extracted = _extract_text_value(item, depth=depth - 1)
+            if extracted:
+                return extracted
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+
+    bedrock = _extract_text_from_bedrock_payload(payload)
+    if bedrock:
+        return bedrock
+
+    for key in ("data", "text", "delta", "content", "output_text", "outputText", "textDelta"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    for key in ("delta", "text_delta", "content_delta"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            extracted = _extract_text_from_delta_payload(nested)
+            if extracted:
+                return extracted
+
+    nested_priority: list[Any] = []
+    for marker in _BEDROCK_CHUNK_KEYS:
+        if marker in payload:
+            nested_priority.append(payload.get(marker))
+    for key in ("message", "event", "chunk", "content", "response", "payload"):
+        if key in payload:
+            value = payload.get(key)
+            if key in {"event", "type", "kind"} and isinstance(value, str):
+                if value.strip().lower() in _NON_TEXT_EVENT_TOKENS:
+                    continue
+            nested_priority.append(value)
+
+    for nested in nested_priority:
+        extracted = _extract_text_value(nested, depth=depth - 1)
+        if extracted:
+            return extracted
+
+    for key, nested in payload.items():
+        if key in {"event", "type", "kind"} and isinstance(nested, str):
+            if nested.strip().lower() in _NON_TEXT_EVENT_TOKENS:
+                continue
+        extracted = _extract_text_value(nested, depth=depth - 1)
+        if extracted:
+            return extracted
     return ""
 
 

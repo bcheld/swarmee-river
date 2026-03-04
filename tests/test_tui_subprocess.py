@@ -2447,6 +2447,8 @@ def test_extract_tui_text_chunk_prefers_data_then_falls_back_to_text():
     assert tui_app.extract_tui_text_chunk({"text": "world"}) == "world"
     assert tui_app.extract_tui_text_chunk({"delta": "chunk"}) == "chunk"
     assert tui_app.extract_tui_text_chunk({"outputText": "done"}) == "done"
+    assert tui_app.extract_tui_text_chunk({"delta": {"text": "nested"}}) == "nested"
+    assert tui_app.extract_tui_text_chunk({"event": {"contentBlockDelta": {"delta": {"text": "bedrock"}}}}) == "bedrock"
     assert tui_app.extract_tui_text_chunk({"event": "text_delta"}) == ""
 
 
@@ -3416,3 +3418,38 @@ def test_streaming_handler_llm_start_triggers_thinking_indicator() -> None:
     handled = _handle_streaming_events(app, "llm_start", {"event": "llm_start"})
     assert handled is True
     assert calls == [""]
+
+
+def test_streaming_handler_text_delta_accepts_nested_bedrock_payload() -> None:
+    from swarmee_river.tui.event_router import _handle_streaming_events
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self._current_assistant_chunks: list[str] = []
+            self._streaming_buffer: list[str] = []
+            self._current_assistant_model: str | None = None
+            self._current_assistant_timestamp: str | None = None
+            self.state = SimpleNamespace(daemon=SimpleNamespace(current_model="us.anthropic.claude-sonnet-4"))
+            self.dismiss_calls = 0
+            self.flush_scheduled = 0
+
+        def _dismiss_thinking(self, *, emit_summary: bool) -> None:
+            del emit_summary
+            self.dismiss_calls += 1
+
+        def _turn_timestamp(self) -> str:
+            return "2026-03-03T00:00:00Z"
+
+        def _schedule_streaming_flush(self) -> None:
+            self.flush_scheduled += 1
+
+    app = FakeApp()
+    handled = _handle_streaming_events(
+        app,
+        "text_delta",
+        {"event": "text_delta", "payload": {"contentBlockDelta": {"delta": {"text": "hello"}}}},
+    )
+    assert handled is True
+    assert app._streaming_buffer == ["hello"]
+    assert app.dismiss_calls == 1
+    assert app.flush_scheduled == 1
