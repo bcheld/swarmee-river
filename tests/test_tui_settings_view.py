@@ -70,6 +70,7 @@ def test_bedrock_runtime_category_filters_to_expected_keys() -> None:
         "SWARMEE_BEDROCK_STALL_WARN_SEC",
         "SWARMEE_BEDROCK_STALL_DIAG_DUMP",
         "SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC",
+        "SWARMEE_AGENT_INVOKE_MODE",
     }
 
 
@@ -267,6 +268,26 @@ def test_model_env_overrides_merge_project_env_and_model_overrides() -> None:
     assert overrides["AWS_PROFILE"] == "ds-pr"
     assert overrides["SWARMEE_MODEL_PROVIDER"] == "openai"
     assert overrides["SWARMEE_MODEL_TIER"] == "deep"
+
+
+def test_model_env_overrides_inherit_aws_region_from_process_env(monkeypatch) -> None:
+    monkeypatch.setenv("AWS_REGION", "us-east-2")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    harness = _SettingsHarness({"models": {}, "env": {}})
+
+    overrides = harness._model_env_overrides()
+
+    assert overrides["AWS_REGION"] == "us-east-2"
+    assert overrides["AWS_DEFAULT_REGION"] == "us-east-1"
+
+
+def test_model_env_overrides_project_aws_region_wins_over_process_env(monkeypatch) -> None:
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    harness = _SettingsHarness({"models": {}, "env": {"AWS_REGION": "eu-west-1"}})
+
+    overrides = harness._model_env_overrides()
+
+    assert overrides["AWS_REGION"] == "eu-west-1"
 
 
 def test_apply_bedrock_runtime_settings_persists_values() -> None:

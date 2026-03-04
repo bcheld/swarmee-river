@@ -41,3 +41,15 @@ def test_bedrock_instance_no_warning_for_matching_prefixed_model(monkeypatch, ca
 
     assert isinstance(model, _FakeBedrockModel)
     assert not caplog.records
+
+
+def test_bedrock_instance_uses_aws_region_env_without_warning(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(bedrock_model, "BedrockModel", _FakeBedrockModel)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    caplog.set_level(logging.WARNING, logger="swarmee_river.models.bedrock")
+
+    model = bedrock_model.instance(model_id="us.anthropic.claude-sonnet-4-20250514-v1:0")
+
+    assert isinstance(model, _FakeBedrockModel)
+    assert not caplog.records

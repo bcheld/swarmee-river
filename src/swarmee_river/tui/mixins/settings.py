@@ -973,6 +973,12 @@ class SettingsMixin:
 
     def _model_env_overrides(self) -> dict[str, str]:
         overrides: dict[str, str] = dict(self._project_settings_env_overrides())
+        for key in ("AWS_REGION", "AWS_DEFAULT_REGION"):
+            if key in overrides:
+                continue
+            inherited = str(os.getenv(key) or "").strip()
+            if inherited:
+                overrides[key] = inherited
         if self.state.daemon.model_provider_override:
             overrides["SWARMEE_MODEL_PROVIDER"] = self.state.daemon.model_provider_override
         if self.state.daemon.model_tier_override:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
 import time
 import uuid
@@ -15,6 +16,19 @@ from swarmee_river.tui.transport import (
     send_daemon_command,
 )
 
+_BROKER_STARTUP_TIMEOUT_S = 6.0
+_BROKER_STARTUP_TIMEOUT_WINDOWS_S = 20.0
+_BROKER_ATTACH_ATTEMPTS_WINDOWS = 6
+_BROKER_ATTACH_RETRY_DELAY_S = 0.35
+
+
+def _is_retryable_broker_connect_error(exc: Exception) -> bool:
+    return isinstance(exc, (FileNotFoundError, ConnectionError, TimeoutError, OSError))
+
+
+def _is_windows_platform() -> bool:
+    return os.name == "nt"
+
 
 class DaemonMixin:
     # Override in tests to inject a mock transport instead of spawning a subprocess.
@@ -25,6 +39,7 @@ class DaemonMixin:
         if self._auth_connect_screen is screen:
             self._auth_connect_screen = None
         self._auth_connect_capture_warnings = False
+        self._auth_connect_completion_announced = False
         self._auth_connect_provider = None
 
     def _show_auth_connect_popup(self, provider: str, *, profile: str | None = None) -> None:
@@ -52,6 +67,7 @@ class DaemonMixin:
         self._auth_connect_screen = screen
         self._auth_connect_provider = normalized or None
         self._auth_connect_capture_warnings = True
+        self._auth_connect_completion_announced = False
         self.push_screen(screen, lambda result, active=screen: self._on_auth_connect_popup_closed(active))
 
     def _append_auth_connect_popup_line(self, text: str) -> None:
@@ -76,9 +92,11 @@ class DaemonMixin:
     def _handle_connect_model_info_event(self, _event: dict[str, Any]) -> None:
         if not bool(self._auth_connect_capture_warnings):
             return
+        if bool(getattr(self, "_auth_connect_completion_announced", False)):
+            return
         self._append_auth_connect_popup_line("Authentication status refreshed.")
         self._append_auth_connect_popup_line("You can close this popup.")
-        self._auth_connect_capture_warnings = False
+        self._auth_connect_completion_announced = True
 
     def _handle_daemon_exit(self, proc: _DaemonTransport, *, return_code: int) -> None:
         if self.state.daemon.proc is not proc:
@@ -184,28 +202,43 @@ class DaemonMixin:
                 self._write_transcript_line(f"[daemon] test transport factory failed: {exc}")
                 return
         else:
+            env_overrides = self._model_env_overrides()
+            is_windows = _is_windows_platform()
+            broker_timeout_s = _BROKER_STARTUP_TIMEOUT_WINDOWS_S if is_windows else _BROKER_STARTUP_TIMEOUT_S
             try:
-                ensure_runtime_broker(cwd=Path.cwd())
+                ensure_runtime_broker(cwd=Path.cwd(), timeout_s=broker_timeout_s)
             except Exception as exc:
                 broker_error = exc
 
-            try:
-                daemon = _SocketTransport.connect(
-                    session_id=requested_session_id,
-                    cwd=Path.cwd(),
-                    client_name="swarmee-tui",
-                    surface="tui",
-                    env_overrides=self._model_env_overrides(),
-                )
-            except Exception as exc:
-                if broker_error is None:
-                    broker_error = exc
+            connect_attempts = _BROKER_ATTACH_ATTEMPTS_WINDOWS if is_windows else 1
+            wrote_retry_notice = False
+            for attempt in range(connect_attempts):
+                try:
+                    daemon = _SocketTransport.connect(
+                        session_id=requested_session_id,
+                        cwd=Path.cwd(),
+                        client_name="swarmee-tui",
+                        surface="tui",
+                        env_overrides=env_overrides,
+                    )
+                    break
+                except Exception as exc:
+                    if broker_error is None:
+                        broker_error = exc
+                    is_retryable = _is_retryable_broker_connect_error(exc)
+                    has_retries_remaining = (attempt + 1) < connect_attempts
+                    if not is_retryable or not has_retries_remaining:
+                        break
+                    if not wrote_retry_notice:
+                        wrote_retry_notice = True
+                        self._write_transcript_line("[daemon] runtime broker still starting; retrying connection...")
+                    time.sleep(_BROKER_ATTACH_RETRY_DELAY_S)
 
             if daemon is None:
                 try:
                     daemon_proc = spawn_swarmee_daemon(
                         session_id=requested_session_id,
-                        env_overrides=self._model_env_overrides(),
+                        env_overrides=env_overrides,
                     )
                     daemon = _SubprocessTransport(daemon_proc)
                 except Exception as exc:

@@ -1015,6 +1015,190 @@ def test_socket_transport_connect_forwards_attach_env_overrides(tmp_path):
     assert fake_client.attach_payload["env_overrides"] == {"AWS_PROFILE": "ds-pr"}
 
 
+def test_spawn_daemon_retries_windows_broker_attach_before_fallback(monkeypatch, tmp_path):
+    import swarmee_river.tui.mixins.daemon as daemon_mixin
+    import swarmee_river.tui.transport as transport
+
+    class _FakeThread:
+        def __init__(self, *args, **kwargs) -> None:
+            self.args = args
+            self.kwargs = kwargs
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+    class _FakeClient:
+        def read_event(self):
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def send_command(self, _payload: dict[str, object]) -> None:
+            return None
+
+    class _Harness(DaemonMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    is_shutting_down=False,
+                    proc=None,
+                    session_id="sess-1",
+                    ready=False,
+                    pending_model_select_value=None,
+                    runner_thread=None,
+                )
+            )
+            self._test_transport_factory = None
+            self._context_sources = []
+            self._active_sop_names = []
+            self.messages: list[str] = []
+            self.saved = False
+
+        def _model_env_overrides(self) -> dict[str, str]:
+            return {"AWS_PROFILE": "ds-pr"}
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.messages.append(text)
+
+        def _save_session(self) -> None:
+            self.saved = True
+
+        def _stream_daemon_output(self, proc) -> None:  # noqa: ANN001
+            _ = proc
+            return None
+
+    ensure_calls: list[dict[str, object]] = []
+
+    def _fake_ensure_runtime_broker(*, cwd=None, timeout_s=6.0, poll_interval_s=0.1):
+        ensure_calls.append({"cwd": cwd, "timeout_s": timeout_s, "poll_interval_s": poll_interval_s})
+        return tmp_path / "runtime.json"
+
+    connect_calls: list[dict[str, object]] = []
+    socket_transport = tui_app._SocketTransport(client=_FakeClient(), session_id="sess-1", broker_pid=321)
+
+    def _fake_connect(cls, **kwargs):  # noqa: ANN001
+        connect_calls.append(dict(kwargs))
+        if len(connect_calls) < 3:
+            raise ConnectionRefusedError("broker not ready")
+        return socket_transport
+
+    spawn_calls: list[dict[str, object]] = []
+
+    def _fake_spawn_swarmee_daemon(*, session_id: str | None = None, env_overrides: dict[str, str] | None = None):
+        spawn_calls.append({"session_id": session_id, "env_overrides": dict(env_overrides or {})})
+        raise AssertionError("local daemon fallback should not run when broker attach succeeds during retries")
+
+    monkeypatch.setattr(daemon_mixin, "_is_windows_platform", lambda: True)
+    monkeypatch.setattr(daemon_mixin, "ensure_runtime_broker", _fake_ensure_runtime_broker)
+    monkeypatch.setattr(daemon_mixin._SocketTransport, "connect", classmethod(_fake_connect))
+    monkeypatch.setattr(daemon_mixin.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(daemon_mixin.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(transport, "spawn_swarmee_daemon", _fake_spawn_swarmee_daemon)
+
+    harness = _Harness()
+    harness._spawn_daemon()
+
+    assert ensure_calls
+    assert ensure_calls[0]["timeout_s"] == daemon_mixin._BROKER_STARTUP_TIMEOUT_WINDOWS_S
+    assert len(connect_calls) == 3
+    assert connect_calls[0]["env_overrides"] == {"AWS_PROFILE": "ds-pr"}
+    assert spawn_calls == []
+    assert isinstance(harness.state.daemon.proc, tui_app._SocketTransport)
+    assert harness.saved is True
+
+
+def test_spawn_daemon_windows_falls_back_once_after_retry_exhaustion(monkeypatch, tmp_path):
+    import swarmee_river.tui.mixins.daemon as daemon_mixin
+    import swarmee_river.tui.transport as transport
+
+    class _FakeThread:
+        def __init__(self, *args, **kwargs) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
+        def start(self) -> None:
+            return None
+
+    class _FakeProc:
+        pid = 777
+        stdin = None
+        stdout = None
+
+        def poll(self) -> int | None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            _ = timeout
+            return 0
+
+    class _Harness(DaemonMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    is_shutting_down=False,
+                    proc=None,
+                    session_id="sess-2",
+                    ready=False,
+                    pending_model_select_value=None,
+                    runner_thread=None,
+                )
+            )
+            self._test_transport_factory = None
+            self._context_sources = []
+            self._active_sop_names = []
+            self.messages: list[str] = []
+            self.saved = False
+
+        def _model_env_overrides(self) -> dict[str, str]:
+            return {"AWS_PROFILE": "ds-pr", "AWS_REGION": "us-east-1"}
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.messages.append(text)
+
+        def _save_session(self) -> None:
+            self.saved = True
+
+        def _stream_daemon_output(self, proc) -> None:  # noqa: ANN001
+            _ = proc
+            return None
+
+    def _fake_ensure_runtime_broker(*, cwd=None, timeout_s=6.0, poll_interval_s=0.1):
+        _ = (cwd, timeout_s, poll_interval_s)
+        return tmp_path / "runtime.json"
+
+    connect_calls = 0
+
+    def _fake_connect(cls, **kwargs):  # noqa: ANN001
+        _ = (cls, kwargs)
+        nonlocal connect_calls
+        connect_calls += 1
+        raise ConnectionRefusedError("still booting")
+
+    spawn_calls: list[dict[str, object]] = []
+
+    def _fake_spawn_swarmee_daemon(*, session_id: str | None = None, env_overrides: dict[str, str] | None = None):
+        spawn_calls.append({"session_id": session_id, "env_overrides": dict(env_overrides or {})})
+        return _FakeProc()
+
+    monkeypatch.setattr(daemon_mixin, "_is_windows_platform", lambda: True)
+    monkeypatch.setattr(daemon_mixin, "ensure_runtime_broker", _fake_ensure_runtime_broker)
+    monkeypatch.setattr(daemon_mixin._SocketTransport, "connect", classmethod(_fake_connect))
+    monkeypatch.setattr(daemon_mixin.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(daemon_mixin.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(transport, "spawn_swarmee_daemon", _fake_spawn_swarmee_daemon)
+
+    harness = _Harness()
+    harness._spawn_daemon()
+
+    assert connect_calls == daemon_mixin._BROKER_ATTACH_ATTEMPTS_WINDOWS
+    assert len(spawn_calls) == 1
+    assert spawn_calls[0]["env_overrides"] == {"AWS_PROFILE": "ds-pr", "AWS_REGION": "us-east-1"}
+    assert isinstance(harness.state.daemon.proc, transport._SubprocessTransport)
+    assert harness.saved is True
+
+
 def test_detect_consent_prompt_matches_cli_prompt():
     assert tui_app.detect_consent_prompt("~ consent> ") is not None
     assert tui_app.detect_consent_prompt("Allow tool 'shell'? [y/n]") is not None
@@ -3095,6 +3279,127 @@ def test_warning_event_handler_uses_connect_popup_instead_of_toast() -> None:
     assert len(notifications) == 0
     assert popup_lines == ["visit URL and enter code ABCD-EFGH"]
     assert "WARN:" in issues[0]
+
+
+def test_connect_popup_model_info_keeps_warning_capture_enabled() -> None:
+    class _PopupScreen:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def append_line(self, line: str) -> None:
+            self.lines.append(line)
+
+    class _Harness(DaemonMixin):
+        def __init__(self) -> None:
+            self._auth_connect_screen = _PopupScreen()
+            self._auth_connect_capture_warnings = True
+            self._auth_connect_completion_announced = False
+
+    harness = _Harness()
+    harness._handle_connect_model_info_event({})
+    harness._handle_connect_model_info_event({})
+
+    assert harness._auth_connect_screen.lines == [
+        "Authentication status refreshed.",
+        "You can close this popup.",
+    ]
+    assert harness._auth_connect_capture_warnings is True
+    assert harness._auth_connect_completion_announced is True
+
+
+def test_warning_after_model_info_stays_in_popup_until_close() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class _PopupScreen:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def append_line(self, line: str) -> None:
+            self.lines.append(line)
+
+    class _State:
+        class session:
+            warning_count = 0
+            error_count = 0
+
+    class _Harness(DaemonMixin):
+        state = _State()
+
+        def __init__(self) -> None:
+            self._auth_connect_screen = _PopupScreen()
+            self._auth_connect_provider = "bedrock"
+            self._auth_connect_capture_warnings = True
+            self._auth_connect_completion_announced = False
+            self.issues: list[str] = []
+            self.notifications: list[tuple[str, str, float]] = []
+
+        def _write_issue(self, text: str) -> None:
+            self.issues.append(text)
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _notify(self, msg: str, *, severity: str = "information", timeout: float = 2.5) -> None:
+            self.notifications.append((msg, severity, timeout))
+
+    harness = _Harness()
+    harness._handle_connect_model_info_event({})
+    handled = _handle_error_warning_events(harness, "warning", {"text": "Open this URL to continue."})
+
+    assert handled is True
+    assert harness.notifications == []
+    assert harness._auth_connect_screen.lines == [
+        "Authentication status refreshed.",
+        "You can close this popup.",
+        "Open this URL to continue.",
+    ]
+
+
+def test_warning_after_popup_close_uses_toast_fallback() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class _PopupScreen:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def append_line(self, line: str) -> None:
+            self.lines.append(line)
+
+    class _State:
+        class session:
+            warning_count = 0
+            error_count = 0
+
+    class _Harness(DaemonMixin):
+        state = _State()
+
+        def __init__(self) -> None:
+            self._auth_connect_screen = _PopupScreen()
+            self._auth_connect_provider = "bedrock"
+            self._auth_connect_capture_warnings = True
+            self._auth_connect_completion_announced = False
+            self.issues: list[str] = []
+            self.notifications: list[tuple[str, str, float]] = []
+
+        def _write_issue(self, text: str) -> None:
+            self.issues.append(text)
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _notify(self, msg: str, *, severity: str = "information", timeout: float = 2.5) -> None:
+            self.notifications.append((msg, severity, timeout))
+
+    harness = _Harness()
+    popup = harness._auth_connect_screen
+    harness._on_auth_connect_popup_closed(popup)
+
+    handled = _handle_error_warning_events(harness, "warning", {"text": "Credentials refreshed."})
+
+    assert handled is True
+    assert popup.lines == []
+    assert len(harness.notifications) == 1
+    assert harness.notifications[0][0] == "WARN: Credentials refreshed."
 
 
 def test_usage_event_handler_computes_fallback_cost_when_event_omits_cost(monkeypatch) -> None:

@@ -2255,6 +2255,7 @@ def run_tui() -> int:
         _auth_connect_screen: Any = None
         _auth_connect_provider: str | None = None
         _auth_connect_capture_warnings: bool = False
+        _auth_connect_completion_announced: bool = False
         _thread_dispatch_backlog: Any = None  # deque[(callback, args, kwargs, attempts)] | None
         _thread_dispatch_dropped_total: int = 0
         _thread_dispatch_dropped_pending: int = 0
