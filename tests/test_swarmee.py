@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import warnings
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -129,10 +130,48 @@ def test_stop_all_runtime_brokers_windows_without_sigkill(monkeypatch) -> None:
     assert [sig for _pid, sig in kill_calls].count(term_signal) >= 2
 
 
+def test_stop_all_runtime_brokers_uses_shared_liveness_helper(monkeypatch) -> None:
+    monkeypatch.setattr(swarmee, "_runtime_broker_pids", lambda: [8123])
+
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(swarmee.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+    monkeypatch.setattr(swarmee.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(swarmee, "is_process_running", lambda pid: False if pid == 8123 else True)
+
+    stopped, failed = swarmee._stop_all_runtime_brokers(timeout_s=0.1)
+
+    assert (stopped, failed) == (1, 0)
+    assert kill_calls and kill_calls[0][0] == 8123
+
+
 def test_daemon_start_with_all_target_is_rejected(capsys) -> None:
     result = swarmee._run_daemon_command(["start", "all"])
     assert result == 1
     assert "only valid with 'stop'" in capsys.readouterr().out
+
+
+def test_run_serve_command_exits_when_server_signals_stopped(monkeypatch) -> None:
+    stopped_calls: list[bool] = []
+
+    class _FakeServer:
+        def __init__(self, *, port: int) -> None:
+            self.host = "127.0.0.1"
+            self.port = 7342 if int(port) == 0 else int(port)
+            self.runtime_file = Path("/tmp/runtime.json")
+            self._stopped = asyncio.Event()
+
+        async def start(self) -> None:
+            self._stopped.set()
+
+        async def stop(self) -> None:
+            stopped_calls.append(True)
+
+    monkeypatch.setattr(swarmee, "RuntimeServiceServer", _FakeServer)
+
+    result = swarmee._run_serve_command(["--port", "0"])
+
+    assert result == 0
+    assert stopped_calls == [True]
 
 
 def test_build_resolved_invocation_state_includes_session_safety_overrides() -> None:
@@ -511,6 +550,36 @@ class TestTuiDaemonMode:
         assert isinstance(events[1]["tool_names"], list)
         assert events[1]["tool_names"] == sorted(events[1]["tool_names"])
 
+    def test_tui_daemon_emits_ready_when_startup_context_refresh_fails(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(
+            swarmee,
+            "build_context_snapshot",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("context refresh exploded")),
+        )
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert events
+        assert events[0]["event"] == "ready"
+        assert any(event.get("event") == "model_info" for event in events)
+        assert any(
+            event.get("event") == "warning"
+            and "context refresh failed during daemon startup handshake" in str(event.get("text", "")).lower()
+            for event in events
+        )
+
     def test_tui_daemon_set_tier_emits_updated_model_info(
         self,
         mock_agent,
@@ -639,6 +708,45 @@ class TestTuiDaemonMode:
         assert error_events
         assert error_events[0].get("category") == "auth_error"
         assert any(event.get("event") == "turn_complete" and event.get("exit_status") == "error" for event in events)
+
+    def test_tui_daemon_query_continues_when_preflight_refresh_fails(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        class _Snapshot:
+            preflight_prompt_section = ""
+            project_map_prompt_section = ""
+
+        def _fake_snapshot(*, interactive: bool, default_preflight_level=None, artifact_store=None):
+            _ = (default_preflight_level, artifact_store)
+            if not interactive:
+                raise RuntimeError("query refresh failed")
+            return _Snapshot()
+
+        run_query_spy = mock.Mock(return_value=(None, "ok", True))
+        monkeypatch.setattr(swarmee, "build_context_snapshot", _fake_snapshot)
+        monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", run_query_spy)
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: True)
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"query","text":"hello"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert run_query_spy.call_count >= 1
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert any(
+            event.get("event") == "warning"
+            and "context refresh failed during query preflight" in str(event.get("text", "")).lower()
+            and "query preflight" in str(event.get("text", "")).lower()
+            for event in events
+        )
+        assert any(event.get("event") == "turn_complete" and event.get("exit_status") == "ok" for event in events)
 
     def test_tui_daemon_retry_tool_without_history_emits_tool_error(
         self,

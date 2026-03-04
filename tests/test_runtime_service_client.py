@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import sys
 import time
 from pathlib import Path
@@ -169,3 +170,47 @@ def test_runtime_client_close_does_not_block_on_stream_close() -> None:
     assert client._sock is None
     assert client._reader is None
     assert client._writer is None
+
+
+def test_kill_stale_broker_process_uses_shared_liveness_probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import swarmee_river.runtime_service.client as client_module
+
+    discovery_path = tmp_path / "runtime.json"
+    discovery_path.write_text(
+        json.dumps({"host": "127.0.0.1", "port": 7399, "token": "tok", "pid": 4242}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    probe_calls: list[int] = []
+    monkeypatch.setattr(client_module, "is_process_running", lambda pid: probe_calls.append(pid) or False)
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(client_module.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    client_module._kill_stale_broker_process(discovery_path)
+
+    assert probe_calls == [4242]
+    assert kill_calls == []
+
+
+def test_kill_stale_broker_process_terminates_with_liveness_recheck(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import swarmee_river.runtime_service.client as client_module
+
+    discovery_path = tmp_path / "runtime.json"
+    discovery_path.write_text(
+        json.dumps({"host": "127.0.0.1", "port": 7400, "token": "tok", "pid": 4321}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    liveness = iter([True, False])
+    monkeypatch.setattr(client_module, "is_process_running", lambda _pid: next(liveness))
+    monkeypatch.setattr(client_module.time, "sleep", lambda _seconds: None)
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(client_module.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    client_module._kill_stale_broker_process(discovery_path)
+
+    assert kill_calls
+    assert kill_calls[0] == (4321, signal.SIGTERM)
+    assert all(sig != 0 for _, sig in kill_calls)

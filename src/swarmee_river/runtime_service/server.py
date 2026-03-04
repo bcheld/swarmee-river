@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import secrets
@@ -111,6 +112,7 @@ class SessionState:
     last_query_stall_warn_mono: float = 0.0
     pending_stall_restart: bool = False
     provider_hint: str = ""
+    stdout_first_line_seen: bool = False
 
 
 class RuntimeServiceServer:
@@ -248,6 +250,54 @@ class RuntimeServiceServer:
         if len(text) <= max_chars:
             return text
         return text[: max_chars - 1].rstrip() + "..."
+
+    def _write_broker_log_line(self, message: str) -> None:
+        line = str(message or "").strip()
+        if not line:
+            return
+        payload = f"[runtime] {utc_now_iso()} {line}\n"
+        with contextlib.suppress(Exception):
+            self.broker_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.broker_log_path.open("a", encoding="utf-8", errors="replace") as handle:
+                handle.write(payload)
+
+    @staticmethod
+    def _cwd_short_hash(cwd: str) -> str:
+        normalized = str(cwd or "").strip()
+        if not normalized:
+            return "unknown"
+        digest = hashlib.sha1(normalized.encode("utf-8", errors="replace")).hexdigest()[:10]
+        tail = Path(normalized).name or normalized[-12:]
+        return f"{tail}:{digest}"
+
+    def _trace_session_transition(
+        self,
+        *,
+        session_id: str,
+        message: str,
+        persist_session_warning: bool = False,
+        **fields: Any,
+    ) -> None:
+        safe_session_id = str(session_id or "").strip() or "unknown"
+        parts = [f"session={safe_session_id}", str(message or "").strip() or "event"]
+        for key, value in fields.items():
+            if value is None:
+                continue
+            rendered = str(value).strip()
+            if not rendered:
+                continue
+            parts.append(f"{key}={rendered}")
+        self._write_broker_log_line(" | ".join(parts))
+        if persist_session_warning:
+            payload: dict[str, Any] = {
+                "event": "warning",
+                "text": f"[broker] {message}",
+                "source": "runtime_broker",
+                "session_id": safe_session_id,
+            }
+            payload.update({key: value for key, value in fields.items() if value is not None})
+            with contextlib.suppress(Exception):
+                self._persist_session_event(safe_session_id, payload)
 
     def _resolve_attach_cwd(self, raw_cwd: Any) -> Path | None:
         if not isinstance(raw_cwd, str) or not raw_cwd.strip():
@@ -611,6 +661,7 @@ class RuntimeServiceServer:
         session.controller_client_id = None
         session.started_new_session = False
         session.pending_stall_restart = False
+        session.stdout_first_line_seen = False
 
     async def _start_session_process(self, session: SessionState) -> None:
         command = [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
@@ -647,7 +698,14 @@ class RuntimeServiceServer:
             raise RuntimeError("Failed to open daemon stdio pipes")
 
         session.process = process
+        session.stdout_first_line_seen = False
         session.started_new_session = started_new_session
+        self._trace_session_transition(
+            session_id=session.session_id,
+            message="session_daemon_spawned",
+            persist_session_warning=True,
+            pid=process.pid,
+        )
         session.stdout_task = asyncio.create_task(
             self._session_stdout_reader(session=session, process=process),
             name=f"runtime-session-{session.session_id}-stdout",
@@ -727,6 +785,14 @@ class RuntimeServiceServer:
                 line = await asyncio.to_thread(stdout.readline)
                 if line == "":
                     break
+                if not session.stdout_first_line_seen and line.strip():
+                    session.stdout_first_line_seen = True
+                    self._trace_session_transition(
+                        session_id=session.session_id,
+                        message="session_stdout_first_line",
+                        persist_session_warning=True,
+                        preview=self._truncate_text(line, max_chars=180),
+                    )
                 parsed = self._parse_session_output_line(line)
                 if parsed is None:
                     continue
@@ -750,6 +816,7 @@ class RuntimeServiceServer:
                 session.controller_client_id = None
                 session.started_new_session = False
                 session.pending_stall_restart = False
+                session.stdout_first_line_seen = False
             code = process.poll()
             await self._broadcast_session_event(
                 session,
@@ -820,6 +887,12 @@ class RuntimeServiceServer:
             await self._send_error(client, "invalid_cwd", "attach.cwd must point to an existing directory")
             return
         cwd = str(resolved_cwd)
+        self._trace_session_transition(
+            session_id=session_id,
+            message="attach_requested",
+            persist_session_warning=True,
+            cwd_hash=self._cwd_short_hash(cwd),
+        )
 
         self._detach_client_from_session(client)
         session = self._sessions.get(session_id)
@@ -895,6 +968,12 @@ class RuntimeServiceServer:
         if not client.authenticated:
             await self._send_error(client, "unauthorized", "Send hello with a valid token first")
             return
+        self._write_broker_log_line(
+            "shutdown_service_received"
+            f" | client={client.client_id}"
+            f" | name={client.client_name or 'unknown'}"
+            f" | surface={client.surface or 'unknown'}"
+        )
         await self._send_event(client, {"event": "shutdown_ack", "scope": "service"})
         asyncio.create_task(self.stop(), name="runtime-service-stop")
 
@@ -929,6 +1008,13 @@ class RuntimeServiceServer:
             session.last_query_start_mono = time.monotonic()
             session.last_session_event_mono = session.last_query_start_mono
             session.last_query_stall_warn_mono = 0.0
+            self._trace_session_transition(
+                session_id=session.session_id,
+                message="query_forwarded",
+                persist_session_warning=True,
+                provider=session.provider_hint or "unknown",
+                text_len=len(text.strip()),
+            )
             self._cancel_interrupt_watchdog(session)
             self._cancel_query_stall_watchdog(session)
         elif cmd == "consent_response":

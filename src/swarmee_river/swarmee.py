@@ -184,6 +184,7 @@ from swarmee_river.utils.agent_runtime_utils import (
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
+from swarmee_river.utils.process_liveness import is_process_running
 from swarmee_river.utils.provider_utils import has_aws_credentials, resolve_aws_auth_source, resolve_model_provider
 from swarmee_river.utils.stdio_utils import configure_stdio_for_utf8, write_stdout_jsonl
 from swarmee_river.utils.welcome_utils import render_goodbye_message, render_welcome_message
@@ -2317,41 +2318,7 @@ def _stop_all_runtime_brokers(*, timeout_s: float = 6.0) -> tuple[int, int]:
 
 
 def _is_process_running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name != "nt":
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return False
-        return True
-    try:
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-        process_query_limited_information = 0x1000
-        handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
-        if not handle:
-            return False
-        kernel32.CloseHandle(handle)
-        return True
-    except Exception:
-        pass
-    try:
-        output = subprocess.check_output(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except Exception:
-        return False
-    lowered = output.strip().lower()
-    if not lowered:
-        return False
-    if "no tasks are running" in lowered:
-        return False
-    return f'"{pid}"' in output
+    return is_process_running(pid)
 
 
 def _print_attach_event(event: dict[str, Any], *, streaming_state: dict[str, bool]) -> None:
@@ -2443,7 +2410,17 @@ def _run_serve_command(raw_args: list[str]) -> int:
                 loop.add_signal_handler(sig, _request_stop)
 
         try:
-            await stop_event.wait()
+            done, pending = await asyncio.wait(
+                [asyncio.ensure_future(stop_event.wait()), asyncio.ensure_future(server._stopped.wait())],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                with contextlib.suppress(Exception):
+                    task.result()
+            for task in pending:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         finally:
             await server.stop()
 
@@ -3221,13 +3198,82 @@ def main() -> None:
         return rendered
 
     def _run_tui_daemon() -> None:
-        _refresh_query_context(interactive=True)
-
         resolved_session_id = daemon_session_id or (os.getenv("SWARMEE_SESSION_ID") or "").strip() or uuid.uuid4().hex
         active_session_id = resolved_session_id
         persist_lock = threading.Lock()
 
         session_store = ctx.session_store if isinstance(ctx.session_store, SessionStore) else SessionStore()
+        refresh_lock = threading.Lock()
+        refresh_state = {"running": False}
+
+        raw_refresh_timeout = str(os.getenv("SWARMEE_DAEMON_CONTEXT_REFRESH_TIMEOUT_SEC", "6")).strip()
+        try:
+            refresh_timeout_s = max(0.1, float(raw_refresh_timeout))
+        except ValueError:
+            refresh_timeout_s = 6.0
+
+        def _refresh_query_context_guarded(
+            *,
+            interactive: bool,
+            phase: str,
+            timeout_s: float | None = None,
+        ) -> bool:
+            timeout = refresh_timeout_s if timeout_s is None else max(0.1, float(timeout_s))
+            with refresh_lock:
+                if refresh_state["running"]:
+                    _write_stdout_jsonl(
+                        {
+                            "event": "warning",
+                            "text": (
+                                "Context refresh already in progress during "
+                                f"{phase}; continuing without waiting."
+                            ),
+                        }
+                    )
+                    return False
+                refresh_state["running"] = True
+
+            done = threading.Event()
+            error_holder: dict[str, Exception] = {}
+
+            def _worker() -> None:
+                try:
+                    _refresh_query_context(interactive=interactive)
+                except Exception as exc:
+                    error_holder["error"] = exc
+                finally:
+                    with refresh_lock:
+                        refresh_state["running"] = False
+                    done.set()
+
+            threading.Thread(
+                target=_worker,
+                daemon=True,
+                name="swarmee-context-refresh",
+            ).start()
+
+            if not done.wait(timeout):
+                _write_stdout_jsonl(
+                    {
+                        "event": "warning",
+                        "text": (
+                            f"Context refresh timed out after {timeout:.1f}s during {phase}; "
+                            "continuing without blocking."
+                        ),
+                    }
+                )
+                return False
+
+            error = error_holder.get("error")
+            if error is not None:
+                _write_stdout_jsonl(
+                    {
+                        "event": "warning",
+                        "text": f"Context refresh failed during {phase}: {error}",
+                    }
+                )
+                return False
+            return True
 
         def _persist_messages_async(*, session_id: str, messages_snapshot: list[Any]) -> None:
             def _worker() -> None:
@@ -3284,7 +3330,10 @@ def main() -> None:
                 state = getattr(ctx.agent, "state", None)
                 with contextlib.suppress(Exception):
                     ctx.swap_agent(messages, state)
-                    _refresh_query_context(interactive=True)
+                    _refresh_query_context_guarded(
+                        interactive=True,
+                        phase="session restore",
+                    )
 
             active_session_id = sid
             os.environ["SWARMEE_SESSION_ID"] = sid
@@ -3344,6 +3393,7 @@ def main() -> None:
                     "turn_count": available_turn_count,
                 }
             )
+        _refresh_query_context_guarded(interactive=True, phase="daemon startup handshake")
 
         worker_thread: threading.Thread | None = None
         worker_lock = threading.Lock()
@@ -3407,7 +3457,10 @@ def main() -> None:
             try:
                 while True:
                     try:
-                        _refresh_query_context(interactive=False)
+                        _refresh_query_context_guarded(
+                            interactive=False,
+                            phase="query preflight",
+                        )
                         _best_effort_retrieve(query_text, warn_on_error=False)
                         if _active_runtime_provider_name() == "bedrock" and not has_aws_credentials():
                             _write_stdout_jsonl(
@@ -3542,7 +3595,10 @@ def main() -> None:
                     try:
                         model_manager.set_tier(ctx.agent, requested_tier.strip().lower())
                         agent_kwargs["model"] = ctx.agent.model
-                        _refresh_query_context(interactive=True)
+                        _refresh_query_context_guarded(
+                            interactive=True,
+                            phase="query tier switch",
+                        )
                         _write_stdout_jsonl(_current_model_info_event())
                     except Exception as e:
                         _emit_turn_error(str(e), category_hint=ERROR_CATEGORY_ESCALATABLE)
@@ -3781,7 +3837,7 @@ def main() -> None:
                 try:
                     payload_event = _set_prompt_asset(payload.get("asset"))
                     _write_stdout_jsonl(payload_event)
-                    _refresh_query_context(interactive=True)
+                    _refresh_query_context_guarded(interactive=True, phase="set_prompt_asset")
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
                 continue
@@ -3798,7 +3854,7 @@ def main() -> None:
                 try:
                     payload_event = _delete_prompt_asset(str(payload.get("id", "")))
                     _write_stdout_jsonl(payload_event)
-                    _refresh_query_context(interactive=True)
+                    _refresh_query_context_guarded(interactive=True, phase="delete_prompt_asset")
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
                 continue
@@ -3856,7 +3912,7 @@ def main() -> None:
                         if _active_runtime_provider_name() == "bedrock":
                             model_manager.set_tier(ctx.agent, model_manager.current_tier)
                             agent_kwargs["model"] = ctx.agent.model
-                            _refresh_query_context(interactive=True)
+                            _refresh_query_context_guarded(interactive=True, phase="connect bedrock")
                         _write_stdout_jsonl(
                             {
                                 "event": "warning",
@@ -3954,7 +4010,7 @@ def main() -> None:
                 try:
                     model_manager.set_tier(ctx.agent, tier.strip().lower())
                     agent_kwargs["model"] = ctx.agent.model
-                    _refresh_query_context(interactive=True)
+                    _refresh_query_context_guarded(interactive=True, phase="set_tier")
                     _write_stdout_jsonl(_current_model_info_event())
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_ESCALATABLE))

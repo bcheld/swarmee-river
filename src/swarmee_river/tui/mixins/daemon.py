@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from swarmee_river.runtime_service.client import ensure_runtime_broker
+from swarmee_river.runtime_service.client import ensure_runtime_broker, load_runtime_discovery, runtime_discovery_path
 from swarmee_river.tui.transport import (
     _DaemonTransport,
     _SocketTransport,
@@ -28,6 +28,18 @@ def _is_retryable_broker_connect_error(exc: Exception) -> bool:
 
 def _is_windows_platform() -> bool:
     return os.name == "nt"
+
+
+def _broker_diagnostics_hint(cwd: Path) -> str:
+    discovery = runtime_discovery_path(cwd=cwd)
+    broker_log: str | None = None
+    if discovery.exists():
+        with contextlib.suppress(Exception):
+            payload = load_runtime_discovery(discovery)
+            broker_log = payload.broker_log_path
+    if broker_log:
+        return f"discovery={discovery} broker_log={broker_log}"
+    return f"discovery={discovery}"
 
 
 class DaemonMixin:
@@ -203,10 +215,11 @@ class DaemonMixin:
                 return
         else:
             env_overrides = self._model_env_overrides()
+            cwd = Path.cwd()
             is_windows = _is_windows_platform()
             broker_timeout_s = _BROKER_STARTUP_TIMEOUT_WINDOWS_S if is_windows else _BROKER_STARTUP_TIMEOUT_S
             try:
-                ensure_runtime_broker(cwd=Path.cwd(), timeout_s=broker_timeout_s)
+                ensure_runtime_broker(cwd=cwd, timeout_s=broker_timeout_s)
             except Exception as exc:
                 broker_error = exc
 
@@ -216,7 +229,7 @@ class DaemonMixin:
                 try:
                     daemon = _SocketTransport.connect(
                         session_id=requested_session_id,
-                        cwd=Path.cwd(),
+                        cwd=cwd,
                         client_name="swarmee-tui",
                         surface="tui",
                         env_overrides=env_overrides,
@@ -257,12 +270,16 @@ class DaemonMixin:
             name="swarmee-tui-daemon-stream",
         )
         self.state.daemon.runner_thread.start()
+        diagnostics_hint = _broker_diagnostics_hint(Path.cwd())
         if isinstance(daemon, _SocketTransport):
-            self._write_transcript_line("[daemon] connected to runtime broker, waiting for ready event.")
+            self._write_transcript_line(
+                "[daemon] connected to runtime broker, waiting for ready event."
+                f" ({diagnostics_hint})"
+            )
         else:
             if broker_error is not None and not isinstance(broker_error, FileNotFoundError):
                 self._write_transcript_line(
-                    f"[daemon] runtime broker unavailable ({broker_error}); using local daemon."
+                    f"[daemon] runtime broker unavailable ({broker_error}); using local daemon. ({diagnostics_hint})"
                 )
             self._write_transcript_line("[daemon] started, waiting for ready event.")
         self._save_session()

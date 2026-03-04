@@ -15,6 +15,7 @@ from typing import Any
 
 from swarmee_river.diagnostics import broker_log_path, session_events_template
 from swarmee_river.state_paths import scope_root, state_dir
+from swarmee_river.utils.process_liveness import is_process_running
 
 
 @dataclass(frozen=True)
@@ -108,24 +109,25 @@ def _kill_stale_broker_process(discovery_path: Path) -> None:
     pid = discovery.pid
     if pid is None or pid <= 0:
         return
-    try:
-        os.kill(pid, 0)  # check if process exists
-    except OSError:
+    if not is_process_running(pid):
         return
     import signal as _signal
 
-    with contextlib.suppress(Exception):
-        os.kill(pid, _signal.SIGTERM)
+    term_signal = getattr(_signal, "SIGTERM", None)
+    force_signal = getattr(_signal, "SIGKILL", term_signal)
+
+    if term_signal is not None:
+        with contextlib.suppress(Exception):
+            os.kill(pid, term_signal)
     # Give it a moment to exit before we proceed.
     for _ in range(10):
         time.sleep(0.1)
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not is_process_running(pid):
             return  # process exited
     # Still alive — force kill.
-    with contextlib.suppress(Exception):
-        os.kill(pid, _signal.SIGKILL)
+    if force_signal is not None:
+        with contextlib.suppress(Exception):
+            os.kill(pid, force_signal)
 
 
 def ensure_runtime_broker(
