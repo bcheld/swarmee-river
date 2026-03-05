@@ -703,10 +703,10 @@ def _mark_bedrock_setup_guidance_shown(app: Any) -> None:
     session_state = getattr(getattr(app, "state", None), "session", None)
     if session_state is not None:
         with contextlib.suppress(Exception):
-            setattr(session_state, "bedrock_setup_guidance_shown", True)
+            session_state.bedrock_setup_guidance_shown = True
             return
     with contextlib.suppress(Exception):
-        setattr(app, "_bedrock_setup_guidance_shown", True)
+        app._bedrock_setup_guidance_shown = True
 
 
 def _show_bedrock_setup_guidance_once(app: Any) -> None:

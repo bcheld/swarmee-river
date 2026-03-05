@@ -154,7 +154,7 @@ def test_run_serve_command_exits_when_server_signals_stopped(monkeypatch) -> Non
     stopped_calls: list[bool] = []
 
     class _FakeServer:
-        def __init__(self, *, port: int) -> None:
+        def __init__(self, *, port: int, broker_log_path=None, **_kwargs) -> None:  # noqa: ANN001
             self.host = "127.0.0.1"
             self.port = 7342 if int(port) == 0 else int(port)
             self.runtime_file = Path("/tmp/runtime.json")

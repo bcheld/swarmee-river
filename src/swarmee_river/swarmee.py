@@ -3358,11 +3358,8 @@ def main() -> None:
         refresh_lock = threading.Lock()
         refresh_state = {"running": False}
 
-        raw_refresh_timeout = str(os.getenv("SWARMEE_DAEMON_CONTEXT_REFRESH_TIMEOUT_SEC", "6")).strip()
-        try:
-            refresh_timeout_s = max(0.1, float(raw_refresh_timeout))
-        except ValueError:
-            refresh_timeout_s = 6.0
+        # Hard-coded: non-secret env tuning knobs are no longer supported.
+        refresh_timeout_s = 6.0
 
         def _refresh_query_context_guarded(
             *,

@@ -172,7 +172,9 @@ def test_default_model_config_bedrock_emits_enabled_thinking_payload_from_settin
 
 
 def test_default_model_config_bedrock_invalid_budget_falls_back_to_default():
-    settings = _settings_with({"models": {"providers": {"bedrock": {"thinking_type": "enabled", "thinking_budget_tokens": "x"}}}})
+    settings = _settings_with(
+        {"models": {"providers": {"bedrock": {"thinking_type": "enabled", "thinking_budget_tokens": "x"}}}}
+    )
     config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
     thinking = config["additional_request_fields"]["thinking"]
     assert thinking["type"] == "enabled"

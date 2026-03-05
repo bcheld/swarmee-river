@@ -226,8 +226,9 @@ def test_model_env_overrides_inherit_aws_region_from_process_env(monkeypatch) ->
 
     overrides = harness._model_env_overrides()
 
-    assert overrides["AWS_REGION"] == "us-east-2"
-    assert overrides["AWS_DEFAULT_REGION"] == "us-east-1"
+    # Secrets-only env policy: region settings should not be injected into daemon env overrides.
+    assert "AWS_REGION" not in overrides
+    assert "AWS_DEFAULT_REGION" not in overrides
 
 
 def test_model_env_overrides_project_aws_region_wins_over_process_env(monkeypatch) -> None:
@@ -236,7 +237,7 @@ def test_model_env_overrides_project_aws_region_wins_over_process_env(monkeypatc
 
     overrides = harness._model_env_overrides()
 
-    assert overrides["AWS_REGION"] == "eu-west-1"
+    assert "AWS_REGION" not in overrides
 
 
 def test_apply_bedrock_runtime_settings_persists_values() -> None:

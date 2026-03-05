@@ -59,8 +59,9 @@ def test_openai_reasoning_effort_env_applies_to_deep_tier(tmp_path: Path, monkey
 
 
 def test_bedrock_deep_tier_strips_thinking_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("STRANDS_THINKING_TYPE", "disable")
-    settings = load_settings(tmp_path / "settings.json")
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text('{"models":{"providers":{"bedrock":{"thinking_type":"disable"}}}}\n', encoding="utf-8")
+    settings = load_settings(settings_path)
     manager = SessionModelManager(settings, fallback_provider="bedrock")
 
     captured: dict[str, object] = {}

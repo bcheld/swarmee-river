@@ -92,19 +92,10 @@ def resolve_aws_region_source() -> tuple[str | None, str]:
     Resolve AWS region and label the source.
 
     Source labels:
-    - env
     - profile_or_config
     - runtime
     - unknown
     """
-    env_region = str(os.getenv("AWS_REGION") or "").strip()
-    if env_region:
-        return env_region, "env"
-
-    env_default_region = str(os.getenv("AWS_DEFAULT_REGION") or "").strip()
-    if env_default_region:
-        return env_default_region, "env"
-
     try:
         import botocore.session
 

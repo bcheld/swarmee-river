@@ -176,6 +176,9 @@ class SessionModelManager:
                 config[k] = self._deep_merge_dict(config_value, v)
             else:
                 config[k] = v
+
+        if provider == "bedrock":
+            model_utils.sanitize_bedrock_thinking_config(config, self._settings)
         model_path = model_utils.load_path(provider)
         return model_utils.load_model(model_path, config)
 

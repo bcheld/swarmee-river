@@ -97,27 +97,25 @@ def test_resolve_aws_auth_source_maps_profile(monkeypatch) -> None:
     assert source == "profile"
 
 
-def test_resolve_aws_region_source_prefers_aws_region(monkeypatch) -> None:
-    monkeypatch.setenv("AWS_REGION", "us-east-2")
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-1")
+def test_resolve_aws_region_source_reads_botocore_runtime_region(monkeypatch) -> None:
+    import botocore.session
+
+    class _Session:
+        def get_config_variable(self, name: str):
+            assert name == "region"
+            return "us-east-2"
+
+        def get_scoped_config(self):
+            return {}
+
+    monkeypatch.setattr(botocore.session, "get_session", lambda: _Session())
     region, source = provider_utils.resolve_aws_region_source()
     assert region == "us-east-2"
-    assert source == "env"
-
-
-def test_resolve_aws_region_source_falls_back_to_default_region(monkeypatch) -> None:
-    monkeypatch.delenv("AWS_REGION", raising=False)
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
-    region, source = provider_utils.resolve_aws_region_source()
-    assert region == "eu-west-1"
-    assert source == "env"
+    assert source == "runtime"
 
 
 def test_resolve_aws_region_source_reads_botocore_profile_config(monkeypatch) -> None:
     import botocore.session
-
-    monkeypatch.delenv("AWS_REGION", raising=False)
-    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
     class _Session:
         def get_config_variable(self, name: str):
@@ -135,9 +133,6 @@ def test_resolve_aws_region_source_reads_botocore_profile_config(monkeypatch) ->
 
 def test_resolve_aws_region_source_returns_unknown_when_unresolved(monkeypatch) -> None:
     import botocore.session
-
-    monkeypatch.delenv("AWS_REGION", raising=False)
-    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
     class _Session:
         def get_config_variable(self, _name: str):
