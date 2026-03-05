@@ -18,6 +18,8 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
+from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID
+
 
 def render_user_message(text: str, *, timestamp: str | None = None) -> RichPanel:
     """Render a user prompt card with a green left accent bar."""
@@ -3176,6 +3178,350 @@ class CatalogSingleSelectScreen(ModalScreen[str | None]):
         input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
         if input_id == "catalog_single_custom":
             self.dismiss(self._resolve_value())
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
+class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
+    """Popup editor for creating/updating a single agent definition."""
+
+    _INHERIT_VALUE = "__inherit__"
+    _DEFAULT_PROVIDERS = ("bedrock", "openai", "ollama", "github_copilot")
+    _DEFAULT_TIERS = ("fast", "balanced", "deep", "long")
+
+    DEFAULT_CSS = """
+    AgentEditorScreen {
+        align: center middle;
+    }
+    AgentEditorScreen #agent_editor_container {
+        width: 96;
+        max-width: 98%;
+        max-height: 96%;
+        border: round $accent;
+        background: $surface;
+        padding: 1;
+        layout: vertical;
+    }
+    AgentEditorScreen #agent_editor_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    AgentEditorScreen #agent_editor_body {
+        height: 1fr;
+        border: round #4a5461;
+        padding: 1;
+        margin: 0 0 1 0;
+        scrollbar-background: #2f2f2f;
+        scrollbar-background-hover: #3a3a3a;
+        scrollbar-background-active: #454545;
+        scrollbar-color: #7f7f7f;
+        scrollbar-color-hover: #999999;
+        scrollbar-color-active: #b3b3b3;
+    }
+    AgentEditorScreen .agent-editor-row {
+        layout: horizontal;
+        height: auto;
+        margin: 0 0 1 0;
+    }
+    AgentEditorScreen .agent-editor-row Input,
+    AgentEditorScreen .agent-editor-row Select {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    AgentEditorScreen .agent-editor-row Input:last-child,
+    AgentEditorScreen .agent-editor-row Select:last-child {
+        margin: 0;
+    }
+    AgentEditorScreen #agent_editor_activated {
+        margin: 0 0 1 0;
+    }
+    AgentEditorScreen #agent_editor_status {
+        height: auto;
+        color: $text-muted;
+        margin: 0 0 1 0;
+    }
+    AgentEditorScreen #agent_editor_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    AgentEditorScreen #agent_editor_buttons Button {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    """
+
+    def __init__(self, agent: dict[str, Any] | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        from swarmee_river.tui.agent_studio import normalize_agent_definition
+
+        normalized = normalize_agent_definition(agent if isinstance(agent, dict) else {})
+        if normalized is None:
+            normalized = {
+                "id": "",
+                "name": "",
+                "summary": "",
+                "prompt_refs": [],
+                "provider": None,
+                "tier": None,
+                "tool_names": [],
+                "sop_names": [],
+                "knowledge_base_id": None,
+                "activated": False,
+            }
+        self._agent = normalized
+        self._is_orchestrator = str(normalized.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID
+        self._providers, self._tiers_by_provider, self._global_tiers = self._load_model_catalog()
+        self._selected_provider = (
+            str(normalized.get("provider", "")).strip().lower() or self._INHERIT_VALUE
+        )
+        self._selected_tier = str(normalized.get("tier", "")).strip().lower() or self._INHERIT_VALUE
+
+    @staticmethod
+    def _load_model_catalog() -> tuple[list[str], dict[str, list[str]], list[str]]:
+        providers = list(AgentEditorScreen._DEFAULT_PROVIDERS)
+        tiers_by_provider: dict[str, list[str]] = {}
+        global_tiers = list(AgentEditorScreen._DEFAULT_TIERS)
+        with contextlib.suppress(Exception):
+            from swarmee_river.settings import load_settings
+
+            settings = load_settings()
+            providers = sorted(
+                {
+                    str(name).strip().lower()
+                    for name in settings.models.providers.keys()
+                    if str(name).strip()
+                }
+                | set(AgentEditorScreen._DEFAULT_PROVIDERS)
+            )
+            for provider_name, provider_cfg in settings.models.providers.items():
+                provider = str(provider_name).strip().lower()
+                if not provider:
+                    continue
+                tier_names = []
+                tiers = getattr(provider_cfg, "tiers", {}) or {}
+                for tier_name in tiers.keys():
+                    tier = str(tier_name).strip().lower()
+                    if tier:
+                        tier_names.append(tier)
+                if tier_names:
+                    tiers_by_provider[provider] = sorted(set(tier_names))
+            configured_global_tiers = [
+                str(name).strip().lower() for name in settings.models.tiers.keys() if str(name).strip()
+            ]
+            if configured_global_tiers:
+                global_tiers = sorted(set(configured_global_tiers + list(AgentEditorScreen._DEFAULT_TIERS)))
+        return providers, tiers_by_provider, global_tiers
+
+    @staticmethod
+    def _normalized_csv_list(raw: str, *, lowercase: bool = False) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for token in str(raw or "").split(","):
+            text = str(token).strip()
+            if not text:
+                continue
+            normalized = text.lower() if lowercase else text
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(normalized)
+        return values
+
+    @classmethod
+    def _normalize_editor_payload(cls, raw: dict[str, Any], *, is_orchestrator: bool) -> dict[str, Any] | None:
+        from swarmee_river.tui.agent_studio import normalize_agent_definition
+
+        provider = str(raw.get("provider", "")).strip().lower()
+        tier = str(raw.get("tier", "")).strip().lower()
+        payload = {
+            "id": ORCHESTRATOR_AGENT_ID if is_orchestrator else str(raw.get("id", "")).strip(),
+            "name": str(raw.get("name", "")).strip(),
+            "summary": str(raw.get("summary", "")).strip(),
+            "prompt_refs": cls._normalized_csv_list(str(raw.get("prompt_refs", "")), lowercase=True),
+            "provider": None if provider in {"", cls._INHERIT_VALUE} else provider,
+            "tier": None if tier in {"", cls._INHERIT_VALUE} else tier,
+            "tool_names": cls._normalized_csv_list(str(raw.get("tool_names", ""))),
+            "sop_names": cls._normalized_csv_list(str(raw.get("sop_names", ""))),
+            "knowledge_base_id": str(raw.get("knowledge_base_id", "")).strip() or None,
+            "activated": False if is_orchestrator else bool(raw.get("activated", False)),
+        }
+        normalized = normalize_agent_definition(payload)
+        if normalized is None:
+            return None
+        if is_orchestrator:
+            normalized["id"] = ORCHESTRATOR_AGENT_ID
+            normalized["activated"] = False
+        return normalized
+
+    def _provider_options(self) -> list[tuple[str, str]]:
+        options = [("Model provider: inherit", self._INHERIT_VALUE)] + [
+            (provider, provider) for provider in self._providers
+        ]
+        if self._selected_provider not in {self._INHERIT_VALUE, ""} and self._selected_provider not in {
+            value for _label, value in options
+        }:
+            options.append((self._selected_provider, self._selected_provider))
+        return options
+
+    def _tier_options(self, provider: str) -> list[tuple[str, str]]:
+        normalized_provider = str(provider or "").strip().lower()
+        if normalized_provider and normalized_provider != self._INHERIT_VALUE:
+            tiers = self._tiers_by_provider.get(normalized_provider, [])
+        else:
+            tiers = self._global_tiers
+        options = [("Model tier: inherit", self._INHERIT_VALUE)] + [(tier, tier) for tier in tiers]
+        if self._selected_tier and self._selected_tier not in {value for _label, value in options}:
+            options.append((self._selected_tier, self._selected_tier))
+        return options
+
+    def _set_status(self, text: str) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_editor_status", Static).update(str(text or "").strip())
+
+    def _refresh_tier_options(self) -> None:
+        with contextlib.suppress(Exception):
+            tier_select = self.query_one("#agent_editor_tier", Select)
+            options = self._tier_options(self._selected_provider)
+            tier_select.set_options(options)
+            values = {value for _label, value in options}
+            current = self._selected_tier if self._selected_tier in values else self._INHERIT_VALUE
+            self._selected_tier = current
+            tier_select.value = current
+
+    def _current_raw_values(self) -> dict[str, Any]:
+        return {
+            "id": str(self.query_one("#agent_editor_id", Input).value or "").strip(),
+            "name": str(self.query_one("#agent_editor_name", Input).value or "").strip(),
+            "summary": str(self.query_one("#agent_editor_summary", Input).value or "").strip(),
+            "prompt_refs": str(self.query_one("#agent_editor_prompt_refs", Input).value or "").strip(),
+            "provider": str(self.query_one("#agent_editor_provider", Select).value or "").strip().lower(),
+            "tier": str(self.query_one("#agent_editor_tier", Select).value or "").strip().lower(),
+            "tool_names": str(self.query_one("#agent_editor_tools", Input).value or "").strip(),
+            "sop_names": str(self.query_one("#agent_editor_sops", Input).value or "").strip(),
+            "knowledge_base_id": str(self.query_one("#agent_editor_kb", Input).value or "").strip(),
+            "activated": bool(self.query_one("#agent_editor_activated", Checkbox).value),
+        }
+
+    def _save_from_form(self) -> None:
+        payload = self._normalize_editor_payload(self._current_raw_values(), is_orchestrator=self._is_orchestrator)
+        if payload is None:
+            self._set_status("Agent name is required.")
+            return
+        self.dismiss(payload)
+
+    def compose(self):  # type: ignore[override]
+        title = "Edit Orchestrator Agent" if self._is_orchestrator else "Agent Editor"
+        with Vertical(id="agent_editor_container"):
+            yield Static(title, id="agent_editor_title")
+            with VerticalScroll(id="agent_editor_body"):
+                with Horizontal(classes="agent-editor-row"):
+                    yield Input(
+                        value=str(self._agent.get("id", "")),
+                        placeholder="agent id",
+                        id="agent_editor_id",
+                    )
+                    yield Input(
+                        value=str(self._agent.get("name", "")),
+                        placeholder="agent name",
+                        id="agent_editor_name",
+                    )
+                yield Input(
+                    value=str(self._agent.get("summary", "")),
+                    placeholder="summary",
+                    id="agent_editor_summary",
+                )
+                yield Input(
+                    value=", ".join(str(item) for item in (self._agent.get("prompt_refs") or [])),
+                    placeholder="prompt refs (asset IDs, comma-separated)",
+                    id="agent_editor_prompt_refs",
+                )
+                with Horizontal(classes="agent-editor-row"):
+                    yield Select(
+                        self._provider_options(),
+                        id="agent_editor_provider",
+                        value=self._selected_provider,
+                        allow_blank=False,
+                    )
+                    yield Select(
+                        self._tier_options(self._selected_provider),
+                        id="agent_editor_tier",
+                        value=self._selected_tier,
+                        allow_blank=False,
+                    )
+                with Horizontal(classes="agent-editor-row"):
+                    yield Input(
+                        value=", ".join(str(item) for item in (self._agent.get("tool_names") or [])),
+                        placeholder="tool names (comma-separated, blank = inherit)",
+                        id="agent_editor_tools",
+                    )
+                    yield Input(
+                        value=", ".join(str(item) for item in (self._agent.get("sop_names") or [])),
+                        placeholder="SOP names (comma-separated, blank = inherit)",
+                        id="agent_editor_sops",
+                    )
+                yield Input(
+                    value=str(self._agent.get("knowledge_base_id", "") or ""),
+                    placeholder="knowledge base id (blank = inherit)",
+                    id="agent_editor_kb",
+                )
+                yield Checkbox(
+                    "Activated",
+                    value=bool(self._agent.get("activated")),
+                    id="agent_editor_activated",
+                )
+                yield Static("", id="agent_editor_status")
+            with Horizontal(id="agent_editor_buttons"):
+                yield Button("Save", id="agent_editor_save", variant="success")
+                yield Button("Cancel", id="agent_editor_cancel", variant="default")
+
+    def on_mount(self) -> None:
+        if self._is_orchestrator:
+            with contextlib.suppress(Exception):
+                self.query_one("#agent_editor_id", Input).disabled = True
+            with contextlib.suppress(Exception):
+                activated = self.query_one("#agent_editor_activated", Checkbox)
+                activated.value = False
+                activated.disabled = True
+        self._refresh_tier_options()
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_editor_name", Input).focus()
+
+    def on_select_changed(self, event: Any) -> None:
+        select_id = str(getattr(getattr(event, "select", None), "id", "")).strip()
+        if select_id == "agent_editor_provider":
+            self._selected_provider = str(getattr(event, "value", self._INHERIT_VALUE) or self._INHERIT_VALUE)
+            self._refresh_tier_options()
+            return
+        if select_id == "agent_editor_tier":
+            self._selected_tier = str(getattr(event, "value", self._INHERIT_VALUE) or self._INHERIT_VALUE)
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "agent_editor_save":
+            self._save_from_form()
+            return
+        if button_id == "agent_editor_cancel":
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Any) -> None:
+        input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
+        if input_id in {
+            "agent_editor_id",
+            "agent_editor_name",
+            "agent_editor_summary",
+            "agent_editor_prompt_refs",
+            "agent_editor_tools",
+            "agent_editor_sops",
+            "agent_editor_kb",
+        }:
+            self._save_from_form()
 
     def on_key(self, event: Any) -> None:
         key = str(getattr(event, "key", "")).lower()

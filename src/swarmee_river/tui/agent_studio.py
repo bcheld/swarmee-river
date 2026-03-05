@@ -108,6 +108,17 @@ def normalize_agent_definitions(raw_agents: Any) -> list[dict[str, Any]]:
     return normalize_profile_agent_definitions(raw_agents)
 
 
+def build_agent_model_label(
+    provider: Any,
+    tier: Any,
+    *,
+    fallback: str = "inherit",
+) -> str:
+    provider_token = provider.strip() if isinstance(provider, str) else ""
+    tier_token = tier.strip() if isinstance(tier, str) else ""
+    return "/".join(token for token in (provider_token, tier_token) if token) or fallback
+
+
 def build_activated_agent_sidebar_items(
     agents: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -129,9 +140,11 @@ def build_activated_agent_sidebar_items(
 
     items: list[dict[str, Any]] = []
     for item in activated:
-        provider = str(item.get("provider", "")).strip()
-        tier = str(item.get("tier", "")).strip()
-        model_label = "/".join(token for token in (provider, tier) if token) or "(inherit session model)"
+        model_label = build_agent_model_label(
+            item.get("provider"),
+            item.get("tier"),
+            fallback="(inherit session model)",
+        )
         summary = str(item.get("summary", "")).strip()
         subtitle = summary or model_label
         if summary and model_label:
@@ -168,9 +181,11 @@ def build_activated_agent_table_rows(
         agent = normalize_agent_definition(item.get("agent"))
         if agent is None:
             continue
-        provider = str(agent.get("provider", "")).strip()
-        tier = str(agent.get("tier", "")).strip()
-        model_label = "/".join(token for token in (provider, tier) if token) or "(inherit)"
+        model_label = build_agent_model_label(
+            agent.get("provider"),
+            agent.get("tier"),
+            fallback="(inherit)",
+        )
         rows.append(
             (
                 item_id,
@@ -199,9 +214,11 @@ def render_activated_agent_detail_text(item: dict[str, Any] | None) -> str:
     if agent is None:
         return "(invalid agent record)"
 
-    provider = str(agent.get("provider", "")).strip()
-    tier = str(agent.get("tier", "")).strip()
-    model_label = "/".join(token for token in (provider, tier) if token) or "(inherit)"
+    model_label = build_agent_model_label(
+        agent.get("provider"),
+        agent.get("tier"),
+        fallback="(inherit)",
+    )
     tools = _normalized_tool_name_list(agent.get("tool_names"))
     sops = _normalized_tool_name_list(agent.get("sop_names"))
     prompt_refs = _normalized_tool_name_list(agent.get("prompt_refs"))
@@ -223,7 +240,10 @@ def render_activated_agent_detail_text(item: dict[str, Any] | None) -> str:
     )
 
 
-def build_builder_agent_table_rows(items: list[dict[str, Any]] | None = None) -> list[tuple[str, str, str, str, str]]:
+def build_builder_agent_table_rows(
+    items: list[dict[str, Any]] | None = None,
+    orchestrator_model_label: str | None = None,
+) -> list[tuple[str, str, str, str, str]]:
     """Build DataTable rows for builder roster entries.
 
     Returns tuples of: (id, name, summary, model, state).
@@ -238,9 +258,15 @@ def build_builder_agent_table_rows(items: list[dict[str, Any]] | None = None) ->
         agent = normalize_agent_definition(item.get("agent"))
         if agent is None:
             continue
-        provider = str(agent.get("provider", "")).strip()
-        tier = str(agent.get("tier", "")).strip()
-        model_label = "/".join(token for token in (provider, tier) if token) or "inherit"
+        is_orchestrator = str(agent.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID
+        if is_orchestrator and isinstance(orchestrator_model_label, str) and orchestrator_model_label.strip():
+            model_label = orchestrator_model_label.strip()
+        else:
+            model_label = build_agent_model_label(
+                agent.get("provider"),
+                agent.get("tier"),
+                fallback="inherit",
+            )
         rows.append(
             (
                 item_id,
@@ -249,7 +275,7 @@ def build_builder_agent_table_rows(items: list[dict[str, Any]] | None = None) ->
                 model_label,
                 (
                     "base"
-                    if str(agent.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID
+                    if is_orchestrator
                     else ("active" if bool(agent.get("activated")) else "default")
                 ),
             )
@@ -280,8 +306,8 @@ def build_swarm_agent_specs(
         tool_names = _normalized_tool_name_list(agent.get("tool_names"))
         if tool_names:
             spec["tools"] = tool_names
-        provider = str(agent.get("provider", "")).strip().lower()
-        tier = str(agent.get("tier", "")).strip().lower()
+        provider = agent.get("provider").strip().lower() if isinstance(agent.get("provider"), str) else ""
+        tier = agent.get("tier").strip().lower() if isinstance(agent.get("tier"), str) else ""
         if provider:
             spec["model_provider"] = provider
         if tier:
@@ -516,6 +542,7 @@ __all__ = [
     "build_activated_agent_sidebar_items",
     "build_activated_agent_table_rows",
     "build_activated_agents_run_prompt",
+    "build_agent_model_label",
     "build_agent_policy_lens",
     "build_agent_team_sidebar_items",
     "build_agent_tools_safety_sidebar_items",

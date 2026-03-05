@@ -24,6 +24,7 @@ from swarmee_river.tui.agent_studio import (
     build_activated_agent_sidebar_items,
     build_activated_agent_table_rows,
     build_activated_agents_run_prompt,
+    build_agent_model_label,
     build_agent_policy_lens,
     build_agent_team_sidebar_items,
     build_agent_tools_safety_sidebar_items,
@@ -105,6 +106,30 @@ class AgentStudioMixin:
         with contextlib.suppress(Exception):
             delete_button = self.query_one("#agent_builder_agent_delete")
             delete_button.disabled = is_orchestrator
+
+    def _apply_orchestrator_runtime_model_selection(self, agent_def: dict[str, Any]) -> None:
+        provider_raw = agent_def.get("provider")
+        tier_raw = agent_def.get("tier")
+        provider = provider_raw.strip().lower() if isinstance(provider_raw, str) else ""
+        tier = tier_raw.strip().lower() if isinstance(tier_raw, str) else ""
+        if provider and tier:
+            self._pin_model_select_target(provider, tier)
+            self._set_model_tier_from_value(f"{provider}|{tier}")
+            with contextlib.suppress(Exception):
+                self._persist_quick_model_selection(provider=provider, tier=tier)
+        else:
+            self.state.daemon.pending_model_select_value = None
+            self.state.daemon.model_provider_override = None
+            self.state.daemon.model_tier_override = None
+            self._pin_model_select_target("", "")
+            with contextlib.suppress(Exception):
+                self._persist_quick_model_selection(provider=None, tier=None)
+            self._refresh_model_select()
+            self._update_header_status()
+            self._update_prompt_placeholder()
+            if self._status_bar is not None:
+                self._status_bar.set_model(self._current_model_summary())
+        self._refresh_agent_summary()
 
     def _selected_agent_profile_id(self) -> str | None:
         selector = self._agent_profile_select
@@ -887,13 +912,30 @@ class AgentStudioMixin:
 
     def _render_agent_builder_panel(self) -> None:
         self.state.agent_studio.agents = normalize_agent_definitions(self.state.agent_studio.agents)
+        runtime_provider, runtime_tier, _runtime_model_id = choose_model_summary_parts(
+            daemon_provider=self.state.daemon.provider,
+            daemon_tier=self.state.daemon.tier,
+            daemon_model_id=self.state.daemon.model_id,
+            daemon_tiers=self.state.daemon.tiers,
+            pending_value=self.state.daemon.pending_model_select_value,
+            override_provider=self.state.daemon.model_provider_override,
+            override_tier=self.state.daemon.model_tier_override,
+        )
+        orchestrator_model_label = build_agent_model_label(
+            runtime_provider,
+            runtime_tier,
+            fallback="auto",
+        )
         items: list[dict[str, Any]] = []
         for agent_def in self.state.agent_studio.agents:
             title = str(agent_def.get("name", "")).strip() or "Unnamed Agent"
             summary = str(agent_def.get("summary", "")).strip()
-            provider = str(agent_def.get("provider", "")).strip()
-            tier = str(agent_def.get("tier", "")).strip()
-            model_label = "/".join(token for token in (provider, tier) if token) or "inherit"
+            is_orchestrator = self._is_orchestrator_agent_id(str(agent_def.get("id", "")).strip())
+            model_label = (
+                orchestrator_model_label
+                if is_orchestrator
+                else build_agent_model_label(agent_def.get("provider"), agent_def.get("tier"), fallback="inherit")
+            )
             subtitle = summary or f"model: {model_label}"
             if summary:
                 subtitle = f"{summary} | {model_label}"
@@ -903,9 +945,7 @@ class AgentStudioMixin:
                     "title": title,
                     "subtitle": subtitle,
                     "state": (
-                        "base"
-                        if self._is_orchestrator_agent_id(str(agent_def.get("id", "")).strip())
-                        else ("active" if bool(agent_def.get("activated")) else "default")
+                        "base" if is_orchestrator else ("active" if bool(agent_def.get("activated")) else "default")
                     ),
                     "agent": dict(agent_def),
                 }
@@ -919,7 +959,10 @@ class AgentStudioMixin:
                 table.add_column("Summary", key="summary")
                 table.add_column("Model", key="model", width=18)
                 table.add_column("State", key="state", width=10)
-            rows = build_builder_agent_table_rows(items)
+            rows = build_builder_agent_table_rows(
+                items,
+                orchestrator_model_label=orchestrator_model_label,
+            )
             table.clear()
             for item_id, name, summary, model, state in rows:
                 table.add_row(name, summary, model, state, key=item_id)
@@ -946,6 +989,11 @@ class AgentStudioMixin:
         self._render_agent_overview_panel()
 
     def _new_agent_builder_draft(self) -> None:
+        self._open_agent_builder_editor_new()
+
+    def _open_agent_builder_editor_new(self) -> None:
+        from swarmee_river.tui.widgets import AgentEditorScreen
+
         payload = normalize_agent_definition(
             {
                 "id": f"agent-{uuid.uuid4().hex[:8]}",
@@ -957,27 +1005,52 @@ class AgentStudioMixin:
         )
         if payload is None:
             return
-        self.state.agent_studio.builder_selected_item_id = None
-        self._set_agent_builder_form_values(payload)
-        self._set_agent_builder_status("New agent draft.")
-        self._set_agent_draft_dirty(True)
+        self.push_screen(
+            AgentEditorScreen(payload),
+            callback=lambda result: self._apply_agent_builder_editor_result(result, source_id=None),
+        )
 
     def _save_agent_builder_draft(self) -> None:
-        inline_prompt = str(getattr(self._agent_builder_agent_prompt_input, "text", "")).strip()
-        if inline_prompt:
-            self._notify(
-                "Promote the inline prompt to Tooling > Prompts before saving this agent.",
-                severity="warning",
-            )
-            self._set_agent_builder_status(
-                "Inline prompt must be promoted to a prompt asset first (use Add Inline Prompt to Tooling)."
-            )
+        self._open_agent_builder_editor_selected()
+
+    def _open_agent_builder_editor_selected(self) -> None:
+        from swarmee_river.tui.widgets import AgentEditorScreen
+
+        selected = self._agent_builder_item_by_id(self.state.agent_studio.builder_selected_item_id)
+        if selected is None:
+            self._notify("Select a draft agent first.", severity="warning")
             return
-        payload = self._agent_builder_form_payload()
+        source_id = str(selected.get("id", "")).strip()
+        agent_def = selected.get("agent") if isinstance(selected.get("agent"), dict) else None
+        if not isinstance(agent_def, dict):
+            self._notify("Selected draft agent is invalid.", severity="warning")
+            return
+        self.push_screen(
+            AgentEditorScreen(agent_def),
+            callback=lambda result, source_id=source_id: self._apply_agent_builder_editor_result(
+                result,
+                source_id=source_id,
+            ),
+        )
+
+    def _apply_agent_builder_editor_result(
+        self,
+        result: dict[str, Any] | None,
+        *,
+        source_id: str | None,
+    ) -> None:
+        if not isinstance(result, dict):
+            return
+        payload = normalize_agent_definition(result)
         if payload is None:
+            self._notify("Agent draft is invalid.", severity="warning")
             return
-        selected_id = str(self.state.agent_studio.builder_selected_item_id or "").strip()
+        selected_id = str(source_id or "").strip()
         payload_id = str(payload.get("id", "")).strip()
+        if self._is_orchestrator_agent_id(selected_id) or self._is_orchestrator_agent_id(payload_id):
+            payload["id"] = ORCHESTRATOR_AGENT_ID
+            payload["activated"] = False
+            payload_id = ORCHESTRATOR_AGENT_ID
         next_agents = [dict(item) for item in normalize_agent_definitions(self.state.agent_studio.agents)]
         if selected_id and selected_id != payload_id:
             next_agents = [item for item in next_agents if str(item.get("id", "")).strip() != selected_id]
@@ -991,6 +1064,8 @@ class AgentStudioMixin:
             next_agents.append(payload)
         self.state.agent_studio.agents = normalize_agent_definitions(next_agents)
         self.state.agent_studio.builder_selected_item_id = payload_id
+        if self._is_orchestrator_agent_id(payload_id):
+            self._apply_orchestrator_runtime_model_selection(payload)
         self._render_agent_builder_panel()
         self._set_agent_builder_status(f"Saved agent '{payload['name']}' in draft.")
         self._set_agent_draft_dirty(True, note=f"Agent '{payload['name']}' saved in draft.")

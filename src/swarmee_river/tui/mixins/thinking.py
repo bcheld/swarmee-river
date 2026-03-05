@@ -11,6 +11,28 @@ _THINKING_MIN_VISIBLE_S = 0.35
 
 
 class ThinkingMixin:
+    def _should_emit_reasoning_unavailable_notice(self) -> bool:
+        model_tokens = [
+            str(getattr(self.state.daemon, "model_id", "") or ""),
+            str(getattr(self.state.daemon, "current_model", "") or ""),
+            str(getattr(self.state.daemon, "model_tier_override", "") or ""),
+            str(getattr(self.state.daemon, "tier", "") or ""),
+        ]
+        joined = " ".join(token.strip().lower() for token in model_tokens if token).strip()
+        if not joined:
+            return False
+        return "gpt-5.2" in joined or "gpt5.2" in joined
+
+    def _maybe_emit_reasoning_unavailable_notice(self) -> None:
+        if bool(getattr(self, "_thinking_seen_turn", False)):
+            return
+        if bool(getattr(self, "_thinking_unavailable_notice_emitted_turn", False)):
+            return
+        if not self._should_emit_reasoning_unavailable_notice():
+            return
+        self._thinking_unavailable_notice_emitted_turn = True
+        self._write_transcript_line("[thinking] no reasoning stream was emitted by the model for this turn.")
+
     def _show_thinking_indicator(self) -> None:
         from swarmee_river.tui.widgets import ThinkingIndicator
 
@@ -135,6 +157,7 @@ class ThinkingMixin:
             self._active_reasoning_block = ReasoningBlock(timestamp=self._turn_timestamp())
             self._mount_transcript_widget(self._active_reasoning_block)
         if chunk:
+            self._thinking_seen_turn = True
             self._thinking_buffer.append(chunk)
             self._thinking_char_count += len(chunk)
             block = self._active_reasoning_block

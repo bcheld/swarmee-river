@@ -60,10 +60,12 @@
     },
     "availability": {},
     "default_selection": {
-      "tier": "balanced"
+      "provider": "openai",
+      "tier": "deep"
     },
-    "default_tier": "balanced",
+    "default_tier": "deep",
     "hidden_tiers": [],
+    "provider": "openai",
     "providers": {
       "bedrock": {
         "description": "AWS-managed models (Anthropic Claude, etc).",

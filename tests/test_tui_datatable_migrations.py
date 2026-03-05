@@ -93,6 +93,38 @@ def test_agent_table_row_builders_map_overview_and_builder() -> None:
     assert builder_rows == [("triage", "Triage", "Handles triage", "openai/balanced", "active")]
 
 
+def test_builder_rows_handle_inherit_and_orchestrator_runtime_model() -> None:
+    rows = build_builder_agent_table_rows(
+        [
+            {
+                "id": "orchestrator",
+                "agent": {
+                    "id": "orchestrator",
+                    "name": "Orchestrator",
+                    "summary": "",
+                    "provider": None,
+                    "tier": None,
+                    "activated": False,
+                },
+            },
+            {
+                "id": "planner",
+                "agent": {
+                    "id": "planner",
+                    "name": "Planner",
+                    "summary": "",
+                    "provider": None,
+                    "tier": None,
+                    "activated": False,
+                },
+            },
+        ],
+        orchestrator_model_label="openai/balanced",
+    )
+    assert rows[0] == ("orchestrator", "Orchestrator", "", "openai/balanced", "base")
+    assert rows[1] == ("planner", "Planner", "", "inherit", "default")
+
+
 def test_settings_table_row_builders_for_models_and_env(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-abcdefgh12345678")
 
