@@ -160,25 +160,33 @@ def ensure_runtime_broker(
         resolved_state_dir = state_dir(cwd=cwd)
         resolved_state_dir.mkdir(parents=True, exist_ok=True)
 
-        env = dict(os.environ)
-        env["SWARMEE_STATE_DIR"] = str(resolved_state_dir)
-        env["SWARMEE_BROKER_LOG_PATH"] = str(broker_log_path(cwd=cwd))
-        env["SWARMEE_DIAG_SESSION_EVENTS_PATH"] = session_events_template(cwd=cwd)
-
         broker_log = broker_log_path(cwd=cwd)
         broker_log.parent.mkdir(parents=True, exist_ok=True)
         log_handle = broker_log.open("a", encoding="utf-8", errors="replace")
+        cmd = [
+            sys.executable,
+            "-u",
+            "-m",
+            "swarmee_river.swarmee",
+            "serve",
+            "--state-dir",
+            str(resolved_state_dir),
+            "--broker-log-path",
+            str(broker_log),
+            "--diag-session-events-path",
+            session_events_template(cwd=cwd),
+        ]
         popen_kwargs: dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
             "stdout": log_handle,
             "stderr": subprocess.STDOUT,
-            "env": env,
+            "env": dict(os.environ),
         }
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
         try:
             process = subprocess.Popen(
-                [sys.executable, "-u", "-m", "swarmee_river.swarmee", "serve"],
+                cmd,
                 **popen_kwargs,
             )
         finally:

@@ -73,8 +73,8 @@ def test_has_github_copilot_token_reads_auth_store(tmp_path, monkeypatch) -> Non
     monkeypatch.delenv("SWARMEE_GITHUB_COPILOT_API_KEY", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
-    monkeypatch.setenv("SWARMEE_AUTH_PATH", str(tmp_path / "auth.json"))
-    monkeypatch.setenv("SWARMEE_OPENCODE_AUTH_PATH", str(tmp_path / "opencode-auth.json"))
+    # Keep auth store writes inside the test sandbox.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
     set_provider_record("github_copilot", {"type": "api", "key": "abc"})
 

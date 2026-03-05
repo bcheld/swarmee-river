@@ -144,24 +144,15 @@ class SessionModelManager:
         if provider not in {"bedrock", "openai", "ollama", "github_copilot"}:
             raise ValueError(f"Unsupported provider {provider!r} for tier {tier_name!r}")
 
-        base = model_utils.default_model_config(provider)
+        base = model_utils.default_model_config(provider, self._settings)
         config = dict(base)
 
         if self._fallback_config is not None and provider == self._fallback_provider:
             config.update(self._fallback_config)
 
-        # Apply model_id overrides with clear precedence:
-        # - per-tier env overrides (SWARMEE_{PROVIDER}_{TIER}_MODEL_ID)
-        # - provider-level env override (e.g., STRANDS_MODEL_ID, SWARMEE_OPENAI_MODEL_ID)
-        # - settings.json tier config / built-in defaults
-        env_tier_model_id = self._env_tier_model_id(provider, tier_name)
-        if env_tier_model_id:
-            config["model_id"] = env_tier_model_id
-        else:
-            provider_env_model_id = self._provider_env_model_id(provider)
-            if not provider_env_model_id:
-                if tier.model_id and tier.model_id.strip():
-                    config["model_id"] = tier.model_id.strip()
+        # Model selection is settings-driven. Per-tier model_id is the source of truth.
+        if tier.model_id and tier.model_id.strip():
+            config["model_id"] = tier.model_id.strip()
         if tier.params:
             existing = config.get("params")
             if isinstance(existing, dict):
@@ -185,19 +176,6 @@ class SessionModelManager:
                 config[k] = self._deep_merge_dict(config_value, v)
             else:
                 config[k] = v
-
-        if provider == "bedrock":
-            model_utils.sanitize_bedrock_thinking_config(config)
-
-        if provider == "openai" and tier_name.strip().lower() == "deep":
-            effort = os.getenv("SWARMEE_OPENAI_REASONING_EFFORT")
-            if isinstance(effort, str) and effort.strip().lower() not in {"", "none", "off", "disabled"}:
-                params = config.get("params")
-                if not isinstance(params, dict):
-                    params = {}
-                params["reasoning_effort"] = effort.strip()
-                config["params"] = params
-
         model_path = model_utils.load_path(provider)
         return model_utils.load_model(model_path, config)
 
@@ -231,44 +209,8 @@ class SessionModelManager:
         return ModelTier(provider=provider)
 
     def _effective_model_id(self, tier: ModelTier, *, tier_name: str) -> str | None:
-        provider = normalize_provider_name(tier.provider)
-        tier_name = (tier_name or "").strip().lower()
-        env_tier_model_id = self._env_tier_model_id(provider, tier_name)
-        if env_tier_model_id:
-            return env_tier_model_id
-        env_provider_model_id = self._provider_env_model_id(provider)
-        if env_provider_model_id:
-            return env_provider_model_id
+        _ = tier_name
         return tier.model_id
-
-    def _env_tier_model_id(self, provider: str, tier_name: str) -> str | None:
-        provider = normalize_provider_name(provider).upper()
-        tier_name = (tier_name or "").strip().upper()
-        if not provider or not tier_name:
-            return None
-        key = f"SWARMEE_{provider}_{tier_name}_MODEL_ID"
-        val = os.getenv(key)
-        return val.strip() if isinstance(val, str) and val.strip() else None
-
-    def _provider_env_model_id(self, provider: str) -> str | None:
-        provider = normalize_provider_name(provider)
-        if provider == "bedrock":
-            val = os.getenv("STRANDS_MODEL_ID")
-            return val.strip() if isinstance(val, str) and val.strip() else None
-        if provider == "openai":
-            val = os.getenv("SWARMEE_OPENAI_MODEL_ID")
-            return val.strip() if isinstance(val, str) and val.strip() else None
-        if provider == "ollama":
-            val = os.getenv("SWARMEE_OLLAMA_MODEL_ID") or os.getenv("OLLAMA_MODEL")
-            return val.strip() if isinstance(val, str) and val.strip() else None
-        if provider == "github_copilot":
-            val = (
-                os.getenv("SWARMEE_GITHUB_COPILOT_MODEL_ID")
-                or os.getenv("SWARMEE_GHCP_MODEL_ID")
-                or os.getenv("GITHUB_COPILOT_MODEL")
-            )
-            return val.strip() if isinstance(val, str) and val.strip() else None
-        return None
 
     def _merge_tiers(self, base: ModelTier, override: ModelTier, *, default_provider: str) -> ModelTier:
         provider = normalize_provider_name(

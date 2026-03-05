@@ -9,9 +9,8 @@ from strands.hooks.events import BeforeToolCallEvent
 from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.opencode_aliases import canonical_tool_name, equivalent_tool_names, normalize_tool_name
 from swarmee_river.permissions import evaluate_declarative_rule_action
-from swarmee_river.settings import SafetyConfig
+from swarmee_river.settings import RuntimeConfig, SafetyConfig
 from swarmee_river.tool_permissions import STRANDS_TOOL_PERMISSIONS, get_permissions
-from swarmee_river.utils.env_utils import csv_env, truthy_env
 
 _WINDOWS_POSIX_BIASED_TOKENS = {
     "awk",
@@ -147,16 +146,20 @@ class ToolPolicyHooks(HookProvider):
     """
     Simple guardrails for tool use in enterprise environments.
 
-    Controls:
-    - Disable selected tools via `SWARMEE_DISABLE_TOOLS` (comma-separated tool names)
-    - Allow only selected tools via `SWARMEE_ENABLE_TOOLS` (comma-separated tool names)
-    - Gate swarms via `SWARMEE_SWARM_ENABLED` (default: enabled)
+    Controls (settings-driven):
+    - Disable selected tools via settings `runtime.disabled_tools`
+    - Allow only selected tools via settings `runtime.enabled_tools`
+    - Gate swarms via settings `runtime.swarm_enabled` (default: enabled)
     """
 
-    def __init__(self, safety: SafetyConfig | None = None) -> None:
-        self.enabled_tools = csv_env("SWARMEE_ENABLE_TOOLS")
-        self.disabled_tools = csv_env("SWARMEE_DISABLE_TOOLS")
-        self.swarm_enabled = truthy_env("SWARMEE_SWARM_ENABLED", True)
+    def __init__(self, safety: SafetyConfig | None = None, *, runtime: RuntimeConfig | None = None) -> None:
+        self.enabled_tools = (
+            {str(x).strip() for x in (runtime.enabled_tools or []) if str(x).strip()} if runtime else set()
+        )
+        self.disabled_tools = (
+            {str(x).strip() for x in (runtime.disabled_tools or []) if str(x).strip()} if runtime else set()
+        )
+        self.swarm_enabled = bool(runtime.swarm_enabled) if runtime else True
         self._safety = safety
         # Plan mode should stay read-only to prevent the model from mutating the repo while planning.
         # Derived from permission metadata when tools are available; falls back to a hardcoded set.

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import time
 import urllib.parse
 import urllib.request
@@ -176,9 +175,7 @@ def login_device_flow(
     status: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     emit = status or (lambda _text: None)
-    resolved_client_id = (
-        (client_id or "").strip() or (os.getenv("SWARMEE_GITHUB_COPILOT_CLIENT_ID") or "").strip() or GITHUB_CLIENT_ID
-    )
+    resolved_client_id = (client_id or "").strip() or GITHUB_CLIENT_ID
 
     device = _post_form_json(
         DEVICE_ENDPOINT,

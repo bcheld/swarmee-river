@@ -97,37 +97,39 @@ class SettingsMixin:
         widget.update(f"Orchestrator: {summary}" if summary else "Orchestrator")
 
     def _refresh_settings_bedrock_runtime_controls(self) -> None:
+        from swarmee_river.settings import load_settings
+
+        settings = load_settings()
+        bedrock = settings.models.providers.get("bedrock")
+        extra = dict(getattr(bedrock, "extra", {}) or {})
         read_widget = self._settings_bedrock_read_timeout_input
         connect_widget = self._settings_bedrock_connect_timeout_input
         retries_widget = self._settings_bedrock_max_retries_input
         if read_widget is not None:
             with contextlib.suppress(Exception):
-                read_widget.value = (
-                    os.environ.get("SWARMEE_BEDROCK_READ_TIMEOUT_SEC")
-                    or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_READ_TIMEOUT_SEC"]
+                read_widget.value = str(
+                    extra.get("read_timeout_sec") or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_READ_TIMEOUT_SEC"]
                 )
         if connect_widget is not None:
             with contextlib.suppress(Exception):
-                connect_widget.value = (
-                    os.environ.get("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC")
+                connect_widget.value = str(
+                    extra.get("connect_timeout_sec")
                     or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC"]
                 )
         if retries_widget is not None:
             with contextlib.suppress(Exception):
-                retries_widget.value = (
-                    os.environ.get("SWARMEE_BEDROCK_MAX_RETRIES")
-                    or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_MAX_RETRIES"]
+                retries_widget.value = str(
+                    extra.get("max_retries") or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_MAX_RETRIES"]
                 )
 
     def _refresh_settings_interrupt_control_controls(self) -> None:
+        from swarmee_river.settings import load_settings
+
+        settings = load_settings()
         timeout_widget = self._settings_interrupt_timeout_input
         if timeout_widget is not None:
             with contextlib.suppress(Exception):
-                timeout_widget.value = (
-                    os.environ.get("SWARMEE_INTERRUPT_TIMEOUT_SEC")
-                    or os.environ.get("SWARMEE_INTERRUPT_TIMEOUT")
-                    or self._INTERRUPT_CONTROL_DEFAULTS["SWARMEE_INTERRUPT_TIMEOUT_SEC"]
-                )
+                timeout_widget.value = str(settings.runtime.interrupt_timeout_sec)
 
     def _parse_positive_float_setting(self, raw: str, *, label: str) -> float | None:
         token = str(raw or "").strip()
@@ -269,10 +271,14 @@ class SettingsMixin:
             self._settings_env_selected_key = None
 
     def _settings_auth_status_lines(self) -> list[str]:
+        from swarmee_river.settings import load_settings
         from swarmee_river.utils.provider_utils import has_aws_credentials, has_github_copilot_token
 
         active_provider = self.state.daemon.model_provider_override or self.state.daemon.provider or "(auto)"
-        aws_profile = (os.getenv("AWS_PROFILE") or "").strip() or "default"
+        settings = load_settings()
+        bedrock = settings.models.providers.get("bedrock")
+        extra = dict(getattr(bedrock, "extra", {}) or {})
+        aws_profile = str(extra.get("aws_profile") or "").strip() or "default"
         aws_ok = has_aws_credentials()
         copilot_ok = has_github_copilot_token()
         return [
@@ -439,10 +445,12 @@ class SettingsMixin:
 
         aws_input = self._settings_aws_profile_input
         if aws_input is not None:
-            current_profile = (os.getenv("AWS_PROFILE") or "").strip()
-            if current_profile and not str(getattr(aws_input, "value", "")).strip():
+            bedrock = settings.models.providers.get("bedrock")
+            extra = dict(getattr(bedrock, "extra", {}) or {})
+            configured_profile = str(extra.get("aws_profile") or "").strip()
+            if configured_profile and not str(getattr(aws_input, "value", "")).strip():
                 with contextlib.suppress(Exception):
-                    aws_input.value = current_profile
+                    aws_input.value = configured_profile
 
         self._refresh_settings_model_detail()
 
@@ -521,25 +529,123 @@ class SettingsMixin:
                 os.environ[key] = value
 
     def _persist_project_setting_env_override(self, key: str, value: str | None) -> None:
-        normalized_key = str(key or "").strip()
+        from swarmee_river.config.env_policy import INTERNAL_SETTINGS_ENV_OVERRIDE_ALLOWLIST, SECRET_ENV_ALLOWLIST
+        from swarmee_river.settings import migrate_legacy_env_overrides
+
+        normalized_key = str(key or "").strip().upper()
         if not normalized_key:
             return
+
+        # Secrets may be set for the current session, but must never be persisted
+        # into `.swarmee/settings.json`.
+        if normalized_key in SECRET_ENV_ALLOWLIST:
+            normalized_value = str(value).strip() if value is not None else ""
+            if normalized_value:
+                os.environ[normalized_key] = normalized_value
+                self._write_transcript_line(f"[settings] set {normalized_key} for this session (not saved).")
+            else:
+                os.environ.pop(normalized_key, None)
+                self._write_transcript_line(f"[settings] unset {normalized_key} for this session (not saved).")
+            return
+
         payload, path = self._load_project_settings_payload()
-        env_payload = payload.get("env")
-        if not isinstance(env_payload, dict):
-            env_payload = {}
+        existing_env = payload.get("env")
+        internal_env_payload: dict[str, str] = dict(existing_env) if isinstance(existing_env, dict) else {}
+
+        # Internal env overrides are migration-only and restricted to allowlisted keys.
+        if normalized_key in INTERNAL_SETTINGS_ENV_OVERRIDE_ALLOWLIST:
+            normalized_value = str(value).strip() if value is not None else ""
+            if normalized_value:
+                internal_env_payload[normalized_key] = normalized_value
+                os.environ[normalized_key] = normalized_value
+            else:
+                internal_env_payload.pop(normalized_key, None)
+                os.environ.pop(normalized_key, None)
+            if internal_env_payload:
+                payload["env"] = internal_env_payload
+            else:
+                payload.pop("env", None)
+            self._save_project_settings_payload(payload, path)
+            return
+
+        # Non-secret runtime configuration must be stored as structured settings.
         normalized_value = str(value).strip() if value is not None else ""
+        temp_payload = dict(payload)
+        temp_payload.pop("env", None)
+
+        # Special-case AWS profile: it is used by external SDKs and should not be stored
+        # in `env.*` overrides, but we still support configuring it via settings.
+        if normalized_key == "AWS_PROFILE":
+            models = temp_payload.setdefault("models", {})
+            providers = models.setdefault("providers", {})
+            bedrock = providers.setdefault("bedrock", {})
+            if normalized_value:
+                bedrock["aws_profile"] = normalized_value
+            else:
+                bedrock.pop("aws_profile", None)
+            if internal_env_payload:
+                temp_payload["env"] = internal_env_payload
+            self._save_project_settings_payload(temp_payload, path)
+            return
+        if normalized_key == "SWARMEE_STATE_DIR":
+            runtime = temp_payload.setdefault("runtime", {})
+            if normalized_value:
+                runtime["state_dir"] = normalized_value
+            else:
+                runtime.pop("state_dir", None)
+            if internal_env_payload:
+                temp_payload["env"] = internal_env_payload
+            self._save_project_settings_payload(temp_payload, path)
+            return
+
         if normalized_value:
-            env_payload[normalized_key] = normalized_value
-            os.environ[normalized_key] = normalized_value
+            temp_payload["env"] = {normalized_key: normalized_value}
         else:
-            env_payload.pop(normalized_key, None)
-            os.environ.pop(normalized_key, None)
-        if env_payload:
-            payload["env"] = env_payload
+            # "Unset" means: remove the override and fall back to built-in defaults.
+            # We do this by writing an explicit default where needed.
+            default_map: dict[str, str] = {
+                # Bedrock runtime tuning.
+                "SWARMEE_BEDROCK_READ_TIMEOUT_SEC": self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_READ_TIMEOUT_SEC"],
+                "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC": self._BEDROCK_RUNTIME_DEFAULTS[
+                    "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC"
+                ],
+                "SWARMEE_BEDROCK_MAX_RETRIES": self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_MAX_RETRIES"],
+                # Interrupt control.
+                "SWARMEE_INTERRUPT_TIMEOUT_SEC": self._INTERRUPT_CONTROL_DEFAULTS["SWARMEE_INTERRUPT_TIMEOUT_SEC"],
+                "SWARMEE_INTERRUPT_TIMEOUT": self._INTERRUPT_CONTROL_DEFAULTS["SWARMEE_INTERRUPT_TIMEOUT_SEC"],
+                # Context/runtime toggles.
+                "SWARMEE_CONTEXT_MANAGER": "summarize",
+                "SWARMEE_PREFLIGHT": "enabled",
+                "SWARMEE_PREFLIGHT_LEVEL": "summary",
+                "SWARMEE_PREFLIGHT_PRINT": "disabled",
+                "SWARMEE_ESC_INTERRUPT": "enabled",
+                "SWARMEE_SWARM_ENABLED": "true",
+                "SWARMEE_LOG_EVENTS": "true",
+                "SWARMEE_PROJECT_MAP": "enabled",
+                "SWARMEE_LIMIT_TOOL_RESULTS": "true",
+                "SWARMEE_TRUNCATE_RESULTS": "true",
+                "SWARMEE_DIAG_REDACT": "true",
+                "SWARMEE_LOG_REDACT": "true",
+                "SWARMEE_FREEZE_TOOLS": "false",
+                "SWARMEE_AUTO_APPROVE": "false",
+                "SWARMEE_TIER_AUTO": "false",
+            }
+            if normalized_key not in default_map:
+                self._write_transcript_line(f"[settings] cannot unset unknown setting: {normalized_key}")
+                return
+            temp_payload["env"] = {normalized_key: default_map[normalized_key]}
+
+        migrated_payload, _migrated, dropped = migrate_legacy_env_overrides(temp_payload)
+        if dropped:
+            self._write_transcript_line(f"[settings] ignored unsupported legacy env keys: {', '.join(dropped)}")
+
+        # Preserve internal env wiring overrides (if any).
+        if internal_env_payload:
+            migrated_payload["env"] = internal_env_payload
         else:
-            payload.pop("env", None)
-        self._save_project_settings_payload(payload, path)
+            migrated_payload.pop("env", None)
+
+        self._save_project_settings_payload(migrated_payload, path)
 
     def _model_tier_key(self, provider: str, tier: str) -> str:
         return f"{str(provider or '').strip().lower()}|{str(tier or '').strip().lower()}"
@@ -631,6 +737,22 @@ class SettingsMixin:
         models["default_tier"] = tier_value or "balanced"
         self._save_project_settings_payload(payload, path)
 
+    def _persist_quick_model_selection(self, *, provider: str | None, tier: str | None) -> None:
+        """Persist model provider/tier selection to `.swarmee/settings.json`."""
+        payload, path = self._load_project_settings_payload()
+        models = payload.setdefault("models", {})
+        normalized_provider = str(provider or "").strip().lower() or None
+        normalized_tier = (
+            str(tier or "").strip().lower()
+            or str(models.get("default_tier") or "balanced").strip().lower()
+        )
+        if not normalized_tier:
+            normalized_tier = "balanced"
+        models["provider"] = normalized_provider
+        models["default_tier"] = normalized_tier
+        models["default_selection"] = {"provider": normalized_provider, "tier": normalized_tier}
+        self._save_project_settings_payload(payload, path)
+
     def _open_settings_model_manager(self) -> None:
         from swarmee_river.tui.widgets import ModelConfigManagerScreen
 
@@ -643,20 +765,45 @@ class SettingsMixin:
     def _apply_settings_model_manager_result(self, result: dict[str, Any] | None) -> None:
         if not isinstance(result, dict):
             return
+        from swarmee_river.config.env_policy import INTERNAL_SETTINGS_ENV_OVERRIDE_ALLOWLIST, SECRET_ENV_ALLOWLIST
+        from swarmee_river.settings import migrate_legacy_env_overrides, normalize_project_env_overrides
+
         payload, path = self._load_project_settings_payload()
         incoming_models = result.get("models")
         if isinstance(incoming_models, dict):
             payload["models"] = incoming_models
         incoming_env = result.get("env")
         if isinstance(incoming_env, dict):
-            payload["env"] = incoming_env
-            for key, value in incoming_env.items():
-                normalized_key = str(key).strip()
-                normalized_value = str(value).strip()
-                if normalized_key and normalized_value:
-                    os.environ[normalized_key] = normalized_value
-                elif normalized_key:
-                    os.environ.pop(normalized_key, None)
+            existing_internal = normalize_project_env_overrides(payload.get("env"))
+            legacy_env: dict[str, str] = {}
+            for raw_key, raw_value in incoming_env.items():
+                k = str(raw_key or "").strip().upper()
+                if not k:
+                    continue
+                if k in SECRET_ENV_ALLOWLIST:
+                    continue
+                v = str(raw_value).strip()
+                if k in INTERNAL_SETTINGS_ENV_OVERRIDE_ALLOWLIST:
+                    if v:
+                        existing_internal[k] = v
+                        os.environ[k] = v
+                    else:
+                        existing_internal.pop(k, None)
+                        os.environ.pop(k, None)
+                    continue
+                if v:
+                    legacy_env[k] = v
+
+            if legacy_env:
+                tmp = dict(payload)
+                tmp.pop("env", None)
+                tmp["env"] = legacy_env
+                migrated, _migrated, _dropped = migrate_legacy_env_overrides(tmp)
+                payload = migrated
+            if existing_internal:
+                payload["env"] = existing_internal
+            else:
+                payload.pop("env", None)
         self._save_project_settings_payload(payload, path)
         self._refresh_model_select()
         self._refresh_settings_models()
@@ -707,30 +854,26 @@ class SettingsMixin:
             tier_dict.pop("description", None)
         tiers[tier] = tier_dict
 
-        provider_key = provider.upper()
-        env_payload = payload.get("env")
-        if not isinstance(env_payload, dict):
-            env_payload = {}
-        for env_key, raw_value in (
-            (f"SWARMEE_PRICE_{provider_key}_INPUT_PER_1M", price_input),
-            (f"SWARMEE_PRICE_{provider_key}_OUTPUT_PER_1M", price_output),
-            (f"SWARMEE_PRICE_{provider_key}_CACHED_INPUT_PER_1M", price_cached),
+        pricing = payload.setdefault("pricing", {})
+        providers_pricing = pricing.setdefault("providers", {})
+        provider_pricing = providers_pricing.setdefault(provider, {})
+        for label, key_name, raw_value in (
+            ("input", "input_per_1m", price_input),
+            ("output", "output_per_1m", price_output),
+            ("cached_input", "cached_input_per_1m", price_cached),
         ):
             if raw_value:
                 try:
-                    float(raw_value)
+                    provider_pricing[key_name] = float(raw_value)
                 except ValueError:
-                    self._write_transcript_line(f"[settings] invalid numeric price for {env_key}: {raw_value}")
+                    self._write_transcript_line(f"[settings] invalid numeric {label} price: {raw_value}")
                     return
-                env_payload[env_key] = raw_value
-                os.environ[env_key] = raw_value
             else:
-                env_payload.pop(env_key, None)
-                os.environ.pop(env_key, None)
-        if env_payload:
-            payload["env"] = env_payload
-        else:
-            payload.pop("env", None)
+                with contextlib.suppress(Exception):
+                    provider_pricing.pop(key_name, None)
+        if not provider_pricing:
+            with contextlib.suppress(Exception):
+                providers_pricing.pop(provider, None)
 
         self._save_project_settings_payload(payload, path)
         self._settings_models_selected_id = f"{provider}|{tier}"
@@ -798,6 +941,9 @@ class SettingsMixin:
         self._refresh_settings_model_detail()
 
     def _refresh_settings_general(self) -> None:
+        from swarmee_river.settings import load_settings
+
+        settings = load_settings()
         summary_widget = self._settings_general_summary
         if summary_widget is not None:
             with contextlib.suppress(Exception):
@@ -808,31 +954,35 @@ class SettingsMixin:
 
         aws_input = self._settings_aws_profile_input
         if aws_input is not None:
-            current_profile = (os.getenv("AWS_PROFILE") or "").strip()
-            if current_profile and not str(getattr(aws_input, "value", "")).strip():
+            bedrock = settings.models.providers.get("bedrock")
+            extra = dict(getattr(bedrock, "extra", {}) or {})
+            configured_profile = str(extra.get("aws_profile") or "").strip()
+            if configured_profile and not str(getattr(aws_input, "value", "")).strip():
                 with contextlib.suppress(Exception):
-                    aws_input.value = current_profile
+                    aws_input.value = configured_profile
 
         # -- Auto-Approve toggle --
         toggle = self._settings_toggle_auto_approve_button
         if toggle is not None:
+            # Keep local cached default in sync with project settings.
+            self._default_auto_approve = bool(settings.runtime.auto_approve)
             enabled = bool(self._default_auto_approve)
             toggle.label = f"Auto-Approve: {'On' if enabled else 'Off'}"
             toggle.variant = "warning" if enabled else "default"
 
-        # -- Bypass Consent toggle --
+        # -- Tool Consent toggle (formerly BYPASS_TOOL_CONSENT env) --
         btn = self._settings_toggle_bypass_consent_button
         if btn is not None:
-            val = (os.environ.get("BYPASS_TOOL_CONSENT") or "").strip().lower()
-            on = val in {"true", "1", "yes", "on"}
-            btn.label = f"Bypass Consent: {'On' if on else 'Off'}"
-            btn.variant = "warning" if on else "default"
+            tool_consent = str(getattr(settings.safety, "tool_consent", "ask") or "ask").strip().lower()
+            if tool_consent not in {"ask", "allow", "deny"}:
+                tool_consent = "ask"
+            btn.label = f"Tool Consent: {tool_consent.title()}"
+            btn.variant = "warning" if tool_consent == "allow" else "default"
 
         # -- ESC Interrupt toggle --
         btn = self._settings_toggle_esc_interrupt_button
         if btn is not None:
-            val = (os.environ.get("SWARMEE_ESC_INTERRUPT") or "enabled").strip().lower()
-            on = val != "disabled"
+            on = bool(settings.runtime.esc_interrupt_enabled)
             btn.label = f"ESC Interrupt: {'On' if on else 'Off'}"
             btn.variant = "success" if on else "default"
         self._refresh_settings_interrupt_control_controls()
@@ -840,85 +990,70 @@ class SettingsMixin:
         # -- Context Manager select --
         sel = self._settings_general_context_manager_select
         if sel is not None:
-            val = (os.environ.get("SWARMEE_CONTEXT_MANAGER") or "summarize").strip().lower()
-            if val not in {"summarize", "sliding", "none"}:
-                val = "summarize"
+            val = str(settings.context.manager or "summarize").strip().lower()
             with contextlib.suppress(Exception):
                 sel.value = val
 
         # -- Preflight select --
         sel = self._settings_general_preflight_select
         if sel is not None:
-            val = (os.environ.get("SWARMEE_PREFLIGHT") or "enabled").strip().lower()
-            if val not in {"enabled", "disabled"}:
-                val = "enabled"
+            val = "enabled" if bool(settings.runtime.preflight_enabled) else "disabled"
             with contextlib.suppress(Exception):
                 sel.value = val
 
         # -- Swarm toggle --
         btn = self._settings_toggle_swarm_button
         if btn is not None:
-            val = (os.environ.get("SWARMEE_SWARM_ENABLED") or "true").strip().lower()
-            on = val not in {"false", "0", "no", "off", "disabled"}
+            on = bool(settings.runtime.swarm_enabled)
             btn.label = f"Swarm: {'On' if on else 'Off'}"
             btn.variant = "success" if on else "default"
 
         # -- Log Events toggle --
         btn = self._settings_toggle_log_events_button
         if btn is not None:
-            val = (os.environ.get("SWARMEE_LOG_EVENTS") or "true").strip().lower()
-            on = val in {"true", "1", "yes", "on"}
+            on = bool(settings.diagnostics.log_events)
             btn.label = f"Log Events: {'On' if on else 'Off'}"
             btn.variant = "success" if on else "default"
 
         # -- Project Map toggle --
         btn = self._settings_toggle_project_map_button
         if btn is not None:
-            val = (os.environ.get("SWARMEE_PROJECT_MAP") or "enabled").strip().lower()
-            on = val != "disabled"
+            on = bool(settings.runtime.project_map_enabled)
             btn.label = f"Project Map: {'On' if on else 'Off'}"
             btn.variant = "success" if on else "default"
 
         # -- Preflight Level select --
         sel = self._settings_general_preflight_level_select
         if sel is not None:
-            val = (os.environ.get("SWARMEE_PREFLIGHT_LEVEL") or "summary").strip().lower()
-            if val not in {"summary", "summary+tree", "summary+files"}:
-                val = "summary"
+            val = str(settings.runtime.preflight_level or "summary").strip().lower()
             with contextlib.suppress(Exception):
                 sel.value = val
 
         # -- Limit Tool Results toggle --
         btn = self._settings_toggle_limit_tool_results_button
         if btn is not None:
-            val = (os.environ.get("SWARMEE_LIMIT_TOOL_RESULTS") or "true").strip().lower()
-            on = val not in {"false", "0", "no", "off"}
+            on = bool(settings.runtime.limit_tool_results)
             btn.label = f"Limit Results: {'On' if on else 'Off'}"
             btn.variant = "success" if on else "default"
 
         # -- Truncate Results toggle --
         btn = self._settings_toggle_truncate_results_button
         if btn is not None:
-            val = (os.environ.get("SWARMEE_TRUNCATE_RESULTS") or "true").strip().lower()
-            on = val not in {"false", "0", "no", "off"}
+            on = bool(settings.context.truncate_results)
             btn.label = f"Truncate: {'On' if on else 'Off'}"
             btn.variant = "success" if on else "default"
 
         # -- Log Redact toggle --
         btn = self._settings_toggle_log_redact_button
         if btn is not None:
-            val = (
-                os.environ.get("SWARMEE_DIAG_REDACT") or os.environ.get("SWARMEE_LOG_REDACT") or "true"
-            ).strip().lower()
-            on = val not in {"false", "0", "no", "off"}
+            on = bool(settings.diagnostics.redact) and bool(settings.diagnostics.log_redact)
             btn.label = f"Redact Logs: {'On' if on else 'Off'}"
             btn.variant = "success" if on else "default"
 
         # -- Freeze Tools toggle --
         btn = self._settings_toggle_freeze_tools_button
         if btn is not None:
-            val = (os.environ.get("SWARMEE_FREEZE_TOOLS") or "").strip().lower()
-            on = val in {"true", "1", "yes", "on"}
+            on = bool(settings.runtime.freeze_tools)
             btn.label = f"Freeze Tools: {'On' if on else 'Off'}"
             btn.variant = "warning" if on else "default"
 
@@ -972,18 +1107,8 @@ class SettingsMixin:
         )
 
     def _model_env_overrides(self) -> dict[str, str]:
-        overrides: dict[str, str] = dict(self._project_settings_env_overrides())
-        for key in ("AWS_REGION", "AWS_DEFAULT_REGION"):
-            if key in overrides:
-                continue
-            inherited = str(os.getenv(key) or "").strip()
-            if inherited:
-                overrides[key] = inherited
-        if self.state.daemon.model_provider_override:
-            overrides["SWARMEE_MODEL_PROVIDER"] = self.state.daemon.model_provider_override
-        if self.state.daemon.model_tier_override:
-            overrides["SWARMEE_MODEL_TIER"] = self.state.daemon.model_tier_override
-        return overrides
+        # Only internal wiring env overrides are allowed.
+        return dict(self._project_settings_env_overrides())
 
     def _refresh_model_select(self) -> None:
         if self.state.daemon.provider and self.state.daemon.tier and self.state.daemon.tiers:
@@ -1306,11 +1431,15 @@ class SettingsMixin:
     def _apply_settings_aws_profile(self, profile: str, *, announce: bool = True) -> None:
         normalized = profile.strip()
         if normalized:
+            # Persist as structured settings, but also set AWS_PROFILE for this process so
+            # botocore/boto3 will pick it up immediately (internal bridging).
             self._persist_project_setting_env_override("AWS_PROFILE", normalized)
+            os.environ["AWS_PROFILE"] = normalized
             if announce:
                 self._write_transcript_line(f"[settings] AWS profile set to {normalized}")
         else:
             self._persist_project_setting_env_override("AWS_PROFILE", None)
+            os.environ.pop("AWS_PROFILE", None)
             if announce:
                 self._write_transcript_line("[settings] AWS profile cleared (using default credential chain).")
         self._refresh_settings_env_list()

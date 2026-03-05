@@ -10,8 +10,8 @@ from swarmee_river.auth.store import get_provider_record, set_provider_record
 
 
 def test_login_device_flow_saves_oauth_record(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AUTH_PATH", str(tmp_path / "auth.json"))
-    monkeypatch.setenv("SWARMEE_OPENCODE_AUTH_PATH", str(tmp_path / "opencode-auth.json"))
+    # Auth store uses XDG_DATA_HOME (or ~/.local/share). Keep tests sandbox-safe.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
     def _fake_post(url: str, data: dict[str, str], **_kwargs):
         if url == DEVICE_ENDPOINT:
@@ -45,8 +45,7 @@ def test_login_device_flow_saves_oauth_record(tmp_path, monkeypatch) -> None:
 
 
 def test_resolve_runtime_credentials_api_record(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AUTH_PATH", str(tmp_path / "auth.json"))
-    monkeypatch.setenv("SWARMEE_OPENCODE_AUTH_PATH", str(tmp_path / "opencode-auth.json"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
     set_provider_record("github_copilot", {"type": "api", "key": "api-key-1", "base_url": "https://api.example"})
     creds = resolve_runtime_credentials(refresh=False)
@@ -56,8 +55,7 @@ def test_resolve_runtime_credentials_api_record(tmp_path, monkeypatch) -> None:
 
 
 def test_resolve_runtime_credentials_refreshes_expired_oauth(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AUTH_PATH", str(tmp_path / "auth.json"))
-    monkeypatch.setenv("SWARMEE_OPENCODE_AUTH_PATH", str(tmp_path / "opencode-auth.json"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
     set_provider_record(
         "github_copilot",

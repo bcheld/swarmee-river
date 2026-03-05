@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import platform
 import sys
 import threading
@@ -212,14 +211,13 @@ def pause_active_interrupt_watcher_for_input() -> Iterator[None]:
         watcher.resume()
 
 
-def interrupt_watcher_from_env(interrupt_event: threading.Event) -> EscInterruptWatcher:
+def interrupt_watcher(interrupt_event: threading.Event, *, esc_interrupt_enabled: bool = True) -> EscInterruptWatcher:
     enabled = (sys.stdin is not None) and sys.stdin.isatty() and (platform.system() in {"Windows", "Darwin", "Linux"})
-    # Allow disabling in automation/CI, or when Esc conflicts with terminal flows.
-    if os.getenv("SWARMEE_ESC_INTERRUPT", "enabled").strip().lower() in {
-        "0",
-        "false",
-        "off",
-        "disabled",
-    }:
+    if not esc_interrupt_enabled:
         enabled = False
     return EscInterruptWatcher(interrupt_event, enabled=enabled)
+
+
+def interrupt_watcher_from_env(interrupt_event: threading.Event) -> EscInterruptWatcher:
+    # Backward-compatible shim; env-based configuration has been removed.
+    return interrupt_watcher(interrupt_event, esc_interrupt_enabled=True)

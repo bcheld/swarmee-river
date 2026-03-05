@@ -8,6 +8,7 @@ import pytest
 
 from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.session.store import SessionStore
+from swarmee_river.state_paths import set_state_dir_override
 from tools.session_s3 import _generate_session_summary, session_s3
 
 
@@ -57,9 +58,12 @@ class _FakeS3:
 
 
 @pytest.fixture
-def session_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SessionStore:
-    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
-    return SessionStore()
+def session_workspace(tmp_path: Path) -> SessionStore:
+    set_state_dir_override(tmp_path / ".swarmee", cwd=tmp_path)
+    try:
+        yield SessionStore()
+    finally:
+        set_state_dir_override(None)
 
 
 def _text(result: dict[str, object]) -> str:

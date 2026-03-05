@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.settings import load_settings
 from swarmee_river.state_paths import logs_dir, state_dir
 
 _DIAG_LEVELS = {"baseline", "verbose"}
@@ -26,69 +27,25 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def _truthy(raw: str | None, *, default: bool) -> bool:
-    token = str(raw or "").strip().lower()
-    if not token:
-        return default
-    return token not in {"false", "0", "no", "off", "disabled"}
-
-
-def _parse_int_env(
-    name: str,
-    *,
-    default: int,
-    minimum: int,
-    alias: str | None = None,
-) -> int:
-    raw = os.getenv(name, "")
-    if not raw.strip() and alias:
-        raw = os.getenv(alias, "")
-    token = raw.strip()
-    if not token:
-        return default
-    try:
-        value = int(token)
-    except ValueError:
-        return default
-    return max(minimum, value)
-
-
 def diagnostics_level() -> str:
-    raw = str(os.getenv("SWARMEE_DIAG_LEVEL", "")).strip().lower()
-    if raw in _DIAG_LEVELS:
-        return raw
-    return _DEFAULT_DIAG_LEVEL
+    level = str(load_settings().diagnostics.level or _DEFAULT_DIAG_LEVEL).strip().lower()
+    return level if level in _DIAG_LEVELS else _DEFAULT_DIAG_LEVEL
 
 
 def diagnostics_events_enabled() -> bool:
-    # Keep legacy event toggle source-compatible.
-    legacy = os.getenv("SWARMEE_LOG_EVENTS")
-    if isinstance(legacy, str) and legacy.strip():
-        return _truthy(legacy, default=True)
-    return True
+    return bool(load_settings().diagnostics.log_events)
 
 
 def diagnostics_redact_enabled() -> bool:
-    raw = os.getenv("SWARMEE_DIAG_REDACT")
-    if isinstance(raw, str) and raw.strip():
-        return _truthy(raw, default=True)
-    return _truthy(os.getenv("SWARMEE_LOG_REDACT"), default=True)
+    return bool(load_settings().diagnostics.redact)
 
 
 def diagnostics_retention_days() -> int:
-    return _parse_int_env(
-        "SWARMEE_DIAG_RETENTION_DAYS",
-        default=_DEFAULT_RETENTION_DAYS,
-        minimum=_MIN_RETENTION_DAYS,
-    )
+    return _DEFAULT_RETENTION_DAYS
 
 
 def diagnostics_max_bytes() -> int:
-    return _parse_int_env(
-        "SWARMEE_DIAG_MAX_BYTES",
-        default=_DEFAULT_MAX_BYTES,
-        minimum=_MIN_MAX_BYTES,
-    )
+    return _DEFAULT_MAX_BYTES
 
 
 def diagnostics_dir(*, cwd: Path | None = None) -> Path:

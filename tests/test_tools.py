@@ -1,6 +1,8 @@
 import importlib
+from dataclasses import replace
 from pathlib import Path
 
+from swarmee_river.settings import default_settings_template
 from swarmee_river.tools import get_tools
 
 
@@ -36,15 +38,15 @@ def test_tools_include_opencode_aliases():
         assert alias_name in tools
 
 
-def test_project_context_tool_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", raising=False)
-    tools = get_tools()
+def test_project_context_tool_disabled_by_default():
+    tools = get_tools(default_settings_template())
     assert "project_context" not in tools
 
 
-def test_project_context_tool_can_be_enabled(monkeypatch):
-    monkeypatch.setenv("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", "true")
-    tools = get_tools()
+def test_project_context_tool_can_be_enabled():
+    settings = default_settings_template()
+    settings = replace(settings, runtime=replace(settings.runtime, enable_project_context_tool=True))
+    tools = get_tools(settings)
     assert "project_context" in tools
 
 

@@ -3,12 +3,11 @@ from __future__ import annotations
 from unittest import mock
 
 from swarmee_river.project_map import build_context_snapshot
+from swarmee_river.settings import RuntimeConfig
 
 
-def test_interactive_preflight_is_silent_by_default(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_PREFLIGHT", "enabled")
-    monkeypatch.setenv("SWARMEE_PROJECT_MAP", "disabled")
-    monkeypatch.delenv("SWARMEE_PREFLIGHT_PRINT", raising=False)
+def test_interactive_preflight_is_silent_by_default() -> None:
+    runtime = RuntimeConfig(preflight_enabled=True, project_map_enabled=False, preflight_print=False)
 
     artifact_store = mock.MagicMock()
 
@@ -21,6 +20,7 @@ def test_interactive_preflight_is_silent_by_default(monkeypatch) -> None:
         snapshot = build_context_snapshot(
             artifact_store=artifact_store,
             interactive=True,
+            runtime=runtime,
             default_preflight_level="summary",
         )
 
@@ -28,10 +28,8 @@ def test_interactive_preflight_is_silent_by_default(monkeypatch) -> None:
         print_mock.assert_not_called()
 
 
-def test_interactive_preflight_prints_when_enabled(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_PREFLIGHT", "enabled")
-    monkeypatch.setenv("SWARMEE_PROJECT_MAP", "disabled")
-    monkeypatch.setenv("SWARMEE_PREFLIGHT_PRINT", "enabled")
+def test_interactive_preflight_prints_when_enabled() -> None:
+    runtime = RuntimeConfig(preflight_enabled=True, project_map_enabled=False, preflight_print=True)
 
     artifact_store = mock.MagicMock()
 
@@ -44,6 +42,7 @@ def test_interactive_preflight_prints_when_enabled(monkeypatch) -> None:
         build_context_snapshot(
             artifact_store=artifact_store,
             interactive=True,
+            runtime=runtime,
             default_preflight_level="summary",
         )
 

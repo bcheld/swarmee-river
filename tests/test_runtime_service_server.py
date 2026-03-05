@@ -1100,18 +1100,20 @@ def test_runtime_service_query_stall_hard_fail_restarts_after_turn_complete(monk
     asyncio.run(_scenario())
 
 
-def test_runtime_service_interrupt_timeout_precedence(monkeypatch) -> None:
+def test_runtime_service_interrupt_timeout_precedence(monkeypatch, tmp_path: Path) -> None:
     import swarmee_river.runtime_service.server as server_module
 
-    monkeypatch.delenv("SWARMEE_INTERRUPT_TIMEOUT_SEC", raising=False)
-    monkeypatch.delenv("SWARMEE_INTERRUPT_TIMEOUT", raising=False)
-    assert server_module._interrupt_timeout_seconds() == 2.0
+    session_cwd = tmp_path / "session"
+    (session_cwd / ".swarmee").mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setenv("SWARMEE_INTERRUPT_TIMEOUT", "3.5")
-    assert server_module._interrupt_timeout_seconds() == 3.5
+    # No settings file -> default.
+    assert server_module._interrupt_timeout_seconds(session_cwd=str(session_cwd)) == 2.0
 
-    monkeypatch.setenv("SWARMEE_INTERRUPT_TIMEOUT_SEC", "1.5")
-    assert server_module._interrupt_timeout_seconds() == 1.5
+    (session_cwd / ".swarmee" / "settings.json").write_text(
+        json.dumps({"runtime": {"interrupt_timeout_sec": 3.5}}) + "\n",
+        encoding="utf-8",
+    )
+    assert server_module._interrupt_timeout_seconds(session_cwd=str(session_cwd)) == 3.5
 
 
 def test_runtime_service_bedrock_stall_timeout_parsing(monkeypatch) -> None:
@@ -1124,8 +1126,9 @@ def test_runtime_service_bedrock_stall_timeout_parsing(monkeypatch) -> None:
 
     monkeypatch.setenv("SWARMEE_BEDROCK_STALL_WARN_SEC", "7")
     monkeypatch.setenv("SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC", "12")
-    assert server_module._bedrock_stall_warn_seconds() == 7.0
-    assert server_module._bedrock_stall_hard_fail_seconds() == 12.0
+    # Env-based tuning is no longer supported; values remain fixed.
+    assert server_module._bedrock_stall_warn_seconds() == 90.0
+    assert server_module._bedrock_stall_hard_fail_seconds() is None
 
 
 def test_runtime_service_proxies_auth_and_connect_commands(monkeypatch, tmp_path: Path) -> None:

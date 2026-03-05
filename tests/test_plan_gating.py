@@ -26,7 +26,8 @@ def test_work_prompt_generates_plan_and_waits_for_approval(
 
     assert mock_agent.invoke_async.call_count == 1
     call = mock_agent.invoke_async.call_args
-    assert call.args[0] == "fix the bug in swarmee.py"
+    assert isinstance(call.args[0], str)
+    assert call.args[0].rstrip().endswith("fix the bug in swarmee.py")
     assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "plan"
     assert call.kwargs["structured_output_model"] is WorkPlan
 

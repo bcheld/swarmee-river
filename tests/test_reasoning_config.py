@@ -33,8 +33,12 @@ def test_bedrock_deep_tier_sets_higher_thinking_budget(tmp_path: Path, monkeypat
 
 
 def test_openai_reasoning_effort_env_applies_to_deep_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SWARMEE_OPENAI_REASONING_EFFORT", "high")
-    settings = load_settings(tmp_path / "settings.json")
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        '{"models":{"providers":{"openai":{"tiers":{"deep":{"params":{"reasoning_effort":"high"}}}}}}}\n',
+        encoding="utf-8",
+    )
+    settings = load_settings(settings_path)
     manager = SessionModelManager(settings, fallback_provider="openai")
 
     captured: dict[str, object] = {}

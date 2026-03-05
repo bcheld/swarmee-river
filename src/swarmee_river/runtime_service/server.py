@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.settings import load_settings
 from swarmee_river.state_paths import state_dir
 
 from .protocol import encode_jsonl, make_error_event, parse_jsonl_command, utc_now_iso
@@ -30,47 +31,28 @@ class ClientState:
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
-_SESSION_IDLE_TIMEOUT_S: float = float(os.environ.get("SWARMEE_SESSION_IDLE_TIMEOUT", "3600"))
-_BROKER_IDLE_TIMEOUT_S: float = float(os.environ.get("SWARMEE_BROKER_IDLE_TIMEOUT", "3600"))
+_SESSION_IDLE_TIMEOUT_S: float = 3600.0
+_BROKER_IDLE_TIMEOUT_S: float = 3600.0
 
 
-def _interrupt_timeout_seconds() -> float:
-    raw = (
-        os.environ.get("SWARMEE_INTERRUPT_TIMEOUT_SEC")
-        or os.environ.get("SWARMEE_INTERRUPT_TIMEOUT")
-        or "2.0"
-    )
+def _interrupt_timeout_seconds(*, session_cwd: str) -> float:
+    """Interrupt watchdog timeout (project-local settings)."""
     try:
-        value = float(raw)
-    except ValueError:
-        return 2.0
+        settings = load_settings(Path(session_cwd) / ".swarmee" / "settings.json")
+        value = float(settings.runtime.interrupt_timeout_sec)
+    except Exception:
+        value = 2.0
     if value <= 0:
         return 2.0
     return value
 
 
 def _bedrock_stall_warn_seconds() -> float:
-    raw = os.environ.get("SWARMEE_BEDROCK_STALL_WARN_SEC", "90")
-    try:
-        value = float(str(raw).strip())
-    except ValueError:
-        return 90.0
-    if value <= 0:
-        return 90.0
-    return value
+    return 90.0
 
 
 def _bedrock_stall_hard_fail_seconds() -> float | None:
-    raw = str(os.environ.get("SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC", "")).strip()
-    if not raw:
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        return None
-    if value <= 0:
-        return None
-    return value
+    return None
 
 
 def _normalize_env_overrides(raw_env: Any) -> dict[str, str]:
@@ -125,6 +107,8 @@ class RuntimeServiceServer:
         port: int = 0,
         token: str | None = None,
         runtime_file: Path | None = None,
+        broker_log_path: str | Path | None = None,
+        session_events_path_template: str | None = None,
     ) -> None:
         if host.strip() != "127.0.0.1":
             raise ValueError("Runtime service must bind to 127.0.0.1 for MVP")
@@ -141,7 +125,7 @@ class RuntimeServiceServer:
         default_runtime_file = state_dir() / "runtime.json"
         self.runtime_file = runtime_file or default_runtime_file
         state_root = self.runtime_file.parent
-        raw_broker_log = str(os.getenv("SWARMEE_BROKER_LOG_PATH", "")).strip()
+        raw_broker_log = str(broker_log_path).strip() if broker_log_path is not None else ""
         if raw_broker_log:
             broker_path = Path(raw_broker_log).expanduser()
             if not broker_path.is_absolute():
@@ -149,7 +133,7 @@ class RuntimeServiceServer:
             self.broker_log_path = broker_path
         else:
             self.broker_log_path = state_root / "diagnostics" / "broker.log"
-        raw_events_template = str(os.getenv("SWARMEE_DIAG_SESSION_EVENTS_PATH", "")).strip()
+        raw_events_template = str(session_events_path_template).strip() if session_events_path_template else ""
         if raw_events_template:
             events_template = Path(raw_events_template).expanduser()
             if not events_template.is_absolute():
@@ -398,7 +382,7 @@ class RuntimeServiceServer:
         self._cancel_interrupt_watchdog(session)
         if not session.query_active:
             return
-        timeout_s = _interrupt_timeout_seconds()
+        timeout_s = _interrupt_timeout_seconds(session_cwd=session.cwd)
         if timeout_s <= 0:
             return
         session.interrupt_watchdog_task = asyncio.ensure_future(
@@ -669,10 +653,6 @@ class RuntimeServiceServer:
         if session.env_overrides:
             env.update(session.env_overrides)
         env["SWARMEE_TUI_EVENTS"] = "1"
-        env["SWARMEE_SPINNERS"] = "0"
-        env["SWARMEE_LOG_EVENTS"] = "1"
-        env.setdefault("SWARMEE_DIAG_LEVEL", "baseline")
-        env.setdefault("SWARMEE_DIAG_REDACT", "true")
         env["SWARMEE_SESSION_ID"] = session.session_id
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")

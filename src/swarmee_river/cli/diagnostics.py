@@ -207,48 +207,18 @@ def render_effective_config(
                 except Exception:
                     continue
 
+    # Supported end-user env vars are secrets only (credentials). Other configuration
+    # is expressed via `.swarmee/settings.json` fields and/or CLI flags.
     env_keys = [
-        "SWARMEE_DIAG_LEVEL",
-        "SWARMEE_DIAG_REDACT",
-        "SWARMEE_DIAG_RETENTION_DAYS",
-        "SWARMEE_DIAG_MAX_BYTES",
-        "SWARMEE_MODEL_PROVIDER",
-        "SWARMEE_MODEL_TIER",
-        "SWARMEE_TIER_AUTO",
-        "SWARMEE_AUTO_APPROVE",
-        "SWARMEE_ENABLE_TOOLS",
-        "SWARMEE_DISABLE_TOOLS",
-        "BYPASS_TOOL_CONSENT",
-        "SWARMEE_PREFLIGHT",
-        "SWARMEE_PREFLIGHT_LEVEL",
-        "SWARMEE_PREFLIGHT_MAX_CHARS",
-        "SWARMEE_PROJECT_MAP",
-        "SWARMEE_LOG_EVENTS",
-        "SWARMEE_LOG_DIR",
-        "SWARMEE_LOG_REDACT",
-        "SWARMEE_LOG_MAX_FIELD_CHARS",
-        "SWARMEE_OPENAI_REASONING_EFFORT",
         "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
         "SWARMEE_GITHUB_COPILOT_API_KEY",
-        "SWARMEE_GITHUB_COPILOT_MODEL_ID",
-        "SWARMEE_GITHUB_COPILOT_BASE_URL",
-        "SWARMEE_GITHUB_COPILOT_INTEGRATION_ID",
-        "SWARMEE_GITHUB_COPILOT_CLIENT_ID",
-        "SWARMEE_AUTH_PATH",
-        "SWARMEE_OPENCODE_AUTH_PATH",
         "GITHUB_TOKEN",
         "GH_TOKEN",
-        "STRANDS_MODEL_ID",
-        "STRANDS_MAX_TOKENS",
-        "STRANDS_BUDGET_TOKENS",
-        "STRANDS_THINKING_TYPE",
-        "AWS_PROFILE",
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
     ]
-    lines.append("- env:")
+    lines.append("- env (secrets):")
     for k in env_keys:
         v = os.getenv(k)
         if v is None:
@@ -303,7 +273,11 @@ def _iter_jsonl_files(log_dir: Path) -> list[Path]:
 
 
 def render_log_tail(*, cwd: Path, lines: int = 50) -> str:
-    log_dir = _resolve_under_cwd(os.getenv("SWARMEE_LOG_DIR", str(_default_logs_dir(cwd=cwd))), cwd)
+    from swarmee_river.settings import load_settings
+
+    settings = load_settings(cwd / ".swarmee" / "settings.json")
+    configured = settings.diagnostics.log_dir or str(_default_logs_dir(cwd=cwd))
+    log_dir = _resolve_under_cwd(configured, cwd)
     files = _iter_jsonl_files(log_dir)
     if not files:
         return f"No logs found in {log_dir}"
@@ -329,7 +303,11 @@ def render_replay_invocation(
     if not inv:
         return "invocation_id is required."
 
-    log_dir = _resolve_under_cwd(os.getenv("SWARMEE_LOG_DIR", str(_default_logs_dir(cwd=cwd))), cwd)
+    from swarmee_river.settings import load_settings
+
+    settings = load_settings(cwd / ".swarmee" / "settings.json")
+    configured = settings.diagnostics.log_dir or str(_default_logs_dir(cwd=cwd))
+    log_dir = _resolve_under_cwd(configured, cwd)
     files = _iter_jsonl_files(log_dir)
     if not files:
         return f"No logs found in {log_dir}"

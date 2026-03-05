@@ -25,6 +25,7 @@ import json
 import queue
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -119,10 +120,31 @@ def tui_app_factory(tmp_path: Any, monkeypatch: Any):
                 await pilot.pause(delay=0.1)
                 assert app.state.daemon.ready
     """
-    # Isolate filesystem state
-    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
-    monkeypatch.setenv("SWARMEE_PREFLIGHT", "disabled")
-    monkeypatch.setenv("SWARMEE_PROJECT_MAP", "disabled")
+    # Isolate filesystem state:
+    # - run the TUI from an isolated temp "project" directory
+    # - use `.swarmee/settings.json` structured fields (not env) to disable
+    #   expensive startup features that would otherwise scan the repository
+    tmp_path = Path(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    state_dir = tmp_path / ".swarmee"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = state_dir / "settings.json"
+    if not settings_path.exists():
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "runtime": {
+                        "preflight_enabled": False,
+                        "project_map_enabled": False,
+                    }
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     @asynccontextmanager
     async def _factory(*, size: tuple[int, int] = (200, 50)):

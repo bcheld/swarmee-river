@@ -17,6 +17,7 @@ from swarmee_river.runtime_service.client import (
     runtime_discovery_path,
     shutdown_runtime_broker,
 )
+from swarmee_river.state_paths import set_state_dir_override
 
 
 def test_default_session_id_for_cwd_is_stable(tmp_path: Path) -> None:
@@ -53,16 +54,18 @@ def test_load_runtime_discovery_round_trip(tmp_path: Path) -> None:
 
 
 def test_ensure_runtime_broker_returns_existing_discovery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
+    set_state_dir_override(tmp_path / ".swarmee", cwd=tmp_path)
     monkeypatch.setattr("swarmee_river.runtime_service.client._discovery_is_reachable", lambda _path: True)
     monkeypatch.setattr("swarmee_river.runtime_service.client.subprocess.Popen", lambda *_a, **_k: None)
-
-    discovery = ensure_runtime_broker(cwd=tmp_path)
-    assert discovery == runtime_discovery_path(cwd=tmp_path)
+    try:
+        discovery = ensure_runtime_broker(cwd=tmp_path)
+        assert discovery == runtime_discovery_path(cwd=tmp_path)
+    finally:
+        set_state_dir_override(None)
 
 
 def test_ensure_runtime_broker_spawns_when_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
+    set_state_dir_override(tmp_path / ".swarmee", cwd=tmp_path)
     reachable = iter([False, False, True])
     monkeypatch.setattr(
         "swarmee_river.runtime_service.client._discovery_is_reachable",
@@ -84,16 +87,20 @@ def test_ensure_runtime_broker_spawns_when_missing(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr("swarmee_river.runtime_service.client.subprocess.Popen", _fake_popen)
 
-    discovery = ensure_runtime_broker(cwd=tmp_path, timeout_s=1.0, poll_interval_s=0.01)
-    assert discovery == runtime_discovery_path(cwd=tmp_path)
-    command = spawned["cmd"]
-    assert isinstance(command, list)
-    assert command[:1] == [sys.executable]
-    assert command[1:] == ["-u", "-m", "swarmee_river.swarmee", "serve"]
+    try:
+        discovery = ensure_runtime_broker(cwd=tmp_path, timeout_s=1.0, poll_interval_s=0.01)
+        assert discovery == runtime_discovery_path(cwd=tmp_path)
+        command = spawned["cmd"]
+        assert isinstance(command, list)
+        assert command[:4] == [sys.executable, "-u", "-m", "swarmee_river.swarmee"]
+        assert command[4:6] == ["serve", "--state-dir"]
+        assert str(tmp_path / ".swarmee") in {str(item) for item in command}
+    finally:
+        set_state_dir_override(None)
 
 
 def test_shutdown_runtime_broker_sends_shutdown_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SWARMEE_STATE_DIR", str(tmp_path / ".swarmee"))
+    set_state_dir_override(tmp_path / ".swarmee", cwd=tmp_path)
     discovery_path = runtime_discovery_path(cwd=tmp_path)
     discovery_path.parent.mkdir(parents=True, exist_ok=True)
     discovery_path.write_text(
@@ -131,8 +138,11 @@ def test_shutdown_runtime_broker_sends_shutdown_service(monkeypatch: pytest.Monk
         staticmethod(lambda _path, timeout_s=10.0: fake_client),
     )
 
-    assert shutdown_runtime_broker(cwd=tmp_path, timeout_s=0.5) is True
-    assert fake_client.commands == [{"cmd": "shutdown_service"}]
+    try:
+        assert shutdown_runtime_broker(cwd=tmp_path, timeout_s=0.5) is True
+        assert fake_client.commands == [{"cmd": "shutdown_service"}]
+    finally:
+        set_state_dir_override(None)
 
 
 def test_runtime_client_close_does_not_block_on_stream_close() -> None:

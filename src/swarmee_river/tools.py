@@ -4,7 +4,7 @@ import importlib
 from typing import Any
 
 from swarmee_river.opencode_aliases import configure_alias_targets, opencode_alias_tools
-from swarmee_river.utils.env_utils import truthy_env
+from swarmee_river.settings import SwarmeeSettings
 from swarmee_river.utils.import_utils import load_optional_attr
 
 # Custom tools (packaged + hot-loaded from ./tools)
@@ -127,7 +127,7 @@ def _load_optional_strands_tools() -> dict[str, Any]:
     return tools
 
 
-def get_tools() -> dict[str, Any]:
+def get_tools(settings: SwarmeeSettings | None = None) -> dict[str, Any]:
     """
     Returns the collection of available agent tools.
 
@@ -139,7 +139,7 @@ def get_tools() -> dict[str, Any]:
         tools.setdefault(name, fallback)
 
     custom_tools = dict(_CUSTOM_TOOLS)
-    if truthy_env("SWARMEE_ENABLE_PROJECT_CONTEXT_TOOL", False):
+    if settings is not None and settings.runtime.enable_project_context_tool:
         custom_tools["project_context"] = project_context
     tools |= custom_tools
 

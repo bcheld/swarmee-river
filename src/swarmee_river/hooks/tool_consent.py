@@ -12,7 +12,7 @@ from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.opencode_aliases import canonical_tool_name, equivalent_tool_names, normalize_tool_name
 from swarmee_river.permissions import evaluate_permission_action
 from swarmee_river.settings import SafetyConfig
-from swarmee_river.utils.env_utils import truthy, truthy_env
+from swarmee_river.utils.env_utils import truthy
 
 
 def _truncate(value: str, limit: int = 240) -> str:
@@ -142,9 +142,6 @@ class ToolConsentHooks(HookProvider):
                 # Plan approval counts as consent for tools explicitly listed in the approved plan.
                 return
 
-        if truthy_env("BYPASS_TOOL_CONSENT", False):
-            return
-
         action, remember_allowed = evaluate_permission_action(
             safety=self._safety,
             tool_name=tool_name,
@@ -165,7 +162,7 @@ class ToolConsentHooks(HookProvider):
         if not self._interactive:
             event.cancel_tool = (
                 f"Tool '{tool_name}' requires consent, but session is non-interactive. "
-                "Re-run with --yes or SWARMEE_AUTO_APPROVE=true to allow."
+                "Re-run with --yes or set `runtime.auto_approve=true` in `.swarmee/settings.json` to allow."
             )
             return
 

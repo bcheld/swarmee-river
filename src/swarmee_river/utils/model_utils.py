@@ -2,7 +2,6 @@
 
 import importlib
 import json
-import os
 import pathlib
 from typing import Any, cast
 
@@ -14,149 +13,128 @@ _THINKING_DISABLE_TOKENS = {"0", "false", "f", "no", "n", "off", "disable", "dis
 _BEDROCK_THINKING_BUDGET_DEFAULT = 2048
 _BEDROCK_THINKING_BUDGET_MAX = 32768
 
+from swarmee_river.config.env_policy import getenv_secret
+from swarmee_river.settings import ProviderModels, SwarmeeSettings
 
-def _env_int(name: str, default: int, *, min_value: int | None = None) -> int:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        value = default
+
+def _as_int(value: Any, default: int, *, min_value: int | None = None) -> int:
+    if value is None:
+        out = default
     else:
-        with_value = raw
-        if with_value.startswith(("+", "-")):
-            with_value = with_value[1:]
-        if not with_value.isdigit():
-            return default
-        value = int(raw)
-    if min_value is not None and value < min_value:
-        return default
-    return value
-
-
-def _bedrock_timeout_seconds(name: str, default: float) -> float:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    if value <= 0:
-        return default
-    return value
-
-
-def _thinking_mode_token() -> str:
-    return str(os.getenv("STRANDS_THINKING_TYPE", "enabled") or "").strip().lower()
-
-
-def _safe_thinking_budget(value: Any) -> int:
-    try:
-        budget = int(value)
-    except Exception:
-        budget = _BEDROCK_THINKING_BUDGET_DEFAULT
-    if budget <= 0:
-        budget = _BEDROCK_THINKING_BUDGET_DEFAULT
-    if budget > _BEDROCK_THINKING_BUDGET_MAX:
-        budget = _BEDROCK_THINKING_BUDGET_MAX
-    return budget
-
-
-def _normalized_bedrock_thinking_fields() -> dict[str, Any] | None:
-    token = _thinking_mode_token()
-    if token in _THINKING_DISABLE_TOKENS:
-        return None
-    if token not in _THINKING_ENABLE_TOKENS:
-        token = "enabled"
-
-    budget = _safe_thinking_budget(_env_int("STRANDS_BUDGET_TOKENS", _BEDROCK_THINKING_BUDGET_DEFAULT, min_value=1))
-    return {
-        "type": "enabled",
-        "budget_tokens": budget,
-    }
-
-
-def sanitize_bedrock_thinking_config(config: dict[str, Any]) -> None:
-    normalized = _normalized_bedrock_thinking_fields()
-    extra = config.get("additional_request_fields")
-    additional_request_fields = extra if isinstance(extra, dict) else {}
-    existing = additional_request_fields.get("thinking")
-
-    if normalized is None:
-        additional_request_fields.pop("thinking", None)
-        if additional_request_fields:
-            config["additional_request_fields"] = additional_request_fields
+        raw = str(value).strip()
+        if not raw:
+            out = default
         else:
-            config.pop("additional_request_fields", None)
-        return
-
-    budget_value = normalized["budget_tokens"]
-    if isinstance(existing, dict):
-        existing_type = str(existing.get("type", "")).strip().lower()
-        existing_budget = existing.get("budget_tokens")
-        if existing_type in _THINKING_ENABLE_TOKENS and not isinstance(existing_budget, bool):
-            budget_value = _safe_thinking_budget(existing_budget)
-
-    additional_request_fields["thinking"] = {
-        "type": "enabled",
-        "budget_tokens": budget_value,
-    }
-    config["additional_request_fields"] = additional_request_fields
+            with_value = raw[1:] if raw.startswith(("+", "-")) else raw
+            if not with_value.isdigit():
+                return default
+            out = int(raw)
+    if min_value is not None and out < min_value:
+        return default
+    return out
 
 
-def _default_bedrock_model_config() -> dict[str, Any]:
+def _as_float(value: Any, default: float, *, min_value: float | None = None) -> float:
+    if value is None:
+        out = default
+    else:
+        raw = str(value).strip()
+        if not raw:
+            out = default
+        else:
+            try:
+                out = float(raw)
+            except Exception:
+                out = default
+    if min_value is not None and out < min_value:
+        return default
+    return out
+
+
+def _provider_extra(settings: SwarmeeSettings, provider: str) -> dict[str, Any]:
+    pm = settings.models.providers.get(provider)
+    if isinstance(pm, ProviderModels):
+        return dict(pm.extra or {})
+    return {}
+
+
+def _default_bedrock_model_config(settings: SwarmeeSettings) -> dict[str, Any]:
+    extra = _provider_extra(settings, "bedrock")
+    max_tokens = settings.models.max_output_tokens if settings.models.max_output_tokens is not None else 32768
+    max_tokens = _as_int(max_tokens, 32768, min_value=1)
+    # Treat <= 0 as invalid; callers should use positive seconds.
+    read_timeout = _as_float(extra.get("read_timeout_sec"), 45.0, min_value=0.01)
+    connect_timeout = _as_float(extra.get("connect_timeout_sec"), 5.0, min_value=0.01)
+    max_retries = _as_int(extra.get("max_retries"), 2, min_value=0)
+    thinking_token = str(extra.get("thinking_type") or "enabled").strip().lower()
+    thinking_budget_tokens = _as_int(extra.get("thinking_budget_tokens"), _BEDROCK_THINKING_BUDGET_DEFAULT, min_value=1)
+    if thinking_budget_tokens > _BEDROCK_THINKING_BUDGET_MAX:
+        thinking_budget_tokens = _BEDROCK_THINKING_BUDGET_MAX
+    cache_tools = str(extra.get("cache_tools") or "default").strip() or "default"
+    anthropic_beta_features = str(extra.get("anthropic_beta") or "interleaved-thinking-2025-05-14").strip()
     config: dict[str, Any] = {
-        "model_id": os.getenv("STRANDS_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
-        "max_tokens": _env_int("STRANDS_MAX_TOKENS", 32768, min_value=1),
+        "model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "max_tokens": max_tokens,
         "boto_client_config": Config(
-            read_timeout=_bedrock_timeout_seconds("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", 45.0),
-            connect_timeout=_bedrock_timeout_seconds("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", 5.0),
+            read_timeout=read_timeout,
+            connect_timeout=connect_timeout,
             retries={
-                "max_attempts": _env_int("SWARMEE_BEDROCK_MAX_RETRIES", 2, min_value=0),
+                "max_attempts": max_retries,
                 "mode": "adaptive",
             },
         ),
-        "cache_tools": os.getenv("STRANDS_CACHE_TOOLS", "default"),
+        "cache_tools": cache_tools,
     }
     additional_request_fields: dict[str, Any] = {}
-    thinking_fields = _normalized_bedrock_thinking_fields()
-    if thinking_fields is not None:
-        additional_request_fields["thinking"] = thinking_fields
-    anthropic_beta_features = os.getenv("STRANDS_ANTHROPIC_BETA", "interleaved-thinking-2025-05-14")
+    if thinking_token not in _THINKING_DISABLE_TOKENS:
+        if thinking_token not in _THINKING_ENABLE_TOKENS:
+            thinking_token = "enabled"
+        if thinking_token in _THINKING_ENABLE_TOKENS:
+            additional_request_fields["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": thinking_budget_tokens,
+            }
+
     if anthropic_beta_features:
-        additional_request_fields["anthropic_beta"] = anthropic_beta_features.split(",")
+        beta = [part.strip() for part in anthropic_beta_features.split(",") if part.strip()]
+        if beta:
+            additional_request_fields["anthropic_beta"] = beta
+
     if additional_request_fields:
         config["additional_request_fields"] = additional_request_fields
     return config
 
 
-def default_model_config(provider: str) -> dict[str, Any]:
+def default_model_config(provider: str, settings: SwarmeeSettings) -> dict[str, Any]:
     provider = provider.strip().lower()
     if provider == "bedrock":
-        return _default_bedrock_model_config()
+        return _default_bedrock_model_config(settings)
 
     if provider == "ollama":
+        extra = _provider_extra(settings, "ollama")
         return {
-            "host": os.getenv("SWARMEE_OLLAMA_HOST"),
-            "model_id": os.getenv("SWARMEE_OLLAMA_MODEL_ID", os.getenv("OLLAMA_MODEL", "llama3.1")),
+            "host": str(extra.get("host") or "").strip() or None,
+            "model_id": "llama3.1",
         }
 
     if provider == "openai":
-        model_id = os.getenv("SWARMEE_OPENAI_MODEL_ID", "gpt-5-nano")
-        max_tokens = os.getenv("SWARMEE_MAX_TOKENS")
+        extra = _provider_extra(settings, "openai")
+        model_id = "gpt-5-nano"
+        max_tokens = settings.models.max_output_tokens
         params: dict[str, Any] = {}
-        if max_tokens and max_tokens.isdigit():
+        if isinstance(max_tokens, int) and max_tokens > 0:
             # OpenAI Chat Completions uses `max_completion_tokens` for newer models.
             params["max_completion_tokens"] = int(max_tokens)
 
         client_args: dict[str, Any] = {}
-        max_retries = os.getenv("SWARMEE_OPENAI_MAX_RETRIES", "0").strip()
-        if max_retries.isdigit():
-            client_args["max_retries"] = int(max_retries)
-        if os.getenv("OPENAI_API_KEY"):
-            client_args["api_key"] = os.getenv("OPENAI_API_KEY")
-        if os.getenv("OPENAI_BASE_URL"):
-            base_url = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+        client_args["max_retries"] = _as_int(extra.get("max_retries"), 0, min_value=0)
+        api_key = getenv_secret("OPENAI_API_KEY")
+        if api_key:
+            client_args["api_key"] = api_key
+        base_url = str(extra.get("base_url") or "").strip().rstrip("/")
+        if base_url:
             # OpenAI Python SDK expects base_url to include `/v1` (default is https://api.openai.com/v1).
-            if base_url and not base_url.endswith("/v1"):
+            if not base_url.endswith("/v1"):
                 base_url = base_url + "/v1"
             client_args["base_url"] = base_url
 
@@ -168,25 +146,27 @@ def default_model_config(provider: str) -> dict[str, Any]:
         return config
 
     if provider == "github_copilot":
-        model_id = os.getenv("SWARMEE_GITHUB_COPILOT_MODEL_ID", "gpt-4o")
-        max_tokens = os.getenv("SWARMEE_MAX_TOKENS")
+        extra = _provider_extra(settings, "github_copilot")
+        model_id = "gpt-4o"
+        max_tokens = settings.models.max_output_tokens
         params: dict[str, Any] = {}
-        if max_tokens and max_tokens.isdigit():
+        if isinstance(max_tokens, int) and max_tokens > 0:
             params["max_completion_tokens"] = int(max_tokens)
 
         client_args: dict[str, Any] = {}
-        max_retries = os.getenv("SWARMEE_GITHUB_COPILOT_MAX_RETRIES", "0").strip()
-        if max_retries.isdigit():
-            client_args["max_retries"] = int(max_retries)
+        client_args["max_retries"] = _as_int(extra.get("max_retries"), 0, min_value=0)
 
-        base_url = os.getenv("SWARMEE_GITHUB_COPILOT_BASE_URL", "https://api.githubcopilot.com").strip().rstrip("/")
+        base_url = str(extra.get("base_url") or "https://api.githubcopilot.com").strip().rstrip("/")
 
-        integration_id = os.getenv("SWARMEE_GITHUB_COPILOT_INTEGRATION_ID", "").strip()
+        integration_id = str(extra.get("integration_id") or "").strip()
         if integration_id:
             client_args["default_headers"] = {"Copilot-Integration-Id": integration_id}
 
         api_key = (
-            os.getenv("SWARMEE_GITHUB_COPILOT_API_KEY") or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or ""
+            getenv_secret("SWARMEE_GITHUB_COPILOT_API_KEY")
+            or getenv_secret("GITHUB_TOKEN")
+            or getenv_secret("GH_TOKEN")
+            or ""
         ).strip()
         if not api_key:
             try:
@@ -194,7 +174,7 @@ def default_model_config(provider: str) -> dict[str, Any]:
 
                 creds = resolve_runtime_credentials(refresh=True)
                 api_key = creds.access_token
-                if not os.getenv("SWARMEE_GITHUB_COPILOT_BASE_URL"):
+                if not str(extra.get("base_url") or "").strip():
                     base_url = creds.base_url
                 if creds.headers:
                     existing_headers = client_args.get("default_headers")

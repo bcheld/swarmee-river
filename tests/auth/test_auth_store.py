@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from swarmee_river.auth.store import (
+    auth_store_path,
     get_provider_record,
     list_auth_records,
     normalize_provider_name,
+    opencode_auth_store_path,
     set_provider_record,
 )
 
 
 def test_set_and_get_provider_record(tmp_path, monkeypatch) -> None:
-    auth_path = tmp_path / "auth.json"
-    monkeypatch.setenv("SWARMEE_AUTH_PATH", str(auth_path))
-    monkeypatch.setenv("SWARMEE_OPENCODE_AUTH_PATH", str(tmp_path / "opencode-auth.json"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
     set_provider_record("github-copilot", {"type": "api", "key": "abc"})
     record, source = get_provider_record("github_copilot", include_opencode=False)
@@ -23,10 +23,10 @@ def test_set_and_get_provider_record(tmp_path, monkeypatch) -> None:
 
 
 def test_get_provider_record_falls_back_to_opencode_store(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AUTH_PATH", str(tmp_path / "empty-auth.json"))
-    opencode_auth_path = tmp_path / "opencode-auth.json"
-    monkeypatch.setenv("SWARMEE_OPENCODE_AUTH_PATH", str(opencode_auth_path))
-    opencode_auth_path.write_text('{"github-copilot":{"type":"oauth","refresh":"refresh-1"}}', encoding="utf-8")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    opencode_path = opencode_auth_store_path()
+    opencode_path.parent.mkdir(parents=True, exist_ok=True)
+    opencode_path.write_text('{"github-copilot":{"type":"oauth","refresh":"refresh-1"}}', encoding="utf-8")
 
     record, source = get_provider_record("github_copilot", include_opencode=True)
 
@@ -37,10 +37,14 @@ def test_get_provider_record_falls_back_to_opencode_store(tmp_path, monkeypatch)
 
 
 def test_list_auth_records_includes_both_sources(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AUTH_PATH", str(tmp_path / "swarmee-auth.json"))
-    opencode_auth_path = tmp_path / "opencode-auth.json"
-    monkeypatch.setenv("SWARMEE_OPENCODE_AUTH_PATH", str(opencode_auth_path))
-    opencode_auth_path.write_text('{"github-copilot":{"type":"oauth","refresh":"refresh-1"}}', encoding="utf-8")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    # Seed opencode auth store.
+    opencode_path = opencode_auth_store_path()
+    opencode_path.parent.mkdir(parents=True, exist_ok=True)
+    opencode_path.write_text('{"github-copilot":{"type":"oauth","refresh":"refresh-1"}}', encoding="utf-8")
+    # Ensure swarmee auth store starts clean for this test.
+    swarmee_auth = auth_store_path()
+    swarmee_auth.parent.mkdir(parents=True, exist_ok=True)
 
     set_provider_record("github_copilot", {"type": "api", "key": "xyz"})
     records = list_auth_records(include_opencode=True)

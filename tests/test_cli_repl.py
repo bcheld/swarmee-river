@@ -4,10 +4,10 @@ import threading
 from types import SimpleNamespace
 from unittest import mock
 
+import swarmee_river.handlers.callback_handler as callback_handler_module
 from swarmee_river.cli.builtin_commands import register_builtin_commands
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
 from swarmee_river.cli.repl import _prompt_for_context, run_repl
-from swarmee_river.handlers.callback_handler import callback_handler_instance
 
 
 def _make_ctx(outputs: list[str], *, generate_plan=None) -> CLIContext:
@@ -81,9 +81,9 @@ def test_keyboard_interrupt_sets_interrupt_event_and_stops_spinners() -> None:
     ctx.stop_spinners = stop_spinners
     goodbye = mock.MagicMock()
 
-    previous_event = callback_handler_instance.interrupt_event
+    previous_event = callback_handler_module.callback_handler_instance.interrupt_event
     interrupt_event = threading.Event()
-    callback_handler_instance.interrupt_event = interrupt_event
+    callback_handler_module.callback_handler_instance.interrupt_event = interrupt_event
     try:
         run_repl(
             ctx=ctx,
@@ -93,7 +93,7 @@ def test_keyboard_interrupt_sets_interrupt_event_and_stops_spinners() -> None:
             render_goodbye_message=goodbye,
         )
     finally:
-        callback_handler_instance.interrupt_event = previous_event
+        callback_handler_module.callback_handler_instance.interrupt_event = previous_event
 
     assert interrupt_event.is_set()
     stop_spinners.assert_called_once()

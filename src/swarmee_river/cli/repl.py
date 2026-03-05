@@ -75,7 +75,7 @@ def run_repl(
                 ctx.pending_plan = ctx.generate_plan(user_input)
                 ctx.output(ctx.render_plan(ctx.pending_plan))
                 if ctx.auto_approve:
-                    ctx.output("\nAuto-approving plan (--yes / SWARMEE_AUTO_APPROVE).")
+                    ctx.output("\nAuto-approving plan (--yes / runtime.auto_approve).")
                     ctx.last_plan = ctx.pending_plan
                     response = ctx.execute_with_plan(user_input, ctx.pending_plan)
                     ctx.pending_plan = None
@@ -108,8 +108,9 @@ def run_repl(
             if "unable to locate credentials" in error_text.lower():
                 if (ctx.selected_provider or "").strip().lower() == "bedrock":
                     ctx.output(
-                        "Hint: Bedrock requires AWS credentials (AWS_PROFILE or AWS_ACCESS_KEY_ID/"
-                        "AWS_SECRET_ACCESS_KEY). Or run with `--model-provider openai`."
+                        "Hint: Bedrock requires AWS credentials (AWS SDK credential chain, e.g. "
+                        "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or profile-based creds). "
+                        "Try `swarmee connect aws <profile>`, or run with `--model-provider openai`."
                     )
                 elif (ctx.selected_provider or "").strip().lower() == "github_copilot":
                     ctx.output("Hint: run `:connect` to authenticate GitHub Copilot, then retry.")

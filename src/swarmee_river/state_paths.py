@@ -1,7 +1,30 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
+_STATE_DIR_OVERRIDE: Path | None = None
+
+
+def set_state_dir_override(path: str | Path | None, *, cwd: Path | None = None) -> None:
+    """
+    Override the resolved state directory for this process.
+
+    This replaces the legacy SWARMEE_STATE_DIR env override. Callers should set
+    this once at startup (CLI/TUI/daemon entrypoints).
+    """
+    global _STATE_DIR_OVERRIDE
+    if path is None:
+        _STATE_DIR_OVERRIDE = None
+        return
+    raw = str(path).strip()
+    if not raw:
+        _STATE_DIR_OVERRIDE = None
+        return
+    relative_base = (cwd or Path.cwd()).expanduser().resolve()
+    resolved = Path(raw).expanduser()
+    if not resolved.is_absolute():
+        resolved = (relative_base / resolved).expanduser()
+    _STATE_DIR_OVERRIDE = resolved.resolve()
 
 
 def scope_root(*, cwd: Path | None = None) -> Path:
@@ -38,21 +61,15 @@ def state_dir(*, cwd: Path | None = None) -> Path:
     Default:
     - `<git-repo-root>/.swarmee` when running inside a git repository
     - `~/.swarmee` when no repository is detected
-    Override: `SWARMEE_STATE_DIR`
+    Override: `set_state_dir_override(...)`
 
     Notes:
-    - If SWARMEE_STATE_DIR is relative, it is interpreted relative to `cwd` (or Path.cwd()).
+    - If the override path is relative, it is interpreted relative to `cwd` (or Path.cwd()).
     - This does not create directories; callers should mkdir as needed.
     """
     base = scope_root(cwd=cwd)
-    relative_base = (cwd or Path.cwd()).expanduser().resolve()
-
-    raw = os.getenv("SWARMEE_STATE_DIR")
-    if isinstance(raw, str) and raw.strip():
-        p = Path(raw.strip()).expanduser()
-        if not p.is_absolute():
-            p = (relative_base / p).expanduser()
-        return p.resolve()
+    if _STATE_DIR_OVERRIDE is not None:
+        return _STATE_DIR_OVERRIDE
 
     return base / ".swarmee"
 

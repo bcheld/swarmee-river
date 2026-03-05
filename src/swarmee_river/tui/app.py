@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.state_paths import sessions_dir
 from swarmee_river.tui.agent_studio import (
     _normalized_tool_name_list,
     _policy_tier_profile,
@@ -52,13 +53,13 @@ from swarmee_river.tui.commands import (
     classify_post_run_command,
     classify_pre_run_command,
 )
+from swarmee_river.tui.event_router import classify_tui_error_event, summarize_error_for_toast
 from swarmee_river.tui.event_types import (
     ParsedEvent,
     extract_tui_text_chunk,
     parse_output_line,
     parse_tui_event,
 )
-from swarmee_river.tui.event_router import classify_tui_error_event, summarize_error_for_toast
 from swarmee_river.tui.event_types import (
     detect_consent_prompt as _event_detect_consent_prompt,
 )
@@ -142,7 +143,6 @@ from swarmee_river.tui.transport import (
 from swarmee_river.tui.transport import (
     write_to_proc as _transport_write_to_proc,
 )
-from swarmee_river.state_paths import sessions_dir
 
 _COMPAT_AGENT_HELPERS = (
     build_activated_agent_sidebar_items,
@@ -696,7 +696,6 @@ def run_tui() -> int:
     Header = textual_widgets.Header
     Footer = textual_widgets.Footer
     Input = textual_widgets.Input
-    Select = textual_widgets.Select
     Static = textual_widgets.Static
     TextArea = textual_widgets.TextArea
 
@@ -2359,12 +2358,22 @@ def run_tui() -> int:
             wire_settings_widgets(self)
 
         def _apply_startup_env(self) -> None:
+            from swarmee_river.settings import load_settings
+            from swarmee_river.state_paths import set_state_dir_override
+
             self._apply_project_settings_env_overrides()
-            auto_env = (os.getenv("SWARMEE_AUTO_APPROVE") or "").strip().lower()
-            if auto_env in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}:
-                self._default_auto_approve = True
-            elif auto_env in {"0", "false", "f", "no", "n", "off", "disabled", "disable"}:
-                self._default_auto_approve = False
+            settings = load_settings()
+            self._default_auto_approve = bool(settings.runtime.auto_approve)
+            set_state_dir_override(settings.runtime.state_dir, cwd=Path.cwd())
+            # Internal bridging: allow Bedrock profile selection without treating AWS_PROFILE
+            # as supported end-user configuration.
+            bedrock = settings.models.providers.get("bedrock")
+            extra = dict(getattr(bedrock, "extra", {}) or {})
+            aws_profile = str(extra.get("aws_profile") or "").strip()
+            if aws_profile:
+                os.environ["AWS_PROFILE"] = aws_profile
+            else:
+                os.environ.pop("AWS_PROFILE", None)
 
         def _reset_ui_panels(self) -> None:
             self._status_bar.set_model(self._current_model_summary())
@@ -2761,6 +2770,8 @@ def run_tui() -> int:
                 self.state.daemon.pending_model_select_value = None
                 self.state.daemon.model_provider_override = None
                 self.state.daemon.model_tier_override = None
+                with contextlib.suppress(Exception):
+                    self._persist_quick_model_selection(provider=None, tier=None)
             elif value == _MODEL_LOADING_VALUE:
                 return
             elif "|" in value:
@@ -2780,6 +2791,8 @@ def run_tui() -> int:
                     now_mono=time.monotonic(),
                 ):
                     return
+                with contextlib.suppress(Exception):
+                    self._persist_quick_model_selection(provider=requested_provider, tier=requested_tier)
                 self._pin_model_select_target(requested_provider, requested_tier)
                 if (
                     self.state.daemon.ready
@@ -3269,15 +3282,23 @@ def run_tui() -> int:
                 self._write_transcript_line(f"[settings] auto-approve {state_label}.")
                 return
             if button_id == "settings_toggle_bypass_consent":
-                cur = (os.environ.get("BYPASS_TOOL_CONSENT") or "").strip().lower()
-                new_val = "false" if cur in {"true", "1", "yes", "on"} else "true"
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                tool_consent = str(getattr(settings.safety, "tool_consent", "ask") or "ask").strip().lower()
+                bypass = tool_consent == "allow"
+                new_val = "false" if bypass else "true"
                 self._persist_project_setting_env_override("BYPASS_TOOL_CONSENT", new_val)
                 self._refresh_settings_general()
-                self._write_transcript_line(f"[settings] bypass consent {new_val}.")
+                self._write_transcript_line(
+                    f"[settings] tool consent {'allow' if new_val == 'true' else 'ask'}."
+                )
                 return
             if button_id == "settings_toggle_esc_interrupt":
-                cur = (os.environ.get("SWARMEE_ESC_INTERRUPT") or "enabled").strip().lower()
-                new_val = "disabled" if cur != "disabled" else "enabled"
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                new_val = "disabled" if bool(settings.runtime.esc_interrupt_enabled) else "enabled"
                 self._persist_project_setting_env_override("SWARMEE_ESC_INTERRUPT", new_val)
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] ESC interrupt {new_val}.")
@@ -3289,47 +3310,56 @@ def run_tui() -> int:
                 self._reset_interrupt_control_settings()
                 return
             if button_id == "settings_toggle_swarm":
-                cur = (os.environ.get("SWARMEE_SWARM_ENABLED") or "true").strip().lower()
-                new_val = "false" if cur not in {"false", "0", "no", "off", "disabled"} else "true"
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                new_val = "false" if bool(settings.runtime.swarm_enabled) else "true"
                 self._persist_project_setting_env_override("SWARMEE_SWARM_ENABLED", new_val)
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] swarm {'enabled' if new_val == 'true' else 'disabled'}.")
                 return
             if button_id == "settings_toggle_log_events":
-                cur = (os.environ.get("SWARMEE_LOG_EVENTS") or "true").strip().lower()
-                new_val = "false" if cur in {"true", "1", "yes", "on"} else "true"
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                new_val = "false" if bool(settings.diagnostics.log_events) else "true"
                 self._persist_project_setting_env_override("SWARMEE_LOG_EVENTS", new_val)
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] log events {new_val}.")
                 return
             if button_id == "settings_toggle_project_map":
-                cur = (os.environ.get("SWARMEE_PROJECT_MAP") or "enabled").strip().lower()
-                new_val = "disabled" if cur != "disabled" else "enabled"
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                new_val = "disabled" if bool(settings.runtime.project_map_enabled) else "enabled"
                 self._persist_project_setting_env_override("SWARMEE_PROJECT_MAP", new_val)
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] project map {new_val}.")
                 return
             if button_id == "settings_toggle_limit_tool_results":
-                cur = (os.environ.get("SWARMEE_LIMIT_TOOL_RESULTS") or "true").strip().lower()
-                new_val = "false" if cur not in {"false", "0", "no", "off"} else "true"
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                new_val = "false" if bool(settings.runtime.limit_tool_results) else "true"
                 self._persist_project_setting_env_override("SWARMEE_LIMIT_TOOL_RESULTS", new_val)
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] limit tool results {new_val}.")
                 return
             if button_id == "settings_toggle_truncate_results":
-                cur = (os.environ.get("SWARMEE_TRUNCATE_RESULTS") or "true").strip().lower()
-                new_val = "false" if cur not in {"false", "0", "no", "off"} else "true"
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                new_val = "false" if bool(settings.context.truncate_results) else "true"
                 self._persist_project_setting_env_override("SWARMEE_TRUNCATE_RESULTS", new_val)
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] truncate results {new_val}.")
                 return
             if button_id == "settings_toggle_log_redact":
-                cur = (
-                    os.environ.get("SWARMEE_DIAG_REDACT")
-                    or os.environ.get("SWARMEE_LOG_REDACT")
-                    or "true"
-                ).strip().lower()
-                new_val = "false" if cur not in {"false", "0", "no", "off"} else "true"
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                on = bool(settings.diagnostics.redact) and bool(settings.diagnostics.log_redact)
+                new_val = "false" if on else "true"
                 self._persist_project_setting_env_override("SWARMEE_DIAG_REDACT", new_val)
                 self._persist_project_setting_env_override("SWARMEE_LOG_REDACT", new_val)
                 self._refresh_settings_general()
@@ -3339,8 +3369,10 @@ def run_tui() -> int:
                 self._create_diagnostics_bundle()
                 return
             if button_id == "settings_toggle_freeze_tools":
-                cur = (os.environ.get("SWARMEE_FREEZE_TOOLS") or "").strip().lower()
-                new_val = "false" if cur in {"true", "1", "yes", "on"} else "true"
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                new_val = "false" if bool(settings.runtime.freeze_tools) else "true"
                 self._persist_project_setting_env_override("SWARMEE_FREEZE_TOOLS", new_val)
                 self._refresh_settings_general()
                 self._write_transcript_line(f"[settings] freeze tools {new_val}.")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import contextlib
-import inspect
+import threading
 import time
 from collections import deque
 from typing import Any
@@ -25,17 +25,28 @@ class TranscriptMixin:
             self._thread_dispatch_last_warning_mono = 0.0
 
     def _dispatch_via_call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> bool:
-        try:
-            result = self.call_from_thread(callback, *args, **kwargs)
-        except Exception:
-            return False
-        if inspect.iscoroutine(result):
-            with contextlib.suppress(Exception):
-                result.close()
+        # Textual's App.call_from_thread() raises if called from the UI thread.
+        # It can also raise while tearing down if the event loop is closed; in that
+        # case it may have created an internal coroutine, which would warn if not
+        # scheduled. Avoid calling into it when we know it can't succeed.
+        thread_id = getattr(self, "_thread_id", None)
+        if thread_id == threading.get_ident():
             try:
                 callback(*args, **kwargs)
             except Exception:
                 return False
+            return True
+
+        loop = getattr(self, "_loop", None)
+        if loop is not None:
+            with contextlib.suppress(Exception):
+                if bool(getattr(loop, "is_closed", lambda: False)()):
+                    return False
+
+        try:
+            self.call_from_thread(callback, *args, **kwargs)
+        except Exception:
+            return False
         return True
 
     def _record_thread_dispatch_drop(self) -> None:

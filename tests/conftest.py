@@ -3,10 +3,12 @@ Test configuration and fixtures for pytest
 """
 
 import os
+import threading
 from unittest import mock
 
 import pytest
 
+import swarmee_river.handlers.callback_handler as callback_handler_module
 from swarmee_river import swarmee
 
 
@@ -16,6 +18,19 @@ def _disable_frontier_startup(monkeypatch):
     monkeypatch.setenv("SWARMEE_PREFLIGHT", "disabled")
     monkeypatch.setenv("SWARMEE_PROJECT_MAP", "disabled")
     monkeypatch.setattr(swarmee, "read_welcome_text", lambda: "Test welcome message")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_interrupt_event() -> None:
+    """
+    Ensure the global interrupt event doesn't leak across tests.
+
+    Several codepaths treat a set interrupt event as a user cancellation signal
+    (e.g., tool streaming loops). Tests should opt-in explicitly when needed.
+    """
+    callback_handler_module.callback_handler_instance.interrupt_event = threading.Event()
+    yield
+    callback_handler_module.callback_handler_instance.interrupt_event = threading.Event()
 
 
 @pytest.fixture

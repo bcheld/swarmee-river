@@ -1,0 +1,4846 @@
+{
+  "entries": [
+    {
+      "classification_reason": "Status derived by deterministic inventory classification rules.",
+      "controls": "Controls runtime behavior at src/swarmee_river/auth/store.py:31 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "APPDATA",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Platform convention variable (OS/shell), not Swarmee-specific naming.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 1,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/auth/store.py:31"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Documented in env.example but has no runtime reads under src/.",
+      "controls": "AWS SDK credentials are resolved by botocore/boto3. Swarmee does not read these directly, but Bedrock model calls use the AWS SDK credential chain.",
+      "controls_plain": "Documented setting reserved for compatibility, but runtime code under src/ does not currently read it.",
+      "documented": true,
+      "dup_group": null,
+      "id": "AWS_ACCESS_KEY_ID",
+      "keep_configurable_justification": "Kept documented for migration/compat context; safe to review for possible deprecation.",
+      "kind": "env",
+      "notes": "Documented in env.example but no runtime reads found in src/.",
+      "precedence": [
+        "process environment / .env"
+      ],
+      "read_count": 0,
+      "status": "doc_only",
+      "surface": "cli",
+      "usage_count": 0,
+      "where_read": [],
+      "where_set": [
+        "process environment",
+        ".env file"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Write-only in runtime code under src/ and used as internal process wiring.",
+      "controls": "Documented environment variable; no runtime reads detected in src/.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "AWS_PROFILE",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Platform convention variable (OS/shell), not Swarmee-specific naming.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 0,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 0,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3164",
+        "src/swarmee_river/swarmee.py:749",
+        "src/swarmee_river/swarmee.py:771",
+        "src/swarmee_river/tui/app.py:2373",
+        "src/swarmee_river/tui/mixins/settings.py:1437"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 5
+    },
+    {
+      "classification_reason": "Documented in env.example but has no runtime reads under src/.",
+      "controls": "Documented environment variable; no runtime reads detected in src/.",
+      "controls_plain": "Documented setting reserved for compatibility, but runtime code under src/ does not currently read it.",
+      "documented": true,
+      "dup_group": null,
+      "id": "AWS_SECRET_ACCESS_KEY",
+      "keep_configurable_justification": "Kept documented for migration/compat context; safe to review for possible deprecation.",
+      "kind": "env",
+      "notes": "Documented in env.example but no runtime reads found in src/.",
+      "precedence": [
+        "process environment / .env"
+      ],
+      "read_count": 0,
+      "status": "doc_only",
+      "surface": "cli",
+      "usage_count": 0,
+      "where_read": [],
+      "where_set": [
+        "process environment",
+        ".env file"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Documented in env.example but has no runtime reads under src/.",
+      "controls": "Documented environment variable; no runtime reads detected in src/.",
+      "controls_plain": "Documented setting reserved for compatibility, but runtime code under src/ does not currently read it.",
+      "documented": true,
+      "dup_group": null,
+      "id": "AWS_SESSION_TOKEN",
+      "keep_configurable_justification": "Kept documented for migration/compat context; safe to review for possible deprecation.",
+      "kind": "env",
+      "notes": "Documented in env.example but no runtime reads found in src/.",
+      "precedence": [
+        "process environment / .env"
+      ],
+      "read_count": 0,
+      "status": "doc_only",
+      "surface": "cli",
+      "usage_count": 0,
+      "where_read": [],
+      "where_set": [
+        "process environment",
+        ".env file"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Status derived by deterministic inventory classification rules.",
+      "controls": "Controls runtime behavior at src/swarmee_river/runtime_env.py:58 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "CI",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Platform convention variable (OS/shell), not Swarmee-specific naming.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 1,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/runtime_env.py:58"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Status derived by deterministic inventory classification rules.",
+      "controls": "Controls runtime behavior at src/swarmee_river/runtime_env.py:26 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "COMSPEC",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Platform convention variable (OS/shell), not Swarmee-specific naming.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 1,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/runtime_env.py:26"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Status derived by deterministic inventory classification rules.",
+      "controls": "Controls runtime behavior at src/swarmee_river/tui/mixins/artifacts.py:241 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "EDITOR",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Platform convention variable (OS/shell), not Swarmee-specific naming.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 1,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/mixins/artifacts.py:241"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Alias-chain compatibility key mapped to canonical `SWARMEE_GITHUB_COPILOT_API_KEY`.",
+      "controls": "Controls runtime behavior at src/swarmee_river/utils/model_utils.py:155 and related callsites.",
+      "controls_plain": "Legacy compatibility variable; use SWARMEE_GITHUB_COPILOT_API_KEY for new configuration.",
+      "documented": true,
+      "dup_group": "SWARMEE_GITHUB_COPILOT_API_KEY",
+      "id": "GH_TOKEN",
+      "keep_configurable_justification": "Retained for backward compatibility while canonical variables remain stable.",
+      "kind": "env",
+      "notes": "Prefer canonical variable `SWARMEE_GITHUB_COPILOT_API_KEY` for new configuration.",
+      "precedence": [
+        "process environment / .env"
+      ],
+      "read_count": 1,
+      "status": "legacy_alias",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/utils/model_utils.py:155"
+      ],
+      "where_set": [
+        "process environment",
+        ".env file"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Alias-chain compatibility key mapped to canonical `SWARMEE_GITHUB_COPILOT_API_KEY`.",
+      "controls": "Controls runtime behavior at src/swarmee_river/utils/model_utils.py:154 and related callsites.",
+      "controls_plain": "Legacy compatibility variable; use SWARMEE_GITHUB_COPILOT_API_KEY for new configuration.",
+      "documented": true,
+      "dup_group": "SWARMEE_GITHUB_COPILOT_API_KEY",
+      "id": "GITHUB_TOKEN",
+      "keep_configurable_justification": "Retained for backward compatibility while canonical variables remain stable.",
+      "kind": "env",
+      "notes": "Prefer canonical variable `SWARMEE_GITHUB_COPILOT_API_KEY` for new configuration.",
+      "precedence": [
+        "process environment / .env"
+      ],
+      "read_count": 1,
+      "status": "legacy_alias",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/utils/model_utils.py:154"
+      ],
+      "where_set": [
+        "process environment",
+        ".env file"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Documented and runtime-read.",
+      "controls": "OpenAI",
+      "controls_plain": "Supplies credentials for authenticating with an external provider.",
+      "documented": true,
+      "dup_group": null,
+      "id": "OPENAI_API_KEY",
+      "keep_configurable_justification": "Credentials must remain user-configurable per environment and security boundary.",
+      "kind": "env",
+      "notes": "",
+      "precedence": [
+        "process environment / .env"
+      ],
+      "read_count": 3,
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 3,
+      "where_read": [
+        "src/swarmee_river/session/models.py:284",
+        "src/swarmee_river/utils/model_utils.py:118",
+        "src/swarmee_river/utils/provider_utils.py:27"
+      ],
+      "where_set": [
+        "process environment",
+        ".env file"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
+      "controls": "Documented environment variable; no runtime reads detected in src/.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "PYTHONUNBUFFERED",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 0,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 0,
+      "where_read": [
+        "src/swarmee_river/tui/transport.py:252"
+      ],
+      "where_set": [
+        "code-only/runtime wiring",
+        ".swarmee/settings.json (legacy env overrides, internal-only)"
+      ],
+      "write_count": 1
+    },
+    {
+      "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
+      "controls": "Documented environment variable; no runtime reads detected in src/.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "PYTHONWARNINGS",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 0,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 0,
+      "where_read": [
+        "src/swarmee_river/tui/transport.py:273"
+      ],
+      "where_set": [
+        "code-only/runtime wiring",
+        ".swarmee/settings.json (legacy env overrides, internal-only)"
+      ],
+      "write_count": 1
+    },
+    {
+      "classification_reason": "Status derived by deterministic inventory classification rules.",
+      "controls": "Controls runtime behavior at src/swarmee_river/runtime_env.py:22 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "SHELL",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Platform convention variable (OS/shell), not Swarmee-specific naming.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 1,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/runtime_env.py:22"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Write-only in runtime code under src/ and used as internal process wiring.",
+      "controls": "Documented environment variable; no runtime reads detected in src/.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "STRANDS_TOOL_CONSOLE_MODE",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 0,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 0,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:193"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 1
+    },
+    {
+      "classification_reason": "Documented and runtime-read.",
+      "controls": "GitHub Copilot / GitHub token (any one is sufficient)",
+      "controls_plain": "Supplies credentials for authenticating with an external provider.",
+      "documented": true,
+      "dup_group": "SWARMEE_GITHUB_COPILOT_API_KEY",
+      "id": "SWARMEE_GITHUB_COPILOT_API_KEY",
+      "keep_configurable_justification": "Credentials must remain user-configurable per environment and security boundary.",
+      "kind": "env",
+      "notes": "",
+      "precedence": [
+        "process environment / .env"
+      ],
+      "read_count": 2,
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 2,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:876",
+        "src/swarmee_river/utils/model_utils.py:153"
+      ],
+      "where_set": [
+        "process environment",
+        ".env file"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Write-only in runtime code under src/ and used as internal process wiring.",
+      "controls": "Documented environment variable; no runtime reads detected in src/.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "SWARMEE_LOG_EVENTS",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 0,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 0,
+      "where_read": [
+        "src/swarmee_river/tui/transport.py:259"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 1
+    },
+    {
+      "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
+      "controls": "Controls runtime behavior at src/swarmee_river/jupyter/magic.py:279 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "SWARMEE_NOTEBOOK_USE_RUNTIME",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 1,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/jupyter/magic.py:279"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
+      "controls": "Controls runtime behavior at src/swarmee_river/hooks/jsonl_logger.py:155 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "SWARMEE_SESSION_ID",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Used outside canonical src/ scope at tools/session_s3.py:265, tools/session_s3.py:65, tools/session_s3.py:839.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 6,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 6,
+      "where_read": [
+        "src/swarmee_river/hooks/jsonl_logger.py:155",
+        "src/swarmee_river/hooks/session_s3.py:55",
+        "src/swarmee_river/jupyter/magic.py:296",
+        "src/swarmee_river/runtime_service/server.py:605",
+        "src/swarmee_river/swarmee.py:3146",
+        "src/swarmee_river/swarmee.py:3147",
+        "src/swarmee_river/swarmee.py:3344",
+        "src/swarmee_river/swarmee.py:3408",
+        "src/swarmee_river/swarmee.py:3448",
+        "src/swarmee_river/tui/event_types.py:66",
+        "src/swarmee_river/tui/transport.py:279"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 5
+    },
+    {
+      "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
+      "controls": "Documented environment variable; no runtime reads detected in src/.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "SWARMEE_SPINNERS",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 0,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 0,
+      "where_read": [
+        "src/swarmee_river/tui/transport.py:255"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 1
+    },
+    {
+      "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
+      "controls": "Controls runtime behavior at src/swarmee_river/handlers/callback_handler.py:1120 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "SWARMEE_TUI_EVENTS",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 6,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 6,
+      "where_read": [
+        "src/swarmee_river/handlers/callback_handler.py:1120",
+        "src/swarmee_river/handlers/callback_handler.py:132",
+        "src/swarmee_river/handlers/callback_handler.py:267",
+        "src/swarmee_river/handlers/callback_handler.py:279",
+        "src/swarmee_river/hooks/tui_metrics.py:159",
+        "src/swarmee_river/runtime_service/server.py:604",
+        "src/swarmee_river/swarmee.py:377",
+        "src/swarmee_river/tui/transport.py:257"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 2
+    },
+    {
+      "classification_reason": "Status derived by deterministic inventory classification rules.",
+      "controls": "Controls runtime behavior at src/swarmee_river/auth/store.py:35 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "XDG_DATA_HOME",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Platform convention variable (OS/shell), not Swarmee-specific naming.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 1,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/auth/store.py:35"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 0
+    },
+    {
+      "context": "swarmee",
+      "controls": "Approximate max prompt tokens before summarization (overrides `context.max_prompt_tokens`).",
+      "controls_plain": "Approximate max prompt tokens before summarization (overrides `context.max_prompt_tokens`).",
+      "dup_group": null,
+      "flags": [
+        "--context-budget-tokens"
+      ],
+      "help": "Approximate max prompt tokens before summarization (overrides `context.max_prompt_tokens`).",
+      "id": "cli:swarmee --context-budget-tokens",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3081"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Context management strategy (overrides `context.manager`).",
+      "controls_plain": "Context management strategy (overrides `context.manager`).",
+      "dup_group": null,
+      "flags": [
+        "--context-manager"
+      ],
+      "help": "Context management strategy (overrides `context.manager`).",
+      "id": "cli:swarmee --context-manager",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3074"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Max history items to drop per truncation pass (overrides `context.per_turn`).",
+      "controls_plain": "Max history items to drop per truncation pass (overrides `context.per_turn`).",
+      "dup_group": null,
+      "flags": [
+        "--context-per-turn"
+      ],
+      "help": "Max history items to drop per truncation pass (overrides `context.per_turn`).",
+      "id": "cli:swarmee --context-per-turn",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3068"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Append the welcome text into the system prompt (not recommended for large welcomes)",
+      "controls_plain": "Append the welcome text into the system prompt (not recommended for large welcomes).",
+      "dup_group": null,
+      "flags": [
+        "--include-welcome-in-prompt"
+      ],
+      "help": "Append the welcome text into the system prompt (not recommended for large welcomes)",
+      "id": "cli:swarmee --include-welcome-in-prompt",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3087"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Knowledge base ID to use for retrievals",
+      "controls_plain": "Knowledge base ID to use for retrievals.",
+      "dup_group": null,
+      "flags": [
+        "--kb",
+        "--knowledge-base"
+      ],
+      "help": "Knowledge base ID to use for retrievals",
+      "id": "cli:swarmee --kb",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3038"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Max output tokens for the model (overrides `models.max_output_tokens`).",
+      "controls_plain": "Max output tokens for the model (overrides `models.max_output_tokens`).",
+      "dup_group": null,
+      "flags": [
+        "--max-output-tokens"
+      ],
+      "help": "Max output tokens for the model (overrides `models.max_output_tokens`).",
+      "id": "cli:swarmee --max-output-tokens",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3056"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Model config as JSON string or path",
+      "controls_plain": "Model config as JSON string or path.",
+      "dup_group": null,
+      "flags": [
+        "--model-config"
+      ],
+      "help": "Model config as JSON string or path",
+      "id": "cli:swarmee --model-config",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3050"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Model provider to use for inference",
+      "controls_plain": "Model provider to use for inference.",
+      "dup_group": null,
+      "flags": [
+        "--model-provider"
+      ],
+      "help": "Model provider to use for inference",
+      "id": "cli:swarmee --model-provider",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3044"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Activate an SOP by name (requires `strands-agents-sops` or local `./sops/*.sop.md`)",
+      "controls_plain": "Activate an SOP by name (requires `strands-agents-sops` or local `./sops/*.sop.md`).",
+      "dup_group": null,
+      "flags": [
+        "--sop"
+      ],
+      "help": "Activate an SOP by name (requires `strands-agents-sops` or local `./sops/*.sop.md`)",
+      "id": "cli:swarmee --sop",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3102"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "OS-separated directories containing `*.sop.md` files.",
+      "controls_plain": "OS-separated directories containing `*.sop.md` files.",
+      "dup_group": null,
+      "flags": [
+        "--sop-paths"
+      ],
+      "help": "OS-separated directories containing `*.sop.md` files.",
+      "id": "cli:swarmee --sop-paths",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3108"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Run as long-lived JSONL daemon for the TUI.",
+      "controls_plain": "Run as long-lived JSONL daemon for the TUI.",
+      "dup_group": null,
+      "flags": [
+        "--tui-daemon"
+      ],
+      "help": "Run as long-lived JSONL daemon for the TUI.",
+      "id": "cli:swarmee --tui-daemon",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3097"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Conversation history window size (overrides `context.window_size`).",
+      "controls_plain": "Conversation history window size (overrides `context.window_size`).",
+      "dup_group": null,
+      "flags": [
+        "--window-size"
+      ],
+      "help": "Conversation history window size (overrides `context.window_size`).",
+      "id": "cli:swarmee --window-size",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3062"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee",
+      "controls": "Auto-approve plans and tool consent prompts (useful for automation).",
+      "controls_plain": "Auto-approve plans and tool consent prompts (useful for automation).",
+      "dup_group": null,
+      "flags": [
+        "--yes"
+      ],
+      "help": "Auto-approve plans and tool consent prompts (useful for automation).",
+      "id": "cli:swarmee --yes",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:3092"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee attach",
+      "controls": "Session cwd for attach command.",
+      "controls_plain": "Session cwd for attach command.",
+      "dup_group": null,
+      "flags": [
+        "--cwd"
+      ],
+      "help": "Session cwd for attach command.",
+      "id": "cli:swarmee attach --cwd",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2154"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee attach",
+      "controls": "Session ID to attach to.",
+      "controls_plain": "Session ID to attach to.",
+      "dup_group": null,
+      "flags": [
+        "--session"
+      ],
+      "help": "Session ID to attach to.",
+      "id": "cli:swarmee attach --session",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2153"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee attach",
+      "controls": "Override runtime state directory (defaults to <cwd>/.swarmee).",
+      "controls_plain": "Override runtime state directory (defaults to <cwd>/.swarmee).",
+      "dup_group": null,
+      "flags": [
+        "--state-dir"
+      ],
+      "help": "Override runtime state directory (defaults to <cwd>/.swarmee).",
+      "id": "cli:swarmee attach --state-dir",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2156"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee attach",
+      "controls": "Tail events only (no interactive prompt loop).",
+      "controls_plain": "Tail events only (no interactive prompt loop).",
+      "dup_group": null,
+      "flags": [
+        "--tail"
+      ],
+      "help": "Tail events only (no interactive prompt loop).",
+      "id": "cli:swarmee attach --tail",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2155"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee daemon",
+      "controls": "Scope cwd for daemon state resolution.",
+      "controls_plain": "Scope cwd for daemon state resolution.",
+      "dup_group": null,
+      "flags": [
+        "--cwd"
+      ],
+      "help": "Scope cwd for daemon state resolution.",
+      "id": "cli:swarmee daemon --cwd",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2181"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee daemon",
+      "controls": "Override runtime state directory.",
+      "controls_plain": "Override runtime state directory.",
+      "dup_group": null,
+      "flags": [
+        "--state-dir"
+      ],
+      "help": "Override runtime state directory.",
+      "id": "cli:swarmee daemon --state-dir",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2182"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee diagnostics",
+      "controls": "Tail commands accept optional --lines N.",
+      "controls_plain": "Sets how many lines diagnostics output should show.",
+      "dup_group": null,
+      "flags": [
+        "--lines"
+      ],
+      "help": "Tail commands accept optional --lines N.",
+      "id": "cli:swarmee diagnostics --lines",
+      "keep_configurable_justification": "Allows users to tune verbosity without changing persistent configuration.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/cli/diagnostics.py:425"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee diff",
+      "controls": "Diff supports optional --staged/--cached flags and optional paths.",
+      "controls_plain": "Choose whether diff runs against staged changes.",
+      "dup_group": null,
+      "flags": [
+        "--staged",
+        "--cached"
+      ],
+      "help": "Diff supports optional --staged/--cached flags and optional paths.",
+      "id": "cli:swarmee diff --staged",
+      "keep_configurable_justification": "Flag-level control avoids separate subcommands for staged vs unstaged diffs.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/cli/diagnostics.py:397"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee serve",
+      "controls": "Broker log path recorded in discovery payload (defaults to <state_dir>/diagnostics/broker.log).",
+      "controls_plain": "Broker log path recorded in discovery payload (defaults to <state_dir>/diagnostics/broker.log).",
+      "dup_group": null,
+      "flags": [
+        "--broker-log-path"
+      ],
+      "help": "Broker log path recorded in discovery payload (defaults to <state_dir>/diagnostics/broker.log).",
+      "id": "cli:swarmee serve --broker-log-path",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2133"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee serve",
+      "controls": "Session events JSONL path template (defaults to <state_dir>/diagnostics/sessions/{session_id}.jsonl).",
+      "controls_plain": "Session events JSONL path template (defaults to <state_dir>/diagnostics/sessions/{session_id}.jsonl).",
+      "dup_group": null,
+      "flags": [
+        "--diag-session-events-path"
+      ],
+      "help": "Session events JSONL path template (defaults to <state_dir>/diagnostics/sessions/{session_id}.jsonl).",
+      "id": "cli:swarmee serve --diag-session-events-path",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2139"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee serve",
+      "controls": "Port for runtime broker (0 chooses an open port).",
+      "controls_plain": "Port for runtime broker (0 chooses an open port).",
+      "dup_group": null,
+      "flags": [
+        "--port"
+      ],
+      "help": "Port for runtime broker (0 chooses an open port).",
+      "id": "cli:swarmee serve --port",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2126"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee serve",
+      "controls": "Override runtime state directory (defaults to <cwd>/.swarmee).",
+      "controls_plain": "Override runtime state directory (defaults to <cwd>/.swarmee).",
+      "dup_group": null,
+      "flags": [
+        "--state-dir"
+      ],
+      "help": "Override runtime state directory (defaults to <cwd>/.swarmee).",
+      "id": "cli:swarmee serve --state-dir",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2127"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee session branch",
+      "controls": "Source session ID.",
+      "controls_plain": "Source session ID.",
+      "dup_group": null,
+      "flags": [
+        "--from-session"
+      ],
+      "help": "Source session ID.",
+      "id": "cli:swarmee session branch --from-session",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2771"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee session branch",
+      "controls": "Optional target session ID.",
+      "controls_plain": "Optional target session ID.",
+      "dup_group": null,
+      "flags": [
+        "--new-session"
+      ],
+      "help": "Optional target session ID.",
+      "id": "cli:swarmee session branch --new-session",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2773"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee session branch",
+      "controls": "1-based user turn index.",
+      "controls_plain": "1-based user turn index.",
+      "dup_group": null,
+      "flags": [
+        "--turn"
+      ],
+      "help": "1-based user turn index.",
+      "id": "cli:swarmee session branch --turn",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2772"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee session export",
+      "controls": "Export format.",
+      "controls_plain": "Export format.",
+      "dup_group": null,
+      "flags": [
+        "--format"
+      ],
+      "help": "Export format.",
+      "id": "cli:swarmee session export --format",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2762"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee session export",
+      "controls": "Output path. Defaults to stdout.",
+      "controls_plain": "Output path. Defaults to stdout.",
+      "dup_group": null,
+      "flags": [
+        "--out"
+      ],
+      "help": "Output path. Defaults to stdout.",
+      "id": "cli:swarmee session export --out",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2768"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee session export",
+      "controls": "Session ID.",
+      "controls_plain": "Session ID.",
+      "dup_group": null,
+      "flags": [
+        "--session"
+      ],
+      "help": "Session ID.",
+      "id": "cli:swarmee session export --session",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2761"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee session index",
+      "controls": "Session ID.",
+      "controls_plain": "Session ID.",
+      "dup_group": null,
+      "flags": [
+        "--session"
+      ],
+      "help": "Session ID.",
+      "id": "cli:swarmee session index --session",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2758"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee session list",
+      "controls": "Max sessions to print.",
+      "controls_plain": "Max sessions to print.",
+      "dup_group": null,
+      "flags": [
+        "--limit"
+      ],
+      "help": "Max sessions to print.",
+      "id": "cli:swarmee session list --limit",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2755"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee settings migrate",
+      "controls": "Print migration output without rewriting the file.",
+      "controls_plain": "Print migration output without rewriting the file.",
+      "dup_group": null,
+      "flags": [
+        "--dry-run"
+      ],
+      "help": "Print migration output without rewriting the file.",
+      "id": "cli:swarmee settings migrate --dry-run",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2675"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "context": "swarmee settings migrate",
+      "controls": "Settings path (default: ./.swarmee/settings.json)",
+      "controls_plain": "Settings path (default: ./.swarmee/settings.json).",
+      "dup_group": null,
+      "flags": [
+        "--path"
+      ],
+      "help": "Settings path (default: ./.swarmee/settings.json)",
+      "id": "cli:swarmee settings migrate --path",
+      "keep_configurable_justification": "CLI flags allow per-invocation overrides without mutating shared settings.",
+      "kind": "cli_arg",
+      "notes": "",
+      "precedence": [
+        "CLI flag argument",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "cli",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/swarmee.py:2669"
+      ],
+      "where_set": [
+        "CLI flag"
+      ]
+    },
+    {
+      "controls": "Stop shared runtime daemon for current scope.",
+      "controls_plain": "Stop shared runtime daemon for current scope.",
+      "dup_group": null,
+      "id": "notebook:%%swarmee --daemon-stop",
+      "keep_configurable_justification": "Notebook users need per-cell behavior control without changing project-level settings.",
+      "kind": "notebook_arg",
+      "notes": "",
+      "precedence": [
+        "Notebook magic flag",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "notebook",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/jupyter/magic.py:669"
+      ],
+      "where_set": [
+        "Notebook magic flag"
+      ]
+    },
+    {
+      "controls": "Skip notebook context injection.",
+      "controls_plain": "Skip notebook context injection.",
+      "dup_group": null,
+      "id": "notebook:%%swarmee --no-context",
+      "keep_configurable_justification": "Notebook users need per-cell behavior control without changing project-level settings.",
+      "kind": "notebook_arg",
+      "notes": "",
+      "precedence": [
+        "Notebook magic flag",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "notebook",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/jupyter/magic.py:666"
+      ],
+      "where_set": [
+        "Notebook magic flag"
+      ]
+    },
+    {
+      "controls": "Force planning mode for this invocation.",
+      "controls_plain": "Force planning mode for this invocation.",
+      "dup_group": null,
+      "id": "notebook:%%swarmee --plan",
+      "keep_configurable_justification": "Notebook users need per-cell behavior control without changing project-level settings.",
+      "kind": "notebook_arg",
+      "notes": "",
+      "precedence": [
+        "Notebook magic flag",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "notebook",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/jupyter/magic.py:663"
+      ],
+      "where_set": [
+        "Notebook magic flag"
+      ]
+    },
+    {
+      "controls": "Auto-approve plan and tool consent for this notebook invocation.",
+      "controls_plain": "Auto-approve plan and tool consent for this notebook invocation.",
+      "dup_group": null,
+      "id": "notebook:%%swarmee --yes",
+      "keep_configurable_justification": "Notebook users need per-cell behavior control without changing project-level settings.",
+      "kind": "notebook_arg",
+      "notes": "",
+      "precedence": [
+        "Notebook magic flag",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "notebook",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/jupyter/magic.py:660"
+      ],
+      "where_set": [
+        "Notebook magic flag"
+      ]
+    },
+    {
+      "controls": "Project settings file field `context.cache_safe_summary`.",
+      "controls_plain": "Sets `context.cache_safe_summary` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:context.cache_safe_summary",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `context.manager`.",
+      "controls_plain": "Sets `context.manager` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:context.manager",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `context.max_prompt_tokens`.",
+      "controls_plain": "Sets `context.max_prompt_tokens` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:context.max_prompt_tokens",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `context.per_turn`.",
+      "controls_plain": "Sets `context.per_turn` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:context.per_turn",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `context.preserve_recent_messages`.",
+      "controls_plain": "Sets `context.preserve_recent_messages` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:context.preserve_recent_messages",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `context.summary_ratio`.",
+      "controls_plain": "Sets `context.summary_ratio` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:context.summary_ratio",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `context.truncate_results`.",
+      "controls_plain": "Sets `context.truncate_results` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:context.truncate_results",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `context.window_size`.",
+      "controls_plain": "Sets `context.window_size` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:context.window_size",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `diagnostics.level`.",
+      "controls_plain": "Sets `diagnostics.level` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:diagnostics.level",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `diagnostics.log_dir`.",
+      "controls_plain": "Sets `diagnostics.log_dir` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:diagnostics.log_dir",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `diagnostics.log_events`.",
+      "controls_plain": "Sets `diagnostics.log_events` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:diagnostics.log_events",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `diagnostics.log_redact`.",
+      "controls_plain": "Sets `diagnostics.log_redact` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:diagnostics.log_redact",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `diagnostics.log_s3_bucket`.",
+      "controls_plain": "Sets `diagnostics.log_s3_bucket` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:diagnostics.log_s3_bucket",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `diagnostics.log_s3_prefix`.",
+      "controls_plain": "Sets `diagnostics.log_s3_prefix` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:diagnostics.log_s3_prefix",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `diagnostics.redact`.",
+      "controls_plain": "Sets `diagnostics.redact` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:diagnostics.redact",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `env.<ENV_VAR_NAME>`.",
+      "controls_plain": "Sets `env.<ENV_VAR_NAME>` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:env.<ENV_VAR_NAME>",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Migration-only legacy surface. New configs must use structured settings fields; only a small internal wiring allowlist may be persisted here.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "internal_only",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json (legacy `env` section; internal-only allowlist)"
+      ]
+    },
+    {
+      "controls": "Project settings file field `harness.tier_profiles.<tier>.preflight_level`.",
+      "controls_plain": "Sets `harness.tier_profiles.<tier>.preflight_level` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:harness.tier_profiles.<tier>.preflight_level",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `harness.tier_profiles.<tier>.tool_allowlist[]`.",
+      "controls_plain": "Sets `harness.tier_profiles.<tier>.tool_allowlist[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:harness.tier_profiles.<tier>.tool_allowlist[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `harness.tier_profiles.<tier>.tool_blocklist[]`.",
+      "controls_plain": "Sets `harness.tier_profiles.<tier>.tool_blocklist[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:harness.tier_profiles.<tier>.tool_blocklist[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.auto_escalation.enabled`.",
+      "controls_plain": "Sets `models.auto_escalation.enabled` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.auto_escalation.enabled",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.auto_escalation.max_escalations_per_task`.",
+      "controls_plain": "Sets `models.auto_escalation.max_escalations_per_task` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.auto_escalation.max_escalations_per_task",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.auto_escalation.order[]`.",
+      "controls_plain": "Sets `models.auto_escalation.order[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.auto_escalation.order[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.auto_escalation.triggers`.",
+      "controls_plain": "Sets `models.auto_escalation.triggers` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.auto_escalation.triggers",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.availability`.",
+      "controls_plain": "Sets `models.availability` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.availability",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.default_selection.provider`.",
+      "controls_plain": "Sets `models.default_selection.provider` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.default_selection.provider",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.default_selection.tier`.",
+      "controls_plain": "Sets `models.default_selection.tier` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.default_selection.tier",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.default_tier`.",
+      "controls_plain": "Sets `models.default_tier` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.default_tier",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.hidden_tiers[]`.",
+      "controls_plain": "Sets `models.hidden_tiers[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.hidden_tiers[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.max_output_tokens`.",
+      "controls_plain": "Sets `models.max_output_tokens` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.max_output_tokens",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.provider`.",
+      "controls_plain": "Sets `models.provider` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.provider",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.providers.<provider>.description`.",
+      "controls_plain": "Sets `models.providers.<provider>.description` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.providers.<provider>.description",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.providers.<provider>.display_name`.",
+      "controls_plain": "Sets `models.providers.<provider>.display_name` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.providers.<provider>.display_name",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.providers.<provider>.extra.<key>`.",
+      "controls_plain": "Sets `models.providers.<provider>.extra.<key>` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.providers.<provider>.extra.<key>",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.providers.<provider>.tiers.<tier>.client_args`.",
+      "controls_plain": "Sets `models.providers.<provider>.tiers.<tier>.client_args` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.providers.<provider>.tiers.<tier>.client_args",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.providers.<provider>.tiers.<tier>.description`.",
+      "controls_plain": "Sets `models.providers.<provider>.tiers.<tier>.description` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.providers.<provider>.tiers.<tier>.description",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.providers.<provider>.tiers.<tier>.display_name`.",
+      "controls_plain": "Sets `models.providers.<provider>.tiers.<tier>.display_name` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.providers.<provider>.tiers.<tier>.display_name",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.providers.<provider>.tiers.<tier>.model_id`.",
+      "controls_plain": "Sets `models.providers.<provider>.tiers.<tier>.model_id` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.providers.<provider>.tiers.<tier>.model_id",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.providers.<provider>.tiers.<tier>.params`.",
+      "controls_plain": "Sets `models.providers.<provider>.tiers.<tier>.params` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.providers.<provider>.tiers.<tier>.params",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.providers.<provider>.tiers.<tier>.provider`.",
+      "controls_plain": "Sets `models.providers.<provider>.tiers.<tier>.provider` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.providers.<provider>.tiers.<tier>.provider",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.tiers.<tier>.client_args`.",
+      "controls_plain": "Sets `models.tiers.<tier>.client_args` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.tiers.<tier>.client_args",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.tiers.<tier>.description`.",
+      "controls_plain": "Sets `models.tiers.<tier>.description` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.tiers.<tier>.description",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.tiers.<tier>.display_name`.",
+      "controls_plain": "Sets `models.tiers.<tier>.display_name` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.tiers.<tier>.display_name",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.tiers.<tier>.model_id`.",
+      "controls_plain": "Sets `models.tiers.<tier>.model_id` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.tiers.<tier>.model_id",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.tiers.<tier>.params`.",
+      "controls_plain": "Sets `models.tiers.<tier>.params` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.tiers.<tier>.params",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `models.tiers.<tier>.provider`.",
+      "controls_plain": "Sets `models.tiers.<tier>.provider` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:models.tiers.<tier>.provider",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].active_sops[]`.",
+      "controls_plain": "Sets `packs.installed[].active_sops[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].active_sops[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].agents[]`.",
+      "controls_plain": "Sets `packs.installed[].agents[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].agents[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].auto_delegate_assistive`.",
+      "controls_plain": "Sets `packs.installed[].auto_delegate_assistive` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].auto_delegate_assistive",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].context_sources[]`.",
+      "controls_plain": "Sets `packs.installed[].context_sources[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].context_sources[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].enabled`.",
+      "controls_plain": "Sets `packs.installed[].enabled` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].enabled",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].id`.",
+      "controls_plain": "Sets `packs.installed[].id` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].id",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].knowledge_base_id`.",
+      "controls_plain": "Sets `packs.installed[].knowledge_base_id` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].knowledge_base_id",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].name`.",
+      "controls_plain": "Sets `packs.installed[].name` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].name",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].path`.",
+      "controls_plain": "Sets `packs.installed[].path` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].path",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].provider`.",
+      "controls_plain": "Sets `packs.installed[].provider` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].provider",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].system_prompt_snippets[]`.",
+      "controls_plain": "Sets `packs.installed[].system_prompt_snippets[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].system_prompt_snippets[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].team_presets[]`.",
+      "controls_plain": "Sets `packs.installed[].team_presets[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].team_presets[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].tier`.",
+      "controls_plain": "Sets `packs.installed[].tier` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].tier",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `packs.installed[].type`.",
+      "controls_plain": "Sets `packs.installed[].type` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:packs.installed[].type",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `pricing.default.cached_input_per_1m`.",
+      "controls_plain": "Sets `pricing.default.cached_input_per_1m` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:pricing.default.cached_input_per_1m",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `pricing.default.input_per_1m`.",
+      "controls_plain": "Sets `pricing.default.input_per_1m` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:pricing.default.input_per_1m",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `pricing.default.output_per_1m`.",
+      "controls_plain": "Sets `pricing.default.output_per_1m` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:pricing.default.output_per_1m",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `pricing.providers.<provider>.cached_input_per_1m`.",
+      "controls_plain": "Sets `pricing.providers.<provider>.cached_input_per_1m` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:pricing.providers.<provider>.cached_input_per_1m",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `pricing.providers.<provider>.input_per_1m`.",
+      "controls_plain": "Sets `pricing.providers.<provider>.input_per_1m` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:pricing.providers.<provider>.input_per_1m",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `pricing.providers.<provider>.output_per_1m`.",
+      "controls_plain": "Sets `pricing.providers.<provider>.output_per_1m` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:pricing.providers.<provider>.output_per_1m",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `raw`.",
+      "controls_plain": "Sets `raw` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:raw",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Internal/debug payload capture; not intended for manual configuration.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "internal_only",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.auto_approve`.",
+      "controls_plain": "Sets `runtime.auto_approve` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.auto_approve",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.disabled_tools[]`.",
+      "controls_plain": "Sets `runtime.disabled_tools[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.disabled_tools[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.enable_project_context_tool`.",
+      "controls_plain": "Sets `runtime.enable_project_context_tool` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.enable_project_context_tool",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.enabled_tools[]`.",
+      "controls_plain": "Sets `runtime.enabled_tools[]` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.enabled_tools[]",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.esc_interrupt_enabled`.",
+      "controls_plain": "Sets `runtime.esc_interrupt_enabled` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.esc_interrupt_enabled",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.freeze_tools`.",
+      "controls_plain": "Sets `runtime.freeze_tools` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.freeze_tools",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.interrupt_timeout_sec`.",
+      "controls_plain": "Sets `runtime.interrupt_timeout_sec` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.interrupt_timeout_sec",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.knowledge_base_id`.",
+      "controls_plain": "Sets `runtime.knowledge_base_id` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.knowledge_base_id",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.limit_tool_results`.",
+      "controls_plain": "Sets `runtime.limit_tool_results` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.limit_tool_results",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.preflight_enabled`.",
+      "controls_plain": "Sets `runtime.preflight_enabled` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.preflight_enabled",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.preflight_level`.",
+      "controls_plain": "Sets `runtime.preflight_level` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.preflight_level",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.preflight_max_chars`.",
+      "controls_plain": "Sets `runtime.preflight_max_chars` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.preflight_max_chars",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.preflight_print`.",
+      "controls_plain": "Sets `runtime.preflight_print` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.preflight_print",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.project_map_enabled`.",
+      "controls_plain": "Sets `runtime.project_map_enabled` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.project_map_enabled",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.session_kb_promote_on_complete`.",
+      "controls_plain": "Sets `runtime.session_kb_promote_on_complete` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.session_kb_promote_on_complete",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.session_s3_auto_export`.",
+      "controls_plain": "Sets `runtime.session_s3_auto_export` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.session_s3_auto_export",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.session_s3_bucket`.",
+      "controls_plain": "Sets `runtime.session_s3_bucket` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.session_s3_bucket",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.session_s3_prefix`.",
+      "controls_plain": "Sets `runtime.session_s3_prefix` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.session_s3_prefix",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.state_dir`.",
+      "controls_plain": "Sets `runtime.state_dir` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.state_dir",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.swarm_enabled`.",
+      "controls_plain": "Sets `runtime.swarm_enabled` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.swarm_enabled",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `runtime.tooling_s3_prefix`.",
+      "controls_plain": "Sets `runtime.tooling_s3_prefix` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:runtime.tooling_s3_prefix",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `safety.permission_rules[].action`.",
+      "controls_plain": "Sets `safety.permission_rules[].action` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:safety.permission_rules[].action",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `safety.permission_rules[].remember`.",
+      "controls_plain": "Sets `safety.permission_rules[].remember` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:safety.permission_rules[].remember",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `safety.permission_rules[].tool`.",
+      "controls_plain": "Sets `safety.permission_rules[].tool` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:safety.permission_rules[].tool",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `safety.permission_rules[].when`.",
+      "controls_plain": "Sets `safety.permission_rules[].when` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:safety.permission_rules[].when",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `safety.tool_consent`.",
+      "controls_plain": "Sets `safety.tool_consent` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:safety.tool_consent",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `safety.tool_rules[].default`.",
+      "controls_plain": "Sets `safety.tool_rules[].default` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:safety.tool_rules[].default",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `safety.tool_rules[].remember`.",
+      "controls_plain": "Sets `safety.tool_rules[].remember` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:safety.tool_rules[].remember",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Project settings file field `safety.tool_rules[].tool`.",
+      "controls_plain": "Sets `safety.tool_rules[].tool` in `.swarmee/settings.json` for workspace defaults.",
+      "dup_group": null,
+      "id": "settings_json:safety.tool_rules[].tool",
+      "keep_configurable_justification": "Workspace-scoped JSON config enables repeatable team defaults without shell setup.",
+      "kind": "settings_json_field",
+      "notes": "Non-secret runtime configuration should be expressed via settings fields and CLI flags, not env vars.",
+      "precedence": [
+        "CLI flags (where supported)",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "settings_file",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/settings.py:1"
+      ],
+      "where_set": [
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /auth list",
+      "controls_plain": "Uses `/auth list` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/auth list",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:8"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /auth logout [provider]",
+      "controls_plain": "Uses `/auth logout [provider]` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/auth logout [provider]",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:8"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /compact",
+      "controls_plain": "Uses `/compact` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/compact",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:12"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /connect [github_copilot]",
+      "controls_plain": "Uses `/connect [github_copilot]` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/connect [github_copilot]",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:7"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /connect aws [profile]",
+      "controls_plain": "Uses `/connect aws [profile]` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/connect aws [profile]",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:7"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /consent <y",
+      "controls_plain": "Uses `/consent <y` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/consent <y",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:6"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /diagnostics bundle",
+      "controls_plain": "Uses `/diagnostics bundle` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/diagnostics bundle",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:20"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /expand <tool_use_id>",
+      "controls_plain": "Uses `/expand <tool_use_id>` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/expand <tool_use_id>",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:11"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /model list",
+      "controls_plain": "Uses `/model list` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/model list",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:5"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /model provider <name>",
+      "controls_plain": "Uses `/model provider <name>` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/model provider <name>",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:5"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /model reset",
+      "controls_plain": "Uses `/model reset` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/model reset",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:5"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /model show",
+      "controls_plain": "Uses `/model show` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/model show",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:5"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /model tier <name>",
+      "controls_plain": "Uses `/model tier <name>` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/model tier <name>",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:5"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /open <number>",
+      "controls_plain": "Uses `/open <number>` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/open <number>",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:10"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /search <term>",
+      "controls_plain": "Uses `/search <term>` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/search <term>",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:9"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /sop activate <name>",
+      "controls_plain": "Uses `/sop activate <name>` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/sop activate <name>",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:19"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /sop deactivate <name>",
+      "controls_plain": "Uses `/sop deactivate <name>` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/sop deactivate <name>",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:19"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /sop list",
+      "controls_plain": "Uses `/sop list` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/sop list",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:19"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /sop preview <name>",
+      "controls_plain": "Uses `/sop preview <name>` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/sop preview <name>",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:19"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /text",
+      "controls_plain": "Uses `/text` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/text",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:13"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: /thinking",
+      "controls_plain": "Uses `/thinking` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:/thinking",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:14"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: a",
+      "controls_plain": "Uses `a` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:a",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:6"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: n",
+      "controls_plain": "Uses `n` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:n",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:6"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "TUI slash command syntax: v>",
+      "controls_plain": "Uses `v>` as an argument form for a TUI slash command.",
+      "dup_group": null,
+      "id": "tui_command_arg:v>",
+      "keep_configurable_justification": "Command arguments are required for fast keyboard-driven workflow control.",
+      "kind": "tui_command_arg",
+      "notes": "",
+      "precedence": [
+        "TUI slash command argument",
+        "current session state",
+        "runtime defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/commands.py:6"
+      ],
+      "where_set": [
+        "TUI slash command input"
+      ]
+    },
+    {
+      "controls": "Advanced env editor (apply selected env var). This is migration-oriented: secrets are set for the current process only; internal wiring keys may persist under the legacy `env` section (allowlisted); non-secret legacy keys are migrated into structured settings fields.",
+      "controls_plain": "Advanced TUI control for applying secrets for this session and migrating legacy keys into settings.",
+      "dup_group": null,
+      "id": "tui_setting:settings_env_apply",
+      "keep_configurable_justification": "Advanced controls support credential setup and migration without requiring manual file edits.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3397"
+      ],
+      "where_set": [
+        "TUI Advanced settings",
+        "process environment (session-only)",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Advanced env editor (apply default for selected env var). This is migration-oriented: secrets are set for the current process only; internal wiring keys may persist under the legacy `env` section (allowlisted); non-secret legacy keys are migrated into structured settings fields.",
+      "controls_plain": "Advanced TUI control for applying secrets for this session and migrating legacy keys into settings.",
+      "dup_group": null,
+      "id": "tui_setting:settings_env_default",
+      "keep_configurable_justification": "Advanced controls support credential setup and migration without requiring manual file edits.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3419"
+      ],
+      "where_set": [
+        "TUI Advanced settings",
+        "process environment (session-only)",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Advanced env editor (unset selected env var). This is migration-oriented: secrets are set for the current process only; internal wiring keys may persist under the legacy `env` section (allowlisted); non-secret legacy keys are migrated into structured settings fields.",
+      "controls_plain": "Advanced TUI control for applying secrets for this session and migrating legacy keys into settings.",
+      "dup_group": null,
+      "id": "tui_setting:settings_env_unset",
+      "keep_configurable_justification": "Advanced controls support credential setup and migration without requiring manual file edits.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3435"
+      ],
+      "where_set": [
+        "TUI Advanced settings",
+        "process environment (session-only)",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_CONTEXT_MANAGER. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Selects a runtime option in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_general_context_manager",
+      "keep_configurable_justification": "Select controls make high-frequency runtime strategy changes discoverable.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:2711"
+      ],
+      "where_set": [
+        "TUI Settings select control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_PREFLIGHT. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Selects a runtime option in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_general_preflight",
+      "keep_configurable_justification": "Select controls make high-frequency runtime strategy changes discoverable.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:2717"
+      ],
+      "where_set": [
+        "TUI Settings select control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_PREFLIGHT_LEVEL. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Selects a runtime option in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_general_preflight_level",
+      "keep_configurable_justification": "Select controls make high-frequency runtime strategy changes discoverable.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:2723"
+      ],
+      "where_set": [
+        "TUI Settings select control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_STATE_DIR. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_set_scope",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3453"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_AUTO_APPROVE. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_auto_approve",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3272"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: BYPASS_TOOL_CONSENT. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_bypass_consent",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3283"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_ESC_INTERRUPT. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_esc_interrupt",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3296"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_FREEZE_TOOLS. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_freeze_tools",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3370"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_LIMIT_TOOL_RESULTS. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_limit_tool_results",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3338"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_LOG_EVENTS. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_log_events",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3320"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_DIAG_REDACT, SWARMEE_LOG_REDACT. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_log_redact",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 2,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3356"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_PROJECT_MAP. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_project_map",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3329"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_SWARM_ENABLED. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_swarm",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3311"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    },
+    {
+      "controls": "Persists workspace settings derived from legacy key identifiers: SWARMEE_TRUNCATE_RESULTS. (These identifiers are migrated to structured `.swarmee/settings.json` fields; they are no longer applied as generic env overrides.)",
+      "controls_plain": "Changes this setting in the TUI and saves it for this workspace.",
+      "dup_group": null,
+      "id": "tui_setting:settings_toggle_truncate_results",
+      "keep_configurable_justification": "Interactive users need in-app control over runtime behavior per workspace.",
+      "kind": "tui_setting",
+      "notes": "",
+      "precedence": [
+        "TUI control value",
+        ".swarmee/settings.json",
+        "built-in defaults"
+      ],
+      "status": "active",
+      "surface": "tui",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/app.py:3347"
+      ],
+      "where_set": [
+        "TUI Settings control",
+        ".swarmee/settings.json"
+      ]
+    }
+  ],
+  "generated_from_scope": "src",
+  "precedence_model": {
+    "exceptions": [
+      "Secrets/credentials are read from process environment (including `.env` for local dev).",
+      "Alias fallback chains are preserved for backward compatibility."
+    ],
+    "global": [
+      "CLI flags",
+      ".swarmee/settings.json",
+      "built-in defaults"
+    ]
+  },
+  "schema_version": 2
+}

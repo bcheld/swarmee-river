@@ -16,7 +16,7 @@ from rich.text import Text as RichText
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Collapsible, DataTable, Input, Select, Static, TextArea
+from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
 
 def render_user_message(text: str, *, timestamp: str | None = None) -> RichPanel:
@@ -3744,8 +3744,12 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         payload = dict(settings_payload) if isinstance(settings_payload, dict) else {}
         models_payload = payload.get("models")
         env_payload = payload.get("env")
-        self._models: dict[str, Any] = _json.loads(_json.dumps(models_payload if isinstance(models_payload, dict) else {}))
-        self._env: dict[str, Any] = _json.loads(_json.dumps(env_payload if isinstance(env_payload, dict) else {}))
+        self._models: dict[str, Any] = _json.loads(
+            _json.dumps(models_payload if isinstance(models_payload, dict) else {})
+        )
+        self._env: dict[str, Any] = _json.loads(
+            _json.dumps(env_payload if isinstance(env_payload, dict) else {})
+        )
         self._provider_filter: str = "__all__"
         self._search: str = ""
         self._selected_entry: tuple[str, str] | None = None

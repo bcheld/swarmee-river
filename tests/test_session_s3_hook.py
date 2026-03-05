@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from swarmee_river.hooks.session_s3 import SessionS3Hooks
+from swarmee_river.settings import default_settings_template
 
 
 class _ImmediateThread:
@@ -18,10 +20,14 @@ class _ImmediateThread:
 
 
 def test_session_s3_hook_auto_export_debounced(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SWARMEE_SESSION_S3_BUCKET", "bucket")
-    monkeypatch.setenv("SWARMEE_SESSION_S3_AUTO_EXPORT", "true")
     monkeypatch.setenv("SWARMEE_SESSION_ID", "sid-1")
     monkeypatch.setattr("swarmee_river.hooks.session_s3.threading.Thread", _ImmediateThread)
+
+    settings = default_settings_template()
+    settings = replace(
+        settings,
+        runtime=replace(settings.runtime, session_s3_bucket="bucket", session_s3_auto_export=True),
+    )
 
     calls: list[str] = []
 
@@ -33,7 +39,7 @@ def test_session_s3_hook_auto_export_debounced(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr("swarmee_river.hooks.session_s3.export_session_to_s3", _fake_export)
 
-    hook = SessionS3Hooks(debounce_seconds=30)
+    hook = SessionS3Hooks(settings=settings, debounce_seconds=30)
     event = SimpleNamespace(invocation_state={"swarmee": {}}, result="ok")
 
     hook.after_invocation(event)
@@ -43,12 +49,20 @@ def test_session_s3_hook_auto_export_debounced(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_session_s3_hook_promotes_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SWARMEE_SESSION_S3_BUCKET", "bucket")
-    monkeypatch.setenv("SWARMEE_SESSION_S3_AUTO_EXPORT", "false")
-    monkeypatch.setenv("SWARMEE_SESSION_KB_PROMOTE_ON_COMPLETE", "true")
-    monkeypatch.setenv("SWARMEE_KNOWLEDGE_BASE_ID", "kb-1")
     monkeypatch.setenv("SWARMEE_SESSION_ID", "sid-2")
     monkeypatch.setattr("swarmee_river.hooks.session_s3.threading.Thread", _ImmediateThread)
+
+    settings = default_settings_template()
+    settings = replace(
+        settings,
+        runtime=replace(
+            settings.runtime,
+            session_s3_bucket="bucket",
+            session_s3_auto_export=False,
+            session_kb_promote_on_complete=True,
+            knowledge_base_id="kb-1",
+        ),
+    )
 
     promoted: list[str] = []
 
@@ -63,7 +77,7 @@ def test_session_s3_hook_promotes_when_enabled(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr("swarmee_river.hooks.session_s3.promote_session_to_kb", _fake_promote)
 
-    hook = SessionS3Hooks(debounce_seconds=30, promote_debounce_seconds=10)
+    hook = SessionS3Hooks(settings=settings, debounce_seconds=30, promote_debounce_seconds=10)
     event = SimpleNamespace(invocation_state={"swarmee": {"mode": "execute"}}, result="ok")
 
     hook.after_invocation(event)
