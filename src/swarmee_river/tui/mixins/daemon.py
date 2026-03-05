@@ -319,12 +319,19 @@ class DaemonMixin:
         self._streaming_last_flush_mono = 0.0
         self._current_assistant_model = None
         self._current_assistant_timestamp = None
+        self._assistant_completion_seen_turn = False
         self._assistant_placeholder_written = False
         self._stream_render_warning_emitted_turn = False
+        self._structured_assistant_seen_turn = False
+        self._raw_assistant_lines_suppressed_turn = 0
+        self._last_structured_assistant_text_turn = ""
+        self._callback_event_trace_turn = []
         self._active_assistant_message = None
         self._active_reasoning_block = None
         self._reset_thinking_state()
         self._last_thinking_text = ""
+        self._thinking_seen_turn = False
+        self._thinking_unavailable_notice_emitted_turn = False
         self._tool_blocks = {}
         self._clear_pending_tool_starts()
         self._tool_progress_pending_ids = set()

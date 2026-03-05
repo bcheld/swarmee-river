@@ -227,6 +227,67 @@ def test_result_fallback_does_not_duplicate_streamed_text():
     ]
 
 
+def test_complete_snapshot_fields_do_not_duplicate_streamed_text():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(data="hello ")
+        h.callback_handler(data="world")
+        h.callback_handler(
+            complete=True,
+            message={"role": "assistant", "content": [{"text": "hello world"}]},
+            delta="hello world",
+            result="hello world",
+        )
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "hello "},
+        {"event": "text_delta", "data": "world"},
+        {"event": "text_complete"},
+    ]
+
+
+def test_complete_snapshot_suppression_logs_duplicate_sources(caplog):
+    h = TuiCallbackHandler()
+    caplog.set_level(logging.DEBUG, logger="swarmee_river.handlers.callback_handler")
+
+    def run():
+        h.callback_handler(data="hello ")
+        h.callback_handler(data="world")
+        h.callback_handler(
+            complete=True,
+            message={"role": "assistant", "content": [{"text": "hello world"}]},
+            result="hello world",
+        )
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "hello "},
+        {"event": "text_delta", "data": "world"},
+        {"event": "text_complete"},
+    ]
+    assert any(
+        "Suppressing duplicate assistant snapshot on completion" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_complete_event_emitted_once_when_complete_called_multiple_times():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(data="hello")
+        h.callback_handler(complete=True)
+        h.callback_handler(complete=True)
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "hello"},
+        {"event": "text_complete"},
+    ]
+
+
 def test_force_stop_no_output():
     h = TuiCallbackHandler()
     events = _capture_events(h, lambda: h.callback_handler(force_stop=True))
@@ -528,6 +589,42 @@ def test_warning_text_extra_field_emits_warning_event():
     h = TuiCallbackHandler()
     events = _capture_events(h, lambda: h.callback_handler(warning_text="bedrock stalled"))
     assert events == [{"event": "warning", "text": "bedrock stalled"}]
+
+
+def test_reasoning_extracted_from_nested_extra_payload():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(
+            event={
+                "delta": {
+                    "reasoningContent": {
+                        "text": "planner trace",
+                    }
+                }
+            }
+        ),
+    )
+    assert events == [{"event": "thinking", "text": "planner trace"}]
+
+
+def test_gpt_5_2_missing_reasoning_logs_diagnostic(caplog):
+    h = TuiCallbackHandler()
+    caplog.set_level(logging.INFO, logger="swarmee_river.handlers.callback_handler")
+
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(
+            complete=True,
+            invocation_state={"swarmee": {"provider": "openai", "tier": "deep", "model_id": "gpt-5.2"}},
+        ),
+    )
+
+    assert events == []
+    assert any(
+        "Reasoning payload missing for expected reasoning-capable turn" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_bedrock_stream_without_text_logs_warning_once(caplog):

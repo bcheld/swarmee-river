@@ -270,6 +270,8 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
 
     if etype == "turn_complete":
         exit_status = str(event.get("exit_status", "ok"))
+        with contextlib.suppress(Exception):
+            app._trace_turn_event("turn_complete")
         try:
             app._finalize_turn(exit_status=exit_status)
         except Exception:
@@ -406,6 +408,9 @@ def _handle_usage_and_compaction_events(app: Any, etype: str, event: dict[str, A
 
 def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype in {"llm_start", "model_start", "before_model_call"}:
+        app._assistant_completion_seen_turn = False
+        with contextlib.suppress(Exception):
+            app._trace_turn_event("llm_start")
         app._record_thinking_event("")
         return True
 
@@ -413,6 +418,13 @@ def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> boo
         chunk = sanitize_output_text(extract_tui_text_chunk(event))
         if not chunk:
             return True
+        if not bool(getattr(app, "_structured_assistant_seen_turn", False)):
+            with contextlib.suppress(Exception):
+                app._trace_turn_event("text_delta(first)")
+        app._structured_assistant_seen_turn = True
+        prior_text = str(getattr(app, "_last_structured_assistant_text_turn", "") or "")
+        app._last_structured_assistant_text_turn = prior_text + chunk
+        app._assistant_completion_seen_turn = False
         app._dismiss_thinking(emit_summary=True)
         if not app._current_assistant_chunks and not app._streaming_buffer:
             app._current_assistant_model = app.state.daemon.current_model
@@ -422,12 +434,20 @@ def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> boo
         return True
 
     if etype in {"text_complete", "message_complete", "output_text_complete", "complete"}:
+        if bool(getattr(app, "_assistant_completion_seen_turn", False)):
+            return True
+        app._assistant_completion_seen_turn = True
+        with contextlib.suppress(Exception):
+            app._trace_turn_event("text_complete")
         app._cancel_streaming_flush_timer()
         app._flush_streaming_buffer()
         app._finalize_assistant_message()
         return True
 
     if etype == "thinking":
+        label = "thinking(delta)" if str(event.get("text", "")).strip() else "thinking(empty)"
+        with contextlib.suppress(Exception):
+            app._trace_turn_event(label)
         app._record_thinking_event(str(event.get("text", "")))
         return True
 
@@ -436,6 +456,8 @@ def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> boo
 
 def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype == "tool_start":
+        with contextlib.suppress(Exception):
+            app._trace_turn_event("tool_start")
         app._dismiss_thinking(emit_summary=True)
         tid = str(event.get("tool_use_id", "")).strip() or f"tool-{app.state.daemon.run_tool_count + 1}"
         tool_name = str(event.get("tool", "unknown"))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
@@ -9,6 +10,9 @@ from swarmee_river.tui.text_sanitize import sanitize_output_text
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
 _THINKING_EXPORT_MAX_CHARS = 5000
+_TURN_TRACE_MAX = 16
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _artifact_paths_from_event(event: Any) -> list[str]:
@@ -30,6 +34,60 @@ class OutputMixin:
         self._consent_history_lines.append(entry)
         if len(self._consent_history_lines) > 200:
             self._consent_history_lines = self._consent_history_lines[-200:]
+
+    def _trace_turn_event(self, label: str) -> None:
+        token = str(label or "").strip()
+        if not token:
+            return
+        trace = list(getattr(self, "_callback_event_trace_turn", []))
+        trace.append(token)
+        if len(trace) > _TURN_TRACE_MAX:
+            trace = trace[-_TURN_TRACE_MAX:]
+        self._callback_event_trace_turn = trace
+
+    @staticmethod
+    def _normalize_assistant_compare_text(text: str) -> str:
+        return " ".join(sanitize_output_text(str(text or "")).split())
+
+    def _structured_assistant_compare_text(self) -> str:
+        parts: list[str] = []
+        snapshot = str(getattr(self, "_last_structured_assistant_text_turn", "") or "")
+        if snapshot:
+            parts.append(snapshot)
+        current_chunks = getattr(self, "_current_assistant_chunks", None)
+        if isinstance(current_chunks, list) and current_chunks:
+            parts.append("".join(str(chunk) for chunk in current_chunks))
+        streaming_buffer = getattr(self, "_streaming_buffer", None)
+        if isinstance(streaming_buffer, list) and streaming_buffer:
+            parts.append("".join(str(chunk) for chunk in streaming_buffer))
+        active = getattr(self, "_active_assistant_message", None)
+        full_text = getattr(active, "full_text", None)
+        if isinstance(full_text, str) and full_text:
+            parts.append(full_text)
+        return self._normalize_assistant_compare_text("".join(parts))
+
+    def _should_suppress_raw_assistant_output(self, text: str) -> bool:
+        if not self.state.daemon.query_active:
+            return False
+        if not bool(getattr(self, "_structured_assistant_seen_turn", False)):
+            return False
+        candidate = self._normalize_assistant_compare_text(text)
+        if not candidate:
+            return False
+        structured = self._structured_assistant_compare_text()
+        if not structured:
+            return False
+        return candidate in structured
+
+    def _record_raw_assistant_suppression(self, text: str) -> None:
+        current = int(getattr(self, "_raw_assistant_lines_suppressed_turn", 0) or 0)
+        self._raw_assistant_lines_suppressed_turn = current + 1
+        self._trace_turn_event("raw_suppressed")
+        _LOGGER.debug(
+            "Suppressed raw assistant echo line during structured turn output (line=%r trace=%s).",
+            sanitize_output_text(text)[:200],
+            " -> ".join(getattr(self, "_callback_event_trace_turn", [])),
+        )
 
     def _show_thinking_text(self) -> None:
         from swarmee_river.tui.widgets import render_system_message
@@ -355,6 +413,10 @@ class OutputMixin:
         if event is None:
             if sanitized.strip() == "return meta(":
                 return
+            if self._should_suppress_raw_assistant_output(sanitized):
+                self._record_raw_assistant_suppression(sanitized)
+                self._apply_consent_capture(sanitized)
+                return
             self._append_plain_text(sanitized)
             self._apply_consent_capture(sanitized)
             return
@@ -503,8 +565,16 @@ class OutputMixin:
         run_tool_count = self.state.daemon.run_tool_count
         completion_line = f"[run] completed in {elapsed:.1f}s ({run_tool_count} tool calls, status={exit_status})"
         self._write_transcript(completion_line)
+        suppressed_raw_lines = int(getattr(self, "_raw_assistant_lines_suppressed_turn", 0) or 0)
+        if suppressed_raw_lines > 0:
+            _LOGGER.info(
+                "Suppressed %s raw assistant echo line(s) for turn (trace=%s).",
+                suppressed_raw_lines,
+                " -> ".join(getattr(self, "_callback_event_trace_turn", [])),
+            )
 
         self._finalize_assistant_message()
+        self._maybe_emit_reasoning_unavailable_notice()
         self._dismiss_thinking(emit_summary=True)
         self._collapse_intermediate_activity_boxes()
 

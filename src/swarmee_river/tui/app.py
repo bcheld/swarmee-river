@@ -1660,8 +1660,9 @@ def run_tui() -> int:
         }
 
         #agent_overview_model_row Select {
-            width: 1fr;
-            min-width: 0;
+            width: 30;
+            min-width: 18;
+            max-width: 1fr;
         }
 
         #agent_summary_header, #agent_builder_agents_header {
@@ -2038,8 +2039,13 @@ def run_tui() -> int:
         _tool_progress_flush_timer: Any = None
         _current_assistant_model: str | None = None
         _current_assistant_timestamp: str | None = None
+        _assistant_completion_seen_turn: bool = False
         _assistant_placeholder_written: bool = False
         _stream_render_warning_emitted_turn: bool = False
+        _structured_assistant_seen_turn: bool = False
+        _raw_assistant_lines_suppressed_turn: int = 0
+        _last_structured_assistant_text_turn: str = ""
+        _callback_event_trace_turn: list[str] = []
         _active_assistant_message: Any = None  # AssistantMessage | None
         _active_reasoning_block: Any = None  # ReasoningBlock | None
         _current_thinking: bool = False
@@ -2051,6 +2057,8 @@ def run_tui() -> int:
         _thinking_started_mono: float | None = None
         _thinking_frame_index: int = 0
         _last_thinking_text: str = ""
+        _thinking_seen_turn: bool = False
+        _thinking_unavailable_notice_emitted_turn: bool = False
         _active_thinking_indicator: Any = None  # ThinkingIndicator | None
         _tool_blocks: dict[str, dict[str, Any]] = {}
         _tool_pending_start: dict[str, float] = {}
@@ -3489,10 +3497,10 @@ def run_tui() -> int:
                 self._apply_bundle_selection()
                 return
             if button_id == "agent_builder_agent_new":
-                self._new_agent_builder_draft()
+                self._open_agent_builder_editor_new()
                 return
-            if button_id == "agent_builder_agent_save":
-                self._save_agent_builder_draft()
+            if button_id == "agent_builder_agent_edit":
+                self._open_agent_builder_editor_selected()
                 return
             if button_id == "agent_builder_agent_delete":
                 self._delete_selected_builder_agent()

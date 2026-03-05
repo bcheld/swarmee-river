@@ -418,6 +418,7 @@ class TuiCallbackHandler:
         self.interrupt_event: Event | None = None
         self._saw_text_delta: bool = False
         self._assistant_text_snapshot: str = ""
+        self._text_complete_emitted_turn: bool = False
         self._emitted_tool_results: set[str] = set()
         self._plan_step_status: dict[int, str] = {}
         self._plan_marker_buffer: str = ""
@@ -435,6 +436,7 @@ class TuiCallbackHandler:
     def _reset_turn_state(self) -> None:
         self._saw_text_delta = False
         self._assistant_text_snapshot = ""
+        self._text_complete_emitted_turn = False
         self.current_tool = None
         self.tool_histories.clear()
         self._emitted_tool_results.clear()
@@ -823,7 +825,9 @@ class TuiCallbackHandler:
         if not text:
             return False
         self._emit({"event": "text_delta", "data": text})
-        self._emit({"event": "text_complete"})
+        if not self._text_complete_emitted_turn:
+            self._emit({"event": "text_complete"})
+            self._text_complete_emitted_turn = True
         self._saw_text_delta = True
         return True
 
@@ -1053,6 +1057,116 @@ class TuiCallbackHandler:
                 return text
         return None
 
+    def _extract_reasoning_text_from_value(
+        self,
+        payload: Any,
+        *,
+        depth: int = 6,
+        in_reasoning: bool = False,
+    ) -> list[str]:
+        if depth < 0 or payload is None:
+            return []
+        if isinstance(payload, str):
+            text = payload.strip()
+            return [text] if in_reasoning and text else []
+        if isinstance(payload, list):
+            chunks: list[str] = []
+            for item in payload:
+                chunks.extend(self._extract_reasoning_text_from_value(item, depth=depth - 1, in_reasoning=in_reasoning))
+            return chunks
+        if not isinstance(payload, dict):
+            return []
+
+        chunks: list[str] = []
+        reasoning_keys = {
+            "reasoning",
+            "reasoningtext",
+            "reasoning_text",
+            "reasoningcontent",
+            "reasoning_content",
+            "thinking",
+            "thinking_content",
+        }
+        wrapper_keys = {
+            "message",
+            "event",
+            "chunk",
+            "content",
+            "response",
+            "payload",
+            "raw_event",
+            "model_extra",
+            "extra",
+            "delta",
+            "result",
+        }
+
+        for key, value in payload.items():
+            normalized = str(key).strip().lower()
+            if normalized in reasoning_keys:
+                chunks.extend(self._extract_reasoning_text_from_value(value, depth=depth - 1, in_reasoning=True))
+                continue
+            if in_reasoning and normalized in {"text", "content", "summary", "value"} and isinstance(value, str):
+                text = value.strip()
+                if text:
+                    chunks.append(text)
+                continue
+            if normalized in wrapper_keys:
+                chunks.extend(
+                    self._extract_reasoning_text_from_value(
+                        value,
+                        depth=depth - 1,
+                        in_reasoning=in_reasoning,
+                    )
+                )
+                continue
+            if in_reasoning and isinstance(value, (dict, list)):
+                chunks.extend(self._extract_reasoning_text_from_value(value, depth=depth - 1, in_reasoning=True))
+        return chunks
+
+    def _extract_reasoning_text_candidates(
+        self,
+        *,
+        message: dict[str, Any],
+        result: Any,
+        extra_event_fields: dict[str, Any],
+    ) -> list[str]:
+        chunks: list[str] = []
+        chunks.extend(self._extract_reasoning_text_from_value(message))
+        chunks.extend(self._extract_reasoning_text_from_value(result))
+        chunks.extend(self._extract_reasoning_text_from_value(extra_event_fields))
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for chunk in chunks:
+            text = str(chunk or "").strip()
+            if not text:
+                continue
+            if text in seen:
+                continue
+            seen.add(text)
+            deduped.append(text)
+        return deduped
+
+    @staticmethod
+    def _invocation_model_tokens(invocation_state: Any) -> tuple[str, str, str]:
+        if not isinstance(invocation_state, dict):
+            return "", "", ""
+        sw = invocation_state.get("swarmee")
+        if not isinstance(sw, dict):
+            return "", "", ""
+        provider = str(sw.get("provider", "") or "").strip().lower()
+        tier = str(sw.get("tier", "") or "").strip().lower()
+        model_id = str(sw.get("model_id", "") or "").strip().lower()
+        return provider, tier, model_id
+
+    @classmethod
+    def _reasoning_expected_for_turn(cls, invocation_state: Any) -> bool:
+        provider, tier, model_id = cls._invocation_model_tokens(invocation_state)
+        joined = " ".join(token for token in (provider, tier, model_id) if token).strip()
+        if not joined:
+            return False
+        return "gpt-5.2" in joined or "gpt5.2" in joined
+
     def callback_handler(
         self,
         reasoningText: str | bool = False,
@@ -1108,10 +1222,40 @@ class TuiCallbackHandler:
                         payload[token] = value
             self._emit(payload)
 
+        should_emit_complete = bool(complete)
+        reasoning_chunks = self._extract_reasoning_text_candidates(
+            message=message,
+            result=result,
+            extra_event_fields=extra_event_fields,
+        )
         if reasoningText:
             self._emit({"event": "thinking", "text": str(reasoningText)})
+        for chunk in reasoning_chunks:
+            if reasoningText and str(reasoningText).strip() == chunk:
+                continue
+            self._emit({"event": "thinking", "text": chunk})
+
+        assistant_snapshot_text = self._extract_text_from_assistant_message(message)
+        extra_snapshot_text = self._extract_text_from_extra_fields(extra_event_fields) if extra_event_fields else None
+        result_text = self._extract_text_from_result(result) if result is not None else None
 
         saw_text_before = self._saw_text_delta
+        suppress_snapshot_reemit = should_emit_complete and saw_text_before
+        if suppress_snapshot_reemit:
+            snapshot_sources = [
+                source
+                for source, payload in (
+                    ("message", assistant_snapshot_text),
+                    ("extra", extra_snapshot_text),
+                    ("result", result_text),
+                )
+                if isinstance(payload, str) and payload
+            ]
+            if snapshot_sources:
+                _LOGGER.debug(
+                    "Suppressing duplicate assistant snapshot on completion after streamed deltas (sources=%s).",
+                    ",".join(snapshot_sources),
+                )
         emitted_stream_text = False
         saw_bedrock_chunk = self._record_bedrock_stream_markers(extra_event_fields)
         saw_bedrock_chunk = self._record_bedrock_stream_markers(result) or saw_bedrock_chunk
@@ -1120,20 +1264,18 @@ class TuiCallbackHandler:
         if data:
             emitted_stream_text = self._emit_assistant_message_text(data) or emitted_stream_text
 
-        emitted_stream_text = (
-            self._emit_assistant_message_text(self._extract_text_from_assistant_message(message)) or emitted_stream_text
-        )
-
-        if extra_event_fields:
+        if not suppress_snapshot_reemit:
             emitted_stream_text = (
-                self._emit_assistant_message_text(self._extract_text_from_extra_fields(extra_event_fields))
+                self._emit_assistant_message_text(assistant_snapshot_text)
                 or emitted_stream_text
             )
+
+            if extra_event_fields:
+                emitted_stream_text = self._emit_assistant_message_text(extra_snapshot_text) or emitted_stream_text
 
         if self._saw_text_delta and not saw_text_before:
             _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
 
-        should_emit_complete = bool(complete)
         if should_emit_complete:
             self._flush_plan_marker_buffer()
             _mark_invoke_diag(invocation_state, stage="complete", saw_complete=True)
@@ -1248,10 +1390,10 @@ class TuiCallbackHandler:
             if isinstance(tid, str) and status is not None:
                 tool_label = result.get("name")
                 self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
-            else:
-                emitted_text_fallback = self._emit_text_fallback_if_needed(self._extract_text_from_result(result))
-        elif result is not None:
-            emitted_text_fallback = self._emit_text_fallback_if_needed(self._extract_text_from_result(result))
+            elif not suppress_snapshot_reemit:
+                emitted_text_fallback = self._emit_text_fallback_if_needed(result_text)
+        elif result is not None and not suppress_snapshot_reemit:
+            emitted_text_fallback = self._emit_text_fallback_if_needed(result_text)
             if isinstance(result, str):
                 self._consume_text_for_plan_markers(result)
 
@@ -1270,8 +1412,25 @@ class TuiCallbackHandler:
             )
             self._bedrock_missing_text_warning_emitted = True
 
-        if should_emit_complete and not emitted_text_fallback and self._saw_text_delta:
+        if should_emit_complete and self._reasoning_expected_for_turn(invocation_state):
+            saw_reasoning = (isinstance(reasoningText, str) and bool(reasoningText.strip())) or bool(reasoning_chunks)
+            if not saw_reasoning:
+                provider, tier, model_id = self._invocation_model_tokens(invocation_state)
+                _LOGGER.info(
+                    "Reasoning payload missing for expected reasoning-capable turn (provider=%s tier=%s model_id=%s).",
+                    provider or "?",
+                    tier or "?",
+                    model_id or "?",
+                )
+
+        if (
+            should_emit_complete
+            and not emitted_text_fallback
+            and self._saw_text_delta
+            and not self._text_complete_emitted_turn
+        ):
             self._emit({"event": "text_complete"})
+            self._text_complete_emitted_turn = True
 
         if should_emit_complete:
             self._reset_bedrock_stream_state()

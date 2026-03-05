@@ -15,8 +15,10 @@ from swarmee_river.tui.mixins.agent_studio import AgentStudioMixin
 from swarmee_river.tui.mixins.artifacts import ArtifactsMixin
 from swarmee_river.tui.mixins.context_sources import ContextSourcesMixin
 from swarmee_river.tui.mixins.daemon import DaemonMixin
+from swarmee_river.tui.mixins.output import OutputMixin
 from swarmee_river.tui.mixins.plan import PlanMixin
 from swarmee_river.tui.mixins.session import SessionMixin
+from swarmee_river.tui.mixins.thinking import ThinkingMixin
 from swarmee_river.tui.mixins.tools import ToolsMixin
 from swarmee_river.tui.mixins.transcript import TranscriptMixin
 from swarmee_river.tui.state import AppState
@@ -2226,6 +2228,26 @@ def test_settings_models_manage_button_opens_popup_manager():
     assert harness.called == 1
 
 
+def test_agent_builder_buttons_open_agent_editor_popup():
+    class _Harness:
+        def __init__(self) -> None:
+            self.new_called = 0
+            self.edit_called = 0
+
+        def _open_agent_builder_editor_new(self) -> None:
+            self.new_called += 1
+
+        def _open_agent_builder_editor_selected(self) -> None:
+            self.edit_called += 1
+
+    harness = _Harness()
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+    SwarmeeTUI.on_button_pressed(harness, SimpleNamespace(button=SimpleNamespace(id="agent_builder_agent_new")))
+    SwarmeeTUI.on_button_pressed(harness, SimpleNamespace(button=SimpleNamespace(id="agent_builder_agent_edit")))
+    assert harness.new_called == 1
+    assert harness.edit_called == 1
+
+
 def test_settings_models_row_selection_updates_model_detail():
     class _Table:
         pass
@@ -2363,6 +2385,219 @@ def test_tool_tag_manager_screen_tag_operations():
     payload_after_delete = screen.build_result_payload()["tool_tags"]
     assert payload_after_delete["shell"] == ["infra"]
     assert payload_after_delete["git"] == []
+
+
+def test_agent_editor_payload_normalization_and_orchestrator_guards():
+    from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID
+    from swarmee_river.tui.widgets import AgentEditorScreen
+
+    payload = AgentEditorScreen._normalize_editor_payload(
+        {
+            "id": "writer-agent",
+            "name": "Writer",
+            "summary": "Writes drafts",
+            "prompt_refs": "Draft_Prompt, draft_prompt, style_guide",
+            "provider": "openai",
+            "tier": "balanced",
+            "tool_names": "git, shell, git",
+            "sop_names": "qa_pass, qa_pass",
+            "knowledge_base_id": "kb-main",
+            "activated": True,
+        },
+        is_orchestrator=False,
+    )
+    assert payload is not None
+    assert payload["prompt_refs"] == ["draft_prompt", "style_guide"]
+    assert payload["tool_names"] == ["git", "shell"]
+    assert payload["sop_names"] == ["qa_pass"]
+    assert payload["provider"] == "openai"
+    assert payload["tier"] == "balanced"
+    assert payload["activated"] is True
+
+    orchestrator_payload = AgentEditorScreen._normalize_editor_payload(
+        {
+            "id": "something-else",
+            "name": "Orchestrator",
+            "activated": True,
+        },
+        is_orchestrator=True,
+    )
+    assert orchestrator_payload is not None
+    assert orchestrator_payload["id"] == ORCHESTRATOR_AGENT_ID
+    assert orchestrator_payload["activated"] is False
+
+
+def test_agent_editor_cancel_and_escape_dismiss_none():
+    from swarmee_river.tui.widgets import AgentEditorScreen
+
+    class _KeyEvent:
+        def __init__(self) -> None:
+            self.key = "escape"
+            self.stopped = False
+            self.prevented = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def prevent_default(self) -> None:
+            self.prevented = True
+
+    screen = AgentEditorScreen({"id": "writer", "name": "Writer"})
+    dismissed: list[object] = []
+    screen.dismiss = lambda value: dismissed.append(value)  # type: ignore[method-assign]
+    screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="agent_editor_cancel")))
+    assert dismissed == [None]
+
+    screen_esc = AgentEditorScreen({"id": "writer", "name": "Writer"})
+    dismissed_esc: list[object] = []
+    screen_esc.dismiss = lambda value: dismissed_esc.append(value)  # type: ignore[method-assign]
+    event = _KeyEvent()
+    screen_esc.on_key(event)
+    assert dismissed_esc == [None]
+    assert event.stopped is True
+    assert event.prevented is True
+
+
+def test_orchestrator_runtime_model_selection_applies_provider_tier_and_persists():
+    class _StatusBar:
+        def __init__(self) -> None:
+            self.models: list[str] = []
+
+        def set_model(self, value: str) -> None:
+            self.models.append(value)
+
+    class _Harness(AgentStudioMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self._status_bar = _StatusBar()
+            self.pin_calls: list[tuple[str, str]] = []
+            self.set_tier_calls: list[str] = []
+            self.persist_calls: list[tuple[str | None, str | None]] = []
+            self.refresh_summary_calls = 0
+
+        def _pin_model_select_target(self, provider: str, tier: str, *, seconds: float = 2.5) -> None:
+            del seconds
+            self.pin_calls.append((provider, tier))
+
+        def _set_model_tier_from_value(self, value: str) -> None:
+            self.set_tier_calls.append(value)
+
+        def _persist_quick_model_selection(self, *, provider: str | None, tier: str | None) -> None:
+            self.persist_calls.append((provider, tier))
+
+        def _refresh_agent_summary(self) -> None:
+            self.refresh_summary_calls += 1
+
+    harness = _Harness()
+    harness._apply_orchestrator_runtime_model_selection({"id": "orchestrator", "provider": "openai", "tier": "deep"})
+    assert harness.pin_calls == [("openai", "deep")]
+    assert harness.set_tier_calls == ["openai|deep"]
+    assert harness.persist_calls == [("openai", "deep")]
+    assert harness.refresh_summary_calls == 1
+
+
+def test_orchestrator_runtime_model_selection_inherit_clears_override_and_persists_auto():
+    class _StatusBar:
+        def __init__(self) -> None:
+            self.models: list[str] = []
+
+        def set_model(self, value: str) -> None:
+            self.models.append(value)
+
+    class _Harness(AgentStudioMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.daemon.model_provider_override = "openai"
+            self.state.daemon.model_tier_override = "deep"
+            self.state.daemon.pending_model_select_value = "openai|deep"
+            self._status_bar = _StatusBar()
+            self.pin_calls: list[tuple[str, str]] = []
+            self.persist_calls: list[tuple[str | None, str | None]] = []
+            self.refresh_model_select_calls = 0
+            self.refresh_summary_calls = 0
+            self.header_updates = 0
+            self.placeholder_updates = 0
+
+        def _pin_model_select_target(self, provider: str, tier: str, *, seconds: float = 2.5) -> None:
+            del seconds
+            self.pin_calls.append((provider, tier))
+
+        def _persist_quick_model_selection(self, *, provider: str | None, tier: str | None) -> None:
+            self.persist_calls.append((provider, tier))
+
+        def _refresh_model_select(self) -> None:
+            self.refresh_model_select_calls += 1
+
+        def _update_header_status(self) -> None:
+            self.header_updates += 1
+
+        def _update_prompt_placeholder(self) -> None:
+            self.placeholder_updates += 1
+
+        def _current_model_summary(self) -> str:
+            return "Model: auto"
+
+        def _refresh_agent_summary(self) -> None:
+            self.refresh_summary_calls += 1
+
+    harness = _Harness()
+    harness._apply_orchestrator_runtime_model_selection({"id": "orchestrator", "provider": None, "tier": None})
+    assert harness.state.daemon.model_provider_override is None
+    assert harness.state.daemon.model_tier_override is None
+    assert harness.state.daemon.pending_model_select_value is None
+    assert harness.pin_calls == [("", "")]
+    assert harness.persist_calls == [(None, None)]
+    assert harness.refresh_model_select_calls == 1
+    assert harness.header_updates == 1
+    assert harness.placeholder_updates == 1
+    assert harness.refresh_summary_calls == 1
+
+
+def test_apply_agent_builder_editor_result_updates_orchestrator_runtime_model_selection():
+    class _Harness(AgentStudioMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.agent_studio.agents = [
+                {"id": "orchestrator", "name": "Orchestrator", "summary": "", "prompt": "", "activated": False},
+            ]
+            self.state.agent_studio.builder_selected_item_id = None
+            self.applied_payloads: list[dict[str, object]] = []
+            self.render_calls = 0
+            self.status_lines: list[str] = []
+            self.dirty_notes: list[str] = []
+
+        def _apply_orchestrator_runtime_model_selection(self, agent_def: dict[str, object]) -> None:
+            self.applied_payloads.append(dict(agent_def))
+
+        def _render_agent_builder_panel(self) -> None:
+            self.render_calls += 1
+
+        def _set_agent_builder_status(self, message: str) -> None:
+            self.status_lines.append(message)
+
+        def _set_agent_draft_dirty(self, _dirty: bool, *, note: str | None = None) -> None:
+            self.dirty_notes.append(str(note or ""))
+
+    harness = _Harness()
+    harness._apply_agent_builder_editor_result(
+        {
+            "id": "orchestrator",
+            "name": "Orchestrator",
+            "summary": "Runtime control",
+            "provider": "openai",
+            "tier": "deep",
+            "prompt_refs": ["orchestrator_base"],
+            "activated": False,
+        },
+        source_id="orchestrator",
+    )
+    assert harness.render_calls == 1
+    assert harness.state.agent_studio.builder_selected_item_id == "orchestrator"
+    assert len(harness.applied_payloads) == 1
+    assert harness.applied_payloads[0]["provider"] == "openai"
+    assert harness.applied_payloads[0]["tier"] == "deep"
+    assert any("Saved agent 'Orchestrator'" in line for line in harness.status_lines)
+    assert any("Orchestrator" in note for note in harness.dirty_notes)
 
 
 def test_model_manager_screen_stage_delete_and_default_pair():
@@ -3066,6 +3301,25 @@ def test_render_thinking_indicator_includes_counts_and_preview():
     assert "line two" in plain
 
 
+def test_reasoning_unavailable_notice_emits_once_for_gpt_5_2():
+    class _Harness(ThinkingMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.daemon.model_id = "gpt-5.2"
+            self.state.daemon.current_model = "openai/deep"
+            self._thinking_seen_turn = False
+            self._thinking_unavailable_notice_emitted_turn = False
+            self.lines: list[str] = []
+
+        def _write_transcript_line(self, line: str) -> None:
+            self.lines.append(line)
+
+    app = _Harness()
+    app._maybe_emit_reasoning_unavailable_notice()
+    app._maybe_emit_reasoning_unavailable_notice()
+    assert app.lines == ["[thinking] no reasoning stream was emitted by the model for this turn."]
+
+
 def test_action_sheet_selection_wraps():
     from swarmee_river.tui.widgets import ActionSheet
 
@@ -3242,6 +3496,88 @@ def test_warning_event_handler_calls_notify() -> None:
     assert len(notifications) == 1
     assert notifications[0][1] == "warning"
     assert "WARN:" in issues[0]
+
+
+def test_handle_output_line_suppresses_duplicate_raw_assistant_echo() -> None:
+    class _Harness(OutputMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(query_active=True, turn_output_chunks=[]),
+                session=SimpleNamespace(warning_count=0, error_count=0),
+            )
+            self._structured_assistant_seen_turn = True
+            self._last_structured_assistant_text_turn = "Hello from the model."
+            self._current_assistant_chunks = []
+            self._streaming_buffer = []
+            self._active_assistant_message = None
+            self._raw_assistant_lines_suppressed_turn = 0
+            self._callback_event_trace_turn = ["llm_start", "text_delta(first)"]
+            self.plain: list[str] = []
+            self.issues: list[str] = []
+
+        def _append_plain_text(self, text: str) -> None:
+            self.plain.append(text)
+
+        def _apply_consent_capture(self, _line: str) -> None:
+            return None
+
+        def _write_issue(self, text: str) -> None:
+            self.issues.append(text)
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _add_artifact_paths(self, _paths: list[str]) -> None:
+            return None
+
+    app = _Harness()
+    app._handle_output_line("Hello from the model.")
+
+    assert app.plain == []
+    assert app._raw_assistant_lines_suppressed_turn == 1
+    assert app._callback_event_trace_turn[-1] == "raw_suppressed"
+    assert app.state.daemon.turn_output_chunks == ["Hello from the model.\n"]
+
+
+def test_handle_output_line_preserves_warning_during_structured_turn() -> None:
+    class _Harness(OutputMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(query_active=True, turn_output_chunks=[]),
+                session=SimpleNamespace(warning_count=0, error_count=0),
+            )
+            self._structured_assistant_seen_turn = True
+            self._last_structured_assistant_text_turn = "Hello from the model."
+            self._current_assistant_chunks = []
+            self._streaming_buffer = []
+            self._active_assistant_message = None
+            self._raw_assistant_lines_suppressed_turn = 0
+            self._callback_event_trace_turn = []
+            self.issues: list[str] = []
+            self.plain: list[str] = []
+
+        def _append_plain_text(self, text: str) -> None:
+            self.plain.append(text)
+
+        def _apply_consent_capture(self, _line: str) -> None:
+            return None
+
+        def _write_issue(self, text: str) -> None:
+            self.issues.append(text)
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _add_artifact_paths(self, _paths: list[str]) -> None:
+            return None
+
+    app = _Harness()
+    app._handle_output_line("UserWarning: callback path was slow")
+
+    assert app._raw_assistant_lines_suppressed_turn == 0
+    assert app.state.session.warning_count == 1
+    assert app.plain == []
+    assert any("WARN:" in issue for issue in app.issues)
 
 
 def test_warning_event_handler_uses_connect_popup_instead_of_toast() -> None:
@@ -3862,6 +4198,9 @@ def test_streaming_handler_text_delta_accepts_nested_bedrock_payload() -> None:
             self._streaming_buffer: list[str] = []
             self._current_assistant_model: str | None = None
             self._current_assistant_timestamp: str | None = None
+            self._structured_assistant_seen_turn = False
+            self._last_structured_assistant_text_turn = ""
+            self._callback_event_trace_turn: list[str] = []
             self.state = SimpleNamespace(daemon=SimpleNamespace(current_model="us.anthropic.claude-sonnet-4"))
             self.dismiss_calls = 0
             self.flush_scheduled = 0
@@ -3876,6 +4215,9 @@ def test_streaming_handler_text_delta_accepts_nested_bedrock_payload() -> None:
         def _schedule_streaming_flush(self) -> None:
             self.flush_scheduled += 1
 
+        def _trace_turn_event(self, label: str) -> None:
+            self._callback_event_trace_turn.append(label)
+
     app = FakeApp()
     handled = _handle_streaming_events(
         app,
@@ -3884,5 +4226,122 @@ def test_streaming_handler_text_delta_accepts_nested_bedrock_payload() -> None:
     )
     assert handled is True
     assert app._streaming_buffer == ["hello"]
+    assert app._structured_assistant_seen_turn is True
+    assert app._last_structured_assistant_text_turn == "hello"
+    assert app._callback_event_trace_turn == ["text_delta(first)"]
     assert app.dismiss_calls == 1
     assert app.flush_scheduled == 1
+
+
+def test_streaming_handler_complete_events_finalize_once_per_turn() -> None:
+    from swarmee_river.tui.event_router import _handle_streaming_events
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self._assistant_completion_seen_turn = False
+            self.finalize_calls = 0
+            self.flush_calls = 0
+            self.cancel_calls = 0
+
+        def _cancel_streaming_flush_timer(self) -> None:
+            self.cancel_calls += 1
+
+        def _flush_streaming_buffer(self) -> None:
+            self.flush_calls += 1
+
+        def _finalize_assistant_message(self) -> None:
+            self.finalize_calls += 1
+
+    app = FakeApp()
+    handled_first = _handle_streaming_events(app, "text_complete", {"event": "text_complete"})
+    handled_second = _handle_streaming_events(app, "complete", {"event": "complete"})
+
+    assert handled_first is True
+    assert handled_second is True
+    assert app.cancel_calls == 1
+    assert app.flush_calls == 1
+    assert app.finalize_calls == 1
+
+
+def test_suppressed_raw_echo_stays_suppressed_through_complete_and_turn_complete() -> None:
+    from swarmee_river.tui.event_router import _handle_streaming_events, handle_daemon_event
+
+    class FakeApp(OutputMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    query_active=True,
+                    turn_output_chunks=[],
+                    current_model="openai/gpt-5.2",
+                    last_restored_turn_count=0,
+                ),
+                session=SimpleNamespace(warning_count=0, error_count=0),
+            )
+            self._assistant_completion_seen_turn = False
+            self._structured_assistant_seen_turn = True
+            self._last_structured_assistant_text_turn = "hello world"
+            self._current_assistant_chunks = []
+            self._streaming_buffer = []
+            self._active_assistant_message = None
+            self._callback_event_trace_turn = ["llm_start", "text_delta(first)"]
+            self._raw_assistant_lines_suppressed_turn = 0
+            self.plain: list[str] = []
+            self.assistant_finalize_calls = 0
+            self.turn_finalize_calls = 0
+            self.flush_calls = 0
+            self.cancel_calls = 0
+            self.timeline_refreshes = 0
+
+        def _append_plain_text(self, text: str) -> None:
+            self.plain.append(text)
+
+        def _apply_consent_capture(self, _line: str) -> None:
+            return None
+
+        def _write_issue(self, _text: str) -> None:
+            return None
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _add_artifact_paths(self, _paths: list[str]) -> None:
+            return None
+
+        def _cancel_streaming_flush_timer(self) -> None:
+            self.cancel_calls += 1
+
+        def _flush_streaming_buffer(self) -> None:
+            self.flush_calls += 1
+
+        def _finalize_assistant_message(self) -> None:
+            self.assistant_finalize_calls += 1
+
+        def _finalize_turn(self, *, exit_status: str) -> None:
+            assert exit_status == "ok"
+            self.turn_finalize_calls += 1
+
+        def _set_planning_controls_enabled(self, *, enabled: bool) -> None:
+            assert enabled is True
+
+        def _reset_error_action_prompt(self) -> None:
+            return None
+
+        def _schedule_session_timeline_refresh(self) -> None:
+            self.timeline_refreshes += 1
+
+        def _trace_turn_event(self, label: str) -> None:
+            self._callback_event_trace_turn.append(label)
+
+    app = FakeApp()
+    app._handle_output_line("hello world")
+    handled_complete = _handle_streaming_events(app, "text_complete", {"event": "text_complete"})
+    handle_daemon_event(app, {"event": "turn_complete", "exit_status": "ok"})
+
+    assert handled_complete is True
+    assert app.plain == []
+    assert app._raw_assistant_lines_suppressed_turn == 1
+    assert app.assistant_finalize_calls == 1
+    assert app.turn_finalize_calls == 1
+    assert app.timeline_refreshes == 1
+    assert "text_complete" in app._callback_event_trace_turn
+    assert app._callback_event_trace_turn[-1] == "turn_complete"
