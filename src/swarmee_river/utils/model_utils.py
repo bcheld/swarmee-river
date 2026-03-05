@@ -3,18 +3,31 @@
 import importlib
 import json
 import pathlib
+from dataclasses import dataclass
 from typing import Any, cast
 
 from botocore.config import Config
 from strands.models import Model
 
 from swarmee_river.config.env_policy import getenv_secret
-from swarmee_river.settings import ProviderModels, SwarmeeSettings
+from swarmee_river.settings import ModelTier, ProviderModels, SwarmeeSettings
 
 _THINKING_ENABLE_TOKENS = {"1", "true", "t", "yes", "y", "on", "enable", "enabled"}
 _THINKING_DISABLE_TOKENS = {"0", "false", "f", "no", "n", "off", "disable", "disabled", ""}
 _BEDROCK_THINKING_BUDGET_DEFAULT = 2048
 _BEDROCK_THINKING_BUDGET_MAX = 32768
+_BEDROCK_EXTENDED_BUDGETS = {"low": 1024, "medium": 4096, "high": 8192}
+_BEDROCK_ADAPTIVE_EFFORTS = {"low": "low", "medium": "medium", "high": "high"}
+_BEDROCK_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+
+
+@dataclass(frozen=True)
+class BedrockModelCapabilities:
+    family: str
+    reasoning_mode: str
+    supports_guardrails: bool
+    supports_cache_tools: bool
+    supports_forced_tool_with_reasoning: bool = False
 
 
 def _as_int(value: Any, default: int, *, min_value: int | None = None) -> int:
@@ -58,6 +71,44 @@ def _provider_extra(settings: SwarmeeSettings, provider: str) -> dict[str, Any]:
     return {}
 
 
+def bedrock_model_capabilities(model_id: str | None) -> BedrockModelCapabilities:
+    normalized = str(model_id or "").strip().lower()
+    if "anthropic.claude-opus-4-6" in normalized:
+        return BedrockModelCapabilities(
+            family="claude_opus_4_6",
+            reasoning_mode="adaptive",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+        )
+    if "anthropic.claude-sonnet-4-5" in normalized:
+        return BedrockModelCapabilities(
+            family="claude_sonnet_4_5",
+            reasoning_mode="extended",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+        )
+    if "anthropic.claude-haiku-4-5" in normalized:
+        return BedrockModelCapabilities(
+            family="claude_haiku_4_5",
+            reasoning_mode="extended",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+        )
+    if "anthropic.claude" in normalized:
+        return BedrockModelCapabilities(
+            family="claude_generic",
+            reasoning_mode="extended",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+        )
+    return BedrockModelCapabilities(
+        family="generic_bedrock",
+        reasoning_mode="none",
+        supports_guardrails=True,
+        supports_cache_tools=False,
+    )
+
+
 def _default_bedrock_model_config(settings: SwarmeeSettings) -> dict[str, Any]:
     extra = _provider_extra(settings, "bedrock")
     max_tokens = settings.models.max_output_tokens if settings.models.max_output_tokens is not None else 32768
@@ -66,18 +117,8 @@ def _default_bedrock_model_config(settings: SwarmeeSettings) -> dict[str, Any]:
     read_timeout = _as_float(extra.get("read_timeout_sec"), 45.0, min_value=0.01)
     connect_timeout = _as_float(extra.get("connect_timeout_sec"), 5.0, min_value=0.01)
     max_retries = _as_int(extra.get("max_retries"), 2, min_value=0)
-    thinking_raw = extra.get("thinking_type")
-    if thinking_raw is None:
-        thinking_token = "enabled"
-    else:
-        thinking_token = str(thinking_raw).strip().lower()
-    thinking_budget_tokens = _as_int(extra.get("thinking_budget_tokens"), _BEDROCK_THINKING_BUDGET_DEFAULT, min_value=1)
-    if thinking_budget_tokens > _BEDROCK_THINKING_BUDGET_MAX:
-        thinking_budget_tokens = _BEDROCK_THINKING_BUDGET_MAX
-    cache_tools = str(extra.get("cache_tools") or "default").strip() or "default"
-    anthropic_beta_features = str(extra.get("anthropic_beta") or "interleaved-thinking-2025-05-14").strip()
     config: dict[str, Any] = {
-        "model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         "max_tokens": max_tokens,
         "boto_client_config": Config(
             read_timeout=read_timeout,
@@ -87,67 +128,98 @@ def _default_bedrock_model_config(settings: SwarmeeSettings) -> dict[str, Any]:
                 "mode": "adaptive",
             },
         ),
-        "cache_tools": cache_tools,
     }
-    additional_request_fields: dict[str, Any] = {}
-    if thinking_token not in _THINKING_DISABLE_TOKENS:
-        if thinking_token not in _THINKING_ENABLE_TOKENS:
-            thinking_token = "enabled"
-        if thinking_token in _THINKING_ENABLE_TOKENS:
-            additional_request_fields["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget_tokens,
-            }
-
-    if anthropic_beta_features:
-        beta = [part.strip() for part in anthropic_beta_features.split(",") if part.strip()]
-        if beta:
-            additional_request_fields["anthropic_beta"] = beta
-
-    if additional_request_fields:
-        config["additional_request_fields"] = additional_request_fields
     return config
 
 
-def sanitize_bedrock_thinking_config(config: dict[str, Any], settings: SwarmeeSettings) -> None:
-    """
-    Normalize/strip Bedrock thinking fields based on settings.
-
-    This replaces the legacy STRANDS_* env controls. If `models.providers.bedrock.extra.thinking_type`
-    is set to a disable token, we remove any `additional_request_fields.thinking` even if a tier
-    (e.g. `deep`) enables it.
-    """
+def _bedrock_reasoning_disabled(settings: SwarmeeSettings) -> bool:
     extra = _provider_extra(settings, "bedrock")
     raw_token = extra.get("thinking_type")
     if raw_token is None:
-        return
-    token = str(raw_token).strip().lower()
+        return False
+    return str(raw_token).strip().lower() in _THINKING_DISABLE_TOKENS
 
-    additional = config.get("additional_request_fields")
-    if not isinstance(additional, dict):
-        return
 
-    if token in _THINKING_DISABLE_TOKENS:
-        additional.pop("thinking", None)
+def _bedrock_beta_features(settings: SwarmeeSettings) -> list[str]:
+    extra = _provider_extra(settings, "bedrock")
+    raw = str(extra.get("anthropic_beta") or "").strip()
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _bedrock_extended_budget_for_tier(tier: ModelTier, settings: SwarmeeSettings) -> int:
+    extra = _provider_extra(settings, "bedrock")
+    override = _as_int(extra.get("thinking_budget_tokens"), 0, min_value=1)
+    if override > 0:
+        return min(override, _BEDROCK_THINKING_BUDGET_MAX)
+    effort = tier.reasoning.effort if tier.reasoning is not None else "medium"
+    return min(_BEDROCK_EXTENDED_BUDGETS.get(effort, _BEDROCK_THINKING_BUDGET_DEFAULT), _BEDROCK_THINKING_BUDGET_MAX)
+
+
+def _bedrock_adaptive_effort_for_tier(tier: ModelTier) -> str:
+    effort = tier.reasoning.effort if tier.reasoning is not None else "medium"
+    return _BEDROCK_ADAPTIVE_EFFORTS.get(effort, "medium")
+
+
+def _forced_bedrock_tool_choice(tool_choice: Any) -> bool:
+    if not isinstance(tool_choice, dict):
+        return False
+    return "any" in tool_choice or "tool" in tool_choice
+
+
+def sanitize_bedrock_converse_config(
+    config: dict[str, Any],
+    *,
+    tier: ModelTier,
+    settings: SwarmeeSettings,
+    tool_choice: dict[str, Any] | None = None,
+) -> BedrockModelCapabilities:
+    """Normalize Bedrock request config from guided tier settings and model-family capabilities."""
+    capabilities = bedrock_model_capabilities(str(config.get("model_id") or ""))
+    additional = dict(config.get("additional_request_fields") or {}) if isinstance(
+        config.get("additional_request_fields"), dict
+    ) else {}
+
+    additional.pop("thinking", None)
+    additional.pop("output_config", None)
+    additional.pop("anthropic_beta", None)
+
+    if capabilities.supports_cache_tools:
+        explicit_cache_tools = str(_provider_extra(settings, "bedrock").get("cache_tools") or "").strip()
+        if explicit_cache_tools:
+            config["cache_tools"] = explicit_cache_tools
+        elif tier.context is not None and tier.context.strategy in {"cache_safe", "long_running"}:
+            config["cache_tools"] = "default"
+        else:
+            config.pop("cache_tools", None)
+    else:
+        config.pop("cache_tools", None)
+
+    if _forced_bedrock_tool_choice(tool_choice) or _bedrock_reasoning_disabled(settings):
         if additional:
             config["additional_request_fields"] = additional
         else:
             config.pop("additional_request_fields", None)
-        return
+        return capabilities
 
-    # Validate existing thinking payload when enabled/unknown.
-    thinking = additional.get("thinking")
-    if not isinstance(thinking, dict):
-        return
-    budget_raw = thinking.get("budget_tokens")
-    if isinstance(budget_raw, int) and budget_raw > 0:
-        budget = budget_raw
+    if capabilities.reasoning_mode == "adaptive":
+        additional["thinking"] = {"type": "adaptive"}
+        additional["output_config"] = {"effort": _bedrock_adaptive_effort_for_tier(tier)}
+    elif capabilities.reasoning_mode == "extended":
+        additional["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": _bedrock_extended_budget_for_tier(tier, settings),
+        }
+        beta_features = _bedrock_beta_features(settings)
+        if not beta_features and tier.tooling is not None and tier.tooling.mode != "minimal":
+            beta_features = [_BEDROCK_INTERLEAVED_THINKING_BETA]
+        if beta_features:
+            additional["anthropic_beta"] = beta_features
+
+    if additional:
+        config["additional_request_fields"] = additional
     else:
-        budget = _as_int(extra.get("thinking_budget_tokens"), _BEDROCK_THINKING_BUDGET_DEFAULT, min_value=1)
-    if budget > _BEDROCK_THINKING_BUDGET_MAX:
-        budget = _BEDROCK_THINKING_BUDGET_MAX
-    additional["thinking"] = {"type": "enabled", "budget_tokens": budget}
-    config["additional_request_fields"] = additional
+        config.pop("additional_request_fields", None)
+    return capabilities
 
 
 def default_model_config(provider: str, settings: SwarmeeSettings) -> dict[str, Any]:
@@ -168,8 +240,7 @@ def default_model_config(provider: str, settings: SwarmeeSettings) -> dict[str, 
         max_tokens = settings.models.max_output_tokens
         params: dict[str, Any] = {}
         if isinstance(max_tokens, int) and max_tokens > 0:
-            # OpenAI Chat Completions uses `max_completion_tokens` for newer models.
-            params["max_completion_tokens"] = int(max_tokens)
+            params["max_output_tokens"] = int(max_tokens)
 
         client_args: dict[str, Any] = {}
         client_args["max_retries"] = _as_int(extra.get("max_retries"), 0, min_value=0)
@@ -183,7 +254,10 @@ def default_model_config(provider: str, settings: SwarmeeSettings) -> dict[str, 
                 base_url = base_url + "/v1"
             client_args["base_url"] = base_url
 
-        config: dict[str, Any] = {"model_id": model_id}
+        config: dict[str, Any] = {
+            "model_id": model_id,
+            "transport": "responses",
+        }
         if params:
             config["params"] = params
         if client_args:
@@ -244,6 +318,35 @@ def default_model_config(provider: str, settings: SwarmeeSettings) -> dict[str, 
         return config
 
     return {}
+
+
+def sanitize_openai_responses_config(
+    config: dict[str, Any],
+    *,
+    tier: ModelTier,
+    settings: SwarmeeSettings,
+) -> None:
+    """Normalize OpenAI configs to a single Responses-oriented shape."""
+    _ = settings
+    config["transport"] = "responses"
+
+    params = dict(config.get("params") or {}) if isinstance(config.get("params"), dict) else {}
+    params.pop("max_completion_tokens", None)
+
+    max_tokens = config.get("max_output_tokens")
+    if isinstance(max_tokens, int) and max_tokens > 0 and "max_output_tokens" not in params:
+        params["max_output_tokens"] = max_tokens
+
+    reasoning = tier.reasoning
+    if reasoning is not None:
+        params["reasoning"] = {"effort": reasoning.effort}
+
+    tooling = tier.tooling
+    if tooling is not None:
+        params["parallel_tool_calls"] = tooling.mode != "minimal"
+        params["tool_choice"] = "auto"
+
+    config["params"] = params
 
 
 def load_path(name: str) -> pathlib.Path:

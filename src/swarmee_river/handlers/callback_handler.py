@@ -1161,11 +1161,22 @@ class TuiCallbackHandler:
 
     @classmethod
     def _reasoning_expected_for_turn(cls, invocation_state: Any) -> bool:
-        provider, tier, model_id = cls._invocation_model_tokens(invocation_state)
-        joined = " ".join(token for token in (provider, tier, model_id) if token).strip()
-        if not joined:
+        provider, _tier, _model_id = cls._invocation_model_tokens(invocation_state)
+        if not isinstance(invocation_state, dict):
             return False
-        return "gpt-5.2" in joined or "gpt5.2" in joined
+        sw = invocation_state.get("swarmee")
+        if not isinstance(sw, dict):
+            return False
+        reasoning_effort = str(sw.get("reasoning_effort", "") or "").strip().lower()
+        reasoning_mode = str(sw.get("reasoning_mode", "") or "").strip().lower()
+        transport = str(sw.get("transport", "") or "").strip().lower()
+        if provider == "bedrock":
+            return reasoning_mode in {"extended", "adaptive"} and reasoning_effort in {"low", "medium", "high"}
+        if provider == "openai" and transport == "responses":
+            return True
+        if reasoning_effort in {"low", "medium", "high"}:
+            return True
+        return False
 
     def callback_handler(
         self,

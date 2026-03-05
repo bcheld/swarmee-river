@@ -647,7 +647,31 @@ class ContextSourcesMixin:
         from swarmee_river.tui.tooling_handlers import build_tool_table_rows
 
         catalog = [item.to_dict() for item in discover_tools_with_metadata()]
-        self.state.tooling.tool_catalog = catalog
+        source_filter = str(
+            getattr(getattr(self, "_tooling_tools_source_filter", None), "value", "__all__") or "__all__"
+        )
+        source_filter = source_filter.strip().lower() or "__all__"
+        search = str(getattr(getattr(self, "_tooling_tools_search", None), "value", "") or "").strip().lower()
+        filtered_catalog: list[dict[str, Any]] = []
+        for item in catalog:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source", "") or "").strip().lower()
+            if source_filter not in {"", "__all__"} and source != source_filter:
+                continue
+            if search:
+                haystack = " ".join(
+                    [
+                        str(item.get("name", "")),
+                        str(item.get("description", "")),
+                        str(item.get("source", "")),
+                        " ".join(str(tag) for tag in (item.get("tags") or [])),
+                    ]
+                ).lower()
+                if search not in haystack:
+                    continue
+            filtered_catalog.append(item)
+        self.state.tooling.tool_catalog = filtered_catalog
         table = self._tooling_tools_table
         if table is None:
             return
@@ -659,12 +683,12 @@ class ContextSourcesMixin:
         if not table.columns:
             table.add_column("Name", key="name")
             table.add_column("Access", key="access", width=9)
-            table.add_column("Source", key="source", width=10)
+            table.add_column("Source", key="source", width=18)
             table.add_column("Tags", key="tags")
 
         # Clear and repopulate rows
         table.clear()
-        rows = build_tool_table_rows(catalog)
+        rows = build_tool_table_rows(filtered_catalog)
         for name, access, source, tags in rows:
             table.add_row(name, access, source, tags, key=name)
 

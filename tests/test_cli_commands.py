@@ -94,3 +94,21 @@ def test_render_diagnostics_usage_rewrite_is_generic(monkeypatch) -> None:
 
     assert "Usage: :diagnostics tail" in repl_text
     assert "Usage: swarmee diagnostics tail" in cli_text
+
+
+def test_tier_set_refreshes_context_runtime() -> None:
+    outputs: list[str] = []
+    registry = CommandRegistry()
+    register_builtin_commands(registry)
+    ctx = _make_ctx(outputs)
+    refresh_conversation_manager = mock.MagicMock()
+    refresh_query_context = mock.MagicMock()
+    ctx.refresh_conversation_manager = refresh_conversation_manager
+    ctx.refresh_query_context = refresh_query_context
+
+    result = registry.dispatch(ctx, ":tier set deep")
+
+    assert result.handled is True
+    ctx.model_manager.set_tier.assert_called_once_with(ctx.agent, "deep")
+    refresh_conversation_manager.assert_called_once_with()
+    refresh_query_context.assert_called_once_with(interactive=True)

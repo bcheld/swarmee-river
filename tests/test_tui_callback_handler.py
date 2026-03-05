@@ -608,7 +608,7 @@ def test_reasoning_extracted_from_nested_extra_payload():
     assert events == [{"event": "thinking", "text": "planner trace"}]
 
 
-def test_gpt_5_2_missing_reasoning_logs_diagnostic(caplog):
+def test_reasoning_capability_missing_stream_logs_diagnostic(caplog):
     h = TuiCallbackHandler()
     caplog.set_level(logging.INFO, logger="swarmee_river.handlers.callback_handler")
 
@@ -616,7 +616,15 @@ def test_gpt_5_2_missing_reasoning_logs_diagnostic(caplog):
         h,
         lambda: h.callback_handler(
             complete=True,
-            invocation_state={"swarmee": {"provider": "openai", "tier": "deep", "model_id": "gpt-5.2"}},
+            invocation_state={
+                "swarmee": {
+                    "provider": "bedrock",
+                    "tier": "deep",
+                    "model_id": "us.anthropic.claude-opus-4-6-v1:0",
+                    "reasoning_effort": "high",
+                    "reasoning_mode": "adaptive",
+                }
+            },
         ),
     )
 

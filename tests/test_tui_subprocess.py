@@ -2634,6 +2634,43 @@ def test_model_manager_screen_stage_delete_and_default_pair():
     assert "coding" not in openai_tiers
 
 
+def test_model_manager_result_payload_preserves_guided_openai_fields():
+    from swarmee_river.tui.widgets import ModelConfigManagerScreen
+
+    payload = {
+        "models": {
+            "provider": "openai",
+            "default_tier": "deep",
+            "default_selection": {"provider": "openai", "tier": "deep"},
+            "providers": {
+                "openai": {
+                    "tiers": {
+                        "deep": {
+                            "provider": "openai",
+                            "model_id": "gpt-5.2",
+                            "transport": "responses",
+                            "reasoning": {"effort": "high"},
+                            "tooling": {"mode": "tool-heavy", "discovery": "search"},
+                            "context": {"strategy": "cache_safe", "compaction": "auto"},
+                        }
+                    }
+                }
+            },
+        },
+        "env": {},
+    }
+
+    screen = ModelConfigManagerScreen(payload)
+    result = screen.build_result_payload()
+    deep = result["models"]["providers"]["openai"]["tiers"]["deep"]
+
+    assert deep["transport"] == "responses"
+    assert deep["reasoning"]["effort"] == "high"
+    assert deep["tooling"]["mode"] == "tool-heavy"
+    assert deep["tooling"]["discovery"] == "search"
+    assert deep["context"]["strategy"] == "cache_safe"
+
+
 def test_prompt_row_selected_opens_metadata_editor_for_editable_columns():
     class _Column:
         def __init__(self, key: str) -> None:
@@ -3301,12 +3338,21 @@ def test_render_thinking_indicator_includes_counts_and_preview():
     assert "line two" in plain
 
 
-def test_reasoning_unavailable_notice_emits_once_for_gpt_5_2():
+def test_reasoning_unavailable_notice_emits_once_for_responses_or_bedrock_reasoning_modes():
     class _Harness(ThinkingMixin):
         def __init__(self) -> None:
             self.state = AppState()
-            self.state.daemon.model_id = "gpt-5.2"
-            self.state.daemon.current_model = "openai/deep"
+            self.state.daemon.provider = "bedrock"
+            self.state.daemon.tier = "deep"
+            self.state.daemon.tiers = [
+                {
+                    "name": "deep",
+                    "provider": "bedrock",
+                    "model_id": "us.anthropic.claude-opus-4-6-v1:0",
+                    "reasoning_effort": "high",
+                    "reasoning_mode": "adaptive",
+                }
+            ]
             self._thinking_seen_turn = False
             self._thinking_unavailable_notice_emitted_turn = False
             self.lines: list[str] = []

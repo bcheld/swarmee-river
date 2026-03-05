@@ -102,6 +102,83 @@ def _as_bool(value: Any, *, default: bool | None = None) -> bool | None:
     return _truthy(str(value))
 
 
+def _normalized_choice(value: Any, *, allowed: set[str], default: str) -> str:
+    token = str(value or "").strip().lower()
+    return token if token in allowed else default
+
+
+@dataclass(frozen=True)
+class ModelReasoningConfig:
+    effort: str = "medium"  # low|medium|high
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ModelReasoningConfig":
+        return cls(
+            effort=_normalized_choice(
+                raw.get("effort"),
+                allowed={"low", "medium", "high"},
+                default="medium",
+            )
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"effort": self.effort}
+
+
+@dataclass(frozen=True)
+class ModelToolingConfig:
+    mode: str = "standard"  # minimal|standard|tool-heavy
+    discovery: str = "off"  # off|search
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ModelToolingConfig":
+        return cls(
+            mode=_normalized_choice(
+                raw.get("mode"),
+                allowed={"minimal", "standard", "tool-heavy"},
+                default="standard",
+            ),
+            discovery=_normalized_choice(
+                raw.get("discovery"),
+                allowed={"off", "search"},
+                default="off",
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "discovery": self.discovery,
+        }
+
+
+@dataclass(frozen=True)
+class ModelContextBehavior:
+    strategy: str = "balanced"  # balanced|cache_safe|long_running
+    compaction: str = "auto"  # auto|manual
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ModelContextBehavior":
+        return cls(
+            strategy=_normalized_choice(
+                raw.get("strategy"),
+                allowed={"balanced", "cache_safe", "long_running"},
+                default="balanced",
+            ),
+            compaction=_normalized_choice(
+                raw.get("compaction"),
+                allowed={"auto", "manual"},
+                default="auto",
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "strategy": self.strategy,
+            "compaction": self.compaction,
+        }
+
+
 @dataclass(frozen=True)
 class ContextConfig:
     manager: str = "summarize"  # summarize|sliding|none
@@ -112,6 +189,8 @@ class ContextConfig:
     preserve_recent_messages: int = 10
     summary_ratio: float = 0.3
     cache_safe_summary: bool = False
+    strategy: str = "balanced"  # balanced|cache_safe|long_running
+    compaction: str = "auto"  # auto|manual
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ContextConfig":
@@ -131,6 +210,16 @@ class ContextConfig:
             preserve_recent_messages=_as_int(raw.get("preserve_recent_messages"), default=10, min_value=0) or 10,
             summary_ratio=_as_float(raw.get("summary_ratio"), default=0.3, min_value=0.0) or 0.3,
             cache_safe_summary=bool(_as_bool(raw.get("cache_safe_summary"), default=False)),
+            strategy=_normalized_choice(
+                raw.get("strategy"),
+                allowed={"balanced", "cache_safe", "long_running"},
+                default="balanced",
+            ),
+            compaction=_normalized_choice(
+                raw.get("compaction"),
+                allowed={"auto", "manual"},
+                default="auto",
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -143,6 +232,8 @@ class ContextConfig:
             "preserve_recent_messages": self.preserve_recent_messages,
             "summary_ratio": self.summary_ratio,
             "cache_safe_summary": self.cache_safe_summary,
+            "strategy": self.strategy,
+            "compaction": self.compaction,
         }
 
 
@@ -851,6 +942,10 @@ class ModelTier:
     model_id: str | None = None
     display_name: str | None = None
     description: str | None = None
+    transport: str | None = None
+    reasoning: ModelReasoningConfig | None = None
+    tooling: ModelToolingConfig | None = None
+    context: ModelContextBehavior | None = None
     client_args: dict[str, Any] | None = None
     params: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
@@ -861,19 +956,44 @@ class ModelTier:
         model_id = raw.get("model_id")
         display_name = raw.get("display_name")
         description = raw.get("description")
+        transport_raw = raw.get("transport")
+        transport = (
+            _normalized_choice(transport_raw, allowed={"responses", "chat_completions"}, default="responses")
+            if isinstance(transport_raw, str) and transport_raw.strip()
+            else None
+        )
+        reasoning_raw = raw.get("reasoning")
+        tooling_raw = raw.get("tooling")
+        context_raw = raw.get("context")
         client_args = raw.get("client_args")
         params = raw.get("params")
 
         extra = {
             k: v
             for k, v in raw.items()
-            if k not in {"provider", "model_id", "display_name", "description", "client_args", "params"}
+            if k
+            not in {
+                "provider",
+                "model_id",
+                "display_name",
+                "description",
+                "transport",
+                "reasoning",
+                "tooling",
+                "context",
+                "client_args",
+                "params",
+            }
         }
         return cls(
             provider=provider,
             model_id=str(model_id) if isinstance(model_id, str) else None,
             display_name=str(display_name) if isinstance(display_name, str) else None,
             description=str(description) if isinstance(description, str) else None,
+            transport=transport,
+            reasoning=ModelReasoningConfig.from_dict(reasoning_raw) if isinstance(reasoning_raw, dict) else None,
+            tooling=ModelToolingConfig.from_dict(tooling_raw) if isinstance(tooling_raw, dict) else None,
+            context=ModelContextBehavior.from_dict(context_raw) if isinstance(context_raw, dict) else None,
             client_args=client_args if isinstance(client_args, dict) else None,
             params=params if isinstance(params, dict) else None,
             extra=extra,
@@ -887,6 +1007,14 @@ class ModelTier:
             out["display_name"] = self.display_name
         if self.description:
             out["description"] = self.description
+        if self.transport:
+            out["transport"] = self.transport
+        if self.reasoning is not None:
+            out["reasoning"] = self.reasoning.to_dict()
+        if self.tooling is not None:
+            out["tooling"] = self.tooling.to_dict()
+        if self.context is not None:
+            out["context"] = self.context.to_dict()
         if self.client_args:
             out["client_args"] = self.client_args
         if self.params:
@@ -1469,33 +1597,37 @@ def default_settings_template() -> SwarmeeSettings:
                             provider="bedrock",
                             model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
                             display_name="Claude Haiku 4.5 (fast)",
-                            description="Lower latency / lower cost default.",
+                            description="Fast Bedrock tier for quick low-cost iterations.",
+                            reasoning=ModelReasoningConfig(effort="low"),
+                            tooling=ModelToolingConfig(mode="minimal", discovery="off"),
+                            context=ModelContextBehavior(strategy="balanced", compaction="auto"),
                         ),
                         "balanced": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
-                            display_name="Claude Haiku 4.5 (fast)",
-                            description="Default tier for most coding and analysis work.",
+                            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                            display_name="Claude Sonnet 4.5 (balanced)",
+                            description="Default Bedrock tier for enterprise analytics and coding work.",
+                            reasoning=ModelReasoningConfig(effort="medium"),
+                            tooling=ModelToolingConfig(mode="standard", discovery="off"),
+                            context=ModelContextBehavior(strategy="balanced", compaction="auto"),
                         ),
                         "deep": ModelTier(
                             provider="bedrock",
                             model_id="us.anthropic.claude-opus-4-6-v1:0",
                             display_name="Claude Opus 4.6 (deep)",
-                            description="Use when you need stronger reasoning.",
-                            extra={
-                                "additional_request_fields": {
-                                    "thinking": {
-                                        "type": "enabled",
-                                        "budget_tokens": 8192,
-                                    }
-                                }
-                            },
+                            description="Adaptive Claude reasoning for harder analytics tasks.",
+                            reasoning=ModelReasoningConfig(effort="high"),
+                            tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
+                            context=ModelContextBehavior(strategy="cache_safe", compaction="auto"),
                         ),
                         "long": ModelTier(
                             provider="bedrock",
                             model_id="us.anthropic.claude-opus-4-6-v1:0",
                             display_name="Claude Opus 4.6 (long)",
-                            description="Use for long outputs and large refactors.",
+                            description="Use for long-running Bedrock sessions and larger outputs.",
+                            reasoning=ModelReasoningConfig(effort="high"),
+                            tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
+                            context=ModelContextBehavior(strategy="long_running", compaction="auto"),
                         ),
                     },
                 ),
@@ -1508,30 +1640,50 @@ def default_settings_template() -> SwarmeeSettings:
                             model_id="gpt-5-nano",
                             display_name="GPT-5 nano",
                             description="Lowest latency/cost; good for quick iterations.",
+                            transport="responses",
+                            reasoning=ModelReasoningConfig(effort="low"),
+                            tooling=ModelToolingConfig(mode="minimal", discovery="off"),
+                            context=ModelContextBehavior(strategy="balanced", compaction="manual"),
                         ),
                         "balanced": ModelTier(
                             provider="openai",
                             model_id="gpt-5-mini",
                             display_name="GPT-5 mini",
                             description="Default OpenAI tier for most coding tasks.",
+                            transport="responses",
+                            reasoning=ModelReasoningConfig(effort="medium"),
+                            tooling=ModelToolingConfig(mode="standard", discovery="off"),
+                            context=ModelContextBehavior(strategy="balanced", compaction="auto"),
                         ),
                         "deep": ModelTier(
                             provider="openai",
                             model_id="gpt-5.2",
                             display_name="GPT-5.2",
-                            description="Stronger reasoning; slower / more expensive.",
+                            description="Deep repo reasoning with tool-heavy workflows.",
+                            transport="responses",
+                            reasoning=ModelReasoningConfig(effort="high"),
+                            tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
+                            context=ModelContextBehavior(strategy="cache_safe", compaction="auto"),
                         ),
                         "long": ModelTier(
                             provider="openai",
                             model_id="gpt-5.2",
                             display_name="GPT-5.2 (long)",
-                            description="Long-form outputs.",
+                            description="Long-running analysis with more aggressive compaction.",
+                            transport="responses",
+                            reasoning=ModelReasoningConfig(effort="medium"),
+                            tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
+                            context=ModelContextBehavior(strategy="long_running", compaction="auto"),
                         ),
                         "coding": ModelTier(
                             provider="openai",
                             model_id="gpt-5.3-codex",
                             display_name="GPT-5.3 Codex (coding)",
                             description="Optimized tier for coding-heavy workflows and refactors.",
+                            transport="responses",
+                            reasoning=ModelReasoningConfig(effort="high"),
+                            tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
+                            context=ModelContextBehavior(strategy="cache_safe", compaction="auto"),
                         ),
                     },
                 ),
@@ -1544,24 +1696,36 @@ def default_settings_template() -> SwarmeeSettings:
                             model_id="llama3.1",
                             display_name="llama3.1",
                             description="Local default for fast iteration.",
+                            reasoning=ModelReasoningConfig(effort="low"),
+                            tooling=ModelToolingConfig(mode="minimal", discovery="off"),
+                            context=ModelContextBehavior(strategy="balanced", compaction="manual"),
                         ),
                         "balanced": ModelTier(
                             provider="ollama",
                             model_id="llama3.1",
                             display_name="llama3.1",
                             description="Local balanced default.",
+                            reasoning=ModelReasoningConfig(effort="medium"),
+                            tooling=ModelToolingConfig(mode="standard", discovery="off"),
+                            context=ModelContextBehavior(strategy="balanced", compaction="auto"),
                         ),
                         "deep": ModelTier(
                             provider="ollama",
                             model_id="llama3.1",
                             display_name="llama3.1",
                             description="Local deep tier.",
+                            reasoning=ModelReasoningConfig(effort="high"),
+                            tooling=ModelToolingConfig(mode="standard", discovery="off"),
+                            context=ModelContextBehavior(strategy="balanced", compaction="auto"),
                         ),
                         "long": ModelTier(
                             provider="ollama",
                             model_id="llama3.1",
                             display_name="llama3.1",
                             description="Local long tier.",
+                            reasoning=ModelReasoningConfig(effort="medium"),
+                            tooling=ModelToolingConfig(mode="standard", discovery="off"),
+                            context=ModelContextBehavior(strategy="long_running", compaction="auto"),
                         ),
                     },
                 ),
@@ -1577,24 +1741,36 @@ def default_settings_template() -> SwarmeeSettings:
                             model_id="gpt-4o-mini",
                             display_name="GPT-4o mini (Copilot)",
                             description="Lower latency default for Copilot.",
+                            reasoning=ModelReasoningConfig(effort="low"),
+                            tooling=ModelToolingConfig(mode="minimal", discovery="off"),
+                            context=ModelContextBehavior(strategy="balanced", compaction="manual"),
                         ),
                         "balanced": ModelTier(
                             provider="github_copilot",
                             model_id="gpt-4o",
                             display_name="GPT-4o (Copilot)",
                             description="Default Copilot tier for most coding tasks.",
+                            reasoning=ModelReasoningConfig(effort="medium"),
+                            tooling=ModelToolingConfig(mode="standard", discovery="off"),
+                            context=ModelContextBehavior(strategy="balanced", compaction="auto"),
                         ),
                         "deep": ModelTier(
                             provider="github_copilot",
                             model_id="gpt-5",
                             display_name="GPT-5 (Copilot)",
                             description="Stronger reasoning where available.",
+                            reasoning=ModelReasoningConfig(effort="high"),
+                            tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
+                            context=ModelContextBehavior(strategy="cache_safe", compaction="auto"),
                         ),
                         "long": ModelTier(
                             provider="github_copilot",
                             model_id="gpt-5",
                             display_name="GPT-5 (Copilot long)",
                             description="Long-form outputs on Copilot.",
+                            reasoning=ModelReasoningConfig(effort="medium"),
+                            tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
+                            context=ModelContextBehavior(strategy="long_running", compaction="auto"),
                         ),
                     },
                 ),

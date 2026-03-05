@@ -2713,6 +2713,9 @@ def run_tui() -> int:
         def on_select_changed(self, event: Any) -> None:
             select_widget = getattr(event, "select", None)
             select_id = str(getattr(select_widget, "id", "")).strip().lower()
+            if select_id == "tooling_tools_source_filter":
+                self._refresh_tooling_tools_list()
+                return
             if select_id == "settings_env_category":
                 self._refresh_settings_env_list()
                 self._refresh_settings_env_detail(self._settings_env_selected_key)
@@ -3125,6 +3128,9 @@ def run_tui() -> int:
         def on_input_changed(self, event: Any) -> None:
             input_widget = getattr(event, "input", None)
             input_id = str(getattr(input_widget, "id", "")).strip().lower()
+            if input_id == "tooling_tools_search":
+                self._refresh_tooling_tools_list()
+                return
             # Plan step comments — no action needed on change
             if input_id.startswith("plan_step_comment_"):
                 return

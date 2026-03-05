@@ -1,86 +1,98 @@
-Lessons from Building Claude Code: Prompt Caching Is Everything 
+# Prompt cache guidance
 
-Thariq
-@trq212
-·
-4h
-·
-It is often said in engineering that "Cache Rules Everything Around Me", and the same rule holds for agents.
-Long running agentic products like Claude Code are made feasible by prompt caching which allows us to reuse computation from previous roundtrips and significantly decrease latency and cost. 
-What is prompt caching, how does it work and how do you implement it technically? Read more in @RLanceMartin's piece on prompt caching and our new auto-caching launch.
-At Claude Code, we build our entire harness around prompt caching. A high prompt cache hit rate decreases costs and helps us create more generous rate limits for our subscription plans, so we run alerts on our prompt cache hit rate and declare SEVs if they're too low.
-These are the (often unintuitive) lessons we've learned from optimizing prompt caching at scale.
-Lay Out Your System Prompt for Caching
+This document describes how Swarmee River keeps long-running agent sessions cache-friendly,
+especially for OpenAI Responses-backed tiers.
 
-Image
-Prompt caching works by prefix matching — the API caches everything from the start of the request up to each cache_control breakpoint. This means the order you put things in matters enormously, you want as many of your requests to share a prefix as possible.
-The best way to do this is static content first, dynamic content last. For Claude Code this looks like:
-Static system prompt & Tools (globally cached)
-Claude.MD (cached within a project)
-Session context (cached within a session)
-Conversation messages  
-This way we maximize how many sessions share cache hits.
-But this can be surprisingly fragile! Examples of reasons we’ve broken this ordering before include: putting an in-depth timestamp in the static system prompt, shuffling tool order definitions non-deterministically, updating parameters of tools (e.g. what agents the AgentTool can call), etc.
-Use System Messages for Updates
+## Core rules
 
-There may be times when the information you put in your prompt becomes out of date, for example if you have the time or if the user changes a file. It may be tempting to update the prompt, but that would result in a cache miss and could end up being quite expensive for the user.
-Consider if you can pass in this information via messages in the next turn instead. In Claude Code, we add a <system-reminder> tag in the next user message or tool result with the updated information for the model (e.g. it is now Wednesday), which helps preserve the cache.
-Don't change Models Mid-Session
+- Keep the prompt prefix stable.
+- Keep tool ordering deterministic.
+- Prefer discovery over changing the active tool set.
+- Compact with tool state preserved, not flattened away.
 
-Prompt caches are unique to models and this can make the math of prompt caching quite unintuitive.
-If you're 100k tokens into a conversation with Opus and want to ask a question that is fairly easy to answer, it would actually be more expensive to switch to Haiku than to have Opus answer, because we would need to rebuild the prompt cache for Haiku.
-If you need to switch models, the best way to do it is with subagents, where Opus would prepare a "handoff" message to another model on the task that it needs done. We do this often with the Explore agents in Claude Code which use Haiku.
-Never Add or Remove Tools Mid-Session
+## Responses-first defaults
 
-Changing the tool set in the middle of a conversation is one of the most common ways people break prompt caching. It seems intuitive — you should only give the model tools you think it needs right now. But because tools are part of the cached prefix, adding or removing a tool invalidates the cache for the entire conversation.
-Plan Mode — Design Around the Cache
-Plan mode is a great example of designing features around caching constraints. The intuitive approach would be: when the user enters plan mode, swap out the tool set to only include read-only tools. But that would break the cache.
-Instead, we keep all tools in the request at all times and use EnterPlanMode and ExitPlanMode as tools themselves. When the user toggles plan mode on, the agent gets a system message explaining that it's in plan mode and what the instructions are — explore the codebase, don't edit files, call ExitPlanMode when the plan is complete. The tool definitions never change.
-This has a bonus benefit: because EnterPlanMode is a tool the model can call itself, it can autonomously enter plan mode when it detects a hard problem, without any cache break.
-Tool Search — Defer Instead of Remove
-The same principle applies to our tool search feature. Claude Code can have dozens of MCP tools loaded, and including all of them in every request would be expensive. But removing them mid-conversation would break the cache.
-Our solution: defer_loading. Instead of removing tools, we send lightweight stubs — just the tool name, with defer_loading: true — that the model can "discover" via a ToolSearch tool when needed. The full tool schemas are only loaded when the model selects them. This keeps the cached prefix stable: the same stubs are always present in the same order.
-Luckily you can use the tool search tool through our API to simplify this.
-Forking Context — Compaction
+OpenAI tiers are Responses-only and now pair model choice with guided context behavior:
 
-Image
-Compaction is what happens when you run out of the context window. We summarize the conversation so far and continue a new session with that summary.
-Surprisingly, compaction has many edge cases with prompt caching that can be unintuitive.
-In particular, when we compact we need to send the entire conversation to the model to generate a summary. If this is a separate API call with a different system prompt and no tools (which is the simple implementation), the cached prefix from the main conversation doesn't match at all. You pay full price for all those input tokens, drastically increasing the cost for the user.
-The Solution — Cache-Safe Forking
-When we run compaction, we use the exact same system prompt, user context, system context, and tool definitions as the parent conversation. We prepend the parent's conversation messages, then append the compaction prompt as a new user message at the end.
-From the API's perspective, this request looks nearly identical to the parent's last request — same prefix, same tools, same history — so the cached prefix is reused. The only new tokens are the compaction prompt itself.
-This does mean however that we need to save a "compaction buffer" so that we have enough room in the context window to include the compact message and the summary output tokens.
-Compaction is tricky but luckily, you don't need to learn these lessons yourself — based on our learnings from Claude Code we built compaction directly into the API, so you can apply these patterns in your own applications.
-Lessons Learned
+- `context.strategy=balanced`
+  - Default for interactive analysis and coding work.
+- `context.strategy=cache_safe`
+  - Strongest prompt-prefix stability. Use this when long sessions, repeated turns, or provider-side caching
+    matter more than immediate prompt richness.
+- `context.strategy=long_running`
+  - Best for tool-heavy work where compaction and artifact references need to stay coherent over time.
 
-Prompt caching is a prefix match. Any change anywhere in the prefix invalidates everything after it. Design your entire system around this constraint. Get the ordering right and most of the caching works for free.
-Use system messages instead of system prompt changes. You may be tempted to edit the system prompt to do things like entering plan mode, changing the date, etc. but it would actually be better to insert these as system messages during the conversation.
-Don't change tools or models mid-conversation. Use tools to model state transitions (like plan mode) rather than changing the tool set. Defer tool loading instead of removing tools.
-Monitor your cache hit rate like you monitor uptime. We alert on cache breaks and treat them as incidents. A few percentage points of cache miss rate can dramatically affect cost and latency.
-Fork operations need to share the parent's prefix. If you need to run a side computation (compaction, summarization, skill execution), use identical cache-safe parameters so you get cache hits on the parent's prefix.
-Claude Code is built around prompt caching from day one, you should do the same if you’re building an agent.
+Compaction is controlled separately:
 
----
+- `context.compaction=auto`
+  - Compact automatically when the budget is exceeded.
+- `context.compaction=manual`
+  - Do not compact until the operator asks for it.
 
-## Swarmee River integration notes
+## Stable tool registry
 
-Swarmee River now applies these ideas in the harness by keeping the **API-level system prompt stable** and delivering changing context as **`<system-reminder>`** blocks prepended to the next user message.
+Prompt caches break easily when the tool list changes. Swarmee therefore treats tool inventory stability as
+part of context management.
 
-### What this project does
+What to prefer:
 
-- **Stable prefix:** orchestrator prompt asset + tool usage rules + `<system-reminder>` handling rules + runtime environment + enabled pack prompt sections are set once on agent creation.
-- **Dynamic context via reminders (sent only on change):** preflight snapshot, project map summary, active SOP text, and (when executing) the approved plan are queued as `<system-reminder>` blocks.
-- **Deterministic tool ordering:** tools are sorted by tool name before being passed into the agent so tool schema order does not fluctuate between runs.
+- Keep a stable catalog of `core`, `pack`, `native`, and `connector-backed` tools for the session.
+- Keep tool ordering deterministic.
+- Use tool search/discovery to reveal detail when needed instead of removing and re-adding tools.
+- Use policy and consent to control usage, not ad hoc tool-set mutations.
 
-### Settings / toggles
+What to avoid:
 
-- `SWARMEE_FREEZE_TOOLS=true` disables Strands' directory hot-loading (`load_tools_from_directory=false`) to avoid mid-session tool schema changes.
-- `SWARMEE_CACHE_SAFE_SUMMARY=true` makes summarization use the same (stable) system prompt where supported, reducing cache breaks during compaction.
+- Switching between different tool sets mid-session.
+- Reordering tools non-deterministically.
+- Treating plan mode as a different tool catalog.
+- For Bedrock Claude sessions, forcing a specific tool while also expecting reasoning output.
 
-### Measuring cache usage
+## Compaction guidance
 
-If your provider returns caching metrics in the model `usage` payload, they are already captured in JSONL logs via `JSONLLoggerHooks`.
+Compaction should preserve orchestration state, not just user-visible prose.
 
-- Summarize cached input token usage from logs:
+The tool-aware summarizing manager now accounts for:
+
+- assistant reasoning fragments
+- tool call IDs, names, and inputs
+- tool result IDs, status, and result content
+- artifact references
+
+That matters because a cache-friendly summary still needs to let the agent continue an in-flight
+multi-tool workflow without losing the thread.
+
+For Bedrock Claude models, this also avoids a common failure mode: Bedrock reasoning is compatible with normal
+tool availability, but not with forced tool choice on the same request.
+
+Use these strategies:
+
+- `balanced`
+  - Good default. Summarizes normal conversation growth while preserving recent turns.
+- `cache_safe`
+  - Best when the stable prefix is the priority. Keep tool presence fixed and avoid loading detailed schemas
+    unless the model explicitly discovers them.
+- `long_running`
+  - Best when tool outputs are large. Persist bulky outputs to artifacts, then preserve references during
+    compaction rather than replaying raw text.
+
+## System prompt and reminder guidance
+
+Keep the API-level system prompt stable. Put changing information into follow-up context or reminders
+instead of rewriting the system prompt every turn.
+
+Swarmee already follows this pattern for:
+
+- runtime environment details
+- project map and preflight snapshots
+- active SOP context
+- approved plan context during execution
+
+## Operational checklist
+
+- Prefer one tier per session; changing models can invalidate cache reuse.
+- Prefer `context.strategy=cache_safe` for long OpenAI Responses sessions.
+- Keep `SWARMEE_FREEZE_TOOLS=true` when you want to avoid accidental tool-registry churn.
+- Keep large tool outputs in artifacts and references rather than raw prompt text.
+- Review JSONL logs if your provider exposes cache usage metrics:
   - `python3 scripts/prompt_cache_stats.py .swarmee/logs`

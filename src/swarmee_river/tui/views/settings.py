@@ -88,7 +88,6 @@ _CHOICE_MAP: dict[str, tuple[str, ...]] = {
     "SWARMEE_SESSION_S3_AUTO_EXPORT": ("false", "true"),
     "SWARMEE_SESSION_KB_PROMOTE_ON_COMPLETE": ("false", "true"),
     "SWARMEE_MODEL_PROVIDER": ("bedrock", "openai", "ollama", "github_copilot"),
-    "SWARMEE_OPENAI_REASONING_EFFORT": ("low", "medium", "high"),
     "SWARMEE_AUTO_APPROVE": ("false", "true"),
     "SWARMEE_PREFLIGHT": ("enabled", "disabled"),
     "SWARMEE_PREFLIGHT_LEVEL": ("summary", "summary+tree", "summary+files"),

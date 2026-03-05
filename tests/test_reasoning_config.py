@@ -9,7 +9,9 @@ from swarmee_river.settings import load_settings
 from swarmee_river.utils import model_utils
 
 
-def test_bedrock_deep_tier_sets_higher_thinking_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bedrock_deep_tier_sets_adaptive_reasoning_for_opus_46(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     settings = load_settings(tmp_path / "settings.json")
     manager = SessionModelManager(settings, fallback_provider="bedrock")
 
@@ -27,15 +29,15 @@ def test_bedrock_deep_tier_sets_higher_thinking_budget(tmp_path: Path, monkeypat
 
     config = captured.get("config")
     assert isinstance(config, dict)
-    thinking = config["additional_request_fields"]["thinking"]
-    assert thinking["type"] == "enabled"
-    assert thinking["budget_tokens"] == 8192
+    assert config["additional_request_fields"]["thinking"] == {"type": "adaptive"}
+    assert config["additional_request_fields"]["output_config"] == {"effort": "high"}
+    assert config["cache_tools"] == "default"
 
 
-def test_openai_reasoning_effort_env_applies_to_deep_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_guided_reasoning_applies_to_deep_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
-        '{"models":{"providers":{"openai":{"tiers":{"deep":{"params":{"reasoning_effort":"high"}}}}}}}\n',
+        '{"models":{"providers":{"openai":{"tiers":{"deep":{"reasoning":{"effort":"high"}}}}}}}\n',
         encoding="utf-8",
     )
     settings = load_settings(settings_path)
@@ -55,7 +57,8 @@ def test_openai_reasoning_effort_env_applies_to_deep_tier(tmp_path: Path, monkey
 
     config = captured.get("config")
     assert isinstance(config, dict)
-    assert config["params"]["reasoning_effort"] == "high"
+    assert config["transport"] == "responses"
+    assert config["params"]["reasoning"] == {"effort": "high"}
 
 
 def test_bedrock_deep_tier_strips_thinking_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,3 +86,31 @@ def test_bedrock_deep_tier_strips_thinking_when_disabled(tmp_path: Path, monkeyp
         assert "thinking" not in additional
     else:
         assert additional is None
+
+
+def test_bedrock_balanced_tier_uses_extended_thinking_and_capabilities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = load_settings(tmp_path / "settings.json")
+    manager = SessionModelManager(settings, fallback_provider="bedrock")
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(model_utils, "load_path", lambda _provider: Path("dummy.py"))
+
+    def fake_load_model(_path: Path, config: dict) -> object:
+        captured["config"] = config
+        return object()
+
+    monkeypatch.setattr(model_utils, "load_model", fake_load_model)
+
+    tiers = {item.name: item for item in manager.list_tiers()}
+    manager.build_model("balanced")
+
+    config = captured.get("config")
+    assert isinstance(config, dict)
+    assert config["additional_request_fields"]["thinking"]["type"] == "enabled"
+    assert config["additional_request_fields"]["thinking"]["budget_tokens"] == 4096
+    assert tiers["balanced"].reasoning_mode == "extended"
+    assert tiers["balanced"].supports_cache_tools is True
+    assert tiers["balanced"].supports_forced_tool_with_reasoning is False

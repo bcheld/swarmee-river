@@ -4006,6 +4006,26 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
     """Popup editor for model catalog entries (selector + form, explicit save)."""
 
     _PROVIDERS = ("bedrock", "openai", "ollama", "github_copilot")
+    _DEFAULT_TIERS = ("fast", "balanced", "deep", "long", "coding")
+    _FAMILY_FALLBACKS: dict[str, tuple[tuple[str, str], ...]] = {
+        "bedrock": (
+            ("Claude Haiku 4.5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+            ("Claude Sonnet 4.5", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+            ("Claude Opus 4.6", "us.anthropic.claude-opus-4-6-v1:0"),
+        ),
+        "openai": (
+            ("GPT-5 nano", "gpt-5-nano"),
+            ("GPT-5 mini", "gpt-5-mini"),
+            ("GPT-5.2", "gpt-5.2"),
+            ("GPT-5.3 Codex", "gpt-5.3-codex"),
+        ),
+        "ollama": (("llama3.1", "llama3.1"),),
+        "github_copilot": (
+            ("GPT-4o mini", "gpt-4o-mini"),
+            ("GPT-4o", "gpt-4o"),
+            ("GPT-5", "gpt-5"),
+        ),
+    }
 
     DEFAULT_CSS = """
     ModelConfigManagerScreen {
@@ -4107,6 +4127,62 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
     def _provider_options(self) -> list[tuple[str, str]]:
         return [(provider, provider) for provider in self._PROVIDERS]
 
+    def _tier_options(self) -> list[tuple[str, str]]:
+        return [(tier, tier) for tier in self._DEFAULT_TIERS]
+
+    def _family_options(self, provider: str) -> list[tuple[str, str]]:
+        normalized_provider = str(provider or "").strip().lower()
+        seen: set[str] = set()
+        options: list[tuple[str, str]] = []
+        provider_payload = self._models_providers().get(normalized_provider, {})
+        tiers = provider_payload.get("tiers", {}) if isinstance(provider_payload, dict) else {}
+        if isinstance(tiers, dict):
+            for tier_payload in tiers.values():
+                if not isinstance(tier_payload, dict):
+                    continue
+                model_id = str(tier_payload.get("model_id", "") or "").strip()
+                if not model_id or model_id in seen:
+                    continue
+                seen.add(model_id)
+                display_name = str(tier_payload.get("display_name", "") or "").strip() or model_id
+                options.append((display_name, model_id))
+        for label, model_id in self._FAMILY_FALLBACKS.get(normalized_provider, ()):
+            if model_id in seen:
+                continue
+            seen.add(model_id)
+            options.append((label, model_id))
+        return options or [("(select model family)", "__none__")]
+
+    @staticmethod
+    def _tool_mode_to_discovery(mode: str) -> str:
+        return "search" if str(mode or "").strip().lower() == "tool-heavy" else "off"
+
+    @staticmethod
+    def _summary_hint_for_tier(tier: str, *, provider: str = "") -> str:
+        normalized_provider = str(provider or "").strip().lower()
+        if normalized_provider == "bedrock":
+            hints = {
+                "fast": "Fast Claude reasoning for quick Bedrock iterations.",
+                "balanced": "Best default Bedrock preset for analytics and coding work.",
+                "deep": "Adaptive Claude reasoning for harder analytics tasks.",
+                "long": "Best for long Bedrock sessions with heavier tool use.",
+            }
+            return hints.get(
+                str(tier or "").strip().lower(),
+                "Guided Bedrock preset for enterprise analytics and coding workflows.",
+            )
+        hints = {
+            "fast": "Best for quick analysis and low-latency iteration.",
+            "balanced": "Best default for day-to-day analytics and coding work.",
+            "deep": "Best for deeper repo reasoning and multi-step tool use.",
+            "long": "Best for long-running sessions and larger outputs.",
+            "coding": "Best for coding-heavy refactors and implementation tasks.",
+        }
+        return hints.get(
+            str(tier or "").strip().lower(),
+            "Guided preset for enterprise analytics and coding workflows.",
+        )
+
     def _models_providers(self) -> dict[str, Any]:
         providers = self._models.setdefault("providers", {})
         return providers if isinstance(providers, dict) else {}
@@ -4186,14 +4262,81 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         if target not in {value for _label, value in options}:
             target = "openai"
         selector.value = target
+        self._refresh_editor_tier_options()
+        self._refresh_editor_family_options(provider=target)
+
+    def _refresh_editor_tier_options(self, selected_tier: str | None = None) -> None:
+        selector = self.query_one("#model_edit_tier", Select)
+        options = self._tier_options()
+        selector.set_options(options)
+        target = self._tier_key(selected_tier or "balanced")
+        if target not in {value for _label, value in options}:
+            target = "balanced"
+        selector.value = target
+
+    def _refresh_editor_family_options(self, *, provider: str, selected_model_id: str | None = None) -> None:
+        selector = self.query_one("#model_edit_model_family", Select)
+        options = self._family_options(provider)
+        selector.set_options(options)
+        allowed = {value for _label, value in options}
+        target = str(selected_model_id or "").strip()
+        if target not in allowed:
+            target = next(iter(allowed), "__none__")
+        selector.value = target
+
+    def _refresh_editor_preview(self) -> None:
+        provider = str(self.query_one("#model_edit_provider", Select).value or "").strip().lower()
+        tier = self._tier_key(str(self.query_one("#model_edit_tier", Select).value or "balanced"))
+        model_id = str(self.query_one("#model_edit_model_family", Select).value or "").strip()
+        reasoning = (
+            str(self.query_one("#model_edit_reasoning", Select).value or "medium").strip().lower() or "medium"
+        )
+        tool_mode = (
+            str(self.query_one("#model_edit_tool_mode", Select).value or "standard").strip().lower() or "standard"
+        )
+        context_strategy = (
+            str(self.query_one("#model_edit_context_strategy", Select).value or "balanced").strip().lower()
+            or "balanced"
+        )
+        compaction = (
+            str(self.query_one("#model_edit_context_compaction", Select).value or "auto").strip().lower() or "auto"
+        )
+        discovery = self._tool_mode_to_discovery(tool_mode)
+        transport = "responses" if provider == "openai" else "provider default"
+        preview = "\n".join(
+            [
+                self._summary_hint_for_tier(tier, provider=provider),
+                f"Provider: {provider} | Model family: {model_id or '(select one)'}",
+                f"Transport: {transport} | Reasoning depth: {reasoning}",
+                f"Tool mode: {tool_mode} | Discovery: {discovery}",
+                f"Context strategy: {context_strategy} | Compaction: {compaction}",
+            ]
+        )
+        with contextlib.suppress(Exception):
+            self.query_one("#model_manager_preview", Static).update(preview)
 
     def _load_editor(self, *, provider: str, tier: str, payload: dict[str, Any]) -> None:
         self._selected_entry = (provider, tier)
         self._refresh_editor_provider_options(provider)
-        self.query_one("#model_edit_tier", Input).value = tier
-        self.query_one("#model_edit_model_id", Input).value = str(payload.get("model_id", "") or "")
+        self._refresh_editor_tier_options(tier)
+        self._refresh_editor_family_options(provider=provider, selected_model_id=str(payload.get("model_id", "") or ""))
         self.query_one("#model_edit_display_name", Input).value = str(payload.get("display_name", "") or "")
         self.query_one("#model_edit_description", Input).value = str(payload.get("description", "") or "")
+        reasoning_payload = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else {}
+        tooling_payload = payload.get("tooling") if isinstance(payload.get("tooling"), dict) else {}
+        context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+        self.query_one("#model_edit_reasoning", Select).value = str(
+            reasoning_payload.get("effort", "medium") or "medium"
+        )
+        self.query_one("#model_edit_tool_mode", Select).value = str(
+            tooling_payload.get("mode", "standard") or "standard"
+        )
+        self.query_one("#model_edit_context_strategy", Select).value = str(
+            context_payload.get("strategy", "balanced") or "balanced"
+        )
+        self.query_one("#model_edit_context_compaction", Select).value = str(
+            context_payload.get("compaction", "auto") or "auto"
+        )
         provider_key = provider.upper()
         self.query_one("#model_edit_price_input", Input).value = str(
             self._env.get(f"SWARMEE_PRICE_{provider_key}_INPUT_PER_1M", "") or ""
@@ -4204,6 +4347,7 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         self.query_one("#model_edit_price_cached", Input).value = str(
             self._env.get(f"SWARMEE_PRICE_{provider_key}_CACHED_INPUT_PER_1M", "") or ""
         )
+        self._refresh_editor_preview()
 
     def _set_model_select_value(self, provider: str | None, tier: str | None) -> None:
         target = "__none__"
@@ -4232,14 +4376,19 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         if not keep_selection:
             self._selected_entry = None
         self._refresh_editor_provider_options("openai")
-        self.query_one("#model_edit_tier", Input).value = ""
-        self.query_one("#model_edit_model_id", Input).value = ""
+        self._refresh_editor_tier_options("balanced")
+        self._refresh_editor_family_options(provider="openai")
         self.query_one("#model_edit_display_name", Input).value = ""
         self.query_one("#model_edit_description", Input).value = ""
+        self.query_one("#model_edit_reasoning", Select).value = "medium"
+        self.query_one("#model_edit_tool_mode", Select).value = "standard"
+        self.query_one("#model_edit_context_strategy", Select).value = "balanced"
+        self.query_one("#model_edit_context_compaction", Select).value = "auto"
         self.query_one("#model_edit_price_input", Input).value = ""
         self.query_one("#model_edit_price_output", Input).value = ""
         self.query_one("#model_edit_price_cached", Input).value = ""
         self._set_model_select_value(None, None)
+        self._refresh_editor_preview()
 
     def _load_selected_entry(self) -> None:
         selector = self.query_one("#model_manager_model_select", Select)
@@ -4261,16 +4410,24 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
 
     def _save_editor_entry(self) -> bool:
         provider = str(self.query_one("#model_edit_provider", Select).value or "").strip().lower()
-        tier = self._tier_key(str(self.query_one("#model_edit_tier", Input).value or ""))
-        model_id = str(self.query_one("#model_edit_model_id", Input).value or "").strip()
+        tier = self._tier_key(str(self.query_one("#model_edit_tier", Select).value or ""))
+        model_id = str(self.query_one("#model_edit_model_family", Select).value or "").strip()
+        reasoning_effort = str(self.query_one("#model_edit_reasoning", Select).value or "medium").strip().lower()
+        tool_mode = str(self.query_one("#model_edit_tool_mode", Select).value or "standard").strip().lower()
+        context_strategy = str(
+            self.query_one("#model_edit_context_strategy", Select).value or "balanced"
+        ).strip().lower()
+        context_compaction = str(
+            self.query_one("#model_edit_context_compaction", Select).value or "auto"
+        ).strip().lower()
         if provider not in self._PROVIDERS:
             self._set_status("Select a valid provider.")
             return False
         if not tier:
             self._set_status("Tier is required.")
             return False
-        if not model_id:
-            self._set_status("model_id is required.")
+        if not model_id or model_id == "__none__":
+            self._set_status("Choose a model family.")
             return False
         providers = self._models_providers()
         provider_payload = providers.setdefault(provider, {})
@@ -4293,13 +4450,23 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         entry: dict[str, Any] = {
             "provider": provider,
             "model_id": model_id,
+            "reasoning": {"effort": reasoning_effort},
+            "tooling": {
+                "mode": tool_mode,
+                "discovery": self._tool_mode_to_discovery(tool_mode),
+            },
+            "context": {
+                "strategy": context_strategy,
+                "compaction": context_compaction,
+            },
         }
+        if provider == "openai":
+            entry["transport"] = "responses"
         display_name = str(self.query_one("#model_edit_display_name", Input).value or "").strip()
         description = str(self.query_one("#model_edit_description", Input).value or "").strip()
         if display_name:
             entry["display_name"] = display_name
-        if description:
-            entry["description"] = description
+        entry["description"] = description or self._summary_hint_for_tier(tier, provider=provider)
         tiers[tier] = entry
         provider_key = provider.upper()
         for suffix, selector in (
@@ -4315,6 +4482,7 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
                 self._env.pop(env_key, None)
         self._selected_entry = (provider, tier)
         self._set_model_select_value(provider, tier)
+        self._refresh_editor_preview()
         self._set_status(f"Saved draft entry for {provider}/{tier}.")
         return True
 
@@ -4400,11 +4568,42 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
                 with Vertical(id="model_manager_editor"):
                     with Horizontal(classes="model-edit-row"):
                         yield Select(self._provider_options(), id="model_edit_provider", value="openai")
-                        yield Input(placeholder="tier", id="model_edit_tier")
-                        yield Input(placeholder="model_id", id="model_edit_model_id")
+                        yield Select(self._tier_options(), id="model_edit_tier", value="balanced")
+                        yield Select(self._family_options("openai"), id="model_edit_model_family", value="gpt-5-nano")
+                    with Horizontal(classes="model-edit-row"):
+                        yield Select(
+                            [("Reasoning: low", "low"), ("Reasoning: medium", "medium"), ("Reasoning: high", "high")],
+                            id="model_edit_reasoning",
+                            value="medium",
+                        )
+                        yield Select(
+                            [
+                                ("Tool mode: minimal", "minimal"),
+                                ("Tool mode: standard", "standard"),
+                                ("Tool mode: tool-heavy", "tool-heavy"),
+                            ],
+                            id="model_edit_tool_mode",
+                            value="standard",
+                        )
+                    with Horizontal(classes="model-edit-row"):
+                        yield Select(
+                            [
+                                ("Context: balanced", "balanced"),
+                                ("Context: cache-safe", "cache_safe"),
+                                ("Context: long-running", "long_running"),
+                            ],
+                            id="model_edit_context_strategy",
+                            value="balanced",
+                        )
+                        yield Select(
+                            [("Compaction: auto", "auto"), ("Compaction: manual", "manual")],
+                            id="model_edit_context_compaction",
+                            value="auto",
+                        )
                     with Horizontal(classes="model-edit-row"):
                         yield Input(placeholder="display_name", id="model_edit_display_name")
                         yield Input(placeholder="description", id="model_edit_description")
+                    yield Static("", id="model_manager_preview")
                     with Horizontal(classes="model-edit-row"):
                         yield Input(placeholder="input $ / 1M", id="model_edit_price_input")
                         yield Input(placeholder="output $ / 1M", id="model_edit_price_output")
@@ -4425,6 +4624,7 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         self._clear_editor()
         self._refresh_model_select_options()
         self._refresh_summary()
+        self._refresh_editor_preview()
         with contextlib.suppress(Exception):
             self.query_one("#model_manager_model_select", Select).focus()
 
@@ -4436,12 +4636,30 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
             return
         if select_id == "model_manager_model_select":
             self._load_selected_entry()
+            return
+        if select_id == "model_edit_provider":
+            provider = str(getattr(event, "value", "openai") or "openai").strip().lower()
+            self._refresh_editor_family_options(provider=provider)
+            self._refresh_editor_preview()
+            return
+        if select_id in {
+            "model_edit_tier",
+            "model_edit_model_family",
+            "model_edit_reasoning",
+            "model_edit_tool_mode",
+            "model_edit_context_strategy",
+            "model_edit_context_compaction",
+        }:
+            self._refresh_editor_preview()
 
     def on_input_changed(self, event: Any) -> None:
         input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
         if input_id == "model_manager_search":
             self._search = str(getattr(event, "value", "") or "").strip()
             self._refresh_model_select_options()
+            return
+        if input_id in {"model_edit_display_name", "model_edit_description"}:
+            self._refresh_editor_preview()
 
     def on_button_pressed(self, event: Any) -> None:
         button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()

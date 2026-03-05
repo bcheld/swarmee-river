@@ -12,16 +12,31 @@ _THINKING_MIN_VISIBLE_S = 0.35
 
 class ThinkingMixin:
     def _should_emit_reasoning_unavailable_notice(self) -> bool:
-        model_tokens = [
-            str(getattr(self.state.daemon, "model_id", "") or ""),
-            str(getattr(self.state.daemon, "current_model", "") or ""),
-            str(getattr(self.state.daemon, "model_tier_override", "") or ""),
-            str(getattr(self.state.daemon, "tier", "") or ""),
-        ]
-        joined = " ".join(token.strip().lower() for token in model_tokens if token).strip()
-        if not joined:
+        provider = str(getattr(self.state.daemon, "provider", "") or "").strip().lower()
+        tier = str(getattr(self.state.daemon, "tier", "") or "").strip().lower()
+        tiers = getattr(self.state.daemon, "tiers", None)
+        if not provider or not tier or not isinstance(tiers, list):
             return False
-        return "gpt-5.2" in joined or "gpt5.2" in joined
+        current = next(
+            (
+                item
+                for item in tiers
+                if isinstance(item, dict)
+                and str(item.get("provider", "") or "").strip().lower() == provider
+                and str(item.get("name", "") or "").strip().lower() == tier
+            ),
+            None,
+        )
+        if not isinstance(current, dict):
+            return False
+        reasoning_mode = str(current.get("reasoning_mode", "") or "").strip().lower()
+        reasoning_effort = str(current.get("reasoning_effort", "") or "").strip().lower()
+        transport = str(current.get("transport", "") or "").strip().lower()
+        if provider == "bedrock":
+            return reasoning_mode in {"extended", "adaptive"} and reasoning_effort in {"low", "medium", "high"}
+        if provider == "openai":
+            return transport == "responses"
+        return reasoning_effort in {"low", "medium", "high"}
 
     def _maybe_emit_reasoning_unavailable_notice(self) -> None:
         if bool(getattr(self, "_thinking_seen_turn", False)):

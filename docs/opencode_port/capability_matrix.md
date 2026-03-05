@@ -13,7 +13,7 @@ Legend:
 | Incremental interactive UX | REPL with `:` commands | ✅ | Not a full-screen TUI by design. |
 | Session persistence | `.swarmee/sessions/<id>/…` | ✅ | Project-local only. |
 | Model/provider switching | `SessionModelManager` tiers + provider resolution | ✅ | Env + settings precedence. |
-| “Think harder” / deep reasoning | `deep` tier + provider-specific knobs | ✅ | Bedrock deep tier raises thinking budget; OpenAI optional env for `reasoning_effort`. |
+| “Think harder” / deep reasoning | Guided tier reasoning depth (`low` / `medium` / `high`) | ✅ | OpenAI is Responses-only and stores reasoning effort in tier config; Bedrock maps guided depth to provider-native thinking controls. |
 | Read/search primitives | `file_read`, `file_list`, `file_search`, `project_context` (+ `read`/`grep` aliases) | 🟡 | `file_list`/`file_search` prefer `rg` but fall back to pure Python when `rg` is unavailable. `project_context` covers summary/tree/files/search/read. |
 | Glob search (`glob`) | `glob` tool | ✅ | Pure-Python glob with skip-dirs guardrails. |
 | Directory listing (`list`) | `list` tool | ✅ | Cross-platform, no shell required; hidden entries excluded by default. |

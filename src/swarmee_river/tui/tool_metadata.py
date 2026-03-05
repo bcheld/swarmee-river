@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.packs import load_enabled_pack_tools
+from swarmee_river.settings import load_settings
 from swarmee_river.state_paths import state_dir
 from swarmee_river.tool_permissions import STRANDS_TOOL_PERMISSIONS, get_permissions
 
@@ -70,6 +72,19 @@ _EXECUTE_TOOLS = frozenset(
         "load_tool",
     }
 )
+_CONNECTOR_TOOLS = frozenset(
+    {
+        "athena_query",
+        "snowflake_query",
+        "s3_browser",
+        "session_s3",
+        "retrieve",
+        "http_request",
+        "slack",
+        "use_aws",
+        "store_in_kb",
+    }
+)
 
 
 @dataclass
@@ -80,7 +95,7 @@ class ToolMeta:
     access_read: bool = False
     access_write: bool = False
     access_execute: bool = False
-    source: str = "builtin"  # "builtin", "custom", "pack", "s3"
+    source: str = "core"  # "core", "pack", "native", "connector-backed"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -156,10 +171,16 @@ def discover_tools_with_metadata(tools_dict: dict[str, Any] | None = None) -> li
     if tools_dict is None:
         from swarmee_river.tools import get_tools
 
-        tools_dict = get_tools()
+        settings = load_settings()
+        tools_dict = get_tools(settings)
+        for name, tool_obj in load_enabled_pack_tools(settings).items():
+            tools_dict.setdefault(name, tool_obj)
+    else:
+        settings = None
 
     overrides = load_tool_metadata_overrides()
     catalog: list[ToolMeta] = []
+    pack_tool_names = set(load_enabled_pack_tools(settings).keys()) if settings is not None else set()
 
     for name, tool_obj in sorted(tools_dict.items()):
         # Extract docstring.
@@ -174,7 +195,14 @@ def discover_tools_with_metadata(tools_dict: dict[str, Any] | None = None) -> li
                     break
 
         r, w, x = _resolve_permissions(name, tool_obj)
-        source = "custom" if name in _CUSTOM_TOOL_NAMES else "builtin"
+        if name in pack_tool_names:
+            source = "pack"
+        elif name in _CONNECTOR_TOOLS:
+            source = "connector-backed"
+        elif name in _CUSTOM_TOOL_NAMES:
+            source = "core"
+        else:
+            source = "native"
 
         meta = ToolMeta(
             name=name,

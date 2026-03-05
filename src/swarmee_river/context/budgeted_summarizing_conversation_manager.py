@@ -7,6 +7,38 @@ from typing import Any
 from strands.agent.conversation_manager import SummarizingConversationManager
 
 
+def _extract_reasoning_fragments(value: Any, *, depth: int = 4, in_reasoning: bool = False) -> list[str]:
+    if depth <= 0:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if in_reasoning and text else []
+    if isinstance(value, list):
+        chunks: list[str] = []
+        for item in value:
+            chunks.extend(_extract_reasoning_fragments(item, depth=depth - 1, in_reasoning=in_reasoning))
+        return chunks
+    if not isinstance(value, dict):
+        return []
+
+    chunks: list[str] = []
+    for key, nested in value.items():
+        normalized = str(key or "").strip().lower().replace("-", "").replace("_", "")
+        next_reasoning = in_reasoning or normalized in {
+            "reasoning",
+            "reasoningtext",
+            "reasoningcontent",
+            "thinking",
+        }
+        if next_reasoning and normalized in {"text", "content", "summary", "value"} and isinstance(nested, str):
+            text = nested.strip()
+            if text:
+                chunks.append(text)
+            continue
+        chunks.extend(_extract_reasoning_fragments(nested, depth=depth - 1, in_reasoning=next_reasoning))
+    return chunks
+
+
 def _extract_message_text(message: dict[str, Any]) -> str:
     parts: list[str] = []
     role = message.get("role")
@@ -22,20 +54,30 @@ def _extract_message_text(message: dict[str, Any]) -> str:
             continue
         if isinstance(item.get("text"), str):
             parts.append(item["text"])
+        for reasoning in _extract_reasoning_fragments(item):
+            parts.append(f"reasoning={reasoning}")
         if isinstance(item.get("toolUse"), dict):
             tool_use = item["toolUse"]
-            parts.append(f"toolUse={tool_use.get('name')}")
+            tool_name = str(tool_use.get("name") or "unknown").strip() or "unknown"
+            tool_use_id = str(tool_use.get("toolUseId") or tool_use.get("id") or "").strip()
+            if tool_use_id:
+                parts.append(f"toolUseId={tool_use_id}")
+            parts.append(f"toolUse={tool_name}")
             if "input" in tool_use:
                 try:
-                    parts.append(json.dumps(tool_use["input"], ensure_ascii=False))
+                    parts.append(json.dumps(tool_use["input"], ensure_ascii=False, sort_keys=True))
                 except Exception:
                     parts.append(str(tool_use["input"]))
         if isinstance(item.get("toolResult"), dict):
             tool_result = item["toolResult"]
-            parts.append(f"toolResult={tool_result.get('status')}")
+            tool_use_id = str(tool_result.get("toolUseId") or "").strip()
+            status = str(tool_result.get("status") or "unknown").strip() or "unknown"
+            if tool_use_id:
+                parts.append(f"toolResultId={tool_use_id}")
+            parts.append(f"toolResult={status}")
             if "content" in tool_result:
                 try:
-                    parts.append(json.dumps(tool_result["content"], ensure_ascii=False))
+                    parts.append(json.dumps(tool_result["content"], ensure_ascii=False, sort_keys=True))
                 except Exception:
                     parts.append(str(tool_result["content"]))
 
@@ -72,6 +114,9 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         summary_ratio: float = 0.3,
         preserve_recent_messages: int = 10,
         summarization_system_prompt: str | None = None,
+        strategy: str = "balanced",
+        compaction_mode: str = "auto",
+        stable_tool_names: list[str] | None = None,
     ) -> None:
         super().__init__(
             summary_ratio=summary_ratio,
@@ -85,6 +130,9 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         self.chars_per_token = int(chars_per_token) if chars_per_token is not None else 4
         self.max_reduce_passes = int(max_reduce_passes) if max_reduce_passes is not None else 4
         self.enabled = True
+        self.strategy = strategy.strip().lower() if isinstance(strategy, str) else "balanced"
+        self.compaction_mode = compaction_mode.strip().lower() if isinstance(compaction_mode, str) else "auto"
+        self.stable_tool_names = [str(name).strip() for name in (stable_tool_names or []) if str(name).strip()]
 
     def reduce_context(self, agent: "Any", e: Exception | None = None, **kwargs: Any) -> None:
         messages = getattr(agent, "messages", [])
@@ -100,6 +148,8 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
 
     def apply_management(self, agent: "Any", **kwargs: Any) -> None:
         if not self.enabled:
+            return
+        if self.compaction_mode == "manual":
             return
 
         for _ in range(max(1, self.max_reduce_passes)):

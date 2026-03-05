@@ -64,6 +64,10 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
             tier = inv.args[1].strip().lower()
             ctx.model_manager.set_tier(ctx.agent, tier)
             ctx.agent_kwargs["model"] = ctx.agent.model
+            if ctx.refresh_conversation_manager is not None:
+                ctx.refresh_conversation_manager()
+            if ctx.refresh_query_context is not None:
+                ctx.refresh_query_context(interactive=True)
             ctx.output(f"Active tier set to: {tier}")
             return CommandDispatchResult(handled=True)
 
@@ -345,6 +349,10 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
                 if current:
                     ctx.model_manager.set_tier(ctx.agent, current)
                     ctx.agent_kwargs["model"] = ctx.agent.model
+                    if ctx.refresh_conversation_manager is not None:
+                        ctx.refresh_conversation_manager()
+                    if ctx.refresh_query_context is not None:
+                        ctx.refresh_query_context(interactive=True)
             return CommandDispatchResult(handled=True)
 
         ctx.output("Usage: :auth list | :auth login [github_copilot] [--api-key] | :auth logout [provider]")

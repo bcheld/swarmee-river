@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Iterator
 
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Static, TabPane, TextArea
+from textual.widgets import Button, DataTable, Input, Select, Static, TabPane, TextArea
 
 from swarmee_river.tui.widgets import SidebarDetail, SidebarHeader
 
@@ -34,6 +34,19 @@ def compose_tooling_tab() -> Iterator[Any]:
                         {"id": "tooling_tools_tag_manager", "label": "Tag Manager", "variant": "default"},
                     ],
                 )
+                with Horizontal(id="tooling_tools_controls"):
+                    yield Select(
+                        [
+                            ("All sources", "__all__"),
+                            ("Core", "core"),
+                            ("Pack", "pack"),
+                            ("Native", "native"),
+                            ("Connector-backed", "connector-backed"),
+                        ],
+                        id="tooling_tools_source_filter",
+                        value="__all__",
+                    )
+                    yield Input(placeholder="Search tools...", id="tooling_tools_search")
                 yield DataTable(id="tooling_tools_table", cursor_type="row")
                 yield SidebarDetail(id="tooling_tools_detail")
 
@@ -100,6 +113,8 @@ def wire_tooling_widgets(app: Any) -> None:
 
     # Tools widgets
     app._tooling_tools_header = app.query_one("#tooling_tools_header", SidebarHeader)
+    app._tooling_tools_source_filter = app.query_one("#tooling_tools_source_filter", Select)
+    app._tooling_tools_search = app.query_one("#tooling_tools_search", Input)
     app._tooling_tools_table = app.query_one("#tooling_tools_table", DataTable)
     app._tooling_tools_detail = app.query_one("#tooling_tools_detail", SidebarDetail)
 

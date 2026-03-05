@@ -87,6 +87,7 @@ def test_load_config_default_none():
 def test_default_model_config_openai():
     config = swarmee_river.utils.model_utils.default_model_config("openai", default_settings_template())
     assert config["model_id"]
+    assert config["transport"] == "responses"
 
 
 def test_default_model_config_bedrock_uses_responsive_defaults(monkeypatch):
@@ -142,17 +143,41 @@ def test_default_model_config_bedrock_invalid_settings_falls_back():
     assert boto_config.retries["max_attempts"] == 2
 
 
+def test_default_model_config_bedrock_no_longer_emits_reasoning_fields_by_default():
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", default_settings_template())
+    assert "additional_request_fields" not in config
+    assert "cache_tools" not in config
+
+
+def test_bedrock_model_capabilities_detects_current_claude_families():
+    adaptive = swarmee_river.utils.model_utils.bedrock_model_capabilities("us.anthropic.claude-opus-4-6-v1:0")
+    extended = swarmee_river.utils.model_utils.bedrock_model_capabilities(
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    )
+    generic = swarmee_river.utils.model_utils.bedrock_model_capabilities("amazon.nova-lite-v1:0")
+
+    assert adaptive.reasoning_mode == "adaptive"
+    assert adaptive.supports_cache_tools is True
+    assert extended.reasoning_mode == "extended"
+    assert generic.reasoning_mode == "none"
+    assert generic.supports_cache_tools is False
+
+
 @pytest.mark.parametrize("token", ["disable", "disabled", "off", "false", "0", ""])
-def test_default_model_config_bedrock_omits_thinking_when_disabled_in_settings(token):
+def test_sanitize_bedrock_converse_config_omits_thinking_when_disabled_in_settings(token):
     settings = _settings_with({"models": {"providers": {"bedrock": {"thinking_type": token}}}})
+    tier = settings.models.providers["bedrock"].tiers["deep"]
     config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
+    config["model_id"] = tier.model_id
+
+    swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(config, tier=tier, settings=settings)
+
     additional = config.get("additional_request_fields")
-    assert isinstance(additional, dict)
-    assert "thinking" not in additional
+    assert additional is None or "thinking" not in additional
 
 
 @pytest.mark.parametrize("token", ["enable", "enabled", "on", "true", "1"])
-def test_default_model_config_bedrock_emits_enabled_thinking_payload_from_settings(token):
+def test_sanitize_bedrock_converse_config_emits_extended_thinking_payload_for_claude_45(token):
     settings = _settings_with(
         {
             "models": {
@@ -165,25 +190,99 @@ def test_default_model_config_bedrock_emits_enabled_thinking_payload_from_settin
             }
         }
     )
+    tier = settings.models.providers["bedrock"].tiers["balanced"]
     config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
+    config["model_id"] = tier.model_id
+    swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(config, tier=tier, settings=settings)
+
     thinking = config["additional_request_fields"]["thinking"]
     assert thinking["type"] == "enabled"
     assert thinking["budget_tokens"] == 3072
+    assert config["additional_request_fields"]["anthropic_beta"] == ["interleaved-thinking-2025-05-14"]
 
 
-def test_default_model_config_bedrock_invalid_budget_falls_back_to_default():
+def test_sanitize_bedrock_converse_config_invalid_budget_falls_back_to_effort_default():
     settings = _settings_with(
         {"models": {"providers": {"bedrock": {"thinking_type": "enabled", "thinking_budget_tokens": "x"}}}}
     )
+    tier = settings.models.providers["bedrock"].tiers["balanced"]
     config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
+    config["model_id"] = tier.model_id
+    swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(config, tier=tier, settings=settings)
+
     thinking = config["additional_request_fields"]["thinking"]
     assert thinking["type"] == "enabled"
-    assert thinking["budget_tokens"] == 2048
+    assert thinking["budget_tokens"] == 4096
+
+
+def test_sanitize_bedrock_converse_config_emits_adaptive_thinking_for_opus_46():
+    settings = _settings_with({})
+    tier = settings.models.providers["bedrock"].tiers["deep"]
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
+    config["model_id"] = tier.model_id
+
+    swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(config, tier=tier, settings=settings)
+
+    assert config["cache_tools"] == "default"
+    assert config["additional_request_fields"]["thinking"] == {"type": "adaptive"}
+    assert config["additional_request_fields"]["output_config"] == {"effort": "high"}
+    assert "anthropic_beta" not in config["additional_request_fields"]
+
+
+def test_sanitize_bedrock_converse_config_strips_reasoning_when_tool_choice_forces_tool_use():
+    settings = _settings_with({})
+    tier = settings.models.providers["bedrock"].tiers["deep"]
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
+    config["model_id"] = tier.model_id
+
+    swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(
+        config,
+        tier=tier,
+        settings=settings,
+        tool_choice={"any": {}},
+    )
+
+    additional = config.get("additional_request_fields")
+    assert additional is None or "thinking" not in additional
+
+
+def test_sanitize_bedrock_converse_config_skips_reasoning_for_non_claude_models():
+    settings = _settings_with(
+        {
+            "models": {
+                "providers": {
+                    "bedrock": {
+                        "tiers": {
+                            "balanced": {
+                                "model_id": "amazon.nova-lite-v1:0",
+                                "reasoning": {"effort": "medium"},
+                                "tooling": {"mode": "standard", "discovery": "off"},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+    tier = settings.models.providers["bedrock"].tiers["balanced"]
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
+    config["model_id"] = tier.model_id
+
+    capabilities = swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(
+        config,
+        tier=tier,
+        settings=settings,
+    )
+
+    assert capabilities.reasoning_mode == "none"
+    assert "additional_request_fields" not in config
+    assert "cache_tools" not in config
 
 
 def test_default_model_config_openai_includes_max_retries_default_zero():
     config = swarmee_river.utils.model_utils.default_model_config("openai", default_settings_template())
     assert config["client_args"]["max_retries"] == 0
+    assert "max_completion_tokens" not in config.get("params", {})
 
 
 def test_default_model_config_openai_honors_max_retries_settings():
@@ -232,6 +331,35 @@ def test_default_model_config_github_copilot_honors_swarmee_token_and_retries(mo
     assert config["client_args"]["max_retries"] == 2
     assert config["client_args"]["base_url"] == "https://internal.example/copilot"
     assert config["params"]["max_completion_tokens"] == 256
+
+
+def test_sanitize_openai_responses_config_applies_guided_fields():
+    settings = _settings_with(
+        {
+            "models": {
+                "providers": {
+                    "openai": {
+                        "tiers": {
+                            "deep": {
+                                "transport": "responses",
+                                "reasoning": {"effort": "high"},
+                                "tooling": {"mode": "tool-heavy", "discovery": "search"},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+    tier = settings.models.providers["openai"].tiers["deep"]
+    config = swarmee_river.utils.model_utils.default_model_config("openai", settings)
+
+    swarmee_river.utils.model_utils.sanitize_openai_responses_config(config, tier=tier, settings=settings)
+
+    assert config["transport"] == "responses"
+    assert config["params"]["reasoning"] == {"effort": "high"}
+    assert config["params"]["parallel_tool_calls"] is True
+    assert config["params"]["tool_choice"] == "auto"
 
 
 def test_load_model(custom_model_dir):

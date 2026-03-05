@@ -119,7 +119,7 @@ When running via the TUI, the **daemon's** orchestrator is a single Strands `Age
 
 - **System prompt** (orchestrator prompt asset + profile snippets + SOP content)
 - **Injected prompt sections** (runtime environment, packs, project map, preflight snapshot, active plan)
-- **Conversation history** (managed by a conversation manager: summarize/sliding/none)
+- **Conversation history** (managed by a tool-aware context strategy that preserves reasoning, tool state, and artifacts during compaction)
 - **Tool results** (optionally truncated + persisted to artifacts)
 
 High-level flow:
@@ -230,7 +230,7 @@ The orchestrator is created in `src/swarmee_river/swarmee.py` via Strands `Agent
 - `model`: selected by provider/tier via `src/swarmee_river/session/models.py`
 - `tools`: assembled from core tools + pack tools
 - `system_prompt`: dynamically rebuilt by `refresh_system_prompt(...)`
-- `conversation_manager`: chosen by `_build_conversation_manager(...)` (summarize/sliding/none)
+- `conversation_manager`: built by `_build_conversation_manager(...)` from the selected context strategy and compaction mode
 - `hooks`: logging + tool policy + tool consent + tool result limiting
 
 ### Effective system prompt (how it's assembled)
@@ -315,24 +315,52 @@ Replay UX:
 
 ### Conversation summarization / history management
 
-Swarmee chooses a conversation manager in `_build_conversation_manager(...)` (`src/swarmee_river/swarmee.py`) via:
+Swarmee still builds the underlying conversation manager in `_build_conversation_manager(...)`
+(`src/swarmee_river/swarmee.py`), but OpenAI tiers are now configured primarily through guided
+context behavior stored in `.swarmee/settings.json`.
+
+The user-facing choices are:
+
+- `context.strategy=balanced`
+  - Default behavior for day-to-day work.
+  - Uses tool-aware summarization with stable tool ordering and automatic compaction.
+- `context.strategy=cache_safe`
+  - Optimized for long Responses sessions where prefix stability matters.
+  - Preserves stable tool presence, keeps tool ordering deterministic, and favors deferred discovery over
+    tool-set churn.
+- `context.strategy=long_running`
+  - Optimized for tool-heavy or artifact-heavy sessions.
+  - Compacts more aggressively while still preserving tool-call IDs, tool-result references, reasoning
+    summaries, and artifact links.
+
+Compaction mode is layered on top:
+
+- `context.compaction=auto`
+  - The conversation manager compacts automatically when the token budget is exceeded.
+- `context.compaction=manual`
+  - Automatic compaction is disabled; the operator decides when to compact.
+
+Implementation notes:
+
+- Tool-aware summarization lives in
+  `src/swarmee_river/context/budgeted_summarizing_conversation_manager.py`.
+- Token estimation now accounts for assistant reasoning blocks, tool calls, and tool results instead of
+  only plain message text.
+- Stable tool names are passed into the conversation manager so cache-sensitive strategies can keep a
+  deterministic tool prefix across turns.
+
+The lower-level runtime knobs still exist for internal tuning:
 
 - `SWARMEE_CONTEXT_MANAGER=summarize|sliding|none`
-
-Summarizing manager (recommended default):
-- Implementation: `src/swarmee_river/context/budgeted_summarizing_conversation_manager.py`
-- Key knobs:
-  - `SWARMEE_CONTEXT_BUDGET_TOKENS` (prompt budget estimate)
-  - `SWARMEE_SUMMARY_RATIO` (how aggressively to summarize)
-  - `SWARMEE_PRESERVE_RECENT_MESSAGES` (keep recent turns verbatim)
-  - `SWARMEE_MAX_SUMMARY_PASSES`, `SWARMEE_TOKEN_CHARS_PER_TOKEN`
-  - `SWARMEE_SUMMARIZE_CONTEXT=true|false`
-
-Sliding window manager:
-- Uses Strands `SlidingWindowConversationManager` with:
-  - `SWARMEE_WINDOW_SIZE`
-  - `SWARMEE_CONTEXT_PER_TURN` (max items dropped per truncation)
-  - `SWARMEE_TRUNCATE_RESULTS=true|false`
+- `SWARMEE_CONTEXT_BUDGET_TOKENS`
+- `SWARMEE_SUMMARY_RATIO`
+- `SWARMEE_PRESERVE_RECENT_MESSAGES`
+- `SWARMEE_MAX_SUMMARY_PASSES`
+- `SWARMEE_TOKEN_CHARS_PER_TOKEN`
+- `SWARMEE_SUMMARIZE_CONTEXT=true|false`
+- `SWARMEE_WINDOW_SIZE`
+- `SWARMEE_CONTEXT_PER_TURN`
+- `SWARMEE_TRUNCATE_RESULTS=true|false`
 
 ### Tool result limiting (prevent tool output from bloating the prompt)
 
@@ -344,6 +372,16 @@ Tool results are often the #1 driver of runaway context. Swarmee mitigates this 
 Controls:
 - `SWARMEE_LIMIT_TOOL_RESULTS=true|false`
 - `SWARMEE_TOOL_RESULT_MAX_CHARS=...`
+
+Guidance for Responses-backed sessions:
+
+- Prefer `context.strategy=cache_safe` when stable prompt prefixes matter more than immediate detail.
+- Prefer `context.strategy=long_running` when tools emit large outputs and you want artifact references to
+  survive compaction cleanly.
+- Keep the tool catalog stable during a session and use discovery/search to reveal more detail instead of
+  swapping tools in and out.
+- For Bedrock Claude tiers, remember that forced tool choice suppresses reasoning fields for that request, so
+  the safest cache-friendly pattern is still stable tool catalogs plus `tool_choice=auto`.
 
 Where the "full output" goes:
 - `<state_dir>/artifacts/` (default `.swarmee/artifacts/`)
@@ -462,6 +500,7 @@ Stored as JSON in `.swarmee/profiles/`.
 3. Clicking **Apply** sends `{"cmd": "set_profile", "profile": {...}}` to daemon
 4. Daemon `apply_profile()` in `swarmee.py`:
    - Optionally calls `model_manager.set_tier()`
+   - Refreshes the conversation manager and query context for the newly selected tier
    - Sets `active_profile_system_prompt_snippets`, `active_profile_agents`, `auto_delegate_assistive`
    - Calls `set_user_context_sources()` and `_replace_daemon_sop_overrides()`
    - Calls `ctx.refresh_system_prompt()` to rebuild the full system prompt
@@ -583,10 +622,14 @@ If you're improving "context performance", these are the highest-leverage areas:
 - Enforce "no shell for repo inspection" behavior (already guarded by `src/swarmee_river/hooks/tool_policy.py`).
 
 3) **Conversation growth**
-- Prefer `SWARMEE_CONTEXT_MANAGER=summarize` and tune the summarization budget knobs.
+- Use `context.strategy=balanced` for normal interactive work.
+- Use `context.strategy=cache_safe` when tool stability and prompt-prefix reuse matter more than raw detail.
+- Use `context.strategy=long_running` when the session is expected to accumulate many tool calls or large artifacts.
 - Increase `SWARMEE_PRESERVE_RECENT_MESSAGES` if summarization is too aggressive.
 
 4) **Selective tools**
 - Use plan enforcement (`tools_expected`) to narrow allowed tools during execution.
-- Use `SWARMEE_ENABLE_TOOLS` / `SWARMEE_DISABLE_TOOLS` to prevent accidental tool sprawl.
+- In the TUI, think in catalog groups: `core`, `pack`, `native`, and `connector-backed`.
+- Prefer tool discovery/search over changing the active tool set mid-session.
+- Use `SWARMEE_ENABLE_TOOLS` / `SWARMEE_DISABLE_TOOLS` only for coarse runtime policy.
 - Use session safety overrides (TUI) to block tool classes for a specific session.

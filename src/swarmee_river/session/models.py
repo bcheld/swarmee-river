@@ -6,7 +6,14 @@ from typing import Any
 
 from strands.models import Model
 
-from swarmee_river.settings import ModelTier, ProviderModels, SwarmeeSettings
+from swarmee_river.settings import (
+    ModelContextBehavior,
+    ModelReasoningConfig,
+    ModelTier,
+    ModelToolingConfig,
+    ProviderModels,
+    SwarmeeSettings,
+)
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.provider_utils import has_aws_credentials, has_github_copilot_token, normalize_provider_name
 
@@ -18,6 +25,16 @@ class TierStatus:
     model_id: str | None
     display_name: str | None
     description: str | None
+    transport: str | None
+    reasoning_effort: str | None
+    tooling_mode: str | None
+    tooling_discovery: str | None
+    context_strategy: str | None
+    context_compaction: str | None
+    reasoning_mode: str | None
+    supports_guardrails: bool | None
+    supports_cache_tools: bool | None
+    supports_forced_tool_with_reasoning: bool | None
     available: bool
     reason: str | None = None
 
@@ -79,6 +96,11 @@ class SessionModelManager:
             tier = self._resolve_tier(name)
             effective_model_id = self._effective_model_id(tier, tier_name=name)
             available, reason = self._is_tier_available(tier)
+            capabilities = (
+                model_utils.bedrock_model_capabilities(effective_model_id)
+                if tier.provider == "bedrock"
+                else None
+            )
             out.append(
                 TierStatus(
                     name=name,
@@ -86,6 +108,18 @@ class SessionModelManager:
                     model_id=effective_model_id,
                     display_name=tier.display_name,
                     description=tier.description,
+                    transport=tier.transport,
+                    reasoning_effort=tier.reasoning.effort if tier.reasoning is not None else None,
+                    tooling_mode=tier.tooling.mode if tier.tooling is not None else None,
+                    tooling_discovery=tier.tooling.discovery if tier.tooling is not None else None,
+                    context_strategy=tier.context.strategy if tier.context is not None else None,
+                    context_compaction=tier.context.compaction if tier.context is not None else None,
+                    reasoning_mode=capabilities.reasoning_mode if capabilities is not None else None,
+                    supports_guardrails=capabilities.supports_guardrails if capabilities is not None else None,
+                    supports_cache_tools=capabilities.supports_cache_tools if capabilities is not None else None,
+                    supports_forced_tool_with_reasoning=(
+                        capabilities.supports_forced_tool_with_reasoning if capabilities is not None else None
+                    ),
                     available=available,
                     reason=reason,
                 )
@@ -178,9 +212,23 @@ class SessionModelManager:
                 config[k] = v
 
         if provider == "bedrock":
-            model_utils.sanitize_bedrock_thinking_config(config, self._settings)
+            model_utils.sanitize_bedrock_converse_config(config, tier=tier, settings=self._settings)
+        if provider == "openai":
+            model_utils.sanitize_openai_responses_config(config, tier=tier, settings=self._settings)
         model_path = model_utils.load_path(provider)
         return model_utils.load_model(model_path, config)
+
+    def current_context_behavior(self, tier_name: str | None = None) -> ModelContextBehavior:
+        tier = self._resolve_tier((tier_name or self.current_tier or "balanced").strip().lower())
+        return tier.context or ModelContextBehavior()
+
+    def current_reasoning_config(self, tier_name: str | None = None) -> ModelReasoningConfig:
+        tier = self._resolve_tier((tier_name or self.current_tier or "balanced").strip().lower())
+        return tier.reasoning or ModelReasoningConfig()
+
+    def current_tooling_config(self, tier_name: str | None = None) -> ModelToolingConfig:
+        tier = self._resolve_tier((tier_name or self.current_tier or "balanced").strip().lower())
+        return tier.tooling or ModelToolingConfig()
 
     def _resolve_tier(self, tier_name: str) -> ModelTier:
         tier_name = (tier_name or "").strip().lower()
@@ -234,6 +282,10 @@ class SessionModelManager:
         if override.description is not None and str(override.description).strip():
             description = str(override.description).strip()
 
+        transport = base.transport
+        if override.transport is not None and str(override.transport).strip():
+            transport = str(override.transport).strip()
+
         client_args = base.client_args
         if override.client_args is not None:
             if isinstance(client_args, dict) and isinstance(override.client_args, dict):
@@ -260,6 +312,10 @@ class SessionModelManager:
             model_id=model_id,
             display_name=display_name,
             description=description,
+            transport=transport,
+            reasoning=override.reasoning if override.reasoning is not None else base.reasoning,
+            tooling=override.tooling if override.tooling is not None else base.tooling,
+            context=override.context if override.context is not None else base.context,
             client_args=client_args,
             params=params,
             extra=extra,

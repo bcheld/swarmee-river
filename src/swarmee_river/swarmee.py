@@ -629,7 +629,19 @@ def _build_resolved_invocation_state(
         tiers = model_manager.list_tiers()
         current = next((item for item in tiers if item.name == model_manager.current_tier), None)
         if current is not None:
-            sw_state["model_id"] = current.model_id
+            sw_state["model_id"] = getattr(current, "model_id", None)
+            sw_state["transport"] = getattr(current, "transport", None)
+            sw_state["reasoning_effort"] = getattr(current, "reasoning_effort", None)
+            sw_state["reasoning_mode"] = getattr(current, "reasoning_mode", None)
+            sw_state["tooling_mode"] = getattr(current, "tooling_mode", None)
+            sw_state["tooling_discovery"] = getattr(current, "tooling_discovery", None)
+            sw_state["context_strategy"] = getattr(current, "context_strategy", None)
+            sw_state["context_compaction"] = getattr(current, "context_compaction", None)
+            sw_state["supports_guardrails"] = getattr(current, "supports_guardrails", None)
+            sw_state["supports_cache_tools"] = getattr(current, "supports_cache_tools", None)
+            sw_state["supports_forced_tool_with_reasoning"] = getattr(
+                current, "supports_forced_tool_with_reasoning", None
+            )
         sw_state["session_safety_overrides"] = _normalized_session_safety_overrides_payload(session_safety_overrides)
     return resolved_state
 
@@ -712,6 +724,16 @@ def _build_model_info_event_payload(
                 "model_id": item.model_id,
                 "display_name": item.display_name,
                 "description": item.description,
+                "transport": item.transport,
+                "reasoning_effort": item.reasoning_effort,
+                "reasoning_mode": item.reasoning_mode,
+                "tooling_mode": item.tooling_mode,
+                "tooling_discovery": item.tooling_discovery,
+                "context_strategy": item.context_strategy,
+                "context_compaction": item.context_compaction,
+                "supports_guardrails": item.supports_guardrails,
+                "supports_cache_tools": item.supports_cache_tools,
+                "supports_forced_tool_with_reasoning": item.supports_forced_tool_with_reasoning,
                 "available": item.available,
                 "reason": item.reason,
             }
@@ -895,8 +917,13 @@ def _build_conversation_manager(
     window_size: int | None,
     per_turn: int | None,
     summarization_system_prompt: str | None = None,
+    strategy: str | None = None,
+    compaction_mode: str | None = None,
+    stable_tool_names: list[str] | None = None,
 ) -> Any:
     manager_name = str(settings.context.manager or "summarize").strip().lower()
+    resolved_strategy = str(strategy or settings.context.strategy or "balanced").strip().lower() or "balanced"
+    resolved_compaction = str(compaction_mode or settings.context.compaction or "auto").strip().lower() or "auto"
 
     if manager_name in {"none", "null", "off", "disabled"}:
         try:
@@ -918,6 +945,9 @@ def _build_conversation_manager(
             summary_ratio=float(settings.context.summary_ratio),
             preserve_recent_messages=int(settings.context.preserve_recent_messages),
             summarization_system_prompt=summarization_system_prompt,
+            strategy=resolved_strategy,
+            compaction_mode=resolved_compaction,
+            stable_tool_names=stable_tool_names,
         )
 
     # Default: sliding window
@@ -1051,12 +1081,22 @@ def _build_agent_runtime(
     )
     effective_sop_paths = resolve_effective_sop_paths(cli_sop_paths=args.sop_paths, pack_sop_paths=pack_sop_paths)
 
-    summarization_system_prompt = base_system_prompt if settings.context.cache_safe_summary else None
+    initial_context_behavior = model_manager.current_context_behavior()
+    initial_context_strategy = str(initial_context_behavior.strategy or settings.context.strategy or "balanced")
+    initial_compaction_mode = str(initial_context_behavior.compaction or settings.context.compaction or "auto")
+    summarization_system_prompt = (
+        base_system_prompt
+        if settings.context.cache_safe_summary or initial_context_strategy.strip().lower() == "cache_safe"
+        else None
+    )
     conversation_manager = _build_conversation_manager(
         settings=settings,
         window_size=args.window_size,
         per_turn=args.context_per_turn,
         summarization_system_prompt=summarization_system_prompt,
+        strategy=initial_context_strategy,
+        compaction_mode=initial_compaction_mode,
+        stable_tool_names=sorted(tools_dict),
     )
     hooks = _build_runtime_hooks(
         args=args,
@@ -1094,6 +1134,31 @@ def _build_agent_runtime(
             return Agent(**kwargs)
 
     agent = create_agent()
+
+    def _refresh_conversation_manager_for_current_tier() -> None:
+        nonlocal conversation_manager, summarization_system_prompt
+        behavior = model_manager.current_context_behavior()
+        strategy = str(behavior.strategy or settings.context.strategy or "balanced").strip().lower() or "balanced"
+        compaction_mode = str(behavior.compaction or settings.context.compaction or "auto").strip().lower() or "auto"
+        summarization_system_prompt = (
+            base_system_prompt if settings.context.cache_safe_summary or strategy == "cache_safe" else None
+        )
+        conversation_manager = _build_conversation_manager(
+            settings=settings,
+            window_size=args.window_size,
+            per_turn=args.context_per_turn,
+            summarization_system_prompt=summarization_system_prompt,
+            strategy=strategy,
+            compaction_mode=compaction_mode,
+            stable_tool_names=sorted(tools_dict),
+        )
+        if conversation_manager is not None:
+            agent_kwargs["conversation_manager"] = conversation_manager
+        else:
+            agent_kwargs.pop("conversation_manager", None)
+        with contextlib.suppress(Exception):
+            agent.conversation_manager = conversation_manager
+
     interrupt_event = threading.Event()
 
     preflight_prompt_section: str | None = None
@@ -1910,6 +1975,7 @@ def _build_agent_runtime(
         stop_spinners=lambda: callback_handler(force_stop=True),
         build_session_meta=_build_session_meta,
         swap_agent=_swap_agent,
+        refresh_conversation_manager=_refresh_conversation_manager_for_current_tier,
     )
     ctx.active_sop_name = args.sop
     ctx.session_store = SessionStore()
@@ -1926,6 +1992,8 @@ def _build_agent_runtime(
         preflight_prompt_section = snapshot.preflight_prompt_section
         project_map_prompt_section = snapshot.project_map_prompt_section
         ctx.refresh_system_prompt()
+
+    ctx.refresh_query_context = lambda *, interactive=True: _refresh_query_context(interactive=interactive)
 
     def _current_model_info_event() -> dict[str, Any]:
         return _build_model_info_event_payload(
@@ -1971,6 +2039,7 @@ def _build_agent_runtime(
         if requested_tier:
             model_manager.set_tier(ctx.agent, requested_tier)
             agent_kwargs["model"] = ctx.agent.model
+            _refresh_conversation_manager_for_current_tier()
             _refresh_query_context(interactive=True)
 
         active_profile_system_prompt_snippets = list(normalized.system_prompt_snippets)
@@ -2069,6 +2138,7 @@ def _build_agent_runtime(
         "execute_with_plan": _execute_with_plan,
         "ctx": ctx,
         "registry": registry,
+        "refresh_conversation_manager": _refresh_conversation_manager_for_current_tier,
         "refresh_query_context": _refresh_query_context,
         "current_model_info_event": _current_model_info_event,
         "set_user_context_sources": set_user_context_sources,
@@ -3302,6 +3372,7 @@ def main() -> None:
     _execute_with_plan = runtime["execute_with_plan"]
     ctx = runtime["ctx"]
     registry = runtime["registry"]
+    _refresh_conversation_manager = runtime["refresh_conversation_manager"]
     _refresh_query_context = runtime["refresh_query_context"]
     _current_model_info_event = runtime["current_model_info_event"]
     _set_user_context_sources = runtime["set_user_context_sources"]
@@ -3744,6 +3815,7 @@ def main() -> None:
                     try:
                         model_manager.set_tier(ctx.agent, requested_tier.strip().lower())
                         agent_kwargs["model"] = ctx.agent.model
+                        _refresh_conversation_manager()
                         _refresh_query_context_guarded(
                             interactive=True,
                             phase="query tier switch",
@@ -4061,6 +4133,7 @@ def main() -> None:
                         if _active_runtime_provider_name() == "bedrock":
                             model_manager.set_tier(ctx.agent, model_manager.current_tier)
                             agent_kwargs["model"] = ctx.agent.model
+                            _refresh_conversation_manager()
                             _refresh_query_context_guarded(interactive=True, phase="connect bedrock")
                         _write_stdout_jsonl(
                             {
@@ -4159,6 +4232,7 @@ def main() -> None:
                 try:
                     model_manager.set_tier(ctx.agent, tier.strip().lower())
                     agent_kwargs["model"] = ctx.agent.model
+                    _refresh_conversation_manager()
                     _refresh_query_context_guarded(interactive=True, phase="set_tier")
                     _write_stdout_jsonl(_current_model_info_event())
                 except Exception as e:

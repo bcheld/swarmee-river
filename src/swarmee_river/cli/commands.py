@@ -59,6 +59,8 @@ class CLIContext:
     stop_spinners: Callable[[], None]
     build_session_meta: Callable[[], dict[str, Any]]
     swap_agent: Callable[[Any | None, Any | None], None]
+    refresh_conversation_manager: Callable[[], None] | None = None
+    refresh_query_context: Callable[..., None] | None = None
 
     # Interactive state
     pending_plan: Any | None = None
