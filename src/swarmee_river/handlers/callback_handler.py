@@ -127,7 +127,9 @@ def format_message(message: str, color: str | None = None, max_length: int = 50)
 
 class ToolSpinner:
     def __init__(self, text: str = "", color: str | int = TOOL_COLORS["running"]) -> None:
-        self.enabled = truthy_env("SWARMEE_SPINNERS", True)
+        # Spinners are disabled when running in TUI-events mode (JSONL daemon).
+        # This is internal behavior; end-user env toggles are intentionally not supported.
+        self.enabled = not truthy_env("SWARMEE_TUI_EVENTS", False)
         self.spinner = Halo(
             text=text,
             spinner=SPINNERS["dots"],
@@ -262,7 +264,7 @@ class CallbackHandler:
             if self.thinking_spinner and (data or current_tool_use):
                 self.thinking_spinner.stop()
 
-            if init_event_loop and truthy_env("SWARMEE_SPINNERS", True):
+            if init_event_loop and not truthy_env("SWARMEE_TUI_EVENTS", False):
                 self.thinking_spinner = Status(
                     "[blue] retrieving memories...[/blue]",
                     spinner="dots",
@@ -274,7 +276,7 @@ class CallbackHandler:
             if reasoningText:
                 _safe_print(reasoningText, end="")
 
-            if start_event_loop and self.thinking_spinner is not None and truthy_env("SWARMEE_SPINNERS", True):
+            if start_event_loop and self.thinking_spinner is not None and not truthy_env("SWARMEE_TUI_EVENTS", False):
                 self.thinking_spinner.update("[blue] thinking...[/blue]")
                 _mark_invoke_diag(invocation_state, stage="start_event_loop")
         except BaseException:

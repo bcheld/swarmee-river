@@ -305,12 +305,16 @@ def compose_settings_tab() -> Iterator[Any]:
                         "Auto-Approve: Off", id="settings_toggle_auto_approve", compact=True, variant="default"
                     )
                     yield Button(
-                        "Bypass Consent: Off", id="settings_toggle_bypass_consent", compact=True, variant="default"
+                        "Tool Consent: Ask", id="settings_toggle_bypass_consent", compact=True, variant="default"
                     )
                     yield Button(
                         "ESC Interrupt: On", id="settings_toggle_esc_interrupt", compact=True, variant="default"
                     )
-                yield Static("Interrupt Control", id="settings_interrupt_control_label", classes="settings-section-label")
+                yield Static(
+                    "Interrupt Control",
+                    id="settings_interrupt_control_label",
+                    classes="settings-section-label",
+                )
                 with Horizontal(id="settings_interrupt_control_row"):
                     yield Input(placeholder="Interrupt Timeout (sec)", id="settings_interrupt_timeout_input")
                 with Horizontal(id="settings_interrupt_control_actions"):

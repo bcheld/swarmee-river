@@ -46,7 +46,8 @@ class SessionStore:
     """
     Project-local session persistence under `<state_dir>/sessions/<session_id>/`.
 
-    Default state dir is `.swarmee/` in the current working directory; override via `SWARMEE_STATE_DIR`.
+    Default state dir is `.swarmee/` in the current working directory; override via
+    `.swarmee/settings.json` (`runtime.state_dir`).
 
     Files:
     - meta.json

@@ -11,8 +11,7 @@ import sys
 import threading
 import time
 import warnings
-from collections.abc import Callable
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -23,38 +22,17 @@ _STRANDS_KWARGS_DEPRECATION = r"`\*\*kwargs` parameter is deprecating, use `invo
 _OTEL_DETACH_FILTER_INSTALLED = False
 _LOGGER = logging.getLogger(__name__)
 
-
-def _truthy_env(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_float(name: str, default: float | None) -> float | None:
-    raw = os.getenv(name)
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        value = float(str(raw).strip())
-    except ValueError:
-        return default
-    if value <= 0:
-        return default
-    return value
+# Internal diagnostic guardrail (not end-user configurable).
+_BEDROCK_STALL_WARN_SEC: float = 90.0
 
 
 def _resolve_windows_event_loop_policy() -> str:
-    raw = str(os.getenv("SWARMEE_WINDOWS_EVENT_LOOP_POLICY", "auto")).strip().lower()
-    if raw in {"auto", "selector", "proactor"}:
-        return raw
+    # Environment-variable overrides are intentionally not supported; this is
+    # internal behavior and should be deterministic.
     return "auto"
 
 
 def _resolve_agent_invoke_mode(invocation_state: dict[str, Any] | None = None) -> str:
-    raw = str(os.getenv("SWARMEE_AGENT_INVOKE_MODE", "")).strip().lower()
-    if raw in {"sync", "isolated", "direct"}:
-        return raw
     if _is_bedrock_invocation(invocation_state):
         return "sync"
     return "isolated"
@@ -189,13 +167,12 @@ def _start_stall_monitor(
     callback_handler: Callable[..., Any],
     invocation_state: dict[str, Any],
 ) -> tuple[threading.Event | None, threading.Thread | None]:
-    warn_sec = _env_float("SWARMEE_BEDROCK_STALL_WARN_SEC", 90.0)
-    if warn_sec is None or warn_sec <= 0:
-        return None, None
+    # Fixed diagnostic guardrail (not end-user configurable).
+    warn_sec = float(_BEDROCK_STALL_WARN_SEC)
     if not _is_bedrock_invocation(invocation_state):
         return None, None
 
-    dump_enabled = _truthy_env("SWARMEE_BEDROCK_STALL_DIAG_DUMP", False)
+    dump_enabled = False
     stop_event = threading.Event()
     check_interval = max(0.05, min(2.0, float(warn_sec) / 4.0))
 

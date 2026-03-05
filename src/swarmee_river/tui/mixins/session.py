@@ -518,7 +518,6 @@ class SessionMixin:
 
     def _load_session(self) -> None:
         import json as _json
-        import os
 
         from swarmee_river.tui.mixins.context_sources import _normalize_context_sources
 
@@ -573,13 +572,12 @@ class SessionMixin:
             # The daemon-reported model_info is the source of truth for startup model state.
             self.state.daemon.model_provider_override = None
             self.state.daemon.model_tier_override = None
-            auto_env = (os.getenv("SWARMEE_AUTO_APPROVE") or "").strip().lower()
-            if auto_env in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}:
-                self._default_auto_approve = True
-            elif auto_env in {"0", "false", "f", "no", "n", "off", "disabled", "disable"}:
-                self._default_auto_approve = False
-            else:
-                self._default_auto_approve = data.get("default_auto_approve", False)
+            try:
+                from swarmee_river.settings import load_settings
+
+                self._default_auto_approve = bool(load_settings().runtime.auto_approve)
+            except Exception:
+                self._default_auto_approve = bool(data.get("default_auto_approve", False))
             self._split_ratio = data.get("split_ratio", 2)
             self.state.session.view_mode = normalize_session_view_mode(data.get("session_view_mode"))
             self.state.agent_studio.view_mode = normalize_agent_studio_view_mode(data.get("agent_studio_view_mode"))

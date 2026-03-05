@@ -633,19 +633,19 @@ def _build_resolved_invocation_state(
     return resolved_state
 
 
-def _emit_tui_context_event_if_enabled(agent: Any) -> None:
+def _emit_tui_context_event_if_enabled(agent: Any, *, settings: SwarmeeSettings) -> None:
     if not _tui_events_enabled():
         return
     try:
         from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
 
-        chars_per_token = int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4"))
+        chars_per_token = 4
         prompt_tokens_est = estimate_tokens(
             system_prompt=getattr(agent, "system_prompt", None),
             messages=getattr(agent, "messages", []),
             chars_per_token=chars_per_token,
         )
-        budget = int(os.getenv("SWARMEE_CONTEXT_BUDGET_TOKENS", "20000"))
+        budget = int(settings.context.max_prompt_tokens)
         _emit_tui_event(
             {
                 "event": "context",
@@ -830,7 +830,7 @@ def _connect_aws_credentials(
     raise RuntimeError(
         "AWS credentials are unavailable in the default credential chain. "
         "Use `swarmee connect aws <profile>` for SSO locally, or rely on role-based credentials (for example in "
-        "SageMaker) without setting AWS_PROFILE."
+        "SageMaker) without configuring a named profile."
         + (f" Last check: {check_message}" if check_message else "")
     )
 
@@ -890,11 +890,12 @@ def _handle_auth_cli_command(command: str, args: list[str]) -> tuple[bool, str]:
 
 def _build_conversation_manager(
     *,
+    settings: SwarmeeSettings,
     window_size: int | None,
     per_turn: int | None,
     summarization_system_prompt: str | None = None,
 ) -> Any:
-    manager_name = (os.getenv("SWARMEE_CONTEXT_MANAGER", "summarize") or "summarize").strip().lower()
+    manager_name = str(settings.context.manager or "summarize").strip().lower()
 
     if manager_name in {"none", "null", "off", "disabled"}:
         try:
@@ -911,13 +912,10 @@ def _build_conversation_manager(
         except Exception:
             return None
 
-        preserve_recent = int(os.getenv("SWARMEE_PRESERVE_RECENT_MESSAGES", "10"))
-        summary_ratio = float(os.getenv("SWARMEE_SUMMARY_RATIO", "0.3"))
-        max_prompt_tokens = int(os.getenv("SWARMEE_CONTEXT_BUDGET_TOKENS", "20000"))
         return BudgetedSummarizingConversationManager(
-            max_prompt_tokens=max_prompt_tokens,
-            summary_ratio=summary_ratio,
-            preserve_recent_messages=preserve_recent,
+            max_prompt_tokens=int(settings.context.max_prompt_tokens),
+            summary_ratio=float(settings.context.summary_ratio),
+            preserve_recent_messages=int(settings.context.preserve_recent_messages),
             summarization_system_prompt=summarization_system_prompt,
         )
 
@@ -927,9 +925,9 @@ def _build_conversation_manager(
     except Exception:
         return None
 
-    resolved_window_size = window_size if window_size is not None else int(os.getenv("SWARMEE_WINDOW_SIZE", "20"))
-    resolved_per_turn = per_turn if per_turn is not None else int(os.getenv("SWARMEE_CONTEXT_PER_TURN", "1"))
-    should_truncate_results = truthy(os.getenv("SWARMEE_TRUNCATE_RESULTS", "true"))
+    resolved_window_size = window_size if window_size is not None else int(settings.context.window_size)
+    resolved_per_turn = per_turn if per_turn is not None else int(settings.context.per_turn)
+    should_truncate_results = bool(settings.context.truncate_results)
 
     return SlidingWindowConversationManager(
         window_size=resolved_window_size,
@@ -941,6 +939,7 @@ def _build_conversation_manager(
 def _build_runtime_hooks(
     *,
     args: argparse.Namespace,
+    settings: SwarmeeSettings,
     safety_settings: Any,
     auto_approve: bool,
     consent_prompt_fn: Callable[[str], str] | None,
@@ -975,25 +974,25 @@ def _build_runtime_hooks(
 
     hooks = [
         JSONLLoggerHooks(),
-        TuiMetricsHooks(),
-        ToolPolicyHooks(safety_settings),
+        TuiMetricsHooks(pricing=settings.pricing),
+        ToolPolicyHooks(safety_settings, runtime=settings.runtime),
         ToolConsentHooks(
             safety_settings,
             interactive=not bool(args.query),
             auto_approve=auto_approve,
             prompt=_consent_prompt,
         ),
-        ToolResultLimiterHooks(),
+        ToolResultLimiterHooks(enabled=settings.runtime.limit_tool_results),
     ]
     if ToolMessageRepairHooks is not None:
         hooks.insert(2, ToolMessageRepairHooks())
-    if (os.getenv("SWARMEE_SESSION_S3_BUCKET") or "").strip() and SessionS3Hooks is not None:
-        hooks.append(SessionS3Hooks())
+    if settings.runtime.session_s3_bucket and SessionS3Hooks is not None:
+        hooks.append(SessionS3Hooks(settings=settings))
     return hooks
 
 
 def _build_runtime_tools(settings: SwarmeeSettings) -> tuple[dict[str, Any], list[Any]]:
-    tools_dict = get_tools()
+    tools_dict = get_tools(settings)
     for name, tool_obj in load_enabled_pack_tools(settings).items():
         tools_dict.setdefault(name, tool_obj)
     return tools_dict, [tools_dict[name] for name in sorted(tools_dict)]
@@ -1006,7 +1005,7 @@ def _resolve_provider_and_model_manager(
 ) -> tuple[str, str | None, SessionModelManager]:
     selected_provider, provider_notice = resolve_model_provider(
         cli_provider=args.model_provider.stem if args.model_provider is not None else None,
-        env_provider=os.getenv("SWARMEE_MODEL_PROVIDER"),
+        env_provider=None,
         settings_provider=settings.models.provider,
     )
     model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
@@ -1051,16 +1050,16 @@ def _build_agent_runtime(
     )
     effective_sop_paths = resolve_effective_sop_paths(cli_sop_paths=args.sop_paths, pack_sop_paths=pack_sop_paths)
 
-    summarization_system_prompt = (
-        base_system_prompt if truthy(os.getenv("SWARMEE_CACHE_SAFE_SUMMARY", "false")) else None
-    )
+    summarization_system_prompt = base_system_prompt if settings.context.cache_safe_summary else None
     conversation_manager = _build_conversation_manager(
+        settings=settings,
         window_size=args.window_size,
         per_turn=args.context_per_turn,
         summarization_system_prompt=summarization_system_prompt,
     )
     hooks = _build_runtime_hooks(
         args=args,
+        settings=settings,
         safety_settings=settings.safety,
         auto_approve=auto_approve,
         consent_prompt_fn=consent_prompt_fn,
@@ -1071,7 +1070,7 @@ def _build_agent_runtime(
         "tools": tools,
         "system_prompt": base_system_prompt,
         "callback_handler": callback_handler,
-        "load_tools_from_directory": not truthy(os.getenv("SWARMEE_FREEZE_TOOLS", "false")),
+        "load_tools_from_directory": not bool(settings.runtime.freeze_tools),
     }
     if conversation_manager is not None:
         agent_kwargs["conversation_manager"] = conversation_manager
@@ -1158,7 +1157,7 @@ def _build_agent_runtime(
         agent_kwargs["system_prompt"] = base_system_prompt
         with contextlib.suppress(Exception):
             agent.system_prompt = base_system_prompt
-        if truthy(os.getenv("SWARMEE_CACHE_SAFE_SUMMARY", "false")):
+        if settings.context.cache_safe_summary:
             summarization_system_prompt = base_system_prompt
 
     def get_prompt_assets_payload() -> dict[str, Any]:
@@ -1207,24 +1206,12 @@ def _build_agent_runtime(
         return f"user_context_{source_type}_{token}"
 
     def _context_per_source_limit() -> int:
-        try:
-            return max(
-                128,
-                int(
-                    os.getenv(
-                        "SWARMEE_USER_CONTEXT_SOURCE_MAX_CHARS",
-                        str(_USER_CONTEXT_PER_SOURCE_MAX_CHARS),
-                    )
-                ),
-            )
-        except Exception:
-            return _USER_CONTEXT_PER_SOURCE_MAX_CHARS
+        # Fixed guardrail (not end-user configurable via env).
+        return _USER_CONTEXT_PER_SOURCE_MAX_CHARS
 
     def _context_total_limit() -> int:
-        try:
-            return max(1024, int(os.getenv("SWARMEE_USER_CONTEXT_TOTAL_MAX_CHARS", str(_USER_CONTEXT_TOTAL_MAX_CHARS))))
-        except Exception:
-            return _USER_CONTEXT_TOTAL_MAX_CHARS
+        # Fixed guardrail (not end-user configurable via env).
+        return _USER_CONTEXT_TOTAL_MAX_CHARS
 
     def _resolve_context_file_path(path_text: str) -> Path:
         candidate = Path(path_text).expanduser()
@@ -1522,7 +1509,7 @@ def _build_agent_runtime(
             before_tokens = estimate_tokens(
                 system_prompt=getattr(agent, "system_prompt", None),
                 messages=getattr(agent, "messages", []),
-                chars_per_token=int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4")),
+                chars_per_token=4,
             )
 
         if manager is None:
@@ -1548,7 +1535,7 @@ def _build_agent_runtime(
             after_tokens = estimate_tokens(
                 system_prompt=getattr(agent, "system_prompt", None),
                 messages=getattr(agent, "messages", []),
-                chars_per_token=int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4")),
+                chars_per_token=4,
             )
         if (
             isinstance(before_tokens, int)
@@ -1666,7 +1653,7 @@ def _build_agent_runtime(
         structured_output_prompt: str | None = None,
     ) -> Any:
         nonlocal agent
-        _emit_tui_context_event_if_enabled(agent)
+        _emit_tui_context_event_if_enabled(agent, settings=settings)
         invocation_state = _build_resolved_invocation_state(
             invocation_state=invocation_state,
             runtime_environment=runtime_environment,
@@ -1706,11 +1693,17 @@ def _build_agent_runtime(
                 )
             except MaxTokensReachedException:
                 callback_handler(force_stop=True)
-                configured = os.getenv("SWARMEE_MAX_TOKENS") or os.getenv("STRANDS_MAX_TOKENS") or "(unset)"
+                configured = (
+                    args.max_output_tokens
+                    if isinstance(getattr(args, "max_output_tokens", None), int)
+                    else settings.models.max_output_tokens
+                )
+                configured_label = str(configured) if isinstance(configured, int) and configured > 0 else "(default)"
                 error_msg = (
                     "Error: Response hit the max output token limit.\n"
-                    f"- Current max: {configured}\n"
-                    "- Fix: increase SWARMEE_MAX_TOKENS (or pass --max-output-tokens), or ask for a shorter response.\n"
+                    f"- Current max: {configured_label}\n"
+                    "- Fix: increase `models.max_output_tokens` in `.swarmee/settings.json` "
+                    "(or pass --max-output-tokens), or ask for a shorter response.\n"
                     "- Resetting agent loop so you can continue."
                 )
                 _emit_classified_tui_error(error_msg, category_hint=ERROR_CATEGORY_ESCALATABLE)
@@ -1926,6 +1919,7 @@ def _build_agent_runtime(
         snapshot = build_context_snapshot(
             artifact_store=artifact_store,
             interactive=interactive,
+            runtime=settings.runtime,
             default_preflight_level=profile.preflight_level if profile else None,
         )
         preflight_prompt_section = snapshot.preflight_prompt_section
@@ -2136,6 +2130,21 @@ def _build_serve_command_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override runtime state directory (defaults to <cwd>/.swarmee).",
     )
+    parser.add_argument(
+        "--broker-log-path",
+        type=str,
+        default=None,
+        help="Broker log path recorded in discovery payload (defaults to <state_dir>/diagnostics/broker.log).",
+    )
+    parser.add_argument(
+        "--diag-session-events-path",
+        type=str,
+        default=None,
+        help=(
+            "Session events JSONL path template (defaults to "
+            "<state_dir>/diagnostics/sessions/{session_id}.jsonl)."
+        ),
+    )
     return parser
 
 
@@ -2203,7 +2212,9 @@ def _runtime_broker_pids() -> list[int]:
                 "powershell",
                 "-NoProfile",
                 "-Command",
-                "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation",
+                "Get-CimInstance Win32_Process | "
+                "Select-Object ProcessId,CommandLine | "
+                "ConvertTo-Csv -NoTypeInformation",
             ],
             ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:CSV"],
         ]
@@ -2386,13 +2397,26 @@ def _print_attach_event(event: dict[str, Any], *, streaming_state: dict[str, boo
 
 
 def _run_serve_command(raw_args: list[str]) -> int:
+    from swarmee_river.state_paths import set_state_dir_override
+    from swarmee_river.settings import load_settings
+
     parser = _build_serve_command_parser()
     args = parser.parse_args(raw_args)
-    if isinstance(args.state_dir, str) and args.state_dir.strip():
-        os.environ["SWARMEE_STATE_DIR"] = args.state_dir.strip()
+    serve_cwd = Path.cwd().resolve()
+    settings = load_settings(serve_cwd / ".swarmee" / "settings.json")
+    override = (
+        args.state_dir.strip()
+        if isinstance(args.state_dir, str) and args.state_dir.strip()
+        else settings.runtime.state_dir
+    )
+    set_state_dir_override(override, cwd=serve_cwd)
 
     async def _serve() -> None:
-        server = RuntimeServiceServer(port=int(args.port))
+        server = RuntimeServiceServer(
+            port=int(args.port),
+            broker_log_path=args.broker_log_path,
+            session_events_path_template=args.diag_session_events_path,
+        )
         await server.start()
         print(f"[runtime] listening on {server.host}:{server.port}")
         print(f"[runtime] discovery file: {server.runtime_file}")
@@ -2424,10 +2448,11 @@ def _run_serve_command(raw_args: list[str]) -> int:
 
 
 def _run_attach_command(raw_args: list[str]) -> int:
+    from swarmee_river.state_paths import set_state_dir_override
+    from swarmee_river.settings import load_settings
+
     parser = _build_attach_command_parser()
     args = parser.parse_args(raw_args)
-    if isinstance(args.state_dir, str) and args.state_dir.strip():
-        os.environ["SWARMEE_STATE_DIR"] = args.state_dir.strip()
 
     attach_cwd = Path(args.cwd).expanduser() if isinstance(args.cwd, str) and args.cwd.strip() else Path.cwd()
     attach_cwd = attach_cwd.resolve()
@@ -2435,9 +2460,16 @@ def _run_attach_command(raw_args: list[str]) -> int:
         print(f"Error: attach cwd does not exist or is not a directory: {attach_cwd}")
         return 1
 
+    settings = load_settings(attach_cwd / ".swarmee" / "settings.json")
+    override = (
+        args.state_dir.strip()
+        if isinstance(args.state_dir, str) and args.state_dir.strip()
+        else settings.runtime.state_dir
+    )
+    set_state_dir_override(override, cwd=attach_cwd)
+
     session_id = (
         (str(args.session).strip() if isinstance(args.session, str) else "")
-        or (os.getenv("SWARMEE_SESSION_ID") or "").strip()
         or default_session_id_for_cwd(attach_cwd)
     )
 
@@ -2548,16 +2580,25 @@ def _run_attach_command(raw_args: list[str]) -> int:
 
 
 def _run_daemon_command(raw_args: list[str]) -> int:
+    from swarmee_river.state_paths import set_state_dir_override
+    from swarmee_river.settings import load_settings
+
     parser = _build_daemon_command_parser()
     args = parser.parse_args(raw_args)
-    if isinstance(args.state_dir, str) and args.state_dir.strip():
-        os.environ["SWARMEE_STATE_DIR"] = args.state_dir.strip()
 
     daemon_cwd = Path(args.cwd).expanduser() if isinstance(args.cwd, str) and args.cwd.strip() else Path.cwd()
     daemon_cwd = daemon_cwd.resolve()
     if not daemon_cwd.exists() or not daemon_cwd.is_dir():
         print(f"Error: cwd does not exist or is not a directory: {daemon_cwd}")
         return 1
+
+    settings = load_settings(daemon_cwd / ".swarmee" / "settings.json")
+    override = (
+        args.state_dir.strip()
+        if isinstance(args.state_dir, str) and args.state_dir.strip()
+        else settings.runtime.state_dir
+    )
+    set_state_dir_override(override, cwd=daemon_cwd)
 
     action = str(args.action or "status").strip().lower()
     target = str(args.target or "").strip().lower()
@@ -2617,6 +2658,95 @@ def _run_daemon_command(raw_args: list[str]) -> int:
     return 0
 
 
+def _run_settings_command(raw_args: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="swarmee settings", description="Project settings maintenance commands.")
+    sub = parser.add_subparsers(dest="settings_cmd")
+
+    migrate_parser = sub.add_parser(
+        "migrate",
+        help="Migrate legacy `.swarmee/settings.json` `env.*` overrides into structured settings fields.",
+    )
+    migrate_parser.add_argument(
+        "--path",
+        type=str,
+        default=None,
+        help="Settings path (default: ./.swarmee/settings.json)",
+    )
+    migrate_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print migration output without rewriting the file.",
+    )
+
+    args = parser.parse_args(raw_args or ["migrate"])
+    cmd = str(getattr(args, "settings_cmd", "") or "migrate").strip().lower()
+    if cmd != "migrate":
+        parser.print_help()
+        return 1
+
+    from swarmee_river.settings import migrate_legacy_env_overrides, normalize_project_env_overrides
+
+    raw_path = str(getattr(args, "path", "") or "").strip()
+    path = Path(raw_path).expanduser().resolve() if raw_path else (Path.cwd() / ".swarmee" / "settings.json")
+    if not path.exists() or not path.is_file():
+        print(f"Error: settings file not found: {path}")
+        return 1
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Error: failed to read settings JSON: {exc}")
+        return 1
+    if not isinstance(payload, dict):
+        print("Error: settings JSON must be an object.")
+        return 1
+
+    raw_env = payload.get("env")
+    if not isinstance(raw_env, dict) or not raw_env:
+        print("No legacy `env` section found; nothing to migrate.")
+        return 0
+
+    internal_env = normalize_project_env_overrides(raw_env)
+    migrated_payload, migrated_map, dropped = migrate_legacy_env_overrides(payload)
+    if internal_env:
+        migrated_payload["env"] = internal_env
+    else:
+        migrated_payload.pop("env", None)
+
+    migrated_keys = sorted(migrated_map.keys())
+    dropped_keys = sorted({str(k).strip() for k in dropped if str(k).strip()})
+
+    print("# Settings Migration")
+    print(f"- file: {path}")
+    print(f"- migrated: {len(migrated_keys)} key(s)")
+    print(f"- dropped: {len(dropped_keys)} key(s)")
+    if migrated_keys:
+        print("\n## Migrated")
+        for k in migrated_keys:
+            print(f"- {k} -> {migrated_map.get(k)}")
+    if dropped_keys:
+        print("\n## Dropped")
+        for k in dropped_keys:
+            if k in {"OPENAI_API_KEY", "SWARMEE_GITHUB_COPILOT_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"}:
+                print(f"- {k} (secret; set via OS environment or provider auth store, not settings.json)")
+            else:
+                print(f"- {k} (no longer supported)")
+
+    if bool(getattr(args, "dry_run", False)):
+        print("\n(dry-run; file not rewritten)")
+        return 0
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(migrated_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except Exception as exc:
+        print(f"Error: failed to write migrated settings: {exc}")
+        return 1
+
+    print("\nWrote migrated settings.")
+    return 0
+
+
 def _build_session_command_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="swarmee session", description="Session graph and branching commands.")
     sub = parser.add_subparsers(dest="session_cmd")
@@ -2625,10 +2755,10 @@ def _build_session_command_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--limit", type=int, default=20, help="Max sessions to print.")
 
     index_parser = sub.add_parser("index", help="Build and persist session graph index.")
-    index_parser.add_argument("--session", type=str, default=None, help="Session ID (defaults to SWARMEE_SESSION_ID).")
+    index_parser.add_argument("--session", type=str, default=None, help="Session ID.")
 
     export_parser = sub.add_parser("export", help="Export session graph data.")
-    export_parser.add_argument("--session", type=str, default=None, help="Session ID (defaults to SWARMEE_SESSION_ID).")
+    export_parser.add_argument("--session", type=str, default=None, help="Session ID.")
     export_parser.add_argument(
         "--format",
         choices=["md", "json"],
@@ -2645,7 +2775,7 @@ def _build_session_command_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_session_id(raw_session_id: str | None) -> str | None:
-    session_id = (raw_session_id or os.getenv("SWARMEE_SESSION_ID") or "").strip()
+    session_id = str(raw_session_id or "").strip()
     return session_id or None
 
 
@@ -2810,7 +2940,7 @@ def _run_session_command(raw_args: list[str]) -> int:
         if command == "index":
             session_id = _resolve_session_id(args.session)
             if not session_id:
-                print("Error: --session is required (or set SWARMEE_SESSION_ID)")
+                print("Error: --session is required")
                 return 1
             index = build_session_graph_index(session_id, cwd=Path.cwd())
             path = write_session_graph_index(session_id, index)
@@ -2828,7 +2958,7 @@ def _run_session_command(raw_args: list[str]) -> int:
         if command == "export":
             session_id = _resolve_session_id(args.session)
             if not session_id:
-                print("Error: --session is required (or set SWARMEE_SESSION_ID)")
+                print("Error: --session is required")
                 return 1
             index = build_session_graph_index(session_id, cwd=Path.cwd())
             _, _, _, last_plan = store.load(session_id)
@@ -2927,32 +3057,32 @@ def main() -> None:
         "--max-output-tokens",
         type=int,
         default=None,
-        help="Max output tokens for the model (sets SWARMEE_MAX_TOKENS, and STRANDS_MAX_TOKENS for Bedrock)",
+        help="Max output tokens for the model (overrides `models.max_output_tokens`).",
     )
     parser.add_argument(
         "--window-size",
         type=int,
         default=None,
-        help="Conversation history window size (overrides SWARMEE_WINDOW_SIZE)",
+        help="Conversation history window size (overrides `context.window_size`).",
     )
     parser.add_argument(
         "--context-per-turn",
         type=int,
         default=None,
-        help="Max history items to drop per truncation pass (overrides SWARMEE_CONTEXT_PER_TURN)",
+        help="Max history items to drop per truncation pass (overrides `context.per_turn`).",
     )
     parser.add_argument(
         "--context-manager",
         type=str,
         default=None,
         choices=["summarize", "sliding", "none"],
-        help="Context management strategy (overrides SWARMEE_CONTEXT_MANAGER)",
+        help="Context management strategy (overrides `context.manager`).",
     )
     parser.add_argument(
         "--context-budget-tokens",
         type=int,
         default=None,
-        help="Approximate max prompt tokens before summarization (overrides SWARMEE_CONTEXT_BUDGET_TOKENS)",
+        help="Approximate max prompt tokens before summarization (overrides `context.max_prompt_tokens`).",
     )
     parser.add_argument(
         "--include-welcome-in-prompt",
@@ -2979,7 +3109,7 @@ def main() -> None:
         "--sop-paths",
         type=str,
         default=None,
-        help="OS-separated directories containing `*.sop.md` files (overrides SWARMEE_SOP_PATHS)",
+        help="OS-separated directories containing `*.sop.md` files.",
     )
     args, extra_args = parser.parse_known_args()
     configure_callback_handler_mode(tui_events=True if args.tui_daemon else None)
@@ -3000,6 +3130,8 @@ def main() -> None:
         raise SystemExit(_run_daemon_command([*sub, *extra_args]))
     if command == "session":
         raise SystemExit(_run_session_command([*sub, *extra_args]))
+    if command == "settings":
+        raise SystemExit(_run_settings_command([*sub, *extra_args]))
     if command == "diagnostics":
         if extra_args:
             sub = [*sub, *extra_args]
@@ -3010,28 +3142,48 @@ def main() -> None:
 
     daemon_session_id: str | None = None
     if args.tui_daemon:
+        # Internal runtime broker uses SWARMEE_SESSION_ID to bind session state.
         daemon_session_id = (os.getenv("SWARMEE_SESSION_ID") or "").strip() or uuid.uuid4().hex
         os.environ["SWARMEE_SESSION_ID"] = daemon_session_id
-
-    if args.max_output_tokens is not None:
-        os.environ["SWARMEE_MAX_TOKENS"] = str(args.max_output_tokens)
-        os.environ["STRANDS_MAX_TOKENS"] = str(args.max_output_tokens)
-
-    if args.context_manager:
-        os.environ["SWARMEE_CONTEXT_MANAGER"] = args.context_manager
-    if args.context_budget_tokens:
-        os.environ["SWARMEE_CONTEXT_BUDGET_TOKENS"] = str(args.context_budget_tokens)
-
-    # Resolve KB from CLI first, then environment.
-    knowledge_base_id = (
-        args.knowledge_base_id or os.getenv("SWARMEE_KNOWLEDGE_BASE_ID") or os.getenv("STRANDS_KNOWLEDGE_BASE_ID")
-    )
 
     settings_path_for_project = Path.cwd() / ".swarmee" / "settings.json"
     if args.tui_daemon:
         apply_project_env_overrides(settings_path_for_project, overwrite=True)
     settings = load_settings(settings_path_for_project)
-    auto_approve = args.yes or truthy(os.getenv("SWARMEE_AUTO_APPROVE", "false"))
+    # Apply state-dir override once at startup.
+    from swarmee_river.state_paths import set_state_dir_override
+
+    set_state_dir_override(settings.runtime.state_dir, cwd=Path.cwd())
+
+    # Internal bridging: Bedrock profile selection lives in structured settings, but
+    # external AWS SDKs honor AWS_PROFILE.
+    bedrock = settings.models.providers.get("bedrock")
+    bedrock_extra = dict(getattr(bedrock, "extra", {}) or {})
+    aws_profile = str(bedrock_extra.get("aws_profile") or "").strip()
+    if aws_profile:
+        os.environ["AWS_PROFILE"] = aws_profile
+    else:
+        os.environ.pop("AWS_PROFILE", None)
+
+    # Apply CLI overrides to the in-memory settings object (no env mutation).
+    from dataclasses import replace
+
+    if args.max_output_tokens is not None:
+        settings = replace(settings, models=replace(settings.models, max_output_tokens=int(args.max_output_tokens)))
+    if args.context_manager:
+        settings = replace(
+            settings,
+            context=replace(settings.context, manager=str(args.context_manager).strip().lower()),
+        )
+    if args.context_budget_tokens:
+        settings = replace(
+            settings,
+            context=replace(settings.context, max_prompt_tokens=max(1, int(args.context_budget_tokens))),
+        )
+
+    # Resolve KB from CLI first, then project settings.
+    knowledge_base_id = args.knowledge_base_id or settings.runtime.knowledge_base_id
+    auto_approve = bool(args.yes) or bool(settings.runtime.auto_approve)
     # Explicit opt-in to launch the full-screen Textual UI.
     if command == "tui":
         from swarmee_river.tui.app import run_tui
@@ -3551,7 +3703,7 @@ def main() -> None:
                     )
                     continue
                 compact_result = _compact_context()
-                _emit_tui_context_event_if_enabled(ctx.agent)
+                _emit_tui_context_event_if_enabled(ctx.agent, settings=settings)
                 _write_stdout_jsonl(
                     {
                         "event": "compact_complete",
@@ -4043,7 +4195,10 @@ def main() -> None:
             )
             if plan is not None and not executed:
                 if not _tui_events_enabled():
-                    print("\nPlan generated. Re-run with --yes (or set SWARMEE_AUTO_APPROVE=true) to execute.")
+                    print(
+                        "\nPlan generated. Re-run with --yes (or set `runtime.auto_approve=true` in "
+                        "`.swarmee/settings.json`) to execute."
+                    )
                 return
         except AgentInterruptedError as e:
             _handle_agent_interrupt(e)

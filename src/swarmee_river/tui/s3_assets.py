@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 from typing import Any
 
 
@@ -16,26 +15,38 @@ def _s3_client() -> Any:
     except Exception as exc:
         raise RuntimeError("boto3 is required for S3 import. Install with: pip install boto3") from exc
 
-    region = (os.getenv("AWS_REGION") or "us-east-1").strip() or "us-east-1"
     return boto3.client(
         "s3",
-        region_name=region,
         config=Config(connect_timeout=15, read_timeout=15, retries={"max_attempts": 2}),
     )
 
 
 def _resolve_bucket() -> str:
-    """Resolve S3 bucket from environment."""
-    raw = os.getenv("SWARMEE_SESSION_S3_BUCKET", "").strip()
-    if not raw:
-        raise RuntimeError("SWARMEE_SESSION_S3_BUCKET environment variable is required for S3 import.")
-    return raw
+    """Resolve S3 bucket from structured settings."""
+    try:
+        from swarmee_river.settings import load_settings
+    except Exception as exc:
+        raise RuntimeError("S3 import requires swarmee_river.settings to be available.") from exc
+
+    settings = load_settings()
+    bucket = str(settings.runtime.session_s3_bucket or "").strip()
+    if not bucket:
+        raise RuntimeError("S3 import requires `runtime.session_s3_bucket` in `.swarmee/settings.json`.")
+    return bucket
 
 
 def _tooling_prefix() -> str:
     """Base S3 prefix for tooling assets."""
-    raw = os.getenv("SWARMEE_TOOLING_S3_PREFIX", "").strip()
-    return raw or "swarmee/tooling"
+    try:
+        from swarmee_river.settings import load_settings
+    except Exception:
+        return "swarmee/tooling"
+    with contextlib.suppress(Exception):
+        settings = load_settings()
+        prefix = str(settings.runtime.tooling_s3_prefix or "").strip()
+        if prefix:
+            return prefix.rstrip("/")
+    return "swarmee/tooling"
 
 
 def _list_objects(bucket: str, prefix: str) -> list[dict[str, Any]]:

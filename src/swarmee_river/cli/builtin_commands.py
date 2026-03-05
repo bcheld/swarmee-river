@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import getpass
 import json
-import os
 from pathlib import Path
 
 from swarmee_river.auth.github_copilot import login_device_flow, save_api_key
@@ -271,10 +270,12 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
                 except Exception:
                     continue
 
-        lines.append("- env:")
-        for key in ["SWARMEE_ENABLE_TOOLS", "SWARMEE_DISABLE_TOOLS", "BYPASS_TOOL_CONSENT"]:
-            value = os.getenv(key)
-            lines.append(f"  - {key}: {value if value is not None else '<unset>'}")
+        runtime = getattr(ctx.settings, "runtime", None)
+        enabled_tools = list(getattr(runtime, "enabled_tools", []) or []) if runtime is not None else []
+        disabled_tools = list(getattr(runtime, "disabled_tools", []) or []) if runtime is not None else []
+        lines.append("- runtime:")
+        lines.append(f"  - enabled_tools: {', '.join(enabled_tools) if enabled_tools else '<none>'}")
+        lines.append(f"  - disabled_tools: {', '.join(disabled_tools) if disabled_tools else '<none>'}")
 
         ctx.output("\n".join(lines))
         return CommandDispatchResult(handled=True)

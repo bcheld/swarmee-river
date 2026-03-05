@@ -9,6 +9,7 @@ from strands.hooks.events import AfterInvocationEvent, AfterModelCallEvent
 
 from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.pricing import resolve_pricing
+from swarmee_river.settings import PricingConfig, PricingOverride
 from swarmee_river.utils.stdio_utils import write_stdout_jsonl
 
 
@@ -79,25 +80,34 @@ def _as_float(value: Any) -> float | None:
     return None
 
 
-def _provider_rates_from_env(provider: str | None) -> tuple[float | None, float | None, float | None]:
-    provider_key = provider.upper() if isinstance(provider, str) and provider else ""
-    if not provider_key:
-        return None, None, None
-    return (
-        _as_float(os.getenv(f"SWARMEE_PRICE_{provider_key}_INPUT_PER_1M")),
-        _as_float(os.getenv(f"SWARMEE_PRICE_{provider_key}_OUTPUT_PER_1M")),
-        _as_float(os.getenv(f"SWARMEE_PRICE_{provider_key}_CACHED_INPUT_PER_1M")),
-    )
+def _resolve_pricing_override(pricing: PricingConfig, provider: str | None) -> PricingOverride:
+    if not provider:
+        return pricing.default
+    provider_key = str(provider).strip().lower()
+    override = pricing.providers.get(provider_key)
+    return override if override is not None else pricing.default
 
 
-def _compute_cost_usd(*, usage: dict[str, Any], provider: str | None, model_id: str | None) -> float | None:
+def _compute_cost_usd(
+    *,
+    usage: dict[str, Any],
+    provider: str | None,
+    model_id: str | None,
+    pricing: PricingConfig,
+) -> float | None:
     default_pricing = resolve_pricing(provider=provider, model_id=model_id)
-    env_input, env_output, env_cached = _provider_rates_from_env(provider)
+    override = _resolve_pricing_override(pricing, provider)
 
-    input_rate = env_input if env_input is not None else (default_pricing.input_per_1m if default_pricing else None)
-    output_rate = env_output if env_output is not None else (default_pricing.output_per_1m if default_pricing else None)
+    input_rate = override.input_per_1m if override.input_per_1m is not None else (
+        default_pricing.input_per_1m if default_pricing else None
+    )
+    output_rate = override.output_per_1m if override.output_per_1m is not None else (
+        default_pricing.output_per_1m if default_pricing else None
+    )
     cached_rate = (
-        env_cached if env_cached is not None else (default_pricing.cached_input_per_1m if default_pricing else None)
+        override.cached_input_per_1m
+        if override.cached_input_per_1m is not None
+        else (default_pricing.cached_input_per_1m if default_pricing else None)
     )
 
     return _estimate_cost_usd(
@@ -118,25 +128,14 @@ def _estimate_cost_usd(
     """
     Provider-agnostic cost estimate.
 
-    If pricing env vars are not set, returns None.
-
-    Inputs / env vars (lowest precedence to highest):
-    - Built-in code defaults (see swarmee_river.pricing)
-    - SWARMEE_PRICE_INPUT_PER_1M / SWARMEE_PRICE_OUTPUT_PER_1M / SWARMEE_PRICE_CACHED_INPUT_PER_1M
-    - SWARMEE_PRICE_<PROVIDER>_INPUT_PER_1M / ... (e.g., OPENAI, BEDROCK, OLLAMA)
+    If pricing config does not provide any rates and there is no built-in default, returns None.
     """
-    input_rate = (
-        input_rate_per_1m if input_rate_per_1m is not None else _as_float(os.getenv("SWARMEE_PRICE_INPUT_PER_1M"))
-    )
-    output_rate = (
-        output_rate_per_1m if output_rate_per_1m is not None else _as_float(os.getenv("SWARMEE_PRICE_OUTPUT_PER_1M"))
-    )
+    input_rate = input_rate_per_1m
+    output_rate = output_rate_per_1m
     if input_rate is None and output_rate is None:
         return None
     cached_input_rate = (
-        cached_input_rate_per_1m
-        if cached_input_rate_per_1m is not None
-        else _as_float(os.getenv("SWARMEE_PRICE_CACHED_INPUT_PER_1M"))
+        cached_input_rate_per_1m if cached_input_rate_per_1m is not None else None
     )
     if cached_input_rate is None:
         cached_input_rate = input_rate
@@ -156,8 +155,9 @@ def _estimate_cost_usd(
 class TuiMetricsHooks(HookProvider):
     """Emit token usage / cost events to stdout for the Textual TUI."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, pricing: PricingConfig | None = None) -> None:
         self.enabled = _truthy_env("SWARMEE_TUI_EVENTS", False)
+        self._pricing = pricing or PricingConfig()
 
     def register_hooks(self, registry: HookRegistry, **_: Any) -> None:
         register_hook_callback(registry, AfterInvocationEvent, self.after_invocation)
@@ -199,7 +199,7 @@ class TuiMetricsHooks(HookProvider):
             normalized["cache_write_input_tokens"] = cache_write
 
         payload: dict[str, Any] = {"event": "usage", "usage": normalized, "provider": provider, "model_id": model_id}
-        cost = _compute_cost_usd(usage=normalized, provider=provider, model_id=model_id)
+        cost = _compute_cost_usd(usage=normalized, provider=provider, model_id=model_id, pricing=self._pricing)
         if cost is not None:
             payload["cost_usd"] = cost
         _write_stdout_jsonl(payload)
@@ -222,7 +222,7 @@ class TuiMetricsHooks(HookProvider):
                 model_id = str(raw_model).strip() if isinstance(raw_model, str) else None
 
         payload: dict[str, Any] = {"event": "usage", "usage": usage, "provider": provider, "model_id": model_id}
-        cost = _compute_cost_usd(usage=usage, provider=provider, model_id=model_id)
+        cost = _compute_cost_usd(usage=usage, provider=provider, model_id=model_id, pricing=self._pricing)
         if cost is not None:
             payload["cost_usd"] = cost
         _write_stdout_jsonl(payload)

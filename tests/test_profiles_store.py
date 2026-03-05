@@ -251,11 +251,15 @@ def test_profile_schema_normalizes_agents_and_auto_delegate_assistive() -> None:
 
 def test_default_state_dir_profiles_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     state_root = tmp_path / "state-root"
-    monkeypatch.setenv("SWARMEE_STATE_DIR", str(state_root))
+    from swarmee_river.state_paths import set_state_dir_override
 
-    save_profile({"id": "stateful", "name": "Stateful"})
+    set_state_dir_override(state_root, cwd=tmp_path)
+    try:
+        save_profile({"id": "stateful", "name": "Stateful"})
 
-    catalog = state_root / "profiles" / "profiles.json"
-    assert catalog.exists()
-    listed = list_profiles()
-    assert [item.id for item in listed] == ["stateful"]
+        catalog = state_root / "profiles" / "profiles.json"
+        assert catalog.exists()
+        listed = list_profiles()
+        assert [item.id for item in listed] == ["stateful"]
+    finally:
+        set_state_dir_override(None)

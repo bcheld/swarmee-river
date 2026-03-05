@@ -61,17 +61,18 @@ class _SyncRecordingAgent:
 
 
 def test_invoke_agent_emits_stall_warning_for_bedrock(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_BEDROCK_STALL_WARN_SEC", "0.04")
-    monkeypatch.setenv("SWARMEE_BEDROCK_STALL_DIAG_DUMP", "false")
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")
+    # Env overrides are no longer supported; monkeypatch the internal constant
+    # to keep the test fast.
+    monkeypatch.setattr(agent_runner, "_BEDROCK_STALL_WARN_SEC", 0.04)
 
     callback_calls: list[dict[str, Any]] = []
 
     def _callback_handler(**kwargs: Any) -> None:
         callback_calls.append(dict(kwargs))
 
+    agent = _SyncRecordingAgent(delay_s=0.15, return_value="ok")
     result = agent_runner.invoke_agent(
-        _SleepAgent(delay_s=0.15),
+        agent,
         "hello",
         callback_handler=_callback_handler,
         interrupt_event=threading.Event(),
@@ -85,17 +86,16 @@ def test_invoke_agent_emits_stall_warning_for_bedrock(monkeypatch) -> None:
 
 
 def test_invoke_agent_stall_warning_is_throttled(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_BEDROCK_STALL_WARN_SEC", "0.05")
-    monkeypatch.setenv("SWARMEE_BEDROCK_STALL_DIAG_DUMP", "false")
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")
+    monkeypatch.setattr(agent_runner, "_BEDROCK_STALL_WARN_SEC", 0.05)
 
     callback_calls: list[dict[str, Any]] = []
 
     def _callback_handler(**kwargs: Any) -> None:
         callback_calls.append(dict(kwargs))
 
+    agent = _SyncRecordingAgent(delay_s=0.18, return_value="ok")
     result = agent_runner.invoke_agent(
-        _SleepAgent(delay_s=0.18),
+        agent,
         "hello",
         callback_handler=_callback_handler,
         interrupt_event=threading.Event(),
@@ -111,7 +111,6 @@ def test_windows_loop_policy_auto_does_not_override(monkeypatch) -> None:
     set_calls: list[object] = []
 
     monkeypatch.setattr(agent_runner.os, "name", "nt", raising=False)
-    monkeypatch.setenv("SWARMEE_WINDOWS_EVENT_LOOP_POLICY", "auto")
     monkeypatch.setattr(agent_runner.asyncio, "set_event_loop_policy", lambda policy: set_calls.append(policy))
 
     with agent_runner._windows_loop_policy_context():
@@ -121,32 +120,18 @@ def test_windows_loop_policy_auto_does_not_override(monkeypatch) -> None:
 
 
 def test_resolve_agent_invoke_mode_defaults_to_isolated(monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_AGENT_INVOKE_MODE", raising=False)
     assert agent_runner._resolve_agent_invoke_mode() == "isolated"
 
 
 def test_resolve_agent_invoke_mode_defaults_to_sync_for_bedrock(monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_AGENT_INVOKE_MODE", raising=False)
     assert agent_runner._resolve_agent_invoke_mode({"swarmee": {"provider": "bedrock"}}) == "sync"
 
 
-def test_resolve_agent_invoke_mode_invalid_falls_back_to_isolated(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "invalid")
-    assert agent_runner._resolve_agent_invoke_mode() == "isolated"
-
-
-def test_resolve_agent_invoke_mode_invalid_falls_back_to_sync_for_bedrock(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "invalid")
-    assert agent_runner._resolve_agent_invoke_mode({"swarmee": {"provider": "bedrock"}}) == "sync"
-
-
-def test_resolve_agent_invoke_mode_explicit_sync_wins(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "sync")
-    assert agent_runner._resolve_agent_invoke_mode({"swarmee": {"provider": "openai"}}) == "sync"
+def test_resolve_agent_invoke_mode_openai_is_isolated(monkeypatch) -> None:
+    assert agent_runner._resolve_agent_invoke_mode({"swarmee": {"provider": "openai"}}) == "isolated"
 
 
 def test_invoke_agent_defaults_to_sync_for_bedrock_when_unset(monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_AGENT_INVOKE_MODE", raising=False)
     agent = _SyncRecordingAgent()
     result = agent_runner.invoke_agent(
         agent,
@@ -161,7 +146,6 @@ def test_invoke_agent_defaults_to_sync_for_bedrock_when_unset(monkeypatch) -> No
 
 
 def test_invoke_agent_sync_mode_calls_agent_call_and_shapes_query(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "sync")
     agent = _SyncRecordingAgent(return_value="ok")
 
     class _DummyModel:
@@ -172,7 +156,7 @@ def test_invoke_agent_sync_mode_calls_agent_call_and_shapes_query(monkeypatch) -
         "user asks",
         callback_handler=lambda **_kwargs: None,
         interrupt_event=threading.Event(),
-        invocation_state={"swarmee": {"provider": "openai"}},
+        invocation_state={"swarmee": {"provider": "bedrock"}},
         system_reminder="system reminder",
         structured_output_model=_DummyModel,
         structured_output_prompt="format as schema",
@@ -188,7 +172,6 @@ def test_invoke_agent_sync_mode_calls_agent_call_and_shapes_query(monkeypatch) -
 
 
 def test_invoke_agent_sync_mode_interrupt_pre_set(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "sync")
     agent = _SyncRecordingAgent()
     callback_calls: list[dict[str, Any]] = []
     interrupt_event = threading.Event()
@@ -208,7 +191,6 @@ def test_invoke_agent_sync_mode_interrupt_pre_set(monkeypatch) -> None:
 
 
 def test_invoke_agent_sync_mode_interrupt_during_call(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "sync")
     agent = _SyncRecordingAgent(delay_s=0.2)
     callback_calls: list[dict[str, Any]] = []
     interrupt_event = threading.Event()
@@ -235,7 +217,6 @@ def test_invoke_agent_sync_mode_interrupt_during_call(monkeypatch) -> None:
 
 
 def test_invoke_agent_isolated_mode_runs_in_different_thread(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")
     agent = _ThreadRecordingAgent()
     caller_tid = threading.get_ident()
 
@@ -253,7 +234,7 @@ def test_invoke_agent_isolated_mode_runs_in_different_thread(monkeypatch) -> Non
 
 
 def test_invoke_agent_direct_mode_runs_in_caller_thread(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "direct")
+    monkeypatch.setattr(agent_runner, "_resolve_agent_invoke_mode", lambda _state=None: "direct")
     agent = _ThreadRecordingAgent()
     caller_tid = threading.get_ident()
 
@@ -270,7 +251,6 @@ def test_invoke_agent_direct_mode_runs_in_caller_thread(monkeypatch) -> None:
 
 
 def test_invoke_agent_isolated_mode_propagates_contextvars(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")
     ctx_var: contextvars.ContextVar[str] = contextvars.ContextVar("invoke_test_ctx")
     token = ctx_var.set("ctx-value")
     try:
@@ -289,7 +269,6 @@ def test_invoke_agent_isolated_mode_propagates_contextvars(monkeypatch) -> None:
 
 
 def test_invoke_agent_interrupt_sets_force_stop_and_raises(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")
     callback_calls: list[dict[str, Any]] = []
     interrupt_event = threading.Event()
 
@@ -324,7 +303,7 @@ def test_windows_loop_policy_selector_applies_and_restores(monkeypatch) -> None:
         pass
 
     monkeypatch.setattr(agent_runner.os, "name", "nt", raising=False)
-    monkeypatch.setenv("SWARMEE_WINDOWS_EVENT_LOOP_POLICY", "selector")
+    monkeypatch.setattr(agent_runner, "_resolve_windows_event_loop_policy", lambda: "selector")
     monkeypatch.setattr(agent_runner.asyncio, "WindowsSelectorEventLoopPolicy", _SelectorPolicy, raising=False)
     monkeypatch.setattr(agent_runner.asyncio, "get_event_loop_policy", lambda: previous_policy)
     monkeypatch.setattr(agent_runner.asyncio, "set_event_loop_policy", lambda policy: set_calls.append(policy))
@@ -345,8 +324,7 @@ def test_windows_loop_policy_selector_applies_and_restores_through_invoke_agent(
         pass
 
     monkeypatch.setattr(agent_runner.os, "name", "nt", raising=False)
-    monkeypatch.setenv("SWARMEE_WINDOWS_EVENT_LOOP_POLICY", "selector")
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")
+    monkeypatch.setattr(agent_runner, "_resolve_windows_event_loop_policy", lambda: "selector")
     monkeypatch.setattr(agent_runner.asyncio, "WindowsSelectorEventLoopPolicy", _SelectorPolicy, raising=False)
     monkeypatch.setattr(agent_runner.asyncio, "get_event_loop_policy", lambda: previous_policy)
     monkeypatch.setattr(agent_runner.asyncio, "set_event_loop_policy", lambda policy: set_calls.append(policy))
@@ -373,7 +351,7 @@ def test_windows_loop_policy_proactor_applies_and_restores(monkeypatch) -> None:
         pass
 
     monkeypatch.setattr(agent_runner.os, "name", "nt", raising=False)
-    monkeypatch.setenv("SWARMEE_WINDOWS_EVENT_LOOP_POLICY", "proactor")
+    monkeypatch.setattr(agent_runner, "_resolve_windows_event_loop_policy", lambda: "proactor")
     monkeypatch.setattr(agent_runner.asyncio, "WindowsProactorEventLoopPolicy", _ProactorPolicy, raising=False)
     monkeypatch.setattr(agent_runner.asyncio, "get_event_loop_policy", lambda: previous_policy)
     monkeypatch.setattr(agent_runner.asyncio, "set_event_loop_policy", lambda policy: set_calls.append(policy))
@@ -394,8 +372,7 @@ def test_windows_loop_policy_proactor_applies_and_restores_through_invoke_agent(
         pass
 
     monkeypatch.setattr(agent_runner.os, "name", "nt", raising=False)
-    monkeypatch.setenv("SWARMEE_WINDOWS_EVENT_LOOP_POLICY", "proactor")
-    monkeypatch.setenv("SWARMEE_AGENT_INVOKE_MODE", "isolated")
+    monkeypatch.setattr(agent_runner, "_resolve_windows_event_loop_policy", lambda: "proactor")
     monkeypatch.setattr(agent_runner.asyncio, "WindowsProactorEventLoopPolicy", _ProactorPolicy, raising=False)
     monkeypatch.setattr(agent_runner.asyncio, "get_event_loop_policy", lambda: previous_policy)
     monkeypatch.setattr(agent_runner.asyncio, "set_event_loop_policy", lambda policy: set_calls.append(policy))

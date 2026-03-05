@@ -27,6 +27,7 @@ from swarmee_river.diagnostics import (
     sweep_retention,
 )
 from swarmee_river.hooks._compat import event_messages, model_response_payload, register_hook_callback
+from swarmee_river.settings import load_settings
 from swarmee_river.state_paths import logs_dir as _default_logs_dir
 
 
@@ -137,7 +138,7 @@ class JSONLLoggerHooks(HookProvider):
     Lightweight JSONL logging of model/tool/invocation events for performance monitoring and replay.
 
     Writes one JSON object per line to a session log file in `<state_dir>/logs/` (default `.swarmee/logs/`).
-    Optionally uploads the log to S3 if `SWARMEE_LOG_S3_BUCKET` is set.
+    Optionally uploads the log to S3 when configured via `settings.diagnostics.log_s3_bucket`.
     """
 
     def __init__(self) -> None:
@@ -145,20 +146,18 @@ class JSONLLoggerHooks(HookProvider):
         self.enabled = diagnostics_events_enabled()
         self.redact = diagnostics_redact_enabled()
         self._secrets = _secret_values_from_env()
-        raw_log_dir = os.getenv(
-            "SWARMEE_LOG_DIR",
-            str(_default_logs_dir()),
-        )
+        settings = load_settings()
+        raw_log_dir = settings.diagnostics.log_dir or str(_default_logs_dir())
         self._discard_output = _is_null_log_sink(raw_log_dir)
         self.log_dir = Path(
             os.devnull if self._discard_output else raw_log_dir
         )
         self.session_id = os.getenv("SWARMEE_SESSION_ID", uuid.uuid4().hex)
-        self.max_field_chars = int(os.getenv("SWARMEE_LOG_MAX_FIELD_CHARS", "8000"))
+        self.max_field_chars = 8000
         self._write_count = 0
 
-        self.s3_bucket = os.getenv("SWARMEE_LOG_S3_BUCKET")
-        self.s3_prefix = os.getenv("SWARMEE_LOG_S3_PREFIX", "swarmee/logs").strip("/")
+        self.s3_bucket = settings.diagnostics.log_s3_bucket
+        self.s3_prefix = str(settings.diagnostics.log_s3_prefix or "swarmee/logs").strip("/")
 
         self._lock = threading.Lock()
         if self._discard_output:

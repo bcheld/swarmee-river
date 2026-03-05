@@ -1,9 +1,21 @@
 {
-  "env": {
-    "SWARMEE_CONTEXT_MANAGER": "summarize",
-    "SWARMEE_LOG_EVENTS": "false",
-    "SWARMEE_PREFLIGHT": "enabled",
-    "SWARMEE_PREFLIGHT_LEVEL": "summary"
+  "context": {
+    "cache_safe_summary": false,
+    "manager": "summarize",
+    "max_prompt_tokens": 20000,
+    "per_turn": 1,
+    "preserve_recent_messages": 10,
+    "summary_ratio": 0.3,
+    "truncate_results": true,
+    "window_size": 20
+  },
+  "diagnostics": {
+    "level": "baseline",
+    "log_events": true,
+    "log_redact": true,
+    "log_s3_bucket": null,
+    "log_s3_prefix": "swarmee/logs",
+    "redact": true
   },
   "harness": {
     "tier_profiles": {
@@ -48,15 +60,13 @@
     },
     "availability": {},
     "default_selection": {
-      "provider": "bedrock",
       "tier": "balanced"
     },
     "default_tier": "balanced",
     "hidden_tiers": [],
-    "provider": "bedrock",
     "providers": {
       "bedrock": {
-        "description": "AWS-managed models (Anthropic Claude, etc). Uses STRANDS_* env vars by default.",
+        "description": "AWS-managed models (Anthropic Claude, etc).",
         "display_name": "Amazon Bedrock",
         "tiers": {
           "balanced": {
@@ -72,19 +82,19 @@
                 "type": "enabled"
               }
             },
-            "description": "Use when you need stronger reasoning (override via SWARMEE_BEDROCK_DEEP_MODEL_ID).",
+            "description": "Use when you need stronger reasoning.",
             "display_name": "Claude Opus 4.6 (deep)",
             "model_id": "us.anthropic.claude-opus-4-6-v1:0",
             "provider": "bedrock"
           },
           "fast": {
-            "description": "Lower latency / lower cost default (override via SWARMEE_BEDROCK_FAST_MODEL_ID).",
+            "description": "Lower latency / lower cost default.",
             "display_name": "Claude Haiku 4.5 (fast)",
             "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
             "provider": "bedrock"
           },
           "long": {
-            "description": "Use for long outputs and large refactors (override via SWARMEE_BEDROCK_LONG_MODEL_ID).",
+            "description": "Use for long outputs and large refactors.",
             "display_name": "Claude Opus 4.6 (long)",
             "model_id": "us.anthropic.claude-opus-4-6-v1:0",
             "provider": "bedrock"
@@ -102,19 +112,19 @@
             "provider": "github_copilot"
           },
           "deep": {
-            "description": "Stronger reasoning where available (override via SWARMEE_GITHUB_COPILOT_DEEP_MODEL_ID).",
+            "description": "Stronger reasoning where available.",
             "display_name": "GPT-5 (Copilot)",
             "model_id": "gpt-5",
             "provider": "github_copilot"
           },
           "fast": {
-            "description": "Lower latency default for Copilot (override via SWARMEE_GITHUB_COPILOT_FAST_MODEL_ID).",
+            "description": "Lower latency default for Copilot.",
             "display_name": "GPT-4o mini (Copilot)",
             "model_id": "gpt-4o-mini",
             "provider": "github_copilot"
           },
           "long": {
-            "description": "Long-form outputs on Copilot (override via SWARMEE_GITHUB_COPILOT_LONG_MODEL_ID).",
+            "description": "Long-form outputs on Copilot.",
             "display_name": "GPT-5 (Copilot long)",
             "model_id": "gpt-5",
             "provider": "github_copilot"
@@ -122,7 +132,7 @@
         }
       },
       "ollama": {
-        "description": "Local models via Ollama (SWARMEE_OLLAMA_HOST).",
+        "description": "Local models via Ollama.",
         "display_name": "Ollama",
         "tiers": {
           "balanced": {
@@ -132,19 +142,19 @@
             "provider": "ollama"
           },
           "deep": {
-            "description": "Local deep tier (override via SWARMEE_OLLAMA_DEEP_MODEL_ID).",
+            "description": "Local deep tier.",
             "display_name": "llama3.1",
             "model_id": "llama3.1",
             "provider": "ollama"
           },
           "fast": {
-            "description": "Local default for fast iteration (override via SWARMEE_OLLAMA_FAST_MODEL_ID).",
+            "description": "Local default for fast iteration.",
             "display_name": "llama3.1",
             "model_id": "llama3.1",
             "provider": "ollama"
           },
           "long": {
-            "description": "Local long tier (override via SWARMEE_OLLAMA_LONG_MODEL_ID).",
+            "description": "Local long tier.",
             "display_name": "llama3.1",
             "model_id": "llama3.1",
             "provider": "ollama"
@@ -180,7 +190,7 @@
             "provider": "openai"
           },
           "long": {
-            "description": "Long-form outputs (override via SWARMEE_OPENAI_LONG_MODEL_ID).",
+            "description": "Long-form outputs.",
             "display_name": "GPT-5.2 (long)",
             "model_id": "gpt-5.2",
             "provider": "openai"
@@ -192,6 +202,32 @@
   },
   "packs": {
     "installed": []
+  },
+  "pricing": {
+    "default": {},
+    "providers": {}
+  },
+  "runtime": {
+    "auto_approve": false,
+    "disabled_tools": [],
+    "enable_project_context_tool": false,
+    "enabled_tools": [],
+    "esc_interrupt_enabled": true,
+    "freeze_tools": false,
+    "interrupt_timeout_sec": 2.0,
+    "knowledge_base_id": null,
+    "limit_tool_results": true,
+    "preflight_enabled": true,
+    "preflight_level": "summary",
+    "preflight_max_chars": 8000,
+    "preflight_print": false,
+    "project_map_enabled": true,
+    "session_kb_promote_on_complete": false,
+    "session_s3_auto_export": false,
+    "session_s3_bucket": null,
+    "session_s3_prefix": "swarmee/sessions/",
+    "swarm_enabled": true,
+    "tooling_s3_prefix": "swarmee/tooling"
   },
   "safety": {
     "permission_rules": [],
@@ -205,7 +241,17 @@
       {
         "default": "ask",
         "remember": true,
+        "tool": "bash"
+      },
+      {
+        "default": "ask",
+        "remember": true,
         "tool": "file_write"
+      },
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "write"
       },
       {
         "default": "ask",
@@ -215,7 +261,62 @@
       {
         "default": "ask",
         "remember": true,
+        "tool": "edit"
+      },
+      {
+        "default": "ask",
+        "remember": true,
         "tool": "http_request"
+      },
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "git"
+      },
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "patch_apply"
+      },
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "patch"
+      },
+      {
+        "default": "allow",
+        "remember": true,
+        "tool": "file_search"
+      },
+      {
+        "default": "allow",
+        "remember": true,
+        "tool": "grep"
+      },
+      {
+        "default": "allow",
+        "remember": true,
+        "tool": "file_read"
+      },
+      {
+        "default": "allow",
+        "remember": true,
+        "tool": "read"
+      },
+      {
+        "default": "allow",
+        "remember": true,
+        "tool": "todoread"
+      },
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "todowrite"
+      },
+      {
+        "default": "ask",
+        "remember": true,
+        "tool": "run_checks"
       }
     ]
   }

@@ -5,6 +5,13 @@ import pytest
 
 import swarmee_river
 import swarmee_river.utils.model_utils
+from swarmee_river.settings import SwarmeeSettings, deep_merge_dict, default_settings_template
+
+
+def _settings_with(override: dict) -> SwarmeeSettings:
+    base = default_settings_template().to_dict()
+    merged = deep_merge_dict(base, override)
+    return SwarmeeSettings.from_dict(merged)
 
 
 @pytest.fixture
@@ -78,16 +85,12 @@ def test_load_config_default_none():
 
 
 def test_default_model_config_openai():
-    config = swarmee_river.utils.model_utils.default_model_config("openai")
+    config = swarmee_river.utils.model_utils.default_model_config("openai", default_settings_template())
     assert config["model_id"]
 
 
 def test_default_model_config_bedrock_uses_responsive_defaults(monkeypatch):
-    monkeypatch.delenv("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", raising=False)
-    monkeypatch.delenv("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", raising=False)
-    monkeypatch.delenv("SWARMEE_BEDROCK_MAX_RETRIES", raising=False)
-
-    config = swarmee_river.utils.model_utils.default_model_config("bedrock")
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", default_settings_template())
     boto_config = config["boto_client_config"]
 
     assert boto_config.read_timeout == 45.0
@@ -95,12 +98,21 @@ def test_default_model_config_bedrock_uses_responsive_defaults(monkeypatch):
     assert boto_config.retries["max_attempts"] == 2
 
 
-def test_default_model_config_bedrock_honors_timeout_and_retry_env(monkeypatch):
-    monkeypatch.setenv("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", "75")
-    monkeypatch.setenv("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", "12")
-    monkeypatch.setenv("SWARMEE_BEDROCK_MAX_RETRIES", "2")
-
-    config = swarmee_river.utils.model_utils.default_model_config("bedrock")
+def test_default_model_config_bedrock_honors_timeout_and_retry_settings():
+    settings = _settings_with(
+        {
+            "models": {
+                "providers": {
+                    "bedrock": {
+                        "read_timeout_sec": 75.0,
+                        "connect_timeout_sec": 12.0,
+                        "max_retries": 2,
+                    }
+                }
+            }
+        }
+    )
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
     boto_config = config["boto_client_config"]
 
     assert boto_config.read_timeout == 75.0
@@ -108,12 +120,21 @@ def test_default_model_config_bedrock_honors_timeout_and_retry_env(monkeypatch):
     assert boto_config.retries["max_attempts"] == 2
 
 
-def test_default_model_config_bedrock_invalid_env_falls_back(monkeypatch):
-    monkeypatch.setenv("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", "abc")
-    monkeypatch.setenv("SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC", "0")
-    monkeypatch.setenv("SWARMEE_BEDROCK_MAX_RETRIES", "-2")
-
-    config = swarmee_river.utils.model_utils.default_model_config("bedrock")
+def test_default_model_config_bedrock_invalid_settings_falls_back():
+    settings = _settings_with(
+        {
+            "models": {
+                "providers": {
+                    "bedrock": {
+                        "read_timeout_sec": "abc",
+                        "connect_timeout_sec": 0,
+                        "max_retries": -2,
+                    }
+                }
+            }
+        }
+    )
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
     boto_config = config["boto_client_config"]
 
     assert boto_config.read_timeout == 45.0
@@ -121,30 +142,28 @@ def test_default_model_config_bedrock_invalid_env_falls_back(monkeypatch):
     assert boto_config.retries["max_attempts"] == 2
 
 
-def test_default_model_config_openai_includes_max_retries_default_zero(monkeypatch):
-    monkeypatch.delenv("SWARMEE_OPENAI_MAX_RETRIES", raising=False)
-    config = swarmee_river.utils.model_utils.default_model_config("openai")
+def test_default_model_config_openai_includes_max_retries_default_zero():
+    config = swarmee_river.utils.model_utils.default_model_config("openai", default_settings_template())
     assert config["client_args"]["max_retries"] == 0
 
 
-def test_default_model_config_openai_honors_max_retries_env(monkeypatch):
-    monkeypatch.setenv("SWARMEE_OPENAI_MAX_RETRIES", "2")
-    config = swarmee_river.utils.model_utils.default_model_config("openai")
+def test_default_model_config_openai_honors_max_retries_settings():
+    settings = _settings_with({"models": {"providers": {"openai": {"max_retries": 2}}}})
+    config = swarmee_river.utils.model_utils.default_model_config("openai", settings)
     assert config["client_args"]["max_retries"] == 2
 
 
-def test_default_model_config_openai_ignores_invalid_max_retries(monkeypatch):
-    monkeypatch.setenv("SWARMEE_OPENAI_MAX_RETRIES", "abc")
-    config = swarmee_river.utils.model_utils.default_model_config("openai")
-    assert "max_retries" not in config.get("client_args", {})
+def test_default_model_config_openai_invalid_max_retries_falls_back_to_default():
+    settings = _settings_with({"models": {"providers": {"openai": {"max_retries": "abc"}}}})
+    config = swarmee_river.utils.model_utils.default_model_config("openai", settings)
+    assert config["client_args"]["max_retries"] == 0
 
 
 def test_default_model_config_github_copilot_defaults(monkeypatch):
-    monkeypatch.delenv("SWARMEE_GITHUB_COPILOT_MODEL_ID", raising=False)
     monkeypatch.delenv("SWARMEE_GITHUB_COPILOT_API_KEY", raising=False)
     monkeypatch.setenv("GITHUB_TOKEN", "token-1")
 
-    config = swarmee_river.utils.model_utils.default_model_config("github_copilot")
+    config = swarmee_river.utils.model_utils.default_model_config("github_copilot", default_settings_template())
 
     assert config["model_id"] == "gpt-4o"
     assert config["client_args"]["api_key"] == "token-1"
@@ -155,11 +174,20 @@ def test_default_model_config_github_copilot_defaults(monkeypatch):
 def test_default_model_config_github_copilot_honors_swarmee_token_and_retries(monkeypatch):
     monkeypatch.setenv("SWARMEE_GITHUB_COPILOT_API_KEY", "preferred")
     monkeypatch.setenv("GITHUB_TOKEN", "ignored")
-    monkeypatch.setenv("SWARMEE_GITHUB_COPILOT_MAX_RETRIES", "2")
-    monkeypatch.setenv("SWARMEE_GITHUB_COPILOT_BASE_URL", "https://internal.example/copilot")
-    monkeypatch.setenv("SWARMEE_MAX_TOKENS", "256")
-
-    config = swarmee_river.utils.model_utils.default_model_config("github_copilot")
+    settings = _settings_with(
+        {
+            "models": {
+                "max_output_tokens": 256,
+                "providers": {
+                    "github_copilot": {
+                        "max_retries": 2,
+                        "base_url": "https://internal.example/copilot",
+                    }
+                },
+            }
+        }
+    )
+    config = swarmee_river.utils.model_utils.default_model_config("github_copilot", settings)
 
     assert config["client_args"]["api_key"] == "preferred"
     assert config["client_args"]["max_retries"] == 2

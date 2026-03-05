@@ -38,16 +38,10 @@ def _data_home(app_name: str) -> Path:
 
 
 def auth_store_path() -> Path:
-    raw = (os.getenv("SWARMEE_AUTH_PATH") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
     return (_data_home("swarmee") / "auth.json").resolve()
 
 
 def opencode_auth_store_path() -> Path:
-    raw = (os.getenv("SWARMEE_OPENCODE_AUTH_PATH") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
     return (_data_home("opencode") / "auth.json").resolve()
 
 

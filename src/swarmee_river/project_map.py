@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.settings import RuntimeConfig
 from swarmee_river.state_paths import project_map_path as _default_project_map_path
-from swarmee_river.utils.env_utils import truthy_env
 from tools.project_context import run_project_context
 
 
@@ -166,23 +166,22 @@ def build_context_snapshot(
     *,
     artifact_store: ArtifactStore,
     interactive: bool,
+    runtime: RuntimeConfig,
     default_preflight_level: str | None = None,
 ) -> ContextSnapshot:
     """
     Build a lightweight repo context snapshot (preflight + project map) and return prompt sections.
 
-    Controlled by existing env vars:
-    - SWARMEE_PREFLIGHT=enabled|disabled
-    - SWARMEE_PREFLIGHT_LEVEL=summary|summary+tree|summary+files
-    - SWARMEE_PREFLIGHT_MAX_CHARS
-    - SWARMEE_PROJECT_MAP=enabled|disabled
+    Controlled by structured settings:
+    - runtime.preflight_enabled, runtime.preflight_level, runtime.preflight_max_chars, runtime.preflight_print
+    - runtime.project_map_enabled
     """
     preflight_prompt_section: str | None = None
     project_map_prompt_section: str | None = None
 
-    if truthy_env("SWARMEE_PREFLIGHT", True):
-        level = (os.getenv("SWARMEE_PREFLIGHT_LEVEL") or default_preflight_level or "summary").strip().lower()
-        max_chars = int(os.getenv("SWARMEE_PREFLIGHT_MAX_CHARS", "8000"))
+    if runtime.preflight_enabled:
+        level = (runtime.preflight_level or default_preflight_level or "summary").strip().lower()
+        max_chars = int(runtime.preflight_max_chars)
         actions = ["summary"]
         if level == "summary+tree":
             actions.append("tree")
@@ -206,11 +205,10 @@ def build_context_snapshot(
                 metadata={"source": "project_context", "level": level},
             )
             preflight_prompt_section = f"Project context snapshot:\n{preflight_text}"
-            should_print_preflight = truthy_env("SWARMEE_PREFLIGHT_PRINT", False)
-            if interactive and should_print_preflight:
+            if interactive and runtime.preflight_print:
                 print("\n[preflight]\n" + preflight_text + "\n")
 
-    if truthy_env("SWARMEE_PROJECT_MAP", True):
+    if runtime.project_map_enabled:
         try:
             pm = build_project_map()
             pm_path = save_project_map(pm)

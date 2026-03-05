@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 _MODEL_AUTO_VALUE = "__auto__"
@@ -13,8 +12,8 @@ def resolve_model_config_summary(*, provider_override: str | None = None, tier_o
     """
     Best-effort summary of the configured model selection (provider/tier/model_id) for display in the TUI.
 
-    This is intentionally approximate: final provider/model can still vary at runtime based on CLI args,
-    environment variables, and credential availability.
+    This is intentionally approximate: final provider/model can still vary at runtime based on CLI args
+    and credential availability.
     """
     try:
         from swarmee_river.settings import load_settings
@@ -28,15 +27,11 @@ def resolve_model_config_summary(*, provider_override: str | None = None, tier_o
         return "Model: (unavailable)"
 
     selected_provider, notice = resolve_model_provider(
-        cli_provider=None,
-        env_provider=provider_override if provider_override is not None else os.getenv("SWARMEE_MODEL_PROVIDER"),
+        cli_provider=provider_override,
+        env_provider=None,
         settings_provider=settings.models.provider,
     )
-    tier = (
-        tier_override
-        if tier_override is not None
-        else (os.getenv("SWARMEE_MODEL_TIER") or settings.models.default_tier)
-    )
+    tier = tier_override if tier_override is not None else settings.models.default_tier
     tier = (tier or "balanced").strip().lower()
 
     model_id: str | None = None
@@ -71,8 +66,8 @@ def resolve_model_fallback_notice(*, provider_override: str | None = None) -> st
     except Exception:
         return None
     _, notice = resolve_model_provider(
-        cli_provider=None,
-        env_provider=provider_override if provider_override is not None else os.getenv("SWARMEE_MODEL_PROVIDER"),
+        cli_provider=provider_override,
+        env_provider=None,
         settings_provider=settings.models.provider,
     )
     return notice or None
@@ -124,15 +119,11 @@ def model_select_options(
         return options, selected_value
 
     selected_provider, _ = resolve_model_provider(
-        cli_provider=None,
-        env_provider=provider_override if provider_override is not None else os.getenv("SWARMEE_MODEL_PROVIDER"),
+        cli_provider=provider_override,
+        env_provider=None,
         settings_provider=settings.models.provider,
     )
-    selected_tier = (
-        tier_override
-        if tier_override is not None
-        else (os.getenv("SWARMEE_MODEL_TIER") or settings.models.default_tier)
-    )
+    selected_tier = tier_override if tier_override is not None else settings.models.default_tier
     selected_provider = (selected_provider or "").strip().lower()
     selected_tier = (selected_tier or "").strip().lower()
 

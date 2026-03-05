@@ -17,7 +17,10 @@ import pytest
 
 # The harness fixture is defined in tui_harness.py (auto-discovered via conftest or
 # direct import).  We import it so pytest collects it as a fixture.
-from tests.tui_harness import tui_app_factory  # noqa: F401
+import tests.tui_harness as _tui_harness  # noqa: F401
+
+# Expose the fixture under its original name so pytest can resolve it.
+tui_app_factory = _tui_harness.tui_app_factory
 
 pytestmark = pytest.mark.asyncio
 

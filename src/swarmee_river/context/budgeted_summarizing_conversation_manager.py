@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from typing import Any
 
 from strands.agent.conversation_manager import SummarizingConversationManager
-
-from swarmee_river.utils.env_utils import truthy_env
 
 
 def _extract_message_text(message: dict[str, Any]) -> str:
@@ -82,16 +79,12 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
             summarization_system_prompt=summarization_system_prompt,
         )
 
-        self.max_prompt_tokens = (
-            int(os.getenv("SWARMEE_CONTEXT_BUDGET_TOKENS", "20000")) if max_prompt_tokens is None else max_prompt_tokens
-        )
-        self.chars_per_token = (
-            int(os.getenv("SWARMEE_TOKEN_CHARS_PER_TOKEN", "4")) if chars_per_token is None else chars_per_token
-        )
-        self.max_reduce_passes = (
-            int(os.getenv("SWARMEE_MAX_SUMMARY_PASSES", "4")) if max_reduce_passes is None else max_reduce_passes
-        )
-        self.enabled = truthy_env("SWARMEE_SUMMARIZE_CONTEXT", True)
+        # Settings are provided by the caller (CLI/TUI/notebook) via structured
+        # `.swarmee/settings.json` fields. Avoid environment-variable fallbacks.
+        self.max_prompt_tokens = int(max_prompt_tokens) if max_prompt_tokens is not None else 20000
+        self.chars_per_token = int(chars_per_token) if chars_per_token is not None else 4
+        self.max_reduce_passes = int(max_reduce_passes) if max_reduce_passes is not None else 4
+        self.enabled = True
 
     def reduce_context(self, agent: "Any", e: Exception | None = None, **kwargs: Any) -> None:
         messages = getattr(agent, "messages", [])

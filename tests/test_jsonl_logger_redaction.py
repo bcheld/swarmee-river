@@ -9,11 +9,27 @@ import pytest
 from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks
 
 
+def _write_project_settings(tmp_path: Path, payload: dict) -> Path:
+    swarmee_dir = tmp_path / ".swarmee"
+    swarmee_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = swarmee_dir / "settings.json"
+    settings_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    return settings_path
+
+
 def test_jsonl_logger_redacts_known_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("SWARMEE_LOG_EVENTS", "true")
-    monkeypatch.setenv("SWARMEE_LOG_REDACT", "true")
-    monkeypatch.setenv("SWARMEE_LOG_DIR", str(tmp_path / "logs"))
+    _write_project_settings(
+        tmp_path,
+        {
+            "diagnostics": {
+                "log_events": True,
+                "redact": True,
+                "log_redact": True,
+                "log_dir": "logs",
+            }
+        },
+    )
 
     secret = "sk-test-secret-12345678901234567890"
     monkeypatch.setenv("OPENAI_API_KEY", secret)
@@ -29,9 +45,17 @@ def test_jsonl_logger_redacts_known_secrets(tmp_path: Path, monkeypatch: pytest.
 
 def test_before_model_call_logs_context_composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("SWARMEE_LOG_EVENTS", "true")
-    monkeypatch.setenv("SWARMEE_LOG_REDACT", "false")
-    monkeypatch.setenv("SWARMEE_LOG_DIR", str(tmp_path / "logs"))
+    _write_project_settings(
+        tmp_path,
+        {
+            "diagnostics": {
+                "log_events": True,
+                "redact": False,
+                "log_redact": False,
+                "log_dir": "logs",
+            }
+        },
+    )
 
     hook = JSONLLoggerHooks()
 
@@ -69,9 +93,17 @@ def test_before_model_call_logs_context_composition(tmp_path: Path, monkeypatch:
 
 def test_after_model_call_logs_model_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("SWARMEE_LOG_EVENTS", "true")
-    monkeypatch.setenv("SWARMEE_LOG_REDACT", "false")
-    monkeypatch.setenv("SWARMEE_LOG_DIR", str(tmp_path / "logs"))
+    _write_project_settings(
+        tmp_path,
+        {
+            "diagnostics": {
+                "log_events": True,
+                "redact": False,
+                "log_redact": False,
+                "log_dir": "logs",
+            }
+        },
+    )
 
     hook = JSONLLoggerHooks()
 
@@ -99,9 +131,17 @@ def test_after_model_call_logs_model_id(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_jsonl_logger_treats_nul_dir_as_null_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("SWARMEE_LOG_EVENTS", "true")
-    monkeypatch.setenv("SWARMEE_LOG_REDACT", "false")
-    monkeypatch.setenv("SWARMEE_LOG_DIR", "NUL")
+    _write_project_settings(
+        tmp_path,
+        {
+            "diagnostics": {
+                "log_events": True,
+                "redact": False,
+                "log_redact": False,
+                "log_dir": "NUL",
+            }
+        },
+    )
 
     hook = JSONLLoggerHooks()
     hook._log("test", {"value": "hello"})  # noqa: SLF001

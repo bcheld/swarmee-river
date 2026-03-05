@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import shlex
 import threading
@@ -28,7 +27,7 @@ from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
 from swarmee_river.tools import get_tools
 from swarmee_river.utils.agent_runtime_utils import plan_json_for_execution, render_plan_text
-from swarmee_river.utils.env_utils import load_env_file, truthy
+from swarmee_river.utils.env_utils import load_env_file
 from swarmee_river.utils.kb_utils import load_system_prompt
 from swarmee_river.utils.provider_utils import resolve_model_provider
 
@@ -111,12 +110,6 @@ def _truncate_text(text: str, limit: int) -> str:
 
 
 def _guess_notebook_path(ipython: Any) -> Path | None:
-    env_path = os.getenv("SWARMEE_NOTEBOOK_PATH", "").strip()
-    if env_path:
-        p = Path(env_path).expanduser()
-        if p.exists() and p.is_file():
-            return p
-
     # Optional: ipynbname can often locate the active notebook in Jupyter.
     try:
         import ipynbname  # type: ignore
@@ -206,32 +199,7 @@ def _runtime_fingerprint() -> str:
         settings_mtime = settings_path.stat().st_mtime if settings_path.exists() else None
     except Exception:
         settings_mtime = None
-
-    env_keys = [
-        "SWARMEE_STATE_DIR",
-        "SWARMEE_LOG_DIR",
-        "SWARMEE_JUPYTER_MODEL_PROVIDER",
-        "SWARMEE_MODEL_PROVIDER",
-        "SWARMEE_MODEL_TIER",
-        "SWARMEE_MAX_TOKENS",
-        "OPENAI_API_KEY",
-        "SWARMEE_OPENAI_MODEL_ID",
-        "SWARMEE_GITHUB_COPILOT_API_KEY",
-        "SWARMEE_GITHUB_COPILOT_MODEL_ID",
-        "SWARMEE_GITHUB_COPILOT_BASE_URL",
-        "SWARMEE_GITHUB_COPILOT_CLIENT_ID",
-        "SWARMEE_AUTH_PATH",
-        "SWARMEE_OPENCODE_AUTH_PATH",
-        "GITHUB_TOKEN",
-        "GH_TOKEN",
-        "STRANDS_MODEL_ID",
-        "SWARMEE_OLLAMA_HOST",
-        "SWARMEE_OLLAMA_MODEL_ID",
-        "SWARMEE_KNOWLEDGE_BASE_ID",
-        "STRANDS_KNOWLEDGE_BASE_ID",
-    ]
-    env = {k: (os.getenv(k) or "") for k in env_keys}
-    return json.dumps({"cwd": cwd, "settings_mtime": settings_mtime, "env": env}, sort_keys=True)
+    return json.dumps({"cwd": cwd, "settings_mtime": settings_mtime}, sort_keys=True)
 
 
 def _build_hooks(settings: Any) -> list[Any]:
@@ -304,10 +272,14 @@ def _extract_runtime_text_chunk(event: dict[str, Any]) -> str:
 
 
 def _should_use_runtime_broker() -> bool:
-    raw = os.getenv("SWARMEE_NOTEBOOK_USE_RUNTIME")
+    # Notebook mode defaults to using the runtime broker so state can be shared
+    # with the CLI/TUI. This is internal wiring behavior, not end-user configuration.
+    from swarmee_river.config.env_policy import getenv_internal
+
+    raw = getenv_internal("SWARMEE_NOTEBOOK_USE_RUNTIME")
     if raw is None:
         return True
-    return truthy(raw)
+    return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
 
 
 def _run_swarmee_via_runtime(
@@ -319,7 +291,9 @@ def _run_swarmee_via_runtime(
     attach_cwd = Path.cwd().resolve()
     discovery = ensure_runtime_broker(cwd=attach_cwd)
 
-    session_id = (os.getenv("SWARMEE_SESSION_ID") or "").strip() or default_session_id_for_cwd(attach_cwd)
+    from swarmee_river.config.env_policy import getenv_internal
+
+    session_id = getenv_internal("SWARMEE_SESSION_ID") or default_session_id_for_cwd(attach_cwd)
     client = RuntimeServiceClient.from_discovery_file(discovery)
     client.connect()
 
@@ -486,15 +460,11 @@ def _get_or_create_runtime() -> _NotebookRuntime:
     load_env_file()
 
     settings = load_settings()
-    knowledge_base_id = (
-        os.getenv("SWARMEE_KNOWLEDGE_BASE_ID")
-        or os.getenv("STRANDS_KNOWLEDGE_BASE_ID")
-        or os.getenv("SWARMEE_NOTEBOOK_KNOWLEDGE_BASE_ID")
-    )
+    knowledge_base_id = settings.runtime.knowledge_base_id
 
     selected_provider, _notice = resolve_model_provider(
         cli_provider=None,
-        env_provider=os.getenv("SWARMEE_JUPYTER_MODEL_PROVIDER") or os.getenv("SWARMEE_MODEL_PROVIDER"),
+        env_provider=None,
         settings_provider=settings.models.provider,
     )
 
@@ -516,6 +486,7 @@ def _get_or_create_runtime() -> _NotebookRuntime:
     snapshot = build_context_snapshot(
         artifact_store=artifact_store,
         interactive=False,
+        runtime=settings.runtime,
         default_preflight_level=profile.preflight_level if profile else None,
     )
 
@@ -548,7 +519,7 @@ def _get_or_create_runtime() -> _NotebookRuntime:
 
 
 def _format_prompt(*, notebook_context: _NotebookContext, user_prompt: str) -> str:
-    context_limit = int(os.getenv("SWARMEE_NOTEBOOK_CONTEXT_CHARS", "120000"))
+    context_limit = 120000
     ctx_text = _truncate_text(notebook_context.text, context_limit)
 
     return (
@@ -636,7 +607,7 @@ def _run_swarmee(
         except MaxTokensReachedException:
             return (
                 "Error: Plan generation hit the max output token limit.\n"
-                "Fix: increase SWARMEE_MAX_TOKENS / STRANDS_MAX_TOKENS, or ask for a shorter plan."
+                "Fix: increase `models.max_output_tokens` in `.swarmee/settings.json`, or ask for a shorter plan."
             )
 
         rendered = render_plan_text(plan)
@@ -648,7 +619,7 @@ def _run_swarmee(
         except MaxTokensReachedException:
             return (
                 "Error: Execution hit the max output token limit.\n"
-                "Fix: increase SWARMEE_MAX_TOKENS / STRANDS_MAX_TOKENS, or ask for a shorter response."
+                "Fix: increase `models.max_output_tokens` in `.swarmee/settings.json`, or ask for a shorter response."
             )
         return str(result)
 
@@ -661,7 +632,7 @@ def _run_swarmee(
     except MaxTokensReachedException:
         return (
             "Error: Response hit the max output token limit.\n"
-            "Fix: increase SWARMEE_MAX_TOKENS / STRANDS_MAX_TOKENS, or ask for a shorter response."
+            "Fix: increase `models.max_output_tokens` in `.swarmee/settings.json`, or ask for a shorter response."
         )
     return str(result)
 
@@ -719,7 +690,7 @@ def load_ipython_extension(ipython: Any) -> None:
                 text = _shutdown_runtime_from_notebook()
                 print(text)
                 return text
-            include_context = (not no_context) and (not truthy(os.getenv("SWARMEE_NOTEBOOK_NO_CONTEXT")))
+            include_context = not no_context
 
             prompt = cell
             if extra:

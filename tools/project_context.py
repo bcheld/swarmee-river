@@ -10,7 +10,6 @@ from strands import tool
 from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.path_utils import SKIP_DIRS, safe_cwd
 from swarmee_river.utils.text_utils import truncate
-
 from tools.file_ops import file_list as _file_list
 from tools.file_ops import file_search as _file_search
 

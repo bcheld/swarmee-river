@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import json as _json
-import os
 from typing import Any
 
 from swarmee_river.error_classification import (
@@ -18,6 +17,7 @@ from swarmee_river.error_classification import (
 )
 from swarmee_river.pricing import resolve_pricing
 from swarmee_river.profiles import AgentProfile
+from swarmee_river.settings import load_settings
 from swarmee_river.tui.agent_studio import normalize_session_safety_overrides, normalize_team_presets
 from swarmee_river.tui.event_types import extract_tui_text_chunk
 from swarmee_river.tui.text_sanitize import sanitize_output_text
@@ -85,38 +85,23 @@ def _compute_usage_cost_fallback(event: dict[str, Any]) -> float | None:
     provider = str(event.get("provider", "")).strip().lower()
     model_id = str(event.get("model_id", "")).strip() or None
     pricing = resolve_pricing(provider=provider or None, model_id=model_id)
-
-    provider_key = provider.upper() if provider else ""
-    provider_input = _as_float(os.getenv(f"SWARMEE_PRICE_{provider_key}_INPUT_PER_1M")) if provider_key else None
-    provider_output = _as_float(os.getenv(f"SWARMEE_PRICE_{provider_key}_OUTPUT_PER_1M")) if provider_key else None
-    provider_cached = (
-        _as_float(os.getenv(f"SWARMEE_PRICE_{provider_key}_CACHED_INPUT_PER_1M")) if provider_key else None
-    )
+    settings = load_settings()
+    override = settings.pricing.providers.get(provider) if provider else None
+    if override is None:
+        override = settings.pricing.default
 
     default_input = pricing.input_per_1m if pricing is not None else None
     default_output = pricing.output_per_1m if pricing is not None else None
     default_cached = pricing.cached_input_per_1m if pricing is not None else None
 
     input_rate = (
-        provider_input
-        if provider_input is not None
-        else default_input
-        if default_input is not None
-        else _as_float(os.getenv("SWARMEE_PRICE_INPUT_PER_1M"))
+        override.input_per_1m if override.input_per_1m is not None else default_input
     )
     output_rate = (
-        provider_output
-        if provider_output is not None
-        else default_output
-        if default_output is not None
-        else _as_float(os.getenv("SWARMEE_PRICE_OUTPUT_PER_1M"))
+        override.output_per_1m if override.output_per_1m is not None else default_output
     )
     cached_rate = (
-        provider_cached
-        if provider_cached is not None
-        else default_cached
-        if default_cached is not None
-        else _as_float(os.getenv("SWARMEE_PRICE_CACHED_INPUT_PER_1M"))
+        override.cached_input_per_1m if override.cached_input_per_1m is not None else default_cached
     )
     if cached_rate is None:
         cached_rate = input_rate

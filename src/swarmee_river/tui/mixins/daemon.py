@@ -389,7 +389,6 @@ class DaemonMixin:
         self._reset_error_action_prompt()
 
     def _request_provider_connect(self, provider: str, *, profile: str | None = None) -> bool:
-        import os
 
         from swarmee_river.tui.commands import _CONNECT_USAGE_TEXT
         from swarmee_river.utils.provider_utils import normalize_provider_name
@@ -416,7 +415,16 @@ class DaemonMixin:
             self._write_transcript_line("[connect] starting provider auth for github_copilot...")
             self._show_auth_connect_popup("github_copilot")
         else:
-            resolved_profile = (profile or "").strip() or (os.getenv("AWS_PROFILE") or "").strip() or "default"
+            try:
+                from swarmee_river.settings import load_settings
+
+                settings = load_settings()
+                bedrock = settings.models.providers.get("bedrock")
+                extra = dict(getattr(bedrock, "extra", {}) or {})
+                configured_profile = str(extra.get("aws_profile") or "").strip()
+            except Exception:
+                configured_profile = ""
+            resolved_profile = (profile or "").strip() or configured_profile or "default"
             payload.update({"method": "sso", "profile": resolved_profile})
             self._write_transcript_line(f"[connect] starting provider auth for bedrock (profile={resolved_profile})...")
             self._show_auth_connect_popup("bedrock", profile=resolved_profile)

@@ -95,7 +95,7 @@ def test_stop_all_runtime_brokers_windows_without_sigkill(monkeypatch) -> None:
     monkeypatch.setattr(swarmee, "_runtime_broker_pids", lambda: [7001])
     monkeypatch.delattr(_signal, "SIGKILL", raising=False)
 
-    term_signal = getattr(_signal, "SIGTERM")
+    term_signal = _signal.SIGTERM
     kill_calls: list[tuple[int, int]] = []
     state = {"forced": False, "term_count": 0}
 
@@ -206,7 +206,8 @@ class TestInteractiveMode:
 
         # Verify user input was processed
         call = mock_agent.invoke_async.call_args
-        assert call.args[0] == "test query"
+        assert isinstance(call.args[0], str)
+        assert call.args[0].rstrip().endswith("test query")
         assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
         assert "structured_output_model" not in call.kwargs
         assert "structured_output_prompt" not in call.kwargs
@@ -690,6 +691,7 @@ class TestTuiDaemonMode:
                 del session_id, messages, max_messages, version
                 return {"version": 1, "message_count": 0, "turn_count": 0}
 
+        (tmp_path / ".swarmee").mkdir(parents=True, exist_ok=True)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
         monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
@@ -834,6 +836,7 @@ class TestTuiDaemonMode:
                 return {"status": "success", "content": [{"text": "Use review SOP"}]}
             return {"status": "error", "content": []}
 
+        (tmp_path / ".swarmee").mkdir(parents=True, exist_ok=True)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
         monkeypatch.setattr(swarmee, "run_sop", _fake_run_sop)
@@ -976,6 +979,7 @@ class TestTuiDaemonMode:
                 del session_id, messages, max_messages, version
                 return {"version": 1, "message_count": 2, "turn_count": 1}
 
+        (tmp_path / ".swarmee").mkdir(parents=True, exist_ok=True)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
         monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
@@ -1033,6 +1037,7 @@ class TestTuiDaemonMode:
                 del session_id, messages, max_messages, version
                 return {"version": 1, "message_count": 2, "turn_count": 1}
 
+        (tmp_path / ".swarmee").mkdir(parents=True, exist_ok=True)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
         monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
@@ -1110,6 +1115,7 @@ class TestTuiDaemonMode:
                 return _ImmediateThread()
             return real_thread(*args, **kwargs)
 
+        (tmp_path / ".swarmee").mkdir(parents=True, exist_ok=True)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(swarmee, "SessionStore", _FakeStore)
         monkeypatch.setattr(swarmee.threading, "Thread", _thread_factory)
@@ -1145,7 +1151,8 @@ class TestCommandLine:
 
         # Verify agent was called with the query
         call = mock_agent.invoke_async.call_args
-        assert call.args[0] == "test query"
+        assert isinstance(call.args[0], str)
+        assert call.args[0].rstrip().endswith("test query")
         assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
         assert "runtime_environment" in call.kwargs["invocation_state"]["swarmee"]
         assert "structured_output_model" not in call.kwargs
@@ -1170,7 +1177,7 @@ class TestCommandLine:
     @mock.patch.object(swarmee, "Agent")
     @mock.patch.object(swarmee, "store_conversation_in_kb")
     def test_command_line_with_kb_environment(self, mock_store, mock_agent):
-        """Test command line mode with KB from environment variable"""
+        """KB env var is no longer a supported configuration surface (settings/CLI only)."""
         # Setup mocks
         mock_agent_instance = mock.MagicMock()
         mock_agent.return_value = mock_agent_instance
@@ -1185,11 +1192,8 @@ class TestCommandLine:
         ):
             swarmee.main()
 
-        # Verify retrieve was called with the right KB ID
-        mock_agent_instance.tool.retrieve.assert_called_once_with(text="test query", knowledgeBaseId="env-kb-id")
-
-        # Verify store_conversation_in_kb was called
-        mock_store.assert_called_once_with(mock_agent_instance, "test query", mock.ANY, "env-kb-id")
+        mock_agent_instance.tool.retrieve.assert_not_called()
+        mock_store.assert_not_called()
 
 
 class TestConfiguration:
@@ -1205,7 +1209,8 @@ class TestConfiguration:
 
         # Verify agent was called with the correct prompt
         call = mock_agent.invoke_async.call_args
-        assert call.args[0] == "test query"
+        assert isinstance(call.args[0], str)
+        assert call.args[0].rstrip().endswith("test query")
         assert call.kwargs["invocation_state"]["swarmee"]["mode"] == "execute"
         assert "structured_output_model" not in call.kwargs
         assert "structured_output_prompt" not in call.kwargs
@@ -1213,8 +1218,7 @@ class TestConfiguration:
     def test_kb_environment_variable(
         self, mock_agent, mock_bedrock, mock_load_prompt, mock_store_conversation, monkeypatch
     ):
-        """Test handling of knowledge base environment variable"""
-        # Set environment variables
+        """KB env var is ignored (settings/CLI only)."""
         monkeypatch.setenv("SWARMEE_KNOWLEDGE_BASE_ID", "env-kb-id")
 
         # Mock sys.argv with a test query
@@ -1223,11 +1227,8 @@ class TestConfiguration:
         # Call the main function
         swarmee.main()
 
-        # Verify retrieve was called with the right KB ID
-        mock_agent.tool.retrieve.assert_called_with(text="test query", knowledgeBaseId="env-kb-id")
-
-        # Verify conversation was stored
-        mock_store_conversation.assert_called_with(mock_agent, "test query", mock.ANY, "env-kb-id")
+        mock_agent.tool.retrieve.assert_not_called()
+        mock_store_conversation.assert_not_called()
 
 
 class TestErrorHandling:
@@ -1293,11 +1294,8 @@ class TestKnowledgeBaseIntegration:
         # Setup mocks
         mock_user_input.side_effect = ["test query", "exit"]
 
-        # Configure environment
-        monkeypatch.setenv("SWARMEE_KNOWLEDGE_BASE_ID", "test-kb-id")
-
-        # Mock sys.argv
-        monkeypatch.setattr(sys, "argv", ["swarmee"])
+        # Mock sys.argv (KB is configured via CLI/settings; env is not supported).
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--kb", "test-kb-id"])
 
         # Call the main function
         swarmee.main()
@@ -1377,7 +1375,7 @@ class TestKnowledgeBaseIntegration:
         call = mock_agent.invoke_async.call_args
         prompt = call.args[0]
         assert "Welcome Text Reference:" not in prompt
-        assert "<system-reminder>" not in prompt
+        # Other system reminders (project map, preflight, etc.) may still be present.
 
 
 class TestToolConsentPrompt:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from swarmee_river.tui import app as tui_app
@@ -3095,12 +3096,18 @@ def test_warning_event_handler_uses_connect_popup_instead_of_toast() -> None:
     assert "WARN:" in issues[0]
 
 
-def test_usage_event_handler_computes_fallback_cost_when_event_omits_cost(monkeypatch) -> None:
+def test_usage_event_handler_computes_fallback_cost_when_event_omits_cost(
+    monkeypatch, tmp_path: Path
+) -> None:
     from swarmee_river.tui.event_router import _handle_usage_and_compaction_events
 
-    monkeypatch.setenv("SWARMEE_PRICE_OPENAI_INPUT_PER_1M", "2")
-    monkeypatch.setenv("SWARMEE_PRICE_OPENAI_OUTPUT_PER_1M", "8")
-    monkeypatch.delenv("SWARMEE_PRICE_OPENAI_CACHED_INPUT_PER_1M", raising=False)
+    # Pricing overrides are settings-driven (env knobs removed).
+    (tmp_path / ".swarmee").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".swarmee" / "settings.json").write_text(
+        '{"pricing":{"providers":{"openai":{"input_per_1m":2,"output_per_1m":8}}}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
 
     status_calls: list[tuple[dict[str, object] | None, float | None]] = []
 
@@ -3134,11 +3141,15 @@ def test_usage_event_handler_computes_fallback_cost_when_event_omits_cost(monkey
     assert app.refresh_calls == 1
 
 
-def test_usage_event_handler_prefers_event_cost_over_fallback(monkeypatch) -> None:
+def test_usage_event_handler_prefers_event_cost_over_fallback(monkeypatch, tmp_path: Path) -> None:
     from swarmee_river.tui.event_router import _handle_usage_and_compaction_events
 
-    monkeypatch.setenv("SWARMEE_PRICE_OPENAI_INPUT_PER_1M", "999")
-    monkeypatch.setenv("SWARMEE_PRICE_OPENAI_OUTPUT_PER_1M", "999")
+    (tmp_path / ".swarmee").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".swarmee" / "settings.json").write_text(
+        '{"pricing":{"providers":{"openai":{"input_per_1m":999,"output_per_1m":999}}}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
 
     status_costs: list[float | None] = []
 

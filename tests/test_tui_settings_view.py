@@ -9,82 +9,33 @@ from swarmee_river.tui.mixins.settings import SettingsMixin
 from swarmee_river.tui.views import settings as settings_view
 
 
-def test_env_var_specs_include_model_provider() -> None:
+def test_env_var_specs_include_supported_secrets() -> None:
     specs = settings_view.env_var_specs()
-    provider_spec = next((spec for spec in specs if spec.key == "SWARMEE_MODEL_PROVIDER"), None)
-    assert provider_spec is not None
-    assert provider_spec.category
-    assert "openai" in provider_spec.choices
-    assert "bedrock" in provider_spec.choices
+    keys = {spec.key for spec in specs}
+    assert "OPENAI_API_KEY" in keys
+    assert "SWARMEE_GITHUB_COPILOT_API_KEY" in keys
+    assert "GITHUB_TOKEN" in keys
+    assert "GH_TOKEN" in keys
+
+    openai = settings_view.env_spec_by_key("OPENAI_API_KEY")
+    assert openai is not None
+    assert openai.category == "Supported Secrets (Read By Swarmee)"
 
 
 def test_build_env_sidebar_items_includes_default_and_current(monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_MODEL_PROVIDER", "openai")
-    items = settings_view.build_env_sidebar_items()
-    target = next((item for item in items if item["id"] == "SWARMEE_MODEL_PROVIDER"), None)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-1234567890abcdef")
+    items = settings_view.build_env_sidebar_items(category="Supported Secrets (Read By Swarmee)")
+    target = next((item for item in items if item["id"] == "OPENAI_API_KEY"), None)
     assert target is not None
-    assert "current: openai" in target["subtitle"]
+    # Masked value in UI.
+    assert "current: sk-1...cdef" in target["subtitle"]
     assert "default:" in target["subtitle"]
 
 
-def test_env_var_specs_include_bedrock_and_interrupt_runtime_controls() -> None:
-    specs = settings_view.env_var_specs()
-    keys = {spec.key for spec in specs}
-    assert "SWARMEE_BEDROCK_READ_TIMEOUT_SEC" in keys
-    assert "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC" in keys
-    assert "SWARMEE_BEDROCK_MAX_RETRIES" in keys
-    assert "SWARMEE_BEDROCK_STALL_WARN_SEC" in keys
-    assert "SWARMEE_BEDROCK_STALL_DIAG_DUMP" in keys
-    assert "SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC" in keys
-    assert "SWARMEE_INTERRUPT_TIMEOUT_SEC" in keys
-    assert "SWARMEE_INTERRUPT_FORCE_RESTART" in keys
-
-
-def test_env_category_options_include_bedrock_runtime() -> None:
+def test_env_category_options_include_expected_sections() -> None:
     categories = {value for _label, value in settings_view.env_category_options()}
-    assert "Bedrock Runtime" in categories
-
-
-def test_env_category_options_include_diagnostics_and_logging() -> None:
-    categories = {value for _label, value in settings_view.env_category_options()}
-    assert "Diagnostics and Logging" in categories
-
-
-def test_bedrock_runtime_spec_has_clear_transport_description() -> None:
-    specs = settings_view.env_var_specs()
-    read_timeout = next((spec for spec in specs if spec.key == "SWARMEE_BEDROCK_READ_TIMEOUT_SEC"), None)
-    assert read_timeout is not None
-    assert read_timeout.category == "Bedrock Runtime"
-    normalized_desc = read_timeout.description.lower()
-    assert "response body chunks" in normalized_desc
-    assert "seconds" in normalized_desc
-
-
-def test_bedrock_runtime_category_filters_to_expected_keys() -> None:
-    rows = settings_view.build_env_table_rows(category="Bedrock Runtime")
-    keys = {row[0] for row in rows}
-    assert keys == {
-        "SWARMEE_BEDROCK_READ_TIMEOUT_SEC",
-        "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC",
-        "SWARMEE_BEDROCK_MAX_RETRIES",
-        "SWARMEE_BEDROCK_STALL_WARN_SEC",
-        "SWARMEE_BEDROCK_STALL_DIAG_DUMP",
-        "SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC",
-    }
-
-
-def test_diagnostics_and_logging_category_filters_to_expected_keys() -> None:
-    rows = settings_view.build_env_table_rows(category="Diagnostics and Logging")
-    keys = {row[0] for row in rows}
-    assert {
-        "SWARMEE_DIAG_LEVEL",
-        "SWARMEE_DIAG_REDACT",
-        "SWARMEE_DIAG_RETENTION_DAYS",
-        "SWARMEE_DIAG_MAX_BYTES",
-        "SWARMEE_LOG_EVENTS",
-        "SWARMEE_LOG_REDACT",
-        "SWARMEE_LOG_DIR",
-    }.issubset(keys)
+    assert "Supported Secrets (Read By Swarmee)" in categories
+    assert "External Provider Credentials (SDK-Managed)" in categories
 
 
 class _Widget:
@@ -254,7 +205,7 @@ def test_model_env_overrides_merge_project_env_and_model_overrides() -> None:
         {
             "models": {},
             "env": {
-                "AWS_PROFILE": "ds-pr",
+                "PYTHONWARNINGS": "default",
                 "SWARMEE_MODEL_PROVIDER": "bedrock",
             },
         }
@@ -264,9 +215,8 @@ def test_model_env_overrides_merge_project_env_and_model_overrides() -> None:
 
     overrides = harness._model_env_overrides()
 
-    assert overrides["AWS_PROFILE"] == "ds-pr"
-    assert overrides["SWARMEE_MODEL_PROVIDER"] == "openai"
-    assert overrides["SWARMEE_MODEL_TIER"] == "deep"
+    # Secrets-only env policy: project settings `env.*` keeps internal wiring keys only.
+    assert overrides == {"PYTHONWARNINGS": "default"}
 
 
 def test_apply_bedrock_runtime_settings_persists_values() -> None:
@@ -278,10 +228,13 @@ def test_apply_bedrock_runtime_settings_persists_values() -> None:
     harness._apply_bedrock_runtime_settings()
 
     assert harness.saved_payload is not None
-    env_payload = harness.saved_payload.get("env", {})
-    assert env_payload["SWARMEE_BEDROCK_READ_TIMEOUT_SEC"] == "75.0"
-    assert env_payload["SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC"] == "12.0"
-    assert env_payload["SWARMEE_BEDROCK_MAX_RETRIES"] == "2"
+    bedrock = harness.saved_payload["models"]["providers"]["bedrock"]
+    assert bedrock["read_timeout_sec"] == 75.0
+    assert bedrock["connect_timeout_sec"] == 12.0
+    assert bedrock["max_retries"] == 2
+    assert "env" not in harness.saved_payload or (
+        "SWARMEE_BEDROCK_READ_TIMEOUT_SEC" not in harness.saved_payload.get("env", {})
+    )
     assert harness._refresh_settings_models_calls == 1
 
 
@@ -292,8 +245,10 @@ def test_apply_interrupt_control_settings_persists_values() -> None:
     harness._apply_interrupt_control_settings()
 
     assert harness.saved_payload is not None
-    env_payload = harness.saved_payload.get("env", {})
-    assert env_payload["SWARMEE_INTERRUPT_TIMEOUT_SEC"] == "1.5"
+    assert harness.saved_payload["runtime"]["interrupt_timeout_sec"] == 1.5
+    assert "env" not in harness.saved_payload or (
+        "SWARMEE_INTERRUPT_TIMEOUT_SEC" not in harness.saved_payload.get("env", {})
+    )
     assert harness._refresh_settings_general_calls == 1
 
 
@@ -338,4 +293,8 @@ def test_apply_settings_model_manager_result_persists_models_and_env() -> None:
     assert harness.saved_payload is not None
     assert harness.saved_payload["models"]["default_selection"]["tier"] == "coding"
     assert harness.saved_payload["models"]["providers"]["openai"]["tiers"]["coding"]["model_id"] == "gpt-5.3-codex"
-    assert harness.saved_payload["env"]["SWARMEE_BEDROCK_READ_TIMEOUT_SEC"] == "60"
+    bedrock = harness.saved_payload["models"]["providers"]["bedrock"]
+    assert bedrock["read_timeout_sec"] == 60.0
+    assert "env" not in harness.saved_payload or (
+        "SWARMEE_BEDROCK_READ_TIMEOUT_SEC" not in harness.saved_payload.get("env", {})
+    )

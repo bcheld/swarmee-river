@@ -8,8 +8,7 @@ from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import apply_project_env_overrides, load_project_env_overrides, load_settings
 
 
-def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
 
     settings = load_settings(settings_path)
@@ -29,6 +28,7 @@ def test_load_project_env_overrides_parses_env_section(tmp_path: Path) -> None:
             {
                 "env": {
                     "AWS_PROFILE": " ds-pr ",
+                    "PYTHONWARNINGS": " default::DeprecationWarning ",
                     "EMPTY_VALUE": "   ",
                     "NULL_VALUE": None,
                     "  ": "ignored",
@@ -40,32 +40,30 @@ def test_load_project_env_overrides_parses_env_section(tmp_path: Path) -> None:
     )
 
     overrides = load_project_env_overrides(settings_path)
-    assert overrides == {
-        "AWS_PROFILE": "ds-pr",
-        "SWARMEE_MODEL_PROVIDER": "bedrock",
-    }
+    # Project env overrides are migration-only and restricted to internal wiring keys.
+    assert overrides == {"PYTHONWARNINGS": "default::DeprecationWarning"}
 
 
 def test_apply_project_env_overrides_honors_overwrite_flag(tmp_path: Path, monkeypatch) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
-        json.dumps({"env": {"AWS_PROFILE": "profile-from-settings"}}),
+        json.dumps({"env": {"PYTHONWARNINGS": "default::DeprecationWarning"}}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("AWS_PROFILE", "existing-profile")
+    monkeypatch.setenv("PYTHONWARNINGS", "error")
 
     applied_no_overwrite = apply_project_env_overrides(settings_path, overwrite=False)
     assert applied_no_overwrite == {}
-    assert (os.getenv("AWS_PROFILE") or "") == "existing-profile"
+    assert (os.getenv("PYTHONWARNINGS") or "") == "error"
 
     applied_overwrite = apply_project_env_overrides(settings_path, overwrite=True)
-    assert applied_overwrite == {"AWS_PROFILE": "profile-from-settings"}
-    assert (os.getenv("AWS_PROFILE") or "") == "profile-from-settings"
+    assert applied_overwrite == {"PYTHONWARNINGS": "default::DeprecationWarning"}
+    assert (os.getenv("PYTHONWARNINGS") or "") == "default::DeprecationWarning"
 
 
-def test_load_settings_env_overrides_provider(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_MODEL_PROVIDER", "openai")
+def test_load_settings_env_overrides_provider(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({"models": {"provider": "openai"}}), encoding="utf-8")
 
     settings = load_settings(settings_path)
 
@@ -73,8 +71,7 @@ def test_load_settings_env_overrides_provider(tmp_path: Path, monkeypatch) -> No
     assert settings.models.default_selection.provider == "openai"
 
 
-def test_load_settings_prefers_default_selection_over_legacy_keys(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+def test_load_settings_prefers_default_selection_over_legacy_keys(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
         json.dumps(
@@ -97,8 +94,7 @@ def test_load_settings_prefers_default_selection_over_legacy_keys(tmp_path: Path
     assert settings.models.default_selection.tier == "coding"
 
 
-def test_auto_escalation_uses_explicit_order_only(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+def test_auto_escalation_uses_explicit_order_only(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
         json.dumps(
@@ -117,11 +113,13 @@ def test_auto_escalation_uses_explicit_order_only(tmp_path: Path, monkeypatch) -
     assert settings.models.auto_escalation.order == ["coding", "deep"]
 
 
-def test_tier_model_id_env_overrides_win_over_settings(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_MODEL_PROVIDER", "openai")
-    monkeypatch.delenv("SWARMEE_OPENAI_MODEL_ID", raising=False)
-    monkeypatch.setenv("SWARMEE_OPENAI_FAST_MODEL_ID", "gpt-4o-mini")
-    settings = load_settings(tmp_path / "settings.json")
+def test_tier_model_id_settings_overrides_apply(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"models": {"providers": {"openai": {"tiers": {"fast": {"model_id": "gpt-4o-mini"}}}}}}),
+        encoding="utf-8",
+    )
+    settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="openai")
     tiers = {t.name: t for t in manager.list_tiers()}
@@ -130,11 +128,26 @@ def test_tier_model_id_env_overrides_win_over_settings(tmp_path: Path, monkeypat
     assert tiers["fast"].model_id == "gpt-4o-mini"
 
 
-def test_provider_level_env_model_id_overrides_settings(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_MODEL_PROVIDER", "openai")
-    monkeypatch.setenv("SWARMEE_OPENAI_MODEL_ID", "gpt-4o-mini")
-    monkeypatch.delenv("SWARMEE_OPENAI_FAST_MODEL_ID", raising=False)
-    settings = load_settings(tmp_path / "settings.json")
+def test_tier_model_id_settings_overrides_can_apply_to_multiple_tiers(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "providers": {
+                        "openai": {
+                            "tiers": {
+                                "fast": {"model_id": "gpt-4o-mini"},
+                                "balanced": {"model_id": "gpt-4o-mini"},
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="openai")
     tiers = {t.name: t for t in manager.list_tiers()}
@@ -143,11 +156,26 @@ def test_provider_level_env_model_id_overrides_settings(tmp_path: Path, monkeypa
     assert tiers["balanced"].model_id == "gpt-4o-mini"
 
 
-def test_tier_env_model_id_beats_provider_env_model_id(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_MODEL_PROVIDER", "openai")
-    monkeypatch.setenv("SWARMEE_OPENAI_MODEL_ID", "gpt-4o-mini")
-    monkeypatch.setenv("SWARMEE_OPENAI_FAST_MODEL_ID", "gpt-5-nano")
-    settings = load_settings(tmp_path / "settings.json")
+def test_tier_model_id_override_is_per_tier(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "providers": {
+                        "openai": {
+                            "tiers": {
+                                "fast": {"model_id": "gpt-5-nano"},
+                                "balanced": {"model_id": "gpt-4o-mini"},
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="openai")
     tiers = {t.name: t for t in manager.list_tiers()}
@@ -156,9 +184,7 @@ def test_tier_env_model_id_beats_provider_env_model_id(tmp_path: Path, monkeypat
     assert tiers["balanced"].model_id == "gpt-4o-mini"
 
 
-def test_fallback_provider_overrides_settings_provider_for_session(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
-
+def test_fallback_provider_overrides_settings_provider_for_session(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(json.dumps({"models": {"provider": "bedrock"}}), encoding="utf-8")
     settings = load_settings(settings_path)
@@ -169,34 +195,43 @@ def test_fallback_provider_overrides_settings_provider_for_session(tmp_path: Pat
     assert tiers["balanced"].provider == "openai"
 
 
-def test_provider_level_env_model_id_overrides_settings_for_github_copilot(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_MODEL_PROVIDER", "github_copilot")
-    monkeypatch.setenv("SWARMEE_GITHUB_COPILOT_MODEL_ID", "gpt-4.1")
-    monkeypatch.delenv("SWARMEE_GITHUB_COPILOT_FAST_MODEL_ID", raising=False)
-    settings = load_settings(tmp_path / "settings.json")
+def test_tier_model_id_settings_overrides_apply_for_github_copilot(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"models": {"providers": {"github_copilot": {"tiers": {"fast": {"model_id": "gpt-4.1"}}}}}}),
+        encoding="utf-8",
+    )
+    settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="github_copilot")
     tiers = {t.name: t for t in manager.list_tiers()}
 
     assert tiers["fast"].model_id == "gpt-4.1"
-    assert tiers["balanced"].model_id == "gpt-4.1"
+    assert tiers["balanced"].model_id is not None
 
 
-def test_tier_env_model_id_beats_provider_env_for_github_copilot(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("SWARMEE_MODEL_PROVIDER", "github_copilot")
-    monkeypatch.setenv("SWARMEE_GITHUB_COPILOT_MODEL_ID", "gpt-4.1")
-    monkeypatch.setenv("SWARMEE_GITHUB_COPILOT_FAST_MODEL_ID", "gpt-4o-mini")
-    settings = load_settings(tmp_path / "settings.json")
+def test_github_copilot_tier_overrides_are_per_tier(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "providers": {"github_copilot": {"tiers": {"fast": {"model_id": "gpt-4o-mini"}}}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="github_copilot")
     tiers = {t.name: t for t in manager.list_tiers()}
 
     assert tiers["fast"].model_id == "gpt-4o-mini"
-    assert tiers["balanced"].model_id == "gpt-4.1"
+    assert tiers["balanced"].model_id != "gpt-4o-mini"
 
 
-def test_default_safety_rules_include_opencode_alias_entries(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+def test_default_safety_rules_include_opencode_alias_entries(tmp_path: Path) -> None:
     settings = load_settings(tmp_path / "settings.json")
 
     rules = {rule.tool: rule.default for rule in settings.safety.tool_rules}
@@ -211,8 +246,7 @@ def test_default_safety_rules_include_opencode_alias_entries(tmp_path: Path, mon
     assert rules["patch_apply"] == "ask"
 
 
-def test_load_settings_filters_hidden_tiers(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+def test_load_settings_filters_hidden_tiers(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
         json.dumps({"models": {"hidden_tiers": ["openai|balanced"]}}),
@@ -226,8 +260,7 @@ def test_load_settings_filters_hidden_tiers(tmp_path: Path, monkeypatch) -> None
     assert "fast" in openai_tiers
 
 
-def test_load_settings_restores_hidden_tier_when_key_removed(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+def test_load_settings_restores_hidden_tier_when_key_removed(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
         json.dumps({"models": {"hidden_tiers": ["openai|balanced"]}}),
@@ -244,8 +277,7 @@ def test_load_settings_restores_hidden_tier_when_key_removed(tmp_path: Path, mon
     assert "balanced" in restored_settings.models.providers["openai"].tiers
 
 
-def test_load_settings_hidden_tier_overrides_are_ignored(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SWARMEE_MODEL_PROVIDER", raising=False)
+def test_load_settings_hidden_tier_overrides_are_ignored(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
         json.dumps(

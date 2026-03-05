@@ -10,26 +10,27 @@ from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import AfterInvocationEvent
 
 from swarmee_river.hooks._compat import register_hook_callback
+from swarmee_river.settings import SwarmeeSettings
 from tools.session_s3 import export_session_to_s3, promote_session_to_kb
 
 logger = logging.getLogger(__name__)
 
 
-def _truthy_env(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "t", "yes", "y", "on", "enabled", "enable"}
-
-
 class SessionS3Hooks(HookProvider):
     """Best-effort background export/promotion hook for persisted sessions."""
 
-    def __init__(self, *, debounce_seconds: int = 30, promote_debounce_seconds: int = 300) -> None:
-        self.bucket = (os.getenv("SWARMEE_SESSION_S3_BUCKET") or "").strip()
-        self.prefix = (os.getenv("SWARMEE_SESSION_S3_PREFIX") or "swarmee/sessions/").strip()
-        self.auto_export = _truthy_env("SWARMEE_SESSION_S3_AUTO_EXPORT", False)
-        self.promote_on_complete = _truthy_env("SWARMEE_SESSION_KB_PROMOTE_ON_COMPLETE", False)
+    def __init__(
+        self,
+        *,
+        settings: SwarmeeSettings,
+        debounce_seconds: int = 30,
+        promote_debounce_seconds: int = 300,
+    ) -> None:
+        self.bucket = str(settings.runtime.session_s3_bucket or "").strip()
+        self.prefix = str(settings.runtime.session_s3_prefix or "swarmee/sessions/").strip() or "swarmee/sessions/"
+        self.auto_export = bool(settings.runtime.session_s3_auto_export)
+        self.promote_on_complete = bool(settings.runtime.session_kb_promote_on_complete)
+        self.knowledge_base_id = str(settings.runtime.knowledge_base_id or "").strip()
 
         self.enabled = bool(self.bucket) and (self.auto_export or self.promote_on_complete)
         self.debounce_seconds = max(1, int(debounce_seconds))
@@ -43,10 +44,6 @@ class SessionS3Hooks(HookProvider):
         register_hook_callback(registry, AfterInvocationEvent, self.after_invocation)
 
     def _resolve_session_id(self, event: AfterInvocationEvent) -> str:
-        sid = (os.getenv("SWARMEE_SESSION_ID") or "").strip()
-        if sid:
-            return sid
-
         invocation_state = getattr(event, "invocation_state", None)
         if isinstance(invocation_state, dict):
             sw = invocation_state.get("swarmee")
@@ -54,6 +51,10 @@ class SessionS3Hooks(HookProvider):
                 fallback = str(sw.get("session_id") or "").strip()
                 if fallback:
                     return fallback
+        # Internal runtime wiring fallback.
+        sid = (os.getenv("SWARMEE_SESSION_ID") or "").strip()
+        if sid:
+            return sid
         return ""
 
     def after_invocation(self, event: AfterInvocationEvent) -> None:
@@ -104,13 +105,12 @@ class SessionS3Hooks(HookProvider):
                 logger.debug("SessionS3Hooks export failed for %s: %s", session_id, exc)
 
         if run_promote:
-            kb_id = (os.getenv("SWARMEE_KNOWLEDGE_BASE_ID") or os.getenv("STRANDS_KNOWLEDGE_BASE_ID") or "").strip()
-            if not kb_id:
+            if not self.knowledge_base_id:
                 return
             try:
                 promote_session_to_kb(
                     session_id=session_id,
-                    knowledge_base_id=kb_id,
+                    knowledge_base_id=self.knowledge_base_id,
                     content_filter="all",
                 )
             except Exception as exc:
