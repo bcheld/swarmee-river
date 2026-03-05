@@ -165,6 +165,20 @@ Configuration precedence (highest → lowest):
 For the full list of configuration knobs, see [`env.example`](env.example).
 For an end-to-end walkthrough of context assembly, trimming, and persistence, see [`docs/agent_context_lifecycle.md`](docs/agent_context_lifecycle.md).
 
+## Developer Onboarding
+
+New to Swarmee River? Start here:
+
+| Guide | What it covers |
+|-------|---------------|
+| [Getting Started](docs/onboarding/getting-started.md) | Install, configure credentials, run your first session |
+| [Core Concepts](docs/onboarding/core-concepts.md) | Architecture, tools, SOPs, profiles, sessions |
+| [First Workflow](docs/onboarding/first-workflow.md) | Build a code review agent end-to-end |
+| [Custom Tools](docs/onboarding/custom-tools.md) | Write, annotate, and test a custom `@tool` |
+| [SOPs and Profiles](docs/onboarding/sops-and-profiles.md) | SOP format, agent profile schema, examples |
+| [Delegation](docs/onboarding/delegation.md) | strand, swarm, and use_agent patterns |
+| [Debugging](docs/onboarding/debugging.md) | Logs, diagnostics, common errors and fixes |
+
 ## Model Providers
 
 Swarmee is packaged with `bedrock`, `openai`, `ollama`, and `github_copilot` providers. See `docs/configuration/` for default model configs and reasoning settings.
