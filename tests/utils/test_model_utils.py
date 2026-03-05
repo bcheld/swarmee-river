@@ -121,6 +121,36 @@ def test_default_model_config_bedrock_invalid_env_falls_back(monkeypatch):
     assert boto_config.retries["max_attempts"] == 2
 
 
+@pytest.mark.parametrize("token", ["disable", "disabled", "off", "false", "0", ""])
+def test_default_model_config_bedrock_omits_thinking_when_disabled(monkeypatch, token):
+    monkeypatch.setenv("STRANDS_THINKING_TYPE", token)
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock")
+    additional = config.get("additional_request_fields")
+    if isinstance(additional, dict):
+        assert "thinking" not in additional
+    else:
+        assert additional is None
+
+
+@pytest.mark.parametrize("token", ["enable", "enabled", "on", "true", "1"])
+def test_default_model_config_bedrock_emits_enabled_thinking_payload(monkeypatch, token):
+    monkeypatch.setenv("STRANDS_THINKING_TYPE", token)
+    monkeypatch.setenv("STRANDS_BUDGET_TOKENS", "3072")
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock")
+    thinking = config["additional_request_fields"]["thinking"]
+    assert thinking["type"] == "enabled"
+    assert thinking["budget_tokens"] == 3072
+
+
+def test_default_model_config_bedrock_invalid_budget_falls_back(monkeypatch):
+    monkeypatch.setenv("STRANDS_THINKING_TYPE", "enabled")
+    monkeypatch.setenv("STRANDS_BUDGET_TOKENS", "invalid")
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock")
+    thinking = config["additional_request_fields"]["thinking"]
+    assert thinking["type"] == "enabled"
+    assert thinking["budget_tokens"] == 2048
+
+
 def test_default_model_config_openai_includes_max_retries_default_zero(monkeypatch):
     monkeypatch.delenv("SWARMEE_OPENAI_MAX_RETRIES", raising=False)
     config = swarmee_river.utils.model_utils.default_model_config("openai")

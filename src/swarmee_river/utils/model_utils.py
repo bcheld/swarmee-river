@@ -9,6 +9,11 @@ from typing import Any, cast
 from botocore.config import Config
 from strands.models import Model
 
+_THINKING_ENABLE_TOKENS = {"1", "true", "t", "yes", "y", "on", "enable", "enabled"}
+_THINKING_DISABLE_TOKENS = {"0", "false", "f", "no", "n", "off", "disable", "disabled", ""}
+_BEDROCK_THINKING_BUDGET_DEFAULT = 2048
+_BEDROCK_THINKING_BUDGET_MAX = 32768
+
 
 def _env_int(name: str, default: int, *, min_value: int | None = None) -> int:
     raw = os.getenv(name, "").strip()
@@ -39,6 +44,64 @@ def _bedrock_timeout_seconds(name: str, default: float) -> float:
     return value
 
 
+def _thinking_mode_token() -> str:
+    return str(os.getenv("STRANDS_THINKING_TYPE", "enabled") or "").strip().lower()
+
+
+def _safe_thinking_budget(value: Any) -> int:
+    try:
+        budget = int(value)
+    except Exception:
+        budget = _BEDROCK_THINKING_BUDGET_DEFAULT
+    if budget <= 0:
+        budget = _BEDROCK_THINKING_BUDGET_DEFAULT
+    if budget > _BEDROCK_THINKING_BUDGET_MAX:
+        budget = _BEDROCK_THINKING_BUDGET_MAX
+    return budget
+
+
+def _normalized_bedrock_thinking_fields() -> dict[str, Any] | None:
+    token = _thinking_mode_token()
+    if token in _THINKING_DISABLE_TOKENS:
+        return None
+    if token not in _THINKING_ENABLE_TOKENS:
+        token = "enabled"
+
+    budget = _safe_thinking_budget(_env_int("STRANDS_BUDGET_TOKENS", _BEDROCK_THINKING_BUDGET_DEFAULT, min_value=1))
+    return {
+        "type": "enabled",
+        "budget_tokens": budget,
+    }
+
+
+def sanitize_bedrock_thinking_config(config: dict[str, Any]) -> None:
+    normalized = _normalized_bedrock_thinking_fields()
+    extra = config.get("additional_request_fields")
+    additional_request_fields = extra if isinstance(extra, dict) else {}
+    existing = additional_request_fields.get("thinking")
+
+    if normalized is None:
+        additional_request_fields.pop("thinking", None)
+        if additional_request_fields:
+            config["additional_request_fields"] = additional_request_fields
+        else:
+            config.pop("additional_request_fields", None)
+        return
+
+    budget_value = normalized["budget_tokens"]
+    if isinstance(existing, dict):
+        existing_type = str(existing.get("type", "")).strip().lower()
+        existing_budget = existing.get("budget_tokens")
+        if existing_type in _THINKING_ENABLE_TOKENS and not isinstance(existing_budget, bool):
+            budget_value = _safe_thinking_budget(existing_budget)
+
+    additional_request_fields["thinking"] = {
+        "type": "enabled",
+        "budget_tokens": budget_value,
+    }
+    config["additional_request_fields"] = additional_request_fields
+
+
 def _default_bedrock_model_config() -> dict[str, Any]:
     config: dict[str, Any] = {
         "model_id": os.getenv("STRANDS_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
@@ -51,17 +114,17 @@ def _default_bedrock_model_config() -> dict[str, Any]:
                 "mode": "adaptive",
             },
         ),
-        "additional_request_fields": {
-            "thinking": {
-                "type": os.getenv("STRANDS_THINKING_TYPE", "enabled"),
-                "budget_tokens": _env_int("STRANDS_BUDGET_TOKENS", 2048, min_value=1),
-            },
-        },
         "cache_tools": os.getenv("STRANDS_CACHE_TOOLS", "default"),
     }
+    additional_request_fields: dict[str, Any] = {}
+    thinking_fields = _normalized_bedrock_thinking_fields()
+    if thinking_fields is not None:
+        additional_request_fields["thinking"] = thinking_fields
     anthropic_beta_features = os.getenv("STRANDS_ANTHROPIC_BETA", "interleaved-thinking-2025-05-14")
     if anthropic_beta_features:
-        config["additional_request_fields"]["anthropic_beta"] = anthropic_beta_features.split(",")
+        additional_request_fields["anthropic_beta"] = anthropic_beta_features.split(",")
+    if additional_request_fields:
+        config["additional_request_fields"] = additional_request_fields
     return config
 
 

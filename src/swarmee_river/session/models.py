@@ -186,6 +186,9 @@ class SessionModelManager:
             else:
                 config[k] = v
 
+        if provider == "bedrock":
+            model_utils.sanitize_bedrock_thinking_config(config)
+
         if provider == "openai" and tier_name.strip().lower() == "deep":
             effort = os.getenv("SWARMEE_OPENAI_REASONING_EFFORT")
             if isinstance(effort, str) and effort.strip().lower() not in {"", "none", "off", "disabled"}:

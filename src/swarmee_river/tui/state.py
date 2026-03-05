@@ -78,6 +78,7 @@ class SessionState:
     issues_repeat_count: int = 0
     warning_count: int = 0
     error_count: int = 0
+    bedrock_setup_guidance_shown: bool = False
 
 
 @dataclass

@@ -87,6 +87,48 @@ def resolve_aws_auth_source() -> tuple[bool, str]:
     return True, "unknown"
 
 
+def resolve_aws_region_source() -> tuple[str | None, str]:
+    """
+    Resolve AWS region and label the source.
+
+    Source labels:
+    - env
+    - profile_or_config
+    - runtime
+    - unknown
+    """
+    env_region = str(os.getenv("AWS_REGION") or "").strip()
+    if env_region:
+        return env_region, "env"
+
+    env_default_region = str(os.getenv("AWS_DEFAULT_REGION") or "").strip()
+    if env_default_region:
+        return env_default_region, "env"
+
+    try:
+        import botocore.session
+
+        session = botocore.session.get_session()
+        inferred = str(session.get_config_variable("region") or "").strip()
+        if inferred:
+            source = "runtime"
+            with_config = {}
+            with_scoped = getattr(session, "get_scoped_config", None)
+            if callable(with_scoped):
+                try:
+                    scoped = with_scoped()
+                    with_config = scoped if isinstance(scoped, dict) else {}
+                except Exception:
+                    with_config = {}
+            if str(with_config.get("region") or "").strip():
+                source = "profile_or_config"
+            return inferred, source
+    except Exception:
+        pass
+
+    return None, "unknown"
+
+
 def resolve_model_provider(
     *,
     cli_provider: str | None,

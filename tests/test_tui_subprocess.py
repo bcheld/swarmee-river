@@ -3402,6 +3402,123 @@ def test_warning_after_popup_close_uses_toast_fallback() -> None:
     assert harness.notifications[0][0] == "WARN: Credentials refreshed."
 
 
+def test_bedrock_region_warning_shows_guidance_once_without_toast() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class _FakeApp:
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                session=SimpleNamespace(
+                    warning_count=0,
+                    error_count=0,
+                    bedrock_setup_guidance_shown=False,
+                )
+            )
+            self.issues: list[str] = []
+            self.notifications: list[tuple[str, str, float]] = []
+            self.guidance: list[str] = []
+            self.tabs: list[str] = []
+            self.views: list[str] = []
+
+        def _write_issue(self, text: str) -> None:
+            self.issues.append(text)
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _notify(self, msg: str, *, severity: str = "information", timeout: float = 2.5) -> None:
+            self.notifications.append((msg, severity, timeout))
+
+        def _handle_connect_status_warning(self, _text: str) -> bool:
+            return False
+
+        def render_system_message(self, text: str):  # noqa: ANN201
+            return text
+
+        def _mount_transcript_widget(self, _widget, *, plain_text: str) -> None:  # noqa: ANN001
+            self.guidance.append(plain_text)
+
+        def _switch_side_tab(self, tab: str) -> None:
+            self.tabs.append(tab)
+
+        def _set_settings_view_mode(self, mode: str) -> None:
+            self.views.append(mode)
+
+        def _refresh_settings_models(self) -> None:
+            return None
+
+    app = _FakeApp()
+    warning = (
+        "Bedrock model_id 'us.anthropic.claude-haiku-4-5-20251001-v1:0' is prefixed but AWS region is not set; "
+        "set AWS_REGION/AWS_DEFAULT_REGION, configure an AWS profile region, or set region_name explicitly."
+    )
+    handled = _handle_error_warning_events(app, "warning", {"text": warning})
+
+    assert handled is True
+    assert app.state.session.warning_count == 1
+    assert len(app.issues) == 1
+    assert app.notifications == []
+    assert len(app.guidance) == 1
+    assert "Configure AWS profile and region" in app.guidance[0]
+    assert app.state.session.bedrock_setup_guidance_shown is True
+    assert app.tabs == ["tab_settings"]
+    assert app.views == ["models"]
+
+
+def test_bedrock_region_warning_guidance_is_deduped_per_session() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class _FakeApp:
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                session=SimpleNamespace(
+                    warning_count=0,
+                    error_count=0,
+                    bedrock_setup_guidance_shown=False,
+                )
+            )
+            self.guidance: list[str] = []
+
+        def _write_issue(self, _text: str) -> None:
+            return None
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _notify(self, _msg: str, *, severity: str = "information", timeout: float = 2.5) -> None:
+            _ = (severity, timeout)
+            return None
+
+        def _handle_connect_status_warning(self, _text: str) -> bool:
+            return False
+
+        def render_system_message(self, text: str):  # noqa: ANN201
+            return text
+
+        def _mount_transcript_widget(self, _widget, *, plain_text: str) -> None:  # noqa: ANN001
+            self.guidance.append(plain_text)
+
+        def _switch_side_tab(self, _tab: str) -> None:
+            return None
+
+        def _set_settings_view_mode(self, _mode: str) -> None:
+            return None
+
+        def _refresh_settings_models(self) -> None:
+            return None
+
+    app = _FakeApp()
+    warning = (
+        "Bedrock model_id 'us.anthropic.claude-haiku-4-5-20251001-v1:0' is prefixed but AWS region is not set; "
+        "set AWS_REGION/AWS_DEFAULT_REGION, configure an AWS profile region, or set region_name explicitly."
+    )
+
+    _handle_error_warning_events(app, "warning", {"text": warning})
+    _handle_error_warning_events(app, "warning", {"text": warning})
+
+    assert len(app.guidance) == 1
+
+
 def test_usage_event_handler_computes_fallback_cost_when_event_omits_cost(monkeypatch) -> None:
     from swarmee_river.tui.event_router import _handle_usage_and_compaction_events
 

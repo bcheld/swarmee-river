@@ -1,12 +1,13 @@
 """Create instance of Strands SDK Bedrock model provider."""
 
 import logging
-import os
 from typing import Any
 
 from botocore.config import Config as BotocoreConfig
 from strands.models import BedrockModel, Model
 from typing_extensions import Unpack
+
+from swarmee_river.utils.provider_utils import resolve_aws_region_source
 
 _LOGGER = logging.getLogger(__name__)
 _BEDROCK_MODEL_PREFIX_REGION = {
@@ -16,15 +17,16 @@ _BEDROCK_MODEL_PREFIX_REGION = {
     "apac": "ap-",
     "au": "ap-southeast-",
 }
+_MISSING_REGION_WARNING_KEYS: set[str] = set()
 
 
 def _resolve_region(config: dict[str, Any]) -> str:
     explicit = str(config.get("region_name") or "").strip()
     if explicit:
         return explicit
-    env_region = str(os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "").strip()
-    if env_region:
-        return env_region
+    env_or_inferred, _source = resolve_aws_region_source()
+    if isinstance(env_or_inferred, str) and env_or_inferred.strip():
+        return env_or_inferred.strip()
     return ""
 
 
@@ -40,11 +42,14 @@ def _warn_if_model_region_looks_mismatched(config: dict[str, Any]) -> None:
     region = _resolve_region(config).lower()
     if prefix in _BEDROCK_MODEL_PREFIX_REGION:
         if not region:
-            _LOGGER.warning(
-                "Bedrock model_id '%s' is prefixed but AWS region is not set; set AWS_REGION/AWS_DEFAULT_REGION or "
-                "region_name explicitly.",
-                model_id,
-            )
+            warning_key = f"missing_region:{model_id}"
+            if warning_key not in _MISSING_REGION_WARNING_KEYS:
+                _MISSING_REGION_WARNING_KEYS.add(warning_key)
+                _LOGGER.warning(
+                    "Bedrock model_id '%s' is prefixed but AWS region is not set; set AWS_REGION/AWS_DEFAULT_REGION, "
+                    "configure an AWS profile region, or set region_name explicitly.",
+                    model_id,
+                )
             return
         expected = _BEDROCK_MODEL_PREFIX_REGION[prefix]
         if not region.startswith(expected):

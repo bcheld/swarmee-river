@@ -52,3 +52,29 @@ def test_openai_reasoning_effort_env_applies_to_deep_tier(tmp_path: Path, monkey
     config = captured.get("config")
     assert isinstance(config, dict)
     assert config["params"]["reasoning_effort"] == "high"
+
+
+def test_bedrock_deep_tier_strips_thinking_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STRANDS_THINKING_TYPE", "disable")
+    settings = load_settings(tmp_path / "settings.json")
+    manager = SessionModelManager(settings, fallback_provider="bedrock")
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(model_utils, "load_path", lambda _provider: Path("dummy.py"))
+
+    def fake_load_model(_path: Path, config: dict) -> object:
+        captured["config"] = config
+        return object()
+
+    monkeypatch.setattr(model_utils, "load_model", fake_load_model)
+
+    manager.build_model("deep")
+
+    config = captured.get("config")
+    assert isinstance(config, dict)
+    additional = config.get("additional_request_fields")
+    if isinstance(additional, dict):
+        assert "thinking" not in additional
+    else:
+        assert additional is None

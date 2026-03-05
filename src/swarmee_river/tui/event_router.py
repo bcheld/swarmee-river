@@ -24,6 +24,16 @@ from swarmee_river.tui.text_sanitize import sanitize_output_text
 
 _TRANSIENT_TOAST_TIMEOUT_S = 5.0
 _FATAL_TOAST_TIMEOUT_S = 3600.0
+_BEDROCK_REGION_WARNING_NEEDLES = (
+    "bedrock model_id",
+    "prefixed",
+    "region is not set",
+)
+_BEDROCK_SETUP_GUIDANCE_TEXT = (
+    "Bedrock region/credentials appear unresolved. Configure AWS profile and region first "
+    "(AWS_REGION or AWS_DEFAULT_REGION, or profile region in AWS config), and ensure credentials "
+    "resolve from env/profile/process/IMDS. If needed, open Settings > Models and run Connect AWS."
+)
 
 
 def _as_int(value: Any) -> int | None:
@@ -690,6 +700,46 @@ def _handle_artifact_events(app: Any, etype: str, event: dict[str, Any]) -> bool
     return True
 
 
+def _is_unresolved_bedrock_region_warning(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return all(needle in lowered for needle in _BEDROCK_REGION_WARNING_NEEDLES)
+
+
+def _bedrock_setup_guidance_shown(app: Any) -> bool:
+    session_state = getattr(getattr(app, "state", None), "session", None)
+    if session_state is not None:
+        return bool(getattr(session_state, "bedrock_setup_guidance_shown", False))
+    return bool(getattr(app, "_bedrock_setup_guidance_shown", False))
+
+
+def _mark_bedrock_setup_guidance_shown(app: Any) -> None:
+    session_state = getattr(getattr(app, "state", None), "session", None)
+    if session_state is not None:
+        with contextlib.suppress(Exception):
+            setattr(session_state, "bedrock_setup_guidance_shown", True)
+            return
+    with contextlib.suppress(Exception):
+        setattr(app, "_bedrock_setup_guidance_shown", True)
+
+
+def _show_bedrock_setup_guidance_once(app: Any) -> None:
+    if _bedrock_setup_guidance_shown(app):
+        return
+    _mark_bedrock_setup_guidance_shown(app)
+    app._mount_transcript_widget(
+        app.render_system_message(  # type: ignore[attr-defined]
+            _BEDROCK_SETUP_GUIDANCE_TEXT
+        ),
+        plain_text=_BEDROCK_SETUP_GUIDANCE_TEXT,
+    )
+    with contextlib.suppress(Exception):
+        app._switch_side_tab("tab_settings")
+        app._set_settings_view_mode("models")
+        app._refresh_settings_models()
+
+
 def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype == "error":
         error_info = classify_tui_error_event(event)
@@ -770,7 +820,10 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
         handled_in_popup = False
         with contextlib.suppress(Exception):
             handled_in_popup = bool(app._handle_connect_status_warning(raw_warn_text))
-        if not handled_in_popup:
+        is_bedrock_region_warning = _is_unresolved_bedrock_region_warning(raw_warn_text)
+        if is_bedrock_region_warning:
+            _show_bedrock_setup_guidance_once(app)
+        if not handled_in_popup and not is_bedrock_region_warning:
             app._notify(warn_text, severity="warning", timeout=4)
         return True
 
