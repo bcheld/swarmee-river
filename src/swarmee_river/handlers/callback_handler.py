@@ -1173,7 +1173,7 @@ class TuiCallbackHandler:
         if provider == "bedrock":
             return reasoning_mode in {"extended", "adaptive"} and reasoning_effort in {"low", "medium", "high"}
         if provider == "openai" and transport == "responses":
-            return True
+            return reasoning_effort in {"low", "medium", "high"}
         if reasoning_effort in {"low", "medium", "high"}:
             return True
         return False

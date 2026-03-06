@@ -35,7 +35,7 @@ class ThinkingMixin:
         if provider == "bedrock":
             return reasoning_mode in {"extended", "adaptive"} and reasoning_effort in {"low", "medium", "high"}
         if provider == "openai":
-            return transport == "responses"
+            return transport == "responses" and reasoning_effort in {"low", "medium", "high"}
         return reasoning_effort in {"low", "medium", "high"}
 
     def _maybe_emit_reasoning_unavailable_notice(self) -> None:

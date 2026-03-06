@@ -1,4 +1,5 @@
 import pathlib
+import sys
 import unittest.mock
 
 import pytest
@@ -360,6 +361,66 @@ def test_sanitize_openai_responses_config_applies_guided_fields():
     assert config["params"]["reasoning"] == {"effort": "high"}
     assert config["params"]["parallel_tool_calls"] is True
     assert config["params"]["tool_choice"] == "auto"
+
+
+@pytest.mark.parametrize("model_id", ["gpt-5-mini", "gpt-5-micro", "gpt-5-mini-preview"])
+def test_sanitize_openai_responses_config_strips_reasoning_for_unsupported_models(model_id: str):
+    settings = _settings_with(
+        {
+            "models": {
+                "providers": {
+                    "openai": {
+                        "tiers": {
+                            "balanced": {
+                                "transport": "responses",
+                                "reasoning": {"effort": "medium"},
+                                "tooling": {"mode": "standard", "discovery": "off"},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+    tier = settings.models.providers["openai"].tiers["balanced"]
+    config = swarmee_river.utils.model_utils.default_model_config("openai", settings)
+    config["model_id"] = model_id
+
+    swarmee_river.utils.model_utils.sanitize_openai_responses_config(config, tier=tier, settings=settings)
+
+    assert config["transport"] == "responses"
+    assert "reasoning" not in config["params"]
+    assert config["params"]["parallel_tool_calls"] is True
+    assert config["params"]["tool_choice"] == "auto"
+
+
+def test_openai_model_supports_responses_reasoning_flags_unsupported_variants():
+    assert swarmee_river.utils.model_utils.openai_model_supports_responses_reasoning("gpt-5.2") is True
+    assert swarmee_river.utils.model_utils.openai_model_supports_responses_reasoning("gpt-5-mini") is False
+    assert swarmee_river.utils.model_utils.openai_model_supports_responses_reasoning("gpt-5-micro") is False
+
+
+def test_openai_provider_module_requires_responses_provider(monkeypatch):
+    import importlib
+    import types
+
+    module_name = "swarmee_river.models.openai"
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    fake_strands = types.ModuleType("strands")
+    fake_strands_models = types.ModuleType("strands.models")
+
+    class _FakeModel:
+        pass
+
+    fake_strands_models.Model = _FakeModel
+
+    monkeypatch.setitem(sys.modules, "strands", fake_strands)
+    monkeypatch.setitem(sys.modules, "strands.models", fake_strands_models)
+    monkeypatch.delitem(sys.modules, "strands.models.openai_responses", raising=False)
+
+    with pytest.raises(ImportError, match="OpenAI Responses transport is required"):
+        importlib.import_module(module_name)
 
 
 def test_load_model(custom_model_dir):

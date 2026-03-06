@@ -101,6 +101,13 @@ class SessionModelManager:
                 if tier.provider == "bedrock"
                 else None
             )
+            reasoning_effort = tier.reasoning.effort if tier.reasoning is not None else None
+            reasoning_mode = capabilities.reasoning_mode if capabilities is not None else None
+            if tier.provider == "openai" and not model_utils.openai_model_supports_responses_reasoning(
+                effective_model_id
+            ):
+                reasoning_effort = None
+                reasoning_mode = "none"
             out.append(
                 TierStatus(
                     name=name,
@@ -109,12 +116,12 @@ class SessionModelManager:
                     display_name=tier.display_name,
                     description=tier.description,
                     transport=tier.transport,
-                    reasoning_effort=tier.reasoning.effort if tier.reasoning is not None else None,
+                    reasoning_effort=reasoning_effort,
                     tooling_mode=tier.tooling.mode if tier.tooling is not None else None,
                     tooling_discovery=tier.tooling.discovery if tier.tooling is not None else None,
                     context_strategy=tier.context.strategy if tier.context is not None else None,
                     context_compaction=tier.context.compaction if tier.context is not None else None,
-                    reasoning_mode=capabilities.reasoning_mode if capabilities is not None else None,
+                    reasoning_mode=reasoning_mode,
                     supports_guardrails=capabilities.supports_guardrails if capabilities is not None else None,
                     supports_cache_tools=capabilities.supports_cache_tools if capabilities is not None else None,
                     supports_forced_tool_with_reasoning=(

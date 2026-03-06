@@ -6,8 +6,12 @@ from strands.models import Model
 
 try:
     from strands.models.openai_responses import OpenAIResponsesModel as _OpenAIProvider
-except ImportError:
-    from strands.models.openai import OpenAIModel as _OpenAIProvider
+except ImportError as exc:  # pragma: no cover - exercised via import-reload tests
+    raise ImportError(
+        "OpenAI Responses transport is required for provider 'openai', but "
+        "strands.models.openai_responses.OpenAIResponsesModel is unavailable. "
+        "Upgrade the installed Strands package to a version that supports the OpenAI Responses API."
+    ) from exc
 
 
 def instance(client_args: dict[str, Any] | None = None, **model_config: Any) -> Model:

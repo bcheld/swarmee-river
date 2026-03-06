@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import logging
 import pathlib
 from dataclasses import dataclass
 from typing import Any, cast
@@ -19,6 +20,12 @@ _BEDROCK_THINKING_BUDGET_MAX = 32768
 _BEDROCK_EXTENDED_BUDGETS = {"low": 1024, "medium": 4096, "high": 8192}
 _BEDROCK_ADAPTIVE_EFFORTS = {"low": "low", "medium": "medium", "high": "high"}
 _BEDROCK_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+_OPENAI_RESPONSES_REASONING_UNSUPPORTED = (
+    "gpt-5-mini",
+    "gpt-5-micro",
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -338,8 +345,16 @@ def sanitize_openai_responses_config(
         params["max_output_tokens"] = max_tokens
 
     reasoning = tier.reasoning
-    if reasoning is not None:
+    if reasoning is not None and openai_model_supports_responses_reasoning(str(config.get("model_id") or "")):
         params["reasoning"] = {"effort": reasoning.effort}
+    else:
+        if "reasoning" in params:
+            params.pop("reasoning", None)
+        if reasoning is not None:
+            logger.info(
+                "OpenAI model '%s' uses Responses transport without reasoning because this model family does not support the reasoning argument.",
+                str(config.get("model_id") or "").strip() or "(unknown)",
+            )
 
     tooling = tier.tooling
     if tooling is not None:
@@ -347,6 +362,13 @@ def sanitize_openai_responses_config(
         params["tool_choice"] = "auto"
 
     config["params"] = params
+
+
+def openai_model_supports_responses_reasoning(model_id: str | None) -> bool:
+    normalized = str(model_id or "").strip().lower()
+    if not normalized:
+        return True
+    return not any(normalized == token or normalized.startswith(f"{token}-") for token in _OPENAI_RESPONSES_REASONING_UNSUPPORTED)
 
 
 def load_path(name: str) -> pathlib.Path:

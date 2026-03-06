@@ -2228,24 +2228,29 @@ def test_settings_models_manage_button_opens_popup_manager():
     assert harness.called == 1
 
 
-def test_agent_builder_buttons_open_agent_editor_popup():
+def test_agents_builder_header_uses_sidebar_header_action():
+    import inspect
+
+    from swarmee_river.tui.views import agents as agents_view
+
+    source = inspect.getsource(agents_view.compose_agents_tab)
+    assert 'SidebarHeader(\n                        "Agent Roster"' in source
+    assert '"agent_builder_open_manager"' in source
+    assert '"Agent Manager"' in source
+
+
+def test_agent_builder_manager_button_opens_modal():
     class _Harness:
         def __init__(self) -> None:
-            self.new_called = 0
-            self.edit_called = 0
+            self.called = 0
 
-        def _open_agent_builder_editor_new(self) -> None:
-            self.new_called += 1
-
-        def _open_agent_builder_editor_selected(self) -> None:
-            self.edit_called += 1
+        def _open_agent_manager(self) -> None:
+            self.called += 1
 
     harness = _Harness()
     SwarmeeTUI = tui_app.get_swarmee_tui_class()
-    SwarmeeTUI.on_button_pressed(harness, SimpleNamespace(button=SimpleNamespace(id="agent_builder_agent_new")))
-    SwarmeeTUI.on_button_pressed(harness, SimpleNamespace(button=SimpleNamespace(id="agent_builder_agent_edit")))
-    assert harness.new_called == 1
-    assert harness.edit_called == 1
+    SwarmeeTUI.on_button_pressed(harness, SimpleNamespace(button=SimpleNamespace(id="agent_builder_open_manager")))
+    assert harness.called == 1
 
 
 def test_settings_models_row_selection_updates_model_detail():
@@ -2396,18 +2401,18 @@ def test_agent_editor_payload_normalization_and_orchestrator_guards():
             "id": "writer-agent",
             "name": "Writer",
             "summary": "Writes drafts",
-            "prompt_refs": "Draft_Prompt, draft_prompt, style_guide",
+            "prompt_ref": "Draft_Prompt",
             "provider": "openai",
             "tier": "balanced",
-            "tool_names": "git, shell, git",
-            "sop_names": "qa_pass, qa_pass",
+            "tool_names": ["git", "shell", "git"],
+            "sop_names": ["qa_pass", "qa_pass"],
             "knowledge_base_id": "kb-main",
             "activated": True,
         },
         is_orchestrator=False,
     )
     assert payload is not None
-    assert payload["prompt_refs"] == ["draft_prompt", "style_guide"]
+    assert payload["prompt_refs"] == ["draft_prompt"]
     assert payload["tool_names"] == ["git", "shell"]
     assert payload["sop_names"] == ["qa_pass"]
     assert payload["provider"] == "openai"
@@ -2456,6 +2461,72 @@ def test_agent_editor_cancel_and_escape_dismiss_none():
     assert dismissed_esc == [None]
     assert event.stopped is True
     assert event.prevented is True
+
+
+def test_agent_editor_create_prompt_asset_record_generates_unique_selection():
+    from swarmee_river.tui.widgets import AgentEditorScreen
+
+    asset = AgentEditorScreen._create_prompt_asset_record(
+        [{"id": "writer_prompt", "name": "Writer Prompt", "content": "Existing"}],
+        name="Writer Prompt",
+        content="New prompt body",
+    )
+    assert asset["id"] != "writer_prompt"
+    assert asset["name"] == "Writer Prompt"
+    assert asset["content"] == "New prompt body"
+
+
+def test_agent_manager_screen_updates_and_deletes_agents():
+    from swarmee_river.tui.widgets import AgentManagerScreen
+
+    screen = AgentManagerScreen(
+        [
+            {"id": "orchestrator", "name": "Orchestrator", "activated": False},
+            {"id": "writer", "name": "Writer", "activated": True, "prompt_refs": ["draft_prompt"]},
+        ],
+        prompt_assets=[{"id": "draft_prompt", "name": "Draft Prompt", "content": "Draft well"}],
+        tool_options=["git", "shell"],
+        sop_options=["qa_pass"],
+        kb_options=[("Primary KB (kb-primary)", "kb-primary")],
+        selected_id="writer",
+    )
+
+    screen._apply_editor_result(
+        {
+            "id": "writer",
+            "name": "Writer Updated",
+            "summary": "Updated",
+            "prompt_ref": "draft_prompt",
+            "tool_names": ["git"],
+            "sop_names": ["qa_pass"],
+            "knowledge_base_id": "kb-primary",
+            "activated": True,
+        },
+        source_id="writer",
+    )
+    updated = next(agent for agent in screen._agents if agent["id"] == "writer")
+    assert updated["name"] == "Writer Updated"
+    assert updated["prompt_refs"] == ["draft_prompt"]
+
+    screen._delete_selected()
+    assert all(agent["id"] != "writer" for agent in screen._agents)
+
+
+def test_agent_manager_screen_preserves_orchestrator_on_delete():
+    from swarmee_river.tui.widgets import AgentManagerScreen
+
+    screen = AgentManagerScreen(
+        [{"id": "orchestrator", "name": "Orchestrator", "activated": False}],
+        prompt_assets=[],
+        tool_options=[],
+        sop_options=[],
+        kb_options=[],
+        selected_id="orchestrator",
+    )
+
+    screen._delete_selected()
+    assert len(screen._agents) == 1
+    assert screen._agents[0]["id"] == "orchestrator"
 
 
 def test_orchestrator_runtime_model_selection_applies_provider_tier_and_persists():
@@ -3364,6 +3435,34 @@ def test_reasoning_unavailable_notice_emits_once_for_responses_or_bedrock_reason
     app._maybe_emit_reasoning_unavailable_notice()
     app._maybe_emit_reasoning_unavailable_notice()
     assert app.lines == ["[thinking] no reasoning stream was emitted by the model for this turn."]
+
+
+def test_openai_responses_without_reasoning_effort_does_not_emit_unavailable_notice():
+    class _Harness(ThinkingMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.daemon.provider = "openai"
+            self.state.daemon.tier = "balanced"
+            self.state.daemon.tiers = [
+                {
+                    "name": "balanced",
+                    "provider": "openai",
+                    "model_id": "gpt-5-mini",
+                    "transport": "responses",
+                    "reasoning_effort": None,
+                    "reasoning_mode": "none",
+                }
+            ]
+            self._thinking_seen_turn = False
+            self._thinking_unavailable_notice_emitted_turn = False
+            self.lines: list[str] = []
+
+        def _write_transcript_line(self, line: str) -> None:
+            self.lines.append(line)
+
+    app = _Harness()
+    app._maybe_emit_reasoning_unavailable_notice()
+    assert app.lines == []
 
 
 def test_action_sheet_selection_wraps():

@@ -61,6 +61,34 @@ def test_openai_guided_reasoning_applies_to_deep_tier(tmp_path: Path, monkeypatc
     assert config["params"]["reasoning"] == {"effort": "high"}
 
 
+def test_openai_balanced_gpt5_mini_uses_responses_without_reasoning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = load_settings(tmp_path / "settings.json")
+    manager = SessionModelManager(settings, fallback_provider="openai")
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(model_utils, "load_path", lambda _provider: Path("dummy.py"))
+
+    def fake_load_model(_path: Path, config: dict) -> object:
+        captured["config"] = config
+        return object()
+
+    monkeypatch.setattr(model_utils, "load_model", fake_load_model)
+
+    manager.build_model("balanced")
+
+    config = captured.get("config")
+    assert isinstance(config, dict)
+    assert config["model_id"] == "gpt-5-mini"
+    assert config["transport"] == "responses"
+    assert "reasoning" not in config["params"]
+    tiers = {item.name: item for item in manager.list_tiers()}
+    assert tiers["balanced"].reasoning_effort is None
+    assert tiers["balanced"].reasoning_mode == "none"
+
+
 def test_bedrock_deep_tier_strips_thinking_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text('{"models":{"providers":{"bedrock":{"thinking_type":"disable"}}}}\n', encoding="utf-8")
