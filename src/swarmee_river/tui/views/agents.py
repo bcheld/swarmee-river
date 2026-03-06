@@ -54,21 +54,13 @@ def compose_agents_tab() -> Iterator[Any]:
                         "Focused roster editor. Save and apply runtime bundles in the Bundles tab.",
                         id="agent_builder_help",
                     )
-                    yield Static("Agent Roster", id="agent_builder_agents_header")
+                    yield SidebarHeader(
+                        "Agent Roster",
+                        id="agent_builder_header",
+                        actions=[{"id": "agent_builder_open_manager", "label": "Agent Manager", "variant": "primary"}],
+                    )
                     yield DataTable(id="agent_builder_table", cursor_type="row")
                     yield SidebarDetail(id="agent_builder_agent_detail")
-                    with Horizontal(id="agent_builder_agent_actions"):
-                        yield Button("New Agent", id="agent_builder_agent_new", compact=True, variant="default")
-                        yield Button("Edit Agent", id="agent_builder_agent_edit", compact=True, variant="primary")
-                        yield Button("Delete Agent", id="agent_builder_agent_delete", compact=True, variant="warning")
-                    with Horizontal(id="agent_builder_run_actions"):
-                        yield Button(
-                            "Insert Run Prompt",
-                            id="agent_builder_insert_prompt",
-                            compact=True,
-                            variant="primary",
-                        )
-                        yield Button("Run Now", id="agent_builder_run_now", compact=True, variant="default")
                     yield Static("", id="agent_builder_status")
 
 

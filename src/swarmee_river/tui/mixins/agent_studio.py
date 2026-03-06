@@ -991,7 +991,51 @@ class AgentStudioMixin:
     def _new_agent_builder_draft(self) -> None:
         self._open_agent_builder_editor_new()
 
+    def _open_agent_manager(self) -> None:
+        from swarmee_river.prompt_assets import load_prompt_assets
+        from swarmee_river.tui.widgets import AgentManagerScreen
+
+        prompt_assets = [item.to_dict() for item in load_prompt_assets()]
+        self.push_screen(
+            AgentManagerScreen(
+                self.state.agent_studio.agents,
+                prompt_assets=prompt_assets,
+                tool_options=self._agent_builder_tooling_tool_options(),
+                sop_options=self._agent_builder_tooling_sop_options(),
+                kb_options=self._agent_builder_tooling_kb_options(),
+                selected_id=self.state.agent_studio.builder_selected_item_id,
+            ),
+            callback=self._apply_agent_manager_result,
+        )
+
+    def _apply_agent_manager_result(self, result: dict[str, Any] | None) -> None:
+        if not isinstance(result, dict):
+            return
+        agents = result.get("agents")
+        if not isinstance(agents, list):
+            return
+        self.state.agent_studio.agents = normalize_agent_definitions(agents)
+        selected_id = str(result.get("selected_id", "") or "").strip() or None
+        self.state.agent_studio.builder_selected_item_id = selected_id
+        orchestrator = next(
+            (
+                agent
+                for agent in self.state.agent_studio.agents
+                if self._is_orchestrator_agent_id(str(agent.get("id", "")).strip())
+            ),
+            None,
+        )
+        if isinstance(orchestrator, dict):
+            self._apply_orchestrator_runtime_model_selection(orchestrator)
+        if bool(result.get("prompt_assets_changed")):
+            with contextlib.suppress(Exception):
+                self._refresh_tooling_prompts_list()
+        self._render_agent_builder_panel()
+        self._set_agent_builder_status("Saved draft changes from Agent Manager.")
+        self._set_agent_draft_dirty(True, note="Agent Manager updated the draft roster.")
+
     def _open_agent_builder_editor_new(self) -> None:
+        from swarmee_river.prompt_assets import load_prompt_assets
         from swarmee_river.tui.widgets import AgentEditorScreen
 
         payload = normalize_agent_definition(
@@ -1006,7 +1050,13 @@ class AgentStudioMixin:
         if payload is None:
             return
         self.push_screen(
-            AgentEditorScreen(payload),
+            AgentEditorScreen(
+                payload,
+                prompt_assets=[item.to_dict() for item in load_prompt_assets()],
+                tool_options=self._agent_builder_tooling_tool_options(),
+                sop_options=self._agent_builder_tooling_sop_options(),
+                kb_options=self._agent_builder_tooling_kb_options(),
+            ),
             callback=lambda result: self._apply_agent_builder_editor_result(result, source_id=None),
         )
 
@@ -1014,6 +1064,7 @@ class AgentStudioMixin:
         self._open_agent_builder_editor_selected()
 
     def _open_agent_builder_editor_selected(self) -> None:
+        from swarmee_river.prompt_assets import load_prompt_assets
         from swarmee_river.tui.widgets import AgentEditorScreen
 
         selected = self._agent_builder_item_by_id(self.state.agent_studio.builder_selected_item_id)
@@ -1026,7 +1077,13 @@ class AgentStudioMixin:
             self._notify("Selected draft agent is invalid.", severity="warning")
             return
         self.push_screen(
-            AgentEditorScreen(agent_def),
+            AgentEditorScreen(
+                agent_def,
+                prompt_assets=[item.to_dict() for item in load_prompt_assets()],
+                tool_options=self._agent_builder_tooling_tool_options(),
+                sop_options=self._agent_builder_tooling_sop_options(),
+                kb_options=self._agent_builder_tooling_kb_options(),
+            ),
             callback=lambda result, source_id=source_id: self._apply_agent_builder_editor_result(
                 result,
                 source_id=source_id,
@@ -1041,6 +1098,7 @@ class AgentStudioMixin:
     ) -> None:
         if not isinstance(result, dict):
             return
+        created_prompt_asset = result.pop("created_prompt_asset", None)
         payload = normalize_agent_definition(result)
         if payload is None:
             self._notify("Agent draft is invalid.", severity="warning")
@@ -1066,6 +1124,9 @@ class AgentStudioMixin:
         self.state.agent_studio.builder_selected_item_id = payload_id
         if self._is_orchestrator_agent_id(payload_id):
             self._apply_orchestrator_runtime_model_selection(payload)
+        if isinstance(created_prompt_asset, dict):
+            with contextlib.suppress(Exception):
+                self._refresh_tooling_prompts_list()
         self._render_agent_builder_panel()
         self._set_agent_builder_status(f"Saved agent '{payload['name']}' in draft.")
         self._set_agent_draft_dirty(True, note=f"Agent '{payload['name']}' saved in draft.")

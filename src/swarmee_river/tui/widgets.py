@@ -6,6 +6,7 @@ import contextlib
 import json as _json
 import re
 import textwrap
+import uuid
 from typing import Any
 
 from rich import box as rich_box
@@ -2933,11 +2934,13 @@ class CatalogMultiSelectScreen(ModalScreen[list[str] | None]):
         options: list[str],
         selected_values: list[str],
         help_text: str = "",
+        allow_custom_values: bool = True,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)
         self._title = str(title or "").strip() or "Select values"
         self._help_text = str(help_text or "").strip()
+        self._allow_custom_values = bool(allow_custom_values)
         self._options = self._normalize_tokens(options)
         self._selected_values = self._normalize_tokens(selected_values)
         option_lowers = {item.lower() for item in self._options}
@@ -2974,15 +2977,16 @@ class CatalogMultiSelectScreen(ModalScreen[list[str] | None]):
                     seen.add(lowered)
                     selected.append(option)
         custom_value = ""
-        with contextlib.suppress(Exception):
-            custom_value = str(self.query_one("#catalog_multi_custom", Input).value or "")
-        for raw in custom_value.split(","):
-            token = str(raw).strip()
-            lowered = token.lower()
-            if not token or lowered in seen:
-                continue
-            seen.add(lowered)
-            selected.append(token)
+        if self._allow_custom_values:
+            with contextlib.suppress(Exception):
+                custom_value = str(self.query_one("#catalog_multi_custom", Input).value or "")
+            for raw in custom_value.split(","):
+                token = str(raw).strip()
+                lowered = token.lower()
+                if not token or lowered in seen:
+                    continue
+                seen.add(lowered)
+                selected.append(token)
         return selected
 
     def compose(self):  # type: ignore[override]
@@ -3002,11 +3006,12 @@ class CatalogMultiSelectScreen(ModalScreen[list[str] | None]):
                         value=(option.lower() in selected_lowers),
                         id=checkbox_id,
                     )
-            yield Input(
-                value=self._custom_initial,
-                placeholder="Additional values (comma-separated)",
-                id="catalog_multi_custom",
-            )
+            if self._allow_custom_values:
+                yield Input(
+                    value=self._custom_initial,
+                    placeholder="Additional values (comma-separated)",
+                    id="catalog_multi_custom",
+                )
             with Horizontal(id="catalog_multi_buttons"):
                 yield Button("Save", id="catalog_multi_save", variant="success")
                 yield Button("Clear", id="catalog_multi_clear", variant="warning")
@@ -3018,8 +3023,9 @@ class CatalogMultiSelectScreen(ModalScreen[list[str] | None]):
             with contextlib.suppress(Exception):
                 self.query_one(f"#{first_checkbox_id}", Checkbox).focus()
                 return
-        with contextlib.suppress(Exception):
-            self.query_one("#catalog_multi_custom", Input).focus()
+        if self._allow_custom_values:
+            with contextlib.suppress(Exception):
+                self.query_one("#catalog_multi_custom", Input).focus()
 
     def on_button_pressed(self, event: Any) -> None:
         button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
@@ -3033,6 +3039,8 @@ class CatalogMultiSelectScreen(ModalScreen[list[str] | None]):
             self.dismiss(None)
 
     def on_input_submitted(self, event: Any) -> None:
+        if not self._allow_custom_values:
+            return
         input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
         if input_id == "catalog_multi_custom":
             self.dismiss(self._selected_values_from_ui())
@@ -3095,11 +3103,13 @@ class CatalogSingleSelectScreen(ModalScreen[str | None]):
         options: list[tuple[str, str]],
         selected_value: str | None,
         help_text: str = "",
+        allow_custom_values: bool = True,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)
         self._title = str(title or "").strip() or "Select value"
         self._help_text = str(help_text or "").strip()
+        self._allow_custom_values = bool(allow_custom_values)
         self._options = self._normalize_options(options)
         token = str(selected_value or "").strip()
         token_lower = token.lower()
@@ -3128,10 +3138,11 @@ class CatalogSingleSelectScreen(ModalScreen[str | None]):
 
     def _resolve_value(self) -> str:
         custom_value = ""
-        with contextlib.suppress(Exception):
-            custom_value = str(self.query_one("#catalog_single_custom", Input).value or "").strip()
-        if custom_value:
-            return custom_value
+        if self._allow_custom_values:
+            with contextlib.suppress(Exception):
+                custom_value = str(self.query_one("#catalog_single_custom", Input).value or "").strip()
+            if custom_value:
+                return custom_value
         selected_value = str(getattr(self.query_one("#catalog_single_select", Select), "value", "") or "").strip()
         if not selected_value or selected_value == self._INHERIT_VALUE:
             return ""
@@ -3149,11 +3160,12 @@ class CatalogSingleSelectScreen(ModalScreen[str | None]):
                 id="catalog_single_select",
                 value=self._initial_select_value,
             )
-            yield Input(
-                value=self._initial_custom_value,
-                placeholder="Custom value (optional)",
-                id="catalog_single_custom",
-            )
+            if self._allow_custom_values:
+                yield Input(
+                    value=self._initial_custom_value,
+                    placeholder="Custom value (optional)",
+                    id="catalog_single_custom",
+                )
             with Horizontal(id="catalog_single_buttons"):
                 yield Button("Save", id="catalog_single_save", variant="success")
                 yield Button("Clear", id="catalog_single_clear", variant="warning")
@@ -3175,6 +3187,8 @@ class CatalogSingleSelectScreen(ModalScreen[str | None]):
             self.dismiss(None)
 
     def on_input_submitted(self, event: Any) -> None:
+        if not self._allow_custom_values:
+            return
         input_id = str(getattr(getattr(event, "input", None), "id", "")).strip()
         if input_id == "catalog_single_custom":
             self.dismiss(self._resolve_value())
@@ -3191,6 +3205,7 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
     """Popup editor for creating/updating a single agent definition."""
 
     _INHERIT_VALUE = "__inherit__"
+    _NO_PROMPT_VALUE = "__no_prompt__"
     _DEFAULT_PROVIDERS = ("bedrock", "openai", "ollama", "github_copilot")
     _DEFAULT_TIERS = ("fast", "balanced", "deep", "long")
 
@@ -3230,13 +3245,31 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         margin: 0 0 1 0;
     }
     AgentEditorScreen .agent-editor-row Input,
-    AgentEditorScreen .agent-editor-row Select {
+    AgentEditorScreen .agent-editor-row Select,
+    AgentEditorScreen .agent-editor-row Button {
         width: 1fr;
         margin: 0 1 0 0;
     }
     AgentEditorScreen .agent-editor-row Input:last-child,
-    AgentEditorScreen .agent-editor-row Select:last-child {
+    AgentEditorScreen .agent-editor-row Select:last-child,
+    AgentEditorScreen .agent-editor-row Button:last-child {
         margin: 0;
+    }
+    AgentEditorScreen .agent-editor-label {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text-muted;
+    }
+    AgentEditorScreen .agent-editor-summary {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+        border: round #3e4654;
+        padding: 0 1;
+    }
+    AgentEditorScreen #agent_editor_prompt_content {
+        height: 10;
+        margin: 0 0 1 0;
     }
     AgentEditorScreen #agent_editor_activated {
         margin: 0 0 1 0;
@@ -3256,7 +3289,16 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
     }
     """
 
-    def __init__(self, agent: dict[str, Any] | None = None, **kwargs: object) -> None:
+    def __init__(
+        self,
+        agent: dict[str, Any] | None = None,
+        *,
+        prompt_assets: list[dict[str, Any]] | None = None,
+        tool_options: list[str] | None = None,
+        sop_options: list[str] | None = None,
+        kb_options: list[tuple[str, str]] | None = None,
+        **kwargs: object,
+    ) -> None:
         super().__init__(**kwargs)
         from swarmee_river.tui.agent_studio import normalize_agent_definition
 
@@ -3281,6 +3323,84 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
             str(normalized.get("provider", "")).strip().lower() or self._INHERIT_VALUE
         )
         self._selected_tier = str(normalized.get("tier", "")).strip().lower() or self._INHERIT_VALUE
+        self._prompt_assets = self._normalize_prompt_assets(prompt_assets or [])
+        self._tool_options = self._normalize_token_list(tool_options or [])
+        self._sop_options = self._normalize_token_list(sop_options or [])
+        self._kb_options = CatalogSingleSelectScreen._normalize_options(kb_options or [])
+        initial_prompt_refs = normalized.get("prompt_refs") or []
+        initial_prompt_ref = str(initial_prompt_refs[0]).strip().lower() if initial_prompt_refs else ""
+        self._selected_prompt_ref = initial_prompt_ref
+        self._selected_tools = self._normalize_token_list(normalized.get("tool_names") or [])
+        self._selected_sops = self._normalize_token_list(normalized.get("sop_names") or [])
+        self._selected_kb = str(normalized.get("knowledge_base_id", "") or "").strip()
+        self._created_prompt_asset: dict[str, Any] | None = None
+
+    @staticmethod
+    def _normalize_token_list(raw: Any, *, lowercase: bool = False) -> list[str]:
+        values = raw if isinstance(raw, list) else str(raw or "").split(",")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for token in values:
+            text = str(token).strip()
+            if not text:
+                continue
+            value = text.lower() if lowercase else text
+            key = value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(value)
+        return normalized
+
+    @staticmethod
+    def _normalize_prompt_assets(prompt_assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in prompt_assets:
+            if not isinstance(raw, dict):
+                continue
+            prompt_id = str(raw.get("id", "")).strip().lower()
+            if not prompt_id or prompt_id in seen:
+                continue
+            seen.add(prompt_id)
+            normalized.append(
+                {
+                    "id": prompt_id,
+                    "name": str(raw.get("name", prompt_id)).strip() or prompt_id,
+                    "content": str(raw.get("content", "")).strip(),
+                    "tags": [str(tag).strip() for tag in (raw.get("tags") or []) if str(tag).strip()],
+                }
+            )
+        return sorted(normalized, key=lambda item: str(item.get("name", "")).lower())
+
+    @staticmethod
+    def _sanitize_prompt_id(value: str) -> str:
+        token = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(value or "").strip().lower())
+        token = token.strip("_")
+        return token or f"prompt_{uuid.uuid4().hex[:8]}"
+
+    @classmethod
+    def _create_prompt_asset_record(
+        cls,
+        prompt_assets: list[dict[str, Any]],
+        *,
+        name: str,
+        content: str,
+    ) -> dict[str, Any]:
+        prompt_name = str(name or "").strip()
+        if not prompt_name or not str(content or "").strip():
+            raise ValueError("Prompt name and content are required.")
+        existing_ids = {str(item.get("id", "")).strip().lower() for item in prompt_assets if isinstance(item, dict)}
+        prompt_id = cls._sanitize_prompt_id(prompt_name)
+        while prompt_id in existing_ids:
+            prompt_id = cls._sanitize_prompt_id(f"{prompt_name}_{uuid.uuid4().hex[:4]}")
+        return {
+            "id": prompt_id,
+            "name": prompt_name,
+            "content": str(content).strip(),
+            "tags": [],
+            "source": "project",
+        }
 
     @staticmethod
     def _load_model_catalog() -> tuple[list[str], dict[str, list[str]], list[str]]:
@@ -3320,19 +3440,7 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
 
     @staticmethod
     def _normalized_csv_list(raw: str, *, lowercase: bool = False) -> list[str]:
-        values: list[str] = []
-        seen: set[str] = set()
-        for token in str(raw or "").split(","):
-            text = str(token).strip()
-            if not text:
-                continue
-            normalized = text.lower() if lowercase else text
-            key = normalized.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            values.append(normalized)
-        return values
+        return AgentEditorScreen._normalize_token_list(raw, lowercase=lowercase)
 
     @classmethod
     def _normalize_editor_payload(cls, raw: dict[str, Any], *, is_orchestrator: bool) -> dict[str, Any] | None:
@@ -3340,15 +3448,24 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
 
         provider = str(raw.get("provider", "")).strip().lower()
         tier = str(raw.get("tier", "")).strip().lower()
+        prompt_ref = str(raw.get("prompt_ref", "")).strip().lower()
+        if not prompt_ref:
+            prompt_refs_raw = raw.get("prompt_refs")
+            if isinstance(prompt_refs_raw, list) and prompt_refs_raw:
+                prompt_ref = str(prompt_refs_raw[0]).strip().lower()
+            else:
+                prompt_ref = str(prompt_refs_raw or "").strip().lower()
+        if prompt_ref == cls._NO_PROMPT_VALUE:
+            prompt_ref = ""
         payload = {
             "id": ORCHESTRATOR_AGENT_ID if is_orchestrator else str(raw.get("id", "")).strip(),
             "name": str(raw.get("name", "")).strip(),
             "summary": str(raw.get("summary", "")).strip(),
-            "prompt_refs": cls._normalized_csv_list(str(raw.get("prompt_refs", "")), lowercase=True),
+            "prompt_refs": [prompt_ref] if prompt_ref else [],
             "provider": None if provider in {"", cls._INHERIT_VALUE} else provider,
             "tier": None if tier in {"", cls._INHERIT_VALUE} else tier,
-            "tool_names": cls._normalized_csv_list(str(raw.get("tool_names", ""))),
-            "sop_names": cls._normalized_csv_list(str(raw.get("sop_names", ""))),
+            "tool_names": cls._normalize_token_list(raw.get("tool_names") or []),
+            "sop_names": cls._normalize_token_list(raw.get("sop_names") or []),
             "knowledge_base_id": str(raw.get("knowledge_base_id", "")).strip() or None,
             "activated": False if is_orchestrator else bool(raw.get("activated", False)),
         }
@@ -3381,6 +3498,20 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
             options.append((self._selected_tier, self._selected_tier))
         return options
 
+    def _prompt_options(self) -> list[tuple[str, str]]:
+        options = [("No prompt selected", self._NO_PROMPT_VALUE)]
+        for item in self._prompt_assets:
+            name = str(item.get("name", "")).strip() or str(item.get("id", "")).strip()
+            prompt_id = str(item.get("id", "")).strip().lower()
+            options.append((f"{name} ({prompt_id})", prompt_id))
+        return options
+
+    def _selected_prompt_asset(self) -> dict[str, Any] | None:
+        selected = str(self._selected_prompt_ref or "").strip().lower()
+        if not selected:
+            return None
+        return next((item for item in self._prompt_assets if str(item.get("id", "")).strip().lower() == selected), None)
+
     def _set_status(self, text: str) -> None:
         with contextlib.suppress(Exception):
             self.query_one("#agent_editor_status", Static).update(str(text or "").strip())
@@ -3395,25 +3526,153 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
             self._selected_tier = current
             tier_select.value = current
 
+    def _refresh_prompt_options(self) -> None:
+        with contextlib.suppress(Exception):
+            prompt_select = self.query_one("#agent_editor_prompt_select", Select)
+            options = self._prompt_options()
+            prompt_select.set_options(options)
+            values = {value for _label, value in options}
+            current = self._selected_prompt_ref if self._selected_prompt_ref in values else self._NO_PROMPT_VALUE
+            prompt_select.value = current
+
+    def _refresh_capability_summaries(self) -> None:
+        prompt_asset = self._selected_prompt_asset()
+        prompt_label = (
+            f"{prompt_asset.get('name', prompt_asset.get('id'))} ({prompt_asset.get('id')})"
+            if prompt_asset
+            else "None"
+        )
+        prompt_preview = str((prompt_asset or {}).get("content", "")).strip()
+        if len(prompt_preview) > 120:
+            prompt_preview = prompt_preview[:117] + "..."
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_editor_prompt_summary", Static).update(
+                f"Selected prompt: {prompt_label}\n{prompt_preview or 'No prompt asset selected.'}"
+            )
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_editor_tools_summary", Static).update(
+                f"Tools: {', '.join(self._selected_tools)}" if self._selected_tools else "Tools: inherit"
+            )
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_editor_sops_summary", Static).update(
+                f"SOPs: {', '.join(self._selected_sops)}" if self._selected_sops else "SOPs: inherit"
+            )
+        kb_label = self._selected_kb or "inherit"
+        for label, value in self._kb_options:
+            if value.lower() == self._selected_kb.lower() and self._selected_kb:
+                kb_label = label
+                break
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_editor_kb_summary", Static).update(f"KB: {kb_label}")
+
+    def _open_tools_editor(self) -> None:
+        self.push_screen(
+            CatalogMultiSelectScreen(
+                title="Select Agent Tools",
+                options=list(self._tool_options),
+                selected_values=list(self._selected_tools),
+                help_text="Choose the tools this agent can use.",
+                allow_custom_values=False,
+            ),
+            callback=self._apply_tools_edit,
+        )
+
+    def _apply_tools_edit(self, result: list[str] | None) -> None:
+        if result is None:
+            return
+        self._selected_tools = self._normalize_token_list(result)
+        self._refresh_capability_summaries()
+
+    def _open_sops_editor(self) -> None:
+        self.push_screen(
+            CatalogMultiSelectScreen(
+                title="Select Agent SOPs",
+                options=list(self._sop_options),
+                selected_values=list(self._selected_sops),
+                help_text="Choose the SOPs to attach to this agent.",
+                allow_custom_values=False,
+            ),
+            callback=self._apply_sops_edit,
+        )
+
+    def _apply_sops_edit(self, result: list[str] | None) -> None:
+        if result is None:
+            return
+        self._selected_sops = self._normalize_token_list(result)
+        self._refresh_capability_summaries()
+
+    def _open_kb_editor(self) -> None:
+        self.push_screen(
+            CatalogSingleSelectScreen(
+                title="Select Agent KB",
+                options=list(self._kb_options),
+                selected_value=self._selected_kb,
+                help_text="Choose the knowledge base to attach to this agent.",
+                allow_custom_values=False,
+            ),
+            callback=self._apply_kb_edit,
+        )
+
+    def _apply_kb_edit(self, result: str | None) -> None:
+        if result is None:
+            return
+        self._selected_kb = str(result or "").strip()
+        self._refresh_capability_summaries()
+
     def _current_raw_values(self) -> dict[str, Any]:
         return {
             "id": str(self.query_one("#agent_editor_id", Input).value or "").strip(),
             "name": str(self.query_one("#agent_editor_name", Input).value or "").strip(),
             "summary": str(self.query_one("#agent_editor_summary", Input).value or "").strip(),
-            "prompt_refs": str(self.query_one("#agent_editor_prompt_refs", Input).value or "").strip(),
+            "prompt_ref": str(
+                getattr(self.query_one("#agent_editor_prompt_select", Select), "value", self._NO_PROMPT_VALUE) or ""
+            ).strip().lower(),
             "provider": str(self.query_one("#agent_editor_provider", Select).value or "").strip().lower(),
             "tier": str(self.query_one("#agent_editor_tier", Select).value or "").strip().lower(),
-            "tool_names": str(self.query_one("#agent_editor_tools", Input).value or "").strip(),
-            "sop_names": str(self.query_one("#agent_editor_sops", Input).value or "").strip(),
-            "knowledge_base_id": str(self.query_one("#agent_editor_kb", Input).value or "").strip(),
+            "tool_names": list(self._selected_tools),
+            "sop_names": list(self._selected_sops),
+            "knowledge_base_id": self._selected_kb,
             "activated": bool(self.query_one("#agent_editor_activated", Checkbox).value),
         }
+
+    def _create_prompt_from_form(self) -> None:
+        prompt_name = str(getattr(self.query_one("#agent_editor_prompt_name", Input), "value", "") or "").strip()
+        prompt_content = str(getattr(self.query_one("#agent_editor_prompt_content", TextArea), "text", "") or "").strip()
+        try:
+            asset = self._create_prompt_asset_record(self._prompt_assets, name=prompt_name, content=prompt_content)
+        except ValueError:
+            self._set_status("Prompt name and content are required to create a prompt.")
+            return
+        from swarmee_river.prompt_assets import PromptAsset, load_prompt_assets, save_prompt_assets
+
+        assets = load_prompt_assets()
+        by_id = {str(item.id).strip().lower(): item for item in assets}
+        by_id[asset["id"]] = PromptAsset(
+            id=str(asset["id"]),
+            name=str(asset["name"]),
+            content=str(asset["content"]),
+            tags=list(asset.get("tags") or []),
+            source=str(asset.get("source", "project") or "project"),
+        )
+        save_prompt_assets(list(by_id.values()))
+        self._prompt_assets = self._normalize_prompt_assets([*self._prompt_assets, asset])
+        self._created_prompt_asset = dict(asset)
+        self._selected_prompt_ref = str(asset["id"]).strip().lower()
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_editor_prompt_name", Input).value = ""
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_editor_prompt_content", TextArea).load_text("")
+        self._refresh_prompt_options()
+        self._refresh_capability_summaries()
+        self._set_status(f"Created prompt '{asset['name']}' ({asset['id']}).")
 
     def _save_from_form(self) -> None:
         payload = self._normalize_editor_payload(self._current_raw_values(), is_orchestrator=self._is_orchestrator)
         if payload is None:
             self._set_status("Agent name is required.")
             return
+        if self._created_prompt_asset is not None:
+            payload["created_prompt_asset"] = dict(self._created_prompt_asset)
         self.dismiss(payload)
 
     def compose(self):  # type: ignore[override]
@@ -3437,40 +3696,55 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
                     placeholder="summary",
                     id="agent_editor_summary",
                 )
+                yield Static("Prompt", classes="agent-editor-label")
+                yield Select(
+                    self._prompt_options(),
+                    id="agent_editor_prompt_select",
+                    value=self._selected_prompt_ref or self._NO_PROMPT_VALUE,
+                    allow_blank=False,
+                )
+                yield Static("", id="agent_editor_prompt_summary", classes="agent-editor-summary")
+                yield Static("Create New Prompt", classes="agent-editor-label")
                 yield Input(
-                    value=", ".join(str(item) for item in (self._agent.get("prompt_refs") or [])),
-                    placeholder="prompt refs (asset IDs, comma-separated)",
-                    id="agent_editor_prompt_refs",
+                    placeholder="Prompt name",
+                    id="agent_editor_prompt_name",
+                )
+                yield TextArea(
+                    text="",
+                    id="agent_editor_prompt_content",
+                    soft_wrap=True,
                 )
                 with Horizontal(classes="agent-editor-row"):
-                    yield Select(
-                        self._provider_options(),
-                        id="agent_editor_provider",
-                        value=self._selected_provider,
-                        allow_blank=False,
-                    )
-                    yield Select(
-                        self._tier_options(self._selected_provider),
-                        id="agent_editor_tier",
-                        value=self._selected_tier,
-                        allow_blank=False,
-                    )
+                    yield Button("Create Prompt", id="agent_editor_prompt_create", variant="success")
                 with Horizontal(classes="agent-editor-row"):
-                    yield Input(
-                        value=", ".join(str(item) for item in (self._agent.get("tool_names") or [])),
-                        placeholder="tool names (comma-separated, blank = inherit)",
-                        id="agent_editor_tools",
-                    )
-                    yield Input(
-                        value=", ".join(str(item) for item in (self._agent.get("sop_names") or [])),
-                        placeholder="SOP names (comma-separated, blank = inherit)",
-                        id="agent_editor_sops",
-                    )
-                yield Input(
-                    value=str(self._agent.get("knowledge_base_id", "") or ""),
-                    placeholder="knowledge base id (blank = inherit)",
-                    id="agent_editor_kb",
-                )
+                    with Vertical():
+                        yield Static("Model Provider", classes="agent-editor-label")
+                        yield Select(
+                            self._provider_options(),
+                            id="agent_editor_provider",
+                            value=self._selected_provider,
+                            allow_blank=False,
+                        )
+                    with Vertical():
+                        yield Static("Model Tier", classes="agent-editor-label")
+                        yield Select(
+                            self._tier_options(self._selected_provider),
+                            id="agent_editor_tier",
+                            value=self._selected_tier,
+                            allow_blank=False,
+                        )
+                yield Static("Tools", classes="agent-editor-label")
+                with Horizontal(classes="agent-editor-row"):
+                    yield Static("", id="agent_editor_tools_summary", classes="agent-editor-summary")
+                    yield Button("Edit Tools", id="agent_editor_tools_edit", variant="default")
+                yield Static("SOPs", classes="agent-editor-label")
+                with Horizontal(classes="agent-editor-row"):
+                    yield Static("", id="agent_editor_sops_summary", classes="agent-editor-summary")
+                    yield Button("Edit SOPs", id="agent_editor_sops_edit", variant="default")
+                yield Static("Knowledge Base", classes="agent-editor-label")
+                with Horizontal(classes="agent-editor-row"):
+                    yield Static("", id="agent_editor_kb_summary", classes="agent-editor-summary")
+                    yield Button("Select KB", id="agent_editor_kb_edit", variant="default")
                 yield Checkbox(
                     "Activated",
                     value=bool(self._agent.get("activated")),
@@ -3490,6 +3764,8 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
                 activated.value = False
                 activated.disabled = True
         self._refresh_tier_options()
+        self._refresh_prompt_options()
+        self._refresh_capability_summaries()
         with contextlib.suppress(Exception):
             self.query_one("#agent_editor_name", Input).focus()
 
@@ -3501,9 +3777,26 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
             return
         if select_id == "agent_editor_tier":
             self._selected_tier = str(getattr(event, "value", self._INHERIT_VALUE) or self._INHERIT_VALUE)
+            return
+        if select_id == "agent_editor_prompt_select":
+            value = str(getattr(event, "value", self._NO_PROMPT_VALUE) or self._NO_PROMPT_VALUE).strip().lower()
+            self._selected_prompt_ref = "" if value == self._NO_PROMPT_VALUE else value
+            self._refresh_capability_summaries()
 
     def on_button_pressed(self, event: Any) -> None:
         button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "agent_editor_prompt_create":
+            self._create_prompt_from_form()
+            return
+        if button_id == "agent_editor_tools_edit":
+            self._open_tools_editor()
+            return
+        if button_id == "agent_editor_sops_edit":
+            self._open_sops_editor()
+            return
+        if button_id == "agent_editor_kb_edit":
+            self._open_kb_editor()
+            return
         if button_id == "agent_editor_save":
             self._save_from_form()
             return
@@ -3516,12 +3809,275 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
             "agent_editor_id",
             "agent_editor_name",
             "agent_editor_summary",
-            "agent_editor_prompt_refs",
-            "agent_editor_tools",
-            "agent_editor_sops",
-            "agent_editor_kb",
+            "agent_editor_prompt_name",
         }:
             self._save_from_form()
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.dismiss(None)
+
+
+class AgentManagerScreen(ModalScreen[dict[str, Any] | None]):
+    """Modal agent manager for draft roster editing."""
+
+    DEFAULT_CSS = """
+    AgentManagerScreen {
+        align: center middle;
+    }
+    AgentManagerScreen #agent_manager_container {
+        width: 84;
+        max-width: 96%;
+        max-height: 92%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    AgentManagerScreen #agent_manager_title {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    AgentManagerScreen #agent_manager_controls {
+        layout: horizontal;
+        height: auto;
+        margin: 0 0 1 0;
+    }
+    AgentManagerScreen #agent_manager_select {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    AgentManagerScreen #agent_manager_preview {
+        height: auto;
+        min-height: 8;
+        border: round #4a5461;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        color: $text;
+    }
+    AgentManagerScreen #agent_manager_status {
+        height: auto;
+        margin: 0 0 1 0;
+        color: $text-muted;
+    }
+    AgentManagerScreen #agent_manager_buttons {
+        layout: horizontal;
+        height: auto;
+    }
+    AgentManagerScreen #agent_manager_buttons Button {
+        width: 1fr;
+        margin: 0 1 0 0;
+    }
+    """
+
+    def __init__(
+        self,
+        agents: list[dict[str, Any]],
+        *,
+        prompt_assets: list[dict[str, Any]],
+        tool_options: list[str],
+        sop_options: list[str],
+        kb_options: list[tuple[str, str]],
+        selected_id: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)
+        from swarmee_river.tui.agent_studio import normalize_agent_definition, normalize_agent_definitions
+
+        self._agents = [dict(item) for item in normalize_agent_definitions(agents)]
+        if not self._agents:
+            seeded = normalize_agent_definition({"id": ORCHESTRATOR_AGENT_ID, "name": "Orchestrator", "activated": False})
+            if seeded is not None:
+                self._agents = [seeded]
+        self._prompt_assets = AgentEditorScreen._normalize_prompt_assets(prompt_assets)
+        self._tool_options = AgentEditorScreen._normalize_token_list(tool_options)
+        self._sop_options = AgentEditorScreen._normalize_token_list(sop_options)
+        self._kb_options = CatalogSingleSelectScreen._normalize_options(kb_options)
+        requested = str(selected_id or "").strip()
+        self._selected_id = requested if any(str(item.get("id", "")).strip() == requested for item in self._agents) else ""
+        if not self._selected_id and self._agents:
+            self._selected_id = str(self._agents[0].get("id", "")).strip()
+        self._prompt_assets_changed = False
+
+    def _agent_options(self) -> list[tuple[str, str]]:
+        options: list[tuple[str, str]] = []
+        for agent in self._agents:
+            agent_id = str(agent.get("id", "")).strip()
+            if not agent_id:
+                continue
+            name = str(agent.get("name", "")).strip() or agent_id
+            options.append((f"{name} ({agent_id})", agent_id))
+        return options or [("(no agents)", "")]
+
+    def _selected_agent(self) -> dict[str, Any] | None:
+        return next((item for item in self._agents if str(item.get("id", "")).strip() == self._selected_id), None)
+
+    def _set_status(self, text: str) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_manager_status", Static).update(str(text or "").strip())
+
+    def _refresh_selector(self) -> None:
+        with contextlib.suppress(Exception):
+            select = self.query_one("#agent_manager_select", Select)
+            options = self._agent_options()
+            select.set_options(options)
+            values = {value for _label, value in options}
+            if self._selected_id not in values and options:
+                self._selected_id = options[0][1]
+            select.value = self._selected_id
+
+    def _refresh_preview(self) -> None:
+        agent = self._selected_agent()
+        if agent is None:
+            preview = "No agents available."
+        else:
+            prompt_refs = agent.get("prompt_refs") or []
+            prompt_id = str(prompt_refs[0]).strip() if prompt_refs else "none"
+            preview = "\n".join(
+                [
+                    f"Name: {str(agent.get('name', '')).strip() or '(unnamed)'}",
+                    f"ID: {str(agent.get('id', '')).strip()}",
+                    f"Prompt: {prompt_id}",
+                    f"Model: {str(agent.get('provider') or 'inherit')}/{str(agent.get('tier') or 'inherit')}",
+                    f"Tools: {', '.join(str(item) for item in (agent.get('tool_names') or [])) or 'inherit'}",
+                    f"SOPs: {', '.join(str(item) for item in (agent.get('sop_names') or [])) or 'inherit'}",
+                    f"KB: {str(agent.get('knowledge_base_id') or 'inherit')}",
+                ]
+            )
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_manager_preview", Static).update(preview)
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_manager_delete", Button).disabled = bool(
+                agent and str(agent.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID
+            )
+
+    def _default_new_agent(self) -> dict[str, Any]:
+        return {
+            "id": f"agent-{uuid.uuid4().hex[:8]}",
+            "name": "New Agent",
+            "summary": "",
+            "prompt_refs": [],
+            "provider": None,
+            "tier": None,
+            "tool_names": [],
+            "sop_names": [],
+            "knowledge_base_id": None,
+            "activated": False,
+        }
+
+    def _open_editor(self, agent: dict[str, Any], *, source_id: str | None) -> None:
+        self.push_screen(
+            AgentEditorScreen(
+                agent,
+                prompt_assets=list(self._prompt_assets),
+                tool_options=list(self._tool_options),
+                sop_options=list(self._sop_options),
+                kb_options=list(self._kb_options),
+            ),
+            callback=lambda result, source_id=source_id: self._apply_editor_result(result, source_id=source_id),
+        )
+
+    def _apply_editor_result(self, result: dict[str, Any] | None, *, source_id: str | None) -> None:
+        if not isinstance(result, dict):
+            return
+        created_prompt_asset = result.pop("created_prompt_asset", None)
+        if isinstance(created_prompt_asset, dict):
+            self._prompt_assets = AgentEditorScreen._normalize_prompt_assets([*self._prompt_assets, created_prompt_asset])
+            self._prompt_assets_changed = True
+        payload = AgentEditorScreen._normalize_editor_payload(
+            result,
+            is_orchestrator=str(source_id or result.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID,
+        )
+        if payload is None:
+            self._set_status("Agent changes were invalid.")
+            return
+        target_id = str(payload.get("id", "")).strip()
+        if source_id and source_id != target_id:
+            self._agents = [item for item in self._agents if str(item.get("id", "")).strip() != source_id]
+        replaced = False
+        for index, item in enumerate(self._agents):
+            if str(item.get("id", "")).strip() == target_id:
+                self._agents[index] = payload
+                replaced = True
+                break
+        if not replaced:
+            self._agents.append(payload)
+        self._selected_id = target_id
+        self._refresh_selector()
+        self._refresh_preview()
+        self._set_status(f"Updated '{payload['name']}'.")
+
+    def _delete_selected(self) -> None:
+        agent = self._selected_agent()
+        if agent is None:
+            self._set_status("Select an agent first.")
+            return
+        agent_id = str(agent.get("id", "")).strip()
+        if agent_id.lower() == ORCHESTRATOR_AGENT_ID:
+            self._set_status("Cannot delete the orchestrator agent.")
+            return
+        self._agents = [item for item in self._agents if str(item.get("id", "")).strip() != agent_id]
+        self._selected_id = str(self._agents[0].get("id", "")).strip() if self._agents else ""
+        self._refresh_selector()
+        self._refresh_preview()
+        self._set_status(f"Deleted '{agent_id}'.")
+
+    def compose(self):  # type: ignore[override]
+        with Vertical(id="agent_manager_container"):
+            yield Static("Agent Manager", id="agent_manager_title")
+            with Horizontal(id="agent_manager_controls"):
+                yield Select(self._agent_options(), id="agent_manager_select", value=self._selected_id or "")
+                yield Button("New", id="agent_manager_new", variant="success", compact=True)
+                yield Button("Edit", id="agent_manager_edit", variant="primary", compact=True)
+                yield Button("Delete", id="agent_manager_delete", variant="warning", compact=True)
+            yield Static("", id="agent_manager_preview")
+            yield Static("Select an agent to edit or create a new one.", id="agent_manager_status")
+            with Horizontal(id="agent_manager_buttons"):
+                yield Button("Save", id="agent_manager_save", variant="success")
+                yield Button("Cancel", id="agent_manager_cancel", variant="default")
+
+    def on_mount(self) -> None:
+        self._refresh_selector()
+        self._refresh_preview()
+        with contextlib.suppress(Exception):
+            self.query_one("#agent_manager_select", Select).focus()
+
+    def on_select_changed(self, event: Any) -> None:
+        select_id = str(getattr(getattr(event, "select", None), "id", "")).strip()
+        if select_id != "agent_manager_select":
+            return
+        self._selected_id = str(getattr(event, "value", "") or "").strip()
+        self._refresh_preview()
+
+    def on_button_pressed(self, event: Any) -> None:
+        button_id = str(getattr(getattr(event, "button", None), "id", "")).strip()
+        if button_id == "agent_manager_new":
+            self._open_editor(self._default_new_agent(), source_id=None)
+            return
+        if button_id == "agent_manager_edit":
+            agent = self._selected_agent()
+            if agent is None:
+                self._set_status("Select an agent first.")
+                return
+            self._open_editor(dict(agent), source_id=str(agent.get("id", "")).strip())
+            return
+        if button_id == "agent_manager_delete":
+            self._delete_selected()
+            return
+        if button_id == "agent_manager_save":
+            self.dismiss(
+                {
+                    "agents": [dict(item) for item in self._agents],
+                    "selected_id": self._selected_id,
+                    "prompt_assets_changed": self._prompt_assets_changed,
+                }
+            )
+            return
+        if button_id == "agent_manager_cancel":
+            self.dismiss(None)
 
     def on_key(self, event: Any) -> None:
         key = str(getattr(event, "key", "")).lower()

@@ -1665,7 +1665,7 @@ def run_tui() -> int:
             max-width: 1fr;
         }
 
-        #agent_summary_header, #agent_builder_agents_header {
+        #agent_summary_header {
             height: auto;
             color: $text-muted;
             padding: 0 0 1 0;
@@ -1681,8 +1681,7 @@ def run_tui() -> int:
             height: 1fr;
         }
 
-        #agent_builder_agent_meta_row, #agent_builder_model_row, #agent_builder_agent_actions,
-        #agent_builder_run_actions,
+        #agent_builder_agent_meta_row, #agent_builder_model_row,
         #agent_builder_prompt_asset_meta_row, #agent_builder_prompt_asset_actions,
         #agent_builder_tools_row, #agent_builder_sops_row, #agent_builder_kb_row,
         #bundles_meta_row, #bundles_actions_primary, #bundles_actions_secondary {
@@ -1746,16 +1745,12 @@ def run_tui() -> int:
             margin: 0;
         }
 
-        #agent_builder_agent_actions Button,
-        #agent_builder_run_actions Button,
         #bundles_actions_primary Button,
         #bundles_actions_secondary Button {
             width: 1fr;
             margin: 0 1 0 0;
         }
 
-        #agent_builder_agent_actions Button:last-child,
-        #agent_builder_run_actions Button:last-child,
         #bundles_actions_primary Button:last-child,
         #bundles_actions_secondary Button:last-child {
             margin: 0;
@@ -1801,8 +1796,6 @@ def run_tui() -> int:
         .layout-narrow #tooling_prompt_actions,
         .layout-narrow #session_view_switch,
         .layout-narrow #agent_overview_model_row,
-        .layout-narrow #agent_builder_agent_actions,
-        .layout-narrow #agent_builder_run_actions,
         .layout-narrow #bundles_actions_primary,
         .layout-narrow #bundles_actions_secondary,
         .layout-narrow #settings_general_runtime_row,
@@ -1818,8 +1811,6 @@ def run_tui() -> int:
         .layout-narrow #engage_view_switch Button,
         .layout-narrow #tooling_view_switch Button,
         .layout-narrow #session_view_switch Button,
-        .layout-narrow #agent_builder_agent_actions Button,
-        .layout-narrow #agent_builder_run_actions Button,
         .layout-narrow #bundles_actions_primary Button,
         .layout-narrow #bundles_actions_secondary Button,
         .layout-narrow #settings_general_runtime_row Button,
@@ -1837,8 +1828,6 @@ def run_tui() -> int:
         .layout-narrow #engage_view_switch Button:last-child,
         .layout-narrow #tooling_view_switch Button:last-child,
         .layout-narrow #session_view_switch Button:last-child,
-        .layout-narrow #agent_builder_agent_actions Button:last-child,
-        .layout-narrow #agent_builder_run_actions Button:last-child,
         .layout-narrow #bundles_actions_primary Button:last-child,
         .layout-narrow #bundles_actions_secondary Button:last-child,
         .layout-narrow #settings_general_runtime_row Button:last-child,
@@ -3502,23 +3491,11 @@ def run_tui() -> int:
             if button_id == "bundle_apply":
                 self._apply_bundle_selection()
                 return
-            if button_id == "agent_builder_agent_new":
-                self._open_agent_builder_editor_new()
-                return
-            if button_id == "agent_builder_agent_edit":
-                self._open_agent_builder_editor_selected()
-                return
-            if button_id == "agent_builder_agent_delete":
-                self._delete_selected_builder_agent()
+            if button_id == "agent_builder_open_manager":
+                self._open_agent_manager()
                 return
             if button_id == "agent_builder_prompt_promote":
                 self._promote_inline_agent_prompt_to_asset()
-                return
-            if button_id == "agent_builder_insert_prompt":
-                self._insert_activated_agents_run_prompt(run_now=False)
-                return
-            if button_id == "agent_builder_run_now":
-                self._insert_activated_agents_run_prompt(run_now=True)
                 return
             if button_id == "agent_builder_edit_tools":
                 self._edit_agent_builder_capability("tools")
