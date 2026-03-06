@@ -94,7 +94,11 @@ def _matches_tool_set(tool_name: str, configured_tools: set[str]) -> bool:
     return bool(equivalent_tool_names(tool_name).intersection(configured_tools))
 
 
-# Hardcoded fallback used when permission-based derivation is unavailable.
+# Hardcoded fallback used only when ``get_tools()`` import fails during
+# bootstrap (e.g. missing optional dependency).  Intentionally conservative —
+# contains only core read-only tools.  Manually maintained; the normal code
+# path derives the allowlist from declared permission metadata via
+# ``_build_plan_mode_allowlist()``.
 _FALLBACK_PLAN_MODE_ALLOWED_TOOLS: set[str] = {
     "retrieve",
     "sop",

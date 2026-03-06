@@ -779,4 +779,4 @@ def office(
     )
 
 
-set_permissions(office, "read")
+set_permissions(office, "read", "write")

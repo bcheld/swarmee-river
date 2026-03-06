@@ -124,4 +124,4 @@ def environment(
     }
 
 
-set_permissions(environment, "read")
+set_permissions(environment, "read", "execute")

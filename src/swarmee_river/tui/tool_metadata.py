@@ -15,63 +15,6 @@ from swarmee_river.tool_permissions import STRANDS_TOOL_PERMISSIONS, get_permiss
 
 _TOOL_OVERRIDES_FILENAME = "tool_metadata.json"
 
-# Heuristic R/W/X defaults keyed by tool name substring.
-_READ_TOOLS = frozenset(
-    {
-        "file_read",
-        "file_list",
-        "file_search",
-        "glob",
-        "list",
-        "retrieve",
-        "s3_browser",
-        "environment",
-        "current_time",
-        "athena_query",
-        "snowflake_query",
-        "office",
-        "image_reader",
-        "todoread",
-        "sop",
-        "memory",
-        "journal",
-    }
-)
-_WRITE_TOOLS = frozenset(
-    {
-        "file_write",
-        "editor",
-        "patch_apply",
-        "artifact",
-        "store_in_kb",
-        "todowrite",
-        "welcome",
-        "session_s3",
-    }
-)
-_EXECUTE_TOOLS = frozenset(
-    {
-        "shell",
-        "python_repl",
-        "git",
-        "run_checks",
-        "http_request",
-        "agent_graph",
-        "swarm",
-        "use_agent",
-        "use_llm",
-        "strand",
-        "calculator",
-        "workflow",
-        "cron",
-        "slack",
-        "speak",
-        "generate_image",
-        "nova_reels",
-        "use_aws",
-        "load_tool",
-    }
-)
 _CONNECTOR_TOOLS = frozenset(
     {
         "athena_query",
@@ -113,17 +56,11 @@ class ToolMeta:
         )
 
 
-def _heuristic_access(name: str) -> tuple[bool, bool, bool]:
-    """Return (read, write, execute) defaults based on tool name."""
-    r = name in _READ_TOOLS
-    w = name in _WRITE_TOOLS
-    x = name in _EXECUTE_TOOLS
-    # Tools like plan_progress, think, stop are informational — default all False.
-    return r, w, x
-
-
 def _resolve_permissions(name: str, tool_obj: Any) -> tuple[bool, bool, bool]:
-    """Three-tier permission resolution: declared > SDK fallback > heuristic."""
+    """Two-tier permission resolution: declared > SDK fallback.
+
+    Unknown tools default to (False, False, False) — informational / no permissions.
+    """
     # 1) Declared .permissions attribute on the tool object.
     declared = get_permissions(tool_obj)
     if declared is not None:
@@ -132,8 +69,8 @@ def _resolve_permissions(name: str, tool_obj: Any) -> tuple[bool, bool, bool]:
     sdk_perms = STRANDS_TOOL_PERMISSIONS.get(name)
     if sdk_perms is not None:
         return ("read" in sdk_perms, "write" in sdk_perms, "execute" in sdk_perms)
-    # 3) Legacy hardcoded heuristic sets.
-    return _heuristic_access(name)
+    # Unknown tool — treat as informational (no permissions).
+    return (False, False, False)
 
 
 def _overrides_path() -> Path:
@@ -234,6 +171,8 @@ def discover_tools_with_metadata(tools_dict: dict[str, Any] | None = None) -> li
 
 
 # Names from _CUSTOM_TOOLS in tools.py for source classification.
+# Keep in sync with ``_CUSTOM_TOOLS.keys()`` in ``tools.py``.
+# ``project_context`` is conditionally added at runtime.
 _CUSTOM_TOOL_NAMES = frozenset(
     {
         "file_list",
@@ -259,6 +198,7 @@ _CUSTOM_TOOL_NAMES = frozenset(
         "todowrite",
         "agent_graph",
         "swarm",
+        "project_context",
     }
 )
 
