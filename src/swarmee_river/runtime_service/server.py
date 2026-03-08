@@ -33,6 +33,7 @@ class ClientState:
 
 _SESSION_IDLE_TIMEOUT_S: float = 3600.0
 _BROKER_IDLE_TIMEOUT_S: float = 3600.0
+_SESSION_STARTUP_OBSERVE_TIMEOUT_S: float = 1.0
 
 
 def _interrupt_timeout_seconds(*, session_cwd: str) -> float:
@@ -95,6 +96,9 @@ class SessionState:
     pending_stall_restart: bool = False
     provider_hint: str = ""
     stdout_first_line_seen: bool = False
+    ready_received: bool = False
+    startup_future: asyncio.Future[bool] | None = None
+    startup_failure_summary: str | None = None
 
 
 class RuntimeServiceServer:
@@ -646,6 +650,12 @@ class RuntimeServiceServer:
         session.started_new_session = False
         session.pending_stall_restart = False
         session.stdout_first_line_seen = False
+        session.ready_received = False
+        session.startup_failure_summary = None
+        startup_future = session.startup_future
+        session.startup_future = None
+        if startup_future is not None and not startup_future.done():
+            startup_future.cancel()
 
     async def _start_session_process(self, session: SessionState) -> None:
         command = [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
@@ -680,6 +690,9 @@ class RuntimeServiceServer:
         session.process = process
         session.stdout_first_line_seen = False
         session.started_new_session = started_new_session
+        session.ready_received = False
+        session.startup_failure_summary = None
+        session.startup_future = asyncio.get_running_loop().create_future()
         self._trace_session_transition(
             session_id=session.session_id,
             message="session_daemon_spawned",
@@ -703,6 +716,16 @@ class RuntimeServiceServer:
             return
         await self._stop_session_process(session)
         await self._start_session_process(session)
+        await self._observe_session_startup(session, timeout_s=_SESSION_STARTUP_OBSERVE_TIMEOUT_S)
+
+    async def _observe_session_startup(self, session: SessionState, *, timeout_s: float) -> None:
+        future = session.startup_future
+        if future is None or future.done() or session.ready_received:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(future), timeout=max(0.1, float(timeout_s)))
+        except asyncio.TimeoutError:
+            return
 
     def _parse_session_output_line(self, raw_line: str) -> dict[str, Any] | None:
         text = raw_line.rstrip("\n").strip()
@@ -729,10 +752,23 @@ class RuntimeServiceServer:
             session.query_active = False
             session.consent_pending = False
             session.controller_client_id = None
+        elif event_type == "ready":
+            session.ready_received = True
+            startup_future = session.startup_future
+            if startup_future is not None and not startup_future.done():
+                startup_future.set_result(True)
         elif event_type == "model_info":
             provider = str(payload.get("provider", "")).strip().lower()
             if provider:
                 session.provider_hint = provider
+        elif event_type in {"error", "warning"} and not session.ready_received:
+            text = str(payload.get("message") or payload.get("text") or "").strip()
+            if text and not text.startswith("[broker]"):
+                session.startup_failure_summary = text
+                if event_type == "error":
+                    startup_future = session.startup_future
+                    if startup_future is not None and not startup_future.done():
+                        startup_future.set_exception(RuntimeError(text))
 
         outgoing = dict(payload)
         outgoing.setdefault("session_id", session.session_id)
@@ -797,7 +833,27 @@ class RuntimeServiceServer:
                 session.started_new_session = False
                 session.pending_stall_restart = False
                 session.stdout_first_line_seen = False
+                if not session.ready_received:
+                    startup_summary = (
+                        session.startup_failure_summary
+                        or f"Session daemon exited before becoming ready (code {process.poll()})."
+                    )
+                    startup_future = session.startup_future
+                    if startup_future is not None and not startup_future.done():
+                        startup_future.set_exception(RuntimeError(startup_summary))
+                session.ready_received = False
+                session.startup_future = None
             code = process.poll()
+            if not session.ready_received and session.startup_failure_summary:
+                await self._broadcast_session_event(
+                    session,
+                    {
+                        "event": "error",
+                        "code": "session_start_failed",
+                        "message": session.startup_failure_summary,
+                        "text": session.startup_failure_summary,
+                    },
+                )
             await self._broadcast_session_event(
                 session,
                 {"event": "warning", "text": f"Session daemon exited (code {code if code is not None else 'unknown'})"},

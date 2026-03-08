@@ -7,6 +7,7 @@ import json as _json
 import re
 import textwrap
 import uuid
+from pathlib import Path
 from typing import Any
 
 from rich import box as rich_box
@@ -174,6 +175,68 @@ def render_tool_progress_chunk(content: str, *, stream: str = "stdout") -> RichT
     return rendered
 
 
+def render_diff_text(diff_text: str) -> RichText:
+    rendered = RichText()
+    lines = str(diff_text or "").splitlines() or [""]
+    for index, line in enumerate(lines):
+        if index:
+            rendered.append("\n")
+        style = ""
+        if line.startswith("@@"):
+            style = "bold yellow"
+        elif line.startswith("+++ ") or line.startswith("--- "):
+            style = "bold cyan"
+        elif line.startswith("+"):
+            style = "green"
+        elif line.startswith("-"):
+            style = "red"
+        elif line.startswith("diff --git") or line.startswith("Index: "):
+            style = "bold cyan"
+        rendered.append(line, style=style)
+    return rendered
+
+
+def render_diff_review_panel(
+    *,
+    tool_name: str,
+    paths: list[str],
+    diff_text: str,
+    stats: dict[str, Any] | None = None,
+    artifact_path: str | None = None,
+    hidden_lines: int = 0,
+) -> RichPanel:
+    summary = RichText()
+    summary.append(tool_name or "file change", style="bold")
+    if paths:
+        summary.append(" - ", style="dim")
+        summary.append(", ".join(paths), style="dim")
+
+    meta: list[str] = []
+    if isinstance(stats, dict):
+        files_changed = stats.get("files_changed")
+        added = stats.get("added_lines")
+        removed = stats.get("removed_lines")
+        non_text = stats.get("non_text_changes")
+        if isinstance(files_changed, int):
+            meta.append(f"{files_changed} file{'s' if files_changed != 1 else ''}")
+        if isinstance(added, int):
+            meta.append(f"+{added}")
+        if isinstance(removed, int):
+            meta.append(f"-{removed}")
+        if isinstance(non_text, int) and non_text > 0:
+            meta.append(f"{non_text} non-text")
+    if hidden_lines > 0:
+        meta.append(f"{hidden_lines} more line{'s' if hidden_lines != 1 else ''} in artifact")
+    if artifact_path:
+        meta.append(Path(artifact_path).name)
+
+    body_items: list[Any] = [summary]
+    if meta:
+        body_items.append(RichText(" | ".join(meta), style="dim"))
+    body_items.append(render_diff_text(diff_text))
+    return RichPanel(RichGroup(*body_items), title="Diff Review", border_style="cyan", box=rich_box.ROUNDED)
+
+
 def render_tool_heartbeat_line(tool_name: str, *, elapsed_s: float, tool_use_id: str | None = None) -> RichText:
     """Render a lightweight running heartbeat line for long-running tools."""
     _ = tool_use_id  # intentionally not shown in default transcript UI
@@ -213,15 +276,53 @@ def render_tool_details_panel(tool_record: dict[str, Any]) -> RichPanel:
     return RichPanel(RichText("\n".join(lines)), title="Tool Details", border_style="cyan")
 
 
-def render_consent_panel(context: str, *, options: list[str] | None = None) -> RichPanel:
+def render_consent_panel(
+    context: str,
+    *,
+    options: list[str] | None = None,
+    changed_paths: list[str] | None = None,
+    diff_preview: str | None = None,
+    diff_hidden_lines: int = 0,
+    non_text_change_summary: str | None = None,
+    diff_stats: dict[str, Any] | None = None,
+) -> RichPanel:
     """Render consent prompt as a panel."""
     consent_options = options or ["y", "n", "a", "v"]
     option_line = "  ".join(f"[{item}]" for item in consent_options)
+    body_items: list[Any] = []
     content = RichText()
     content.append(context.strip() if context.strip() else "Consent requested.")
-    content.append("\n")
-    content.append(option_line, style="bold")
-    return RichPanel(content, title="Consent", border_style="yellow")
+    body_items.append(content)
+    if changed_paths:
+        body_items.append(RichText(f"Paths: {', '.join(changed_paths)}", style="dim"))
+    if isinstance(diff_preview, str) and diff_preview.strip():
+        body_items.append(
+            RichPanel(
+                RichGroup(
+                    render_diff_text(diff_preview),
+                    RichText(
+                        f"{diff_hidden_lines} more line(s) hidden"
+                        if diff_hidden_lines > 0
+                        else "",
+                        style="dim",
+                    ),
+                ),
+                title="Change Preview",
+                border_style="cyan",
+                box=rich_box.ROUNDED,
+            )
+        )
+    elif isinstance(non_text_change_summary, str) and non_text_change_summary.strip():
+        body_items.append(
+            RichPanel(
+                RichText(non_text_change_summary.strip()),
+                title="Change Summary",
+                border_style="cyan",
+                box=rich_box.ROUNDED,
+            )
+        )
+    body_items.append(RichText(option_line, style="bold"))
+    return RichPanel(RichGroup(*body_items), title="Consent", border_style="yellow")
 
 
 def render_plan_panel(plan_json: dict[str, Any]) -> RichPanel:
@@ -380,7 +481,7 @@ class ConsentPrompt(Vertical):
         padding: 0 1;
         margin: 0 0 1 0;
         height: auto;
-        max-height: 7;
+        max-height: 24;
     }
     ConsentPrompt.-highlight {
         border: heavy yellow;
@@ -394,6 +495,10 @@ class ConsentPrompt(Vertical):
         color: $text-muted;
         margin: 0;
         padding: 0;
+    }
+    ConsentPrompt #consent_diff {
+        height: auto;
+        margin: 0 0 1 0;
     }
     ConsentPrompt #consent_actions {
         layout: horizontal;
@@ -414,13 +519,25 @@ class ConsentPrompt(Vertical):
     def compose(self):  # type: ignore[override]
         yield Static("", id="consent_context")
         yield Static("", id="consent_separator")
+        yield Static("", id="consent_diff")
         with Horizontal(id="consent_actions"):
             yield Button("Yes (y)", id="consent_choice_y", variant="success", compact=True)
             yield Button("No (n)", id="consent_choice_n", variant="error", compact=True)
             yield Button("Always (a)", id="consent_choice_a", variant="primary", compact=True)
             yield Button("Never (v)", id="consent_choice_v", variant="warning", compact=True)
 
-    def set_prompt(self, context: str, *, options: list[str] | None = None, alert: bool = True) -> None:
+    def set_prompt(
+        self,
+        context: str,
+        *,
+        options: list[str] | None = None,
+        alert: bool = True,
+        changed_paths: list[str] | None = None,
+        diff_preview: str | None = None,
+        diff_hidden_lines: int = 0,
+        non_text_change_summary: str | None = None,
+        diff_stats: dict[str, Any] | None = None,
+    ) -> None:
         """Show context + enabled options and reveal the prompt."""
         available = {opt.strip().lower() for opt in (options or self._CHOICE_IDS) if opt.strip()}
         if not available:
@@ -435,8 +552,36 @@ class ConsentPrompt(Vertical):
             rich_context.append(" — ", style="bold yellow")
             rich_context.append("Command: ", style="bold")
             rich_context.append(summary, style="dim")
+        if changed_paths:
+            rich_context.append("\nPaths: ", style="bold")
+            rich_context.append(", ".join(changed_paths), style="dim")
         self.query_one("#consent_context", Static).update(rich_context)
         self.query_one("#consent_separator", Static).update(RichText("─" * 28, style="dim"))
+        diff_widget = self.query_one("#consent_diff", Static)
+        if isinstance(diff_preview, str) and diff_preview.strip():
+            diff_widget.styles.display = "block"
+            diff_widget.update(
+                render_diff_review_panel(
+                    tool_name=tool_name,
+                    paths=changed_paths or [],
+                    diff_text=diff_preview,
+                    stats=diff_stats,
+                    hidden_lines=diff_hidden_lines,
+                )
+            )
+        elif isinstance(non_text_change_summary, str) and non_text_change_summary.strip():
+            diff_widget.styles.display = "block"
+            diff_widget.update(
+                RichPanel(
+                    RichText(non_text_change_summary.strip()),
+                    title="Change Summary",
+                    border_style="cyan",
+                    box=rich_box.ROUNDED,
+                )
+            )
+        else:
+            diff_widget.styles.display = "none"
+            diff_widget.update("")
         self.query_one("#consent_actions", Horizontal).styles.display = "block"
 
         for choice in self._CHOICE_IDS:
@@ -455,6 +600,10 @@ class ConsentPrompt(Vertical):
     def hide_prompt(self) -> None:
         self._clear_highlight()
         self.styles.display = "none"
+        with contextlib.suppress(Exception):
+            diff_widget = self.query_one("#consent_diff", Static)
+            diff_widget.styles.display = "none"
+            diff_widget.update("")
         with contextlib.suppress(Exception):
             self.query_one("#consent_actions", Horizontal).styles.display = "block"
 
@@ -1055,12 +1204,12 @@ class SidebarDetail(Vertical):
     def __init__(
         self,
         *,
-        preview: str = "",
+        preview: Any = "",
         actions: list[dict[str, Any]] | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)
-        self._preview = str(preview or "").strip()
+        self._preview = preview if preview not in (None, "") else ""
         self._actions = [dict(item) for item in (actions or []) if isinstance(item, dict)]
         self._action_button_ids: dict[str, str] = {}
 
@@ -1081,8 +1230,8 @@ class SidebarDetail(Vertical):
                 compact = bool(action.get("compact", True))
                 yield Button(label, id=button_id, variant=variant, compact=compact)
 
-    def set_preview(self, preview: str) -> None:
-        self._preview = str(preview or "").strip()
+    def set_preview(self, preview: Any) -> None:
+        self._preview = preview if preview not in (None, "") else ""
         text = self._preview if self._preview else "(no selection)"
         with contextlib.suppress(Exception):
             self.query_one(".sidebar-detail-preview", Static).update(text)
@@ -3637,7 +3786,9 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
 
     def _create_prompt_from_form(self) -> None:
         prompt_name = str(getattr(self.query_one("#agent_editor_prompt_name", Input), "value", "") or "").strip()
-        prompt_content = str(getattr(self.query_one("#agent_editor_prompt_content", TextArea), "text", "") or "").strip()
+        prompt_content = str(
+            getattr(self.query_one("#agent_editor_prompt_content", TextArea), "text", "") or ""
+        ).strip()
         try:
             asset = self._create_prompt_asset_record(self._prompt_assets, name=prompt_name, content=prompt_content)
         except ValueError:
@@ -3889,7 +4040,9 @@ class AgentManagerScreen(ModalScreen[dict[str, Any] | None]):
 
         self._agents = [dict(item) for item in normalize_agent_definitions(agents)]
         if not self._agents:
-            seeded = normalize_agent_definition({"id": ORCHESTRATOR_AGENT_ID, "name": "Orchestrator", "activated": False})
+            seeded = normalize_agent_definition(
+                {"id": ORCHESTRATOR_AGENT_ID, "name": "Orchestrator", "activated": False}
+            )
             if seeded is not None:
                 self._agents = [seeded]
         self._prompt_assets = AgentEditorScreen._normalize_prompt_assets(prompt_assets)
@@ -3897,7 +4050,9 @@ class AgentManagerScreen(ModalScreen[dict[str, Any] | None]):
         self._sop_options = AgentEditorScreen._normalize_token_list(sop_options)
         self._kb_options = CatalogSingleSelectScreen._normalize_options(kb_options)
         requested = str(selected_id or "").strip()
-        self._selected_id = requested if any(str(item.get("id", "")).strip() == requested for item in self._agents) else ""
+        self._selected_id = (
+            requested if any(str(item.get("id", "")).strip() == requested for item in self._agents) else ""
+        )
         if not self._selected_id and self._agents:
             self._selected_id = str(self._agents[0].get("id", "")).strip()
         self._prompt_assets_changed = False
@@ -3985,7 +4140,9 @@ class AgentManagerScreen(ModalScreen[dict[str, Any] | None]):
             return
         created_prompt_asset = result.pop("created_prompt_asset", None)
         if isinstance(created_prompt_asset, dict):
-            self._prompt_assets = AgentEditorScreen._normalize_prompt_assets([*self._prompt_assets, created_prompt_asset])
+            self._prompt_assets = AgentEditorScreen._normalize_prompt_assets(
+                [*self._prompt_assets, created_prompt_asset]
+            )
             self._prompt_assets_changed = True
         payload = AgentEditorScreen._normalize_editor_payload(
             result,

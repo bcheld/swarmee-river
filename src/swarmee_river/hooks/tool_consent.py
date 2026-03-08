@@ -8,6 +8,7 @@ from typing import Any, Callable
 from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import BeforeToolCallEvent
 
+from swarmee_river.diff_review import preview_mutating_tool_change, summarize_diff_stats, truncate_diff_preview
 from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.opencode_aliases import canonical_tool_name, equivalent_tool_names, normalize_tool_name
 from swarmee_river.permissions import evaluate_permission_action
@@ -70,6 +71,79 @@ def _tool_prompt_context(tool_name: str, tool_use: Any) -> str:
     return f"  Input: {_truncate(payload)}"
 
 
+def _format_non_text_change_summary(non_text_paths: list[dict[str, str]]) -> str:
+    if not non_text_paths:
+        return ""
+    lines = ["  Non-text changes:"]
+    for item in non_text_paths[:8]:
+        path = str(item.get("path", "")).strip() or "(unknown)"
+        before = str(item.get("before", "")).strip() or "unknown"
+        after = str(item.get("after", "")).strip() or "unknown"
+        lines.append(f"    - {path}: {before} -> {after}")
+    remaining = len(non_text_paths) - 8
+    if remaining > 0:
+        lines.append(f"    - ... {remaining} more")
+    return "\n".join(lines)
+
+
+def _build_consent_prompt(
+    tool_name: str,
+    tool_use: Any,
+) -> tuple[str, dict[str, Any] | None, str | None]:
+    lines = [f"Allow tool '{tool_name}'?"]
+    context = _tool_prompt_context(tool_name, tool_use)
+    if context:
+        lines.append(context)
+
+    tool_input = tool_use.get("input") if isinstance(tool_use, dict) else None
+    preview = preview_mutating_tool_change(tool_name, tool_input if isinstance(tool_input, dict) else None)
+    if preview is None:
+        return "\n".join(lines), None, None
+    if not preview.trusted:
+        reason = str(preview.reason or "").strip() or "missing deterministic file diff preview"
+        blocked = (
+            f"Tool '{tool_name}' blocked: unable to build a trustworthy pre-approval diff preview ({reason}). "
+            "Use `editor` for single-file edits or `patch_apply` for structured multi-file patches."
+        )
+        return "\n".join(lines), None, blocked
+
+    payload: dict[str, Any] = {
+        "tool": tool_name,
+        "changed_paths": list(preview.changed_paths),
+        "touched_paths": list(preview.touched_paths),
+    }
+
+    if preview.changed_paths:
+        lines.append(f"  Changed paths: {', '.join(preview.changed_paths)}")
+    elif preview.touched_paths:
+        lines.append(f"  Touched paths: {', '.join(preview.touched_paths)}")
+
+    if preview.diff_text.strip():
+        preview_text, hidden_lines = truncate_diff_preview(preview.diff_text)
+        stats = summarize_diff_stats(preview.diff_text)
+        stats["files_changed"] = max(len(preview.changed_paths), stats.get("files_changed", 0))
+        payload["diff_preview"] = preview_text
+        payload["diff_hidden_lines"] = hidden_lines
+        payload["diff_stats"] = stats
+        lines.append("  Diff preview:")
+        lines.extend(f"    {line}" if line else "" for line in preview_text.splitlines())
+        if hidden_lines > 0:
+            lines.append(f"    ... {hidden_lines} more line(s) hidden")
+
+    non_text_paths = list(preview.non_text_paths or [])
+    if non_text_paths:
+        summary = _format_non_text_change_summary(non_text_paths)
+        payload["non_text_paths"] = non_text_paths
+        payload["non_text_change_summary"] = summary.strip()
+        if summary:
+            lines.append(summary)
+
+    if not preview.diff_text.strip() and not non_text_paths:
+        lines.append("  No file content changes predicted.")
+
+    return "\n".join(lines), payload, None
+
+
 @dataclass(frozen=True)
 class ConsentDecision:
     allowed: bool
@@ -82,8 +156,8 @@ class ToolConsentHooks(HookProvider):
 
     High-risk tools default to requiring explicit consent:
     - shell
-    - file_write
     - editor
+    - patch_apply
     - http_request
     """
 
@@ -93,7 +167,7 @@ class ToolConsentHooks(HookProvider):
         *,
         interactive: bool,
         auto_approve: bool,
-        prompt: Callable[[str], str],
+        prompt: Callable[[str, dict[str, Any] | None], str],
     ) -> None:
         self._safety = safety
         self._interactive = interactive
@@ -178,15 +252,22 @@ class ToolConsentHooks(HookProvider):
                 return
 
             if remember_allowed:
+                prompt_text, prompt_payload, preview_block = _build_consent_prompt(tool_name, tool_use)
+                if preview_block:
+                    event.cancel_tool = preview_block
+                    return
                 prompt = (
-                    f"Allow tool '{tool_name}'?\n"
-                    f"{_tool_prompt_context(tool_name, tool_use)}\n"
+                    f"{prompt_text}\n"
                     "  [y] Yes   [n] No   [a] Always (session)   [v] Never (session): "
                 )
             else:
-                prompt = f"Allow tool '{tool_name}'?\n{_tool_prompt_context(tool_name, tool_use)}\n  [y] Yes   [n] No: "
+                prompt_text, prompt_payload, preview_block = _build_consent_prompt(tool_name, tool_use)
+                if preview_block:
+                    event.cancel_tool = preview_block
+                    return
+                prompt = f"{prompt_text}\n  [y] Yes   [n] No: "
 
-            choice = (self._prompt(prompt) or "").strip().lower()
+            choice = (self._prompt(prompt, prompt_payload) or "").strip().lower()
             if remember_allowed:
                 if choice in {"a", "always"}:
                     self._decisions[decision_key] = True

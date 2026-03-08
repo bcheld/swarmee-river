@@ -176,7 +176,7 @@ The `context_sources` field injects additional content into every invocation:
   "name": "Data Analyst",
   "prompt": "You are a data analyst. Prefer pandas for data manipulation. Always explain your methodology before running code. Show intermediate results.",
   "sop_names": ["data-analysis"],
-  "tool_names": ["python_repl", "file_read", "file_list", "file_write"]
+  "tool_names": ["python_repl", "file_read", "file_list", "editor"]
 }
 ```
 
@@ -204,7 +204,7 @@ Uses only read-only tools so the agent can only inspect, never modify.
   "name": "DevOps Engineer",
   "prompt": "You are a DevOps engineer. Prefer idempotent operations. Always check the current state before making changes.",
   "sop_names": ["infrastructure-change"],
-  "tool_names": ["shell", "file_read", "file_write", "git", "http_request"],
+  "tool_names": ["shell", "file_read", "editor", "git", "http_request"],
   "context_sources": [
     {"type": "file", "path": "./infrastructure/README.md"}
   ]

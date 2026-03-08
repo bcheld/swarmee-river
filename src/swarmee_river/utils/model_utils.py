@@ -1,13 +1,17 @@
 """Utilities for loading model providers in Swarmee."""
 
+import hashlib
 import importlib
+import importlib.metadata
 import json
 import logging
 import pathlib
+import sys
 from dataclasses import dataclass
 from typing import Any, cast
 
 from botocore.config import Config
+from packaging.version import InvalidVersion, Version
 from strands.models import Model
 
 from swarmee_river.config.env_policy import getenv_secret
@@ -20,6 +24,9 @@ _BEDROCK_THINKING_BUDGET_MAX = 32768
 _BEDROCK_EXTENDED_BUDGETS = {"low": 1024, "medium": 4096, "high": 8192}
 _BEDROCK_ADAPTIVE_EFFORTS = {"low": "low", "medium": "medium", "high": "high"}
 _BEDROCK_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+_OPENAI_RESPONSES_MIN_STRANDS_VERSION = "1.29.0"
+_OPENAI_RESPONSES_MIN_OPENAI_VERSION = "2.0.0"
+_OPENAI_RESPONSES_PROVIDER_PATH = "swarmee_river.models.openai.OpenAIResponsesModel"
 _OPENAI_RESPONSES_REASONING_UNSUPPORTED = (
     "gpt-5-mini",
     "gpt-5-micro",
@@ -35,6 +42,121 @@ class BedrockModelCapabilities:
     supports_guardrails: bool
     supports_cache_tools: bool
     supports_forced_tool_with_reasoning: bool = False
+
+
+@dataclass(frozen=True)
+class OpenAIResponsesTransportStatus:
+    available: bool
+    strands_version: str | None
+    openai_version: str | None
+    reason: str
+    required_strands_version: str = _OPENAI_RESPONSES_MIN_STRANDS_VERSION
+    required_openai_version: str = _OPENAI_RESPONSES_MIN_OPENAI_VERSION
+    provider_name: str = _OPENAI_RESPONSES_PROVIDER_PATH
+
+    @property
+    def provider_path(self) -> str:
+        return self.provider_name
+
+
+def _version_is_at_least(version_text: str | None, minimum_text: str) -> bool:
+    if not version_text:
+        return False
+    try:
+        return Version(version_text) >= Version(minimum_text)
+    except InvalidVersion:
+        return False
+
+
+def _openai_responses_transport_reason(
+    *,
+    strands_version: str | None,
+    openai_version: str | None,
+    detail: str | None = None,
+) -> str:
+    detail_text = str(detail or "").strip()
+    if strands_version and not _version_is_at_least(strands_version, _OPENAI_RESPONSES_MIN_STRANDS_VERSION):
+        base = (
+            f"Installed strands-agents=={strands_version} is below Swarmee's supported runtime version "
+            "for OpenAI Responses. "
+            f"Upgrade to strands-agents>={_OPENAI_RESPONSES_MIN_STRANDS_VERSION}."
+        )
+        return f"{base} ({detail_text})" if detail_text else base
+
+    if not strands_version:
+        base = (
+            "strands-agents is not installed, so Swarmee's OpenAI runtime is unavailable. "
+            f"Install strands-agents>={_OPENAI_RESPONSES_MIN_STRANDS_VERSION}."
+        )
+        return f"{base} ({detail_text})" if detail_text else base
+
+    if openai_version and _version_is_at_least(openai_version, _OPENAI_RESPONSES_MIN_OPENAI_VERSION):
+        base = (
+            "Swarmee OpenAI Responses runtime available via "
+            f"strands-agents=={strands_version} and openai=={openai_version}."
+        )
+        return f"{base} ({detail_text})" if detail_text else base
+
+    if openai_version:
+        base = (
+            f"Installed openai=={openai_version} is incompatible with Swarmee's OpenAI Responses runtime. "
+            f"Upgrade to openai>={_OPENAI_RESPONSES_MIN_OPENAI_VERSION},<3.0.0."
+        )
+        return f"{base} ({detail_text})" if detail_text else base
+
+    base = (
+        "The OpenAI SDK is missing or incompatible with Swarmee's OpenAI Responses runtime. "
+        f"Install openai>={_OPENAI_RESPONSES_MIN_OPENAI_VERSION},<3.0.0."
+    )
+    return f"{base} ({detail_text})" if detail_text else base
+
+
+def probe_openai_responses_transport() -> OpenAIResponsesTransportStatus:
+    """Report whether Swarmee can run the OpenAI Responses provider."""
+    try:
+        strands_version = importlib.metadata.version("strands-agents")
+    except importlib.metadata.PackageNotFoundError:
+        strands_version = None
+    try:
+        openai_version = importlib.metadata.version("openai")
+    except importlib.metadata.PackageNotFoundError:
+        openai_version = None
+
+    available = bool(
+        _version_is_at_least(strands_version, _OPENAI_RESPONSES_MIN_STRANDS_VERSION)
+        and _version_is_at_least(openai_version, _OPENAI_RESPONSES_MIN_OPENAI_VERSION)
+    )
+    if not available:
+        return OpenAIResponsesTransportStatus(
+            available=False,
+            strands_version=strands_version,
+            openai_version=openai_version,
+            reason=_openai_responses_transport_reason(
+                strands_version=strands_version,
+                openai_version=openai_version,
+            ),
+        )
+
+    return OpenAIResponsesTransportStatus(
+        available=True,
+        strands_version=strands_version,
+        openai_version=openai_version,
+        reason=_openai_responses_transport_reason(
+            strands_version=strands_version,
+            openai_version=openai_version,
+        ),
+    )
+
+
+def ensure_openai_responses_transport_available() -> OpenAIResponsesTransportStatus:
+    """Raise a stable ImportError when Swarmee's OpenAI runtime is unavailable."""
+    status = probe_openai_responses_transport()
+    if status.available:
+        return status
+    raise ImportError(
+        "OpenAI Responses transport is required for provider 'openai', but "
+        f"Swarmee's OpenAI runtime is unavailable. {status.reason}"
+    )
 
 
 def _as_int(value: Any, default: int, *, min_value: int | None = None) -> int:
@@ -352,7 +474,10 @@ def sanitize_openai_responses_config(
             params.pop("reasoning", None)
         if reasoning is not None:
             logger.info(
-                "OpenAI model '%s' uses Responses transport without reasoning because this model family does not support the reasoning argument.",
+                (
+                    "OpenAI model '%s' uses Responses transport without reasoning "
+                    "because this model family does not support the reasoning argument."
+                ),
                 str(config.get("model_id") or "").strip() or "(unknown)",
             )
 
@@ -368,7 +493,10 @@ def openai_model_supports_responses_reasoning(model_id: str | None) -> bool:
     normalized = str(model_id or "").strip().lower()
     if not normalized:
         return True
-    return not any(normalized == token or normalized.startswith(f"{token}-") for token in _OPENAI_RESPONSES_REASONING_UNSUPPORTED)
+    return not any(
+        normalized == token or normalized.startswith(f"{token}-")
+        for token in _OPENAI_RESPONSES_REASONING_UNSUPPORTED
+    )
 
 
 def load_path(name: str) -> pathlib.Path:
@@ -430,11 +558,20 @@ def load_model(path: pathlib.Path, config: dict[str, Any]) -> Model:
     Returns:
         An instantiated model provider.
     """
-    spec = importlib.util.spec_from_file_location(path.stem, str(path))
+    resolved_path = path.resolve()
+    digest = hashlib.sha1(str(resolved_path).encode("utf-8")).hexdigest()[:12]
+    module_name = f"_swarmee_dynamic_model_{path.stem}_{digest}"
+
+    spec = importlib.util.spec_from_file_location(module_name, str(resolved_path))
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load model provider module from path: {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
 
     instance = getattr(module, "instance", None)
     if not callable(instance):

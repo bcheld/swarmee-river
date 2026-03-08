@@ -346,6 +346,9 @@ class SessionModelManager:
             if not has_aws_credentials():
                 return False, "AWS credentials missing/expired"
         if provider == "openai":
+            compatibility = model_utils.probe_openai_responses_transport()
+            if not compatibility.available:
+                return False, compatibility.reason
             if not (tier.client_args and tier.client_args.get("api_key")) and not os.getenv("OPENAI_API_KEY"):
                 return False, "OPENAI_API_KEY missing"
         if provider == "github_copilot":

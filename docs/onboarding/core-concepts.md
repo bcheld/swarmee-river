@@ -58,6 +58,12 @@ Built-in tools live in the `tools/` directory at the project root. You can add y
 
 Full reference: [../tool_permissions.md](../tool_permissions.md)
 
+Preferred coding loop:
+
+- Inspect with `file_list`, `file_search`, and `file_read`
+- Edit with `editor` for single-file changes or `patch_apply` for multi-file/hunk patches
+- Verify with `run_checks` first, then use `shell` only when you need something `run_checks` does not cover
+
 ---
 
 ## SOPs (Standard Operating Procedures)

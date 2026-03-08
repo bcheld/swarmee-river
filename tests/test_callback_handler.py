@@ -212,6 +212,30 @@ class TestCallbackHandler:
             handler.callback_handler(data="Test data", complete=False)
             mock_print.assert_called_once()
 
+    def test_callback_handler_suppresses_duplicate_completion_snapshot_after_streaming(self):
+        handler = CallbackHandler()
+
+        with mock.patch("builtins.print") as mock_print:
+            handler.callback_handler(data="hello ", complete=False)
+            handler.callback_handler(data="world", complete=False)
+            handler.callback_handler(data="hello world", complete=True)
+
+        rendered = "".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        assert "hello worldhello world" not in rendered
+        assert rendered.count("hello ") == 1
+        assert rendered.count("world") == 1
+
+    def test_callback_handler_prints_only_unseen_completion_suffix_after_streaming(self):
+        handler = CallbackHandler()
+
+        with mock.patch("builtins.print") as mock_print:
+            handler.callback_handler(data="hello ", complete=False)
+            handler.callback_handler(data="hello world", complete=True)
+
+        rendered = "".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        assert rendered.count("hello ") == 1
+        assert rendered.count("world") == 1
+
     def test_callback_handler_warning_text_prints_warning(self):
         handler = CallbackHandler()
         with mock.patch("builtins.print") as mock_print:

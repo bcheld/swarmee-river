@@ -38,7 +38,12 @@ def artifact(
     - list: show recent artifacts from `<state_dir>/artifacts/index.jsonl`
     - get: read an artifact by id (preferred) or by path
     - upload: upload an artifact to S3 (requires bucket)
-    - store_in_kb: store artifact contents in a Bedrock Knowledge Base
+    - store_in_kb: store an existing artifact in a Bedrock Knowledge Base
+
+    Canonical KB paths:
+    - direct/raw content from the current turn: `store_in_kb`
+    - existing artifact content: `artifact(action="store_in_kb", ...)`
+    - existing session/artifact history: `session_s3(action="promote_to_kb"| "promote_artifact", ...)`
     """
     store = ArtifactStore()
     action = (action or "").strip().lower()
@@ -101,7 +106,17 @@ def artifact(
 
     if action == "store_in_kb":
         if not artifact_id and not path:
-            return {"status": "error", "content": [{"text": "artifact_id or path is required for action=store_in_kb"}]}
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "artifact_id or path is required for action=store_in_kb. "
+                            "Use the standalone store_in_kb tool for direct content capture."
+                        )
+                    }
+                ],
+            }
 
         meta = store.get_by_id(artifact_id) if artifact_id else None
         resolved_path = Path(str(meta["path"])) if meta and meta.get("path") else Path(path or "").expanduser()

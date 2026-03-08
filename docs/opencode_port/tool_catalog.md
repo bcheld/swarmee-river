@@ -32,3 +32,9 @@ Swarmee River uses:
 - Tool consent rules (ask/allow/deny per tool)
 - Policy hooks (block in plan-mode, block outside approved plan, allowlists)
 
+When mapping OpenCode workflows into Swarmee River, prefer the canonical chain:
+
+- inspect with `file_read`, `file_list`, `file_search`
+- edit with `editor`
+- apply multi-file diffs with `patch_apply`
+- verify with `run_checks`

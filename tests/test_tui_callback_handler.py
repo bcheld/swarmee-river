@@ -449,19 +449,50 @@ def test_data_and_message_in_same_callback_emit_monotonic_delta():
     ]
 
 
+def test_strands_raw_chunk_callbacks_do_not_duplicate_normalized_text_stream() -> None:
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(event={"contentBlockDelta": {"delta": {"text": "hel"}}})
+        h.callback_handler(data="hel", delta={"text": "hel"})
+        h.callback_handler(event={"contentBlockDelta": {"delta": {"text": "lo"}}})
+        h.callback_handler(data="lo", delta={"text": "lo"})
+        h.callback_handler(message={"role": "assistant", "content": [{"text": "hello"}]})
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "hel"},
+        {"event": "text_delta", "data": "lo"},
+    ]
+
+
+def test_result_message_dict_does_not_rehydrate_streamed_assistant_text() -> None:
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(data="hel")
+        h.callback_handler(data="lo")
+        h.callback_handler(
+            result={"message": {"role": "assistant", "content": [{"text": "hello"}]}},
+        )
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "text_delta", "data": "hel"},
+        {"event": "text_delta", "data": "lo"},
+    ]
+
+
 def test_extra_event_fields_text_emits_text_delta():
     h = TuiCallbackHandler()
     events = _capture_events(h, lambda: h.callback_handler(delta="hello from extra"))
     assert events == [{"event": "text_delta", "data": "hello from extra"}]
 
 
-def test_bedrock_content_block_delta_emits_text_delta():
+def test_raw_content_block_delta_event_does_not_emit_text_delta():
     h = TuiCallbackHandler()
-    events = _capture_events(
-        h,
-        lambda: h.callback_handler(event={"contentBlockDelta": {"delta": {"text": "hello from bedrock"}}}),
-    )
-    assert events == [{"event": "text_delta", "data": "hello from bedrock"}]
+    events = _capture_events(h, lambda: h.callback_handler(event={"contentBlockDelta": {"delta": {"text": "raw"}}}))
+    assert events == []
 
 
 def test_nested_delta_text_payload_emits_text_delta():
@@ -470,15 +501,16 @@ def test_nested_delta_text_payload_emits_text_delta():
     assert events == [{"event": "text_delta", "data": "nested delta text"}]
 
 
-def test_mixed_bedrock_chunks_emit_only_text_chunk():
+def test_bedrock_payload_fallback_emits_text_delta_when_no_normalized_text_exists():
     h = TuiCallbackHandler()
-
-    def run():
-        h.callback_handler(event={"contentBlockStart": {"start": {"toolUse": {"toolUseId": "tool-1"}}}})
-        h.callback_handler(event={"contentBlockDelta": {"delta": {"text": "streamed token"}}})
-
-    events = _capture_events(h, run)
-    assert events == [{"event": "text_delta", "data": "streamed token"}]
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(
+            payload={"contentBlockDelta": {"delta": {"text": "hello from bedrock"}}},
+            invocation_state={"swarmee": {"provider": "bedrock"}},
+        ),
+    )
+    assert events == [{"event": "text_delta", "data": "hello from bedrock"}]
 
 
 def test_init_event_loop_resets_text_fallback_state():

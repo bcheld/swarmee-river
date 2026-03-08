@@ -783,3 +783,28 @@ async def test_resize_clears_right_edge_artifacts(tui_app_factory):
         assert len(app._transcript_fallback_lines) >= len(pre_transcript), (
             "transcript lines should not be lost after resize"
         )
+
+
+async def test_file_diff_event_renders_inline_review_and_artifact(tui_app_factory, tmp_path):
+    diff_path = tmp_path / "inline-review.diff"
+    diff_path.write_text("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n", encoding="utf-8")
+
+    async with tui_app_factory() as (app, pilot, transport):
+        transport.emit_ready(session_id="diff-session")
+        reached = await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+        assert reached, "daemon never became ready"
+
+        transport.emit_event(
+            {
+                "event": "file_diff",
+                "artifact_path": str(diff_path),
+                "tool": "editor",
+                "paths": ["a.txt"],
+                "stats": {"files_changed": 1, "added_lines": 1, "removed_lines": 1},
+            }
+        )
+        await pilot.pause(delay=0.15)
+
+        transcript_text = "\n".join(app._transcript_fallback_lines)
+        assert "Δ editor changed a.txt" in transcript_text
+        assert any(str(diff_path) in str(path) for path in app.state.artifacts.recent_paths)

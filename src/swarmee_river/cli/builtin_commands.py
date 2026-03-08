@@ -377,6 +377,7 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
                 args=inv.args,
                 cwd=Path.cwd(),
                 surface="repl",
+                current_session_id=ctx.current_session_id,
             )
         )
         return CommandDispatchResult(handled=True)
@@ -407,7 +408,12 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     registry.register("connect", _connect, help="Connect a provider (alias for :auth login)")
     registry.register("permissions", _permissions, help="Show effective permissions", usage="show")
     registry.register("status", _diagnostic, help="Show git status summary")
-    registry.register("diff", _diagnostic, help="Show git diff", usage="[--staged] [paths...]")
+    registry.register(
+        "diff",
+        _diagnostic,
+        help="Show git diff or session-captured diffs",
+        usage="session [session_id] | [--staged] [paths...]",
+    )
     registry.register("artifact", _diagnostic, help="List/get artifacts", usage="list|get")
     registry.register("log", _diagnostic, help="Tail Swarmee logs", usage="tail [--lines N]")
     registry.register("replay", _diagnostic, help="Replay a logged invocation", usage="<invocation_id>")

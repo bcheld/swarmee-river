@@ -5,11 +5,13 @@ Tests for TUI subprocess helpers.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from swarmee_river.handlers.callback_handler import TuiCallbackHandler
 from swarmee_river.tui import app as tui_app
 from swarmee_river.tui.mixins.agent_studio import AgentStudioMixin
 from swarmee_river.tui.mixins.artifacts import ArtifactsMixin
@@ -2948,6 +2950,115 @@ def test_sync_artifact_session_scope_resets_on_session_change():
     assert app.state.artifacts.selected_item_id is None
 
 
+def test_artifact_preview_renderable_uses_diff_panel_for_file_diff(tmp_path: Path) -> None:
+    class _Dummy(ArtifactsMixin):
+        pass
+
+    diff_path = tmp_path / "example.diff"
+    diff_path.write_text("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n", encoding="utf-8")
+    app = _Dummy()
+
+    renderable = app._artifact_preview_renderable(
+        {
+            "kind": "file_diff",
+            "path": str(diff_path),
+            "meta": {
+                "tool": "editor",
+                "changed_paths": ["a.txt"],
+                "stats": {"files_changed": 1, "added_lines": 1, "removed_lines": 1},
+            },
+        }
+    )
+
+    assert type(renderable).__name__ == "Panel"
+
+
+def test_handle_output_line_routes_file_diff_event_once_and_adds_artifact(tmp_path: Path) -> None:
+    diff_path = tmp_path / "event.diff"
+    diff_path.write_text("--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n", encoding="utf-8")
+
+    class _Harness(OutputMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(query_active=False, turn_output_chunks=[]),
+                session=SimpleNamespace(warning_count=0, error_count=0),
+            )
+            self.widgets: list[object] = []
+            self.fallback: list[str] = []
+            self.artifacts: list[list[str]] = []
+
+        def _append_plain_text(self, text: str) -> None:
+            self.fallback.append(text)
+
+        def _apply_consent_capture(self, _line: str) -> None:
+            return None
+
+        def _write_issue(self, _text: str) -> None:
+            return None
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _add_artifact_paths(self, paths: list[str]) -> None:
+            self.artifacts.append(paths)
+
+        def _mount_transcript_widget(self, widget, *, plain_text=None) -> None:  # noqa: ANN001
+            self.widgets.append(widget)
+            if isinstance(plain_text, str):
+                self.fallback.append(plain_text)
+
+    app = _Harness()
+    app._handle_output_line(
+        json.dumps(
+            {
+                "event": "file_diff",
+                "artifact_path": str(diff_path),
+                "tool": "editor",
+                "paths": ["a.txt"],
+                "stats": {"files_changed": 1, "added_lines": 1, "removed_lines": 1},
+            }
+        )
+    )
+
+    assert len(app.widgets) == 1
+    assert app.artifacts == [[str(diff_path)]]
+    assert any("Δ editor changed a.txt" in line for line in app.fallback)
+
+
+def test_handle_tool_events_routes_consent_prompt_with_diff_preview() -> None:
+    from swarmee_river.tui.event_router import _handle_tool_events
+
+    captured: dict[str, object] = {}
+
+    class _App:
+        def __init__(self) -> None:
+            self._consent_buffer: list[str] = []
+
+        def _show_consent_prompt(self, **kwargs) -> None:  # noqa: ANN003
+            captured.update(kwargs)
+
+    app = _App()
+    handled = _handle_tool_events(
+        app,
+        "consent_prompt",
+        {
+            "event": "consent_prompt",
+            "context": "Allow tool 'editor'?\n  Changed paths: notes.txt",
+            "options": ["y", "n", "a", "v"],
+            "changed_paths": ["notes.txt"],
+            "diff_preview": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-old\n+new",
+            "diff_hidden_lines": 3,
+            "diff_stats": {"files_changed": 1, "added_lines": 1, "removed_lines": 1},
+        },
+    )
+
+    assert handled is True
+    assert app._consent_buffer == ["Allow tool 'editor'?\n  Changed paths: notes.txt"]
+    assert captured["changed_paths"] == ["notes.txt"]
+    assert str(captured["diff_preview"]).startswith("--- a/notes.txt")
+    assert captured["diff_hidden_lines"] == 3
+
+
 # ---------------------------------------------------------------------------
 # parse_tui_event tests
 # ---------------------------------------------------------------------------
@@ -3682,6 +3793,118 @@ def test_handle_output_line_suppresses_duplicate_raw_assistant_echo() -> None:
     assert app._raw_assistant_lines_suppressed_turn == 1
     assert app._callback_event_trace_turn[-1] == "raw_suppressed"
     assert app.state.daemon.turn_output_chunks == ["Hello from the model.\n"]
+
+
+def test_tui_output_path_does_not_duplicate_assistant_text_for_dual_strands_callbacks() -> None:
+    class _Timer:
+        def stop(self) -> None:
+            return None
+
+    class _Harness(OutputMixin, ToolsMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(query_active=True, turn_output_chunks=[], current_model="gpt-5-nano"),
+                session=SimpleNamespace(warning_count=0, error_count=0),
+            )
+            self._structured_assistant_seen_turn = False
+            self._last_structured_assistant_text_turn = ""
+            self._current_assistant_chunks: list[str] = []
+            self._streaming_buffer: list[str] = []
+            self._active_assistant_message = None
+            self._raw_assistant_lines_suppressed_turn = 0
+            self._callback_event_trace_turn: list[str] = []
+            self._assistant_completion_seen_turn = False
+            self._current_assistant_model = None
+            self._current_assistant_timestamp = None
+            self._assistant_placeholder_written = False
+            self._streaming_flush_timer = None
+            self._streaming_last_flush_mono = 0.0
+            self._stream_render_warning_emitted_turn = False
+            self._tool_progress_flush_timer = None
+            self._tool_progress_pending_ids: set[str] = set()
+            self._tool_blocks: dict[str, dict[str, object]] = {}
+            self._last_transcript_dedup_line = ""
+            self._last_transcript_dedup_count = 0
+            self.widgets: list[object] = []
+            self.fallback: list[str] = []
+
+        def _append_plain_text(self, text: str) -> None:
+            self.fallback.append(text)
+
+        def _apply_consent_capture(self, _line: str) -> None:
+            return None
+
+        def _write_issue(self, _text: str) -> None:
+            return None
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _add_artifact_paths(self, _paths: list[str]) -> None:
+            return None
+
+        def _record_thinking_event(self, _text: str) -> None:
+            return None
+
+        def _dismiss_thinking(self, *, emit_summary: bool) -> None:
+            del emit_summary
+            return None
+
+        def _trace_turn_event(self, label: str) -> None:
+            self._callback_event_trace_turn.append(label)
+
+        def _turn_timestamp(self) -> str:
+            return "12:34 PM"
+
+        def _is_transcript_following_tail(self, *, threshold: float = 0.95) -> bool:
+            del threshold
+            return True
+
+        def _sync_live_transcript_after_append(self, *, follow_tail: bool) -> None:
+            del follow_tail
+            return None
+
+        def _record_transcript_fallback(self, text: str) -> None:
+            self.fallback.append(text)
+
+        def _mount_transcript_widget(self, widget, *, plain_text=None) -> None:  # noqa: ANN001
+            del plain_text
+            self.widgets.append(widget)
+
+        def set_timer(self, _delay: float, callback):  # noqa: ANN001
+            callback()
+            return _Timer()
+
+    handler = TuiCallbackHandler()
+    app = _Harness()
+
+    lines: list[str] = []
+
+    original_stdout = sys.stdout
+    try:
+        import io
+
+        buf = io.StringIO()
+        sys.stdout = buf
+        handler.callback_handler(event={"contentBlockDelta": {"delta": {"text": "hel"}}})
+        handler.callback_handler(data="hel", delta={"text": "hel"})
+        handler.callback_handler(event={"contentBlockDelta": {"delta": {"text": "lo"}}})
+        handler.callback_handler(data="lo", delta={"text": "lo"})
+        handler.callback_handler(message={"role": "assistant", "content": [{"text": "hello"}]})
+        lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+    finally:
+        sys.stdout = original_stdout
+
+    for line in lines:
+        app._handle_output_line(line, raw_line=f"{line}\n")
+    app._finalize_assistant_message()
+
+    assert len(app.widgets) == 1
+    assistant_widget = app.widgets[0]
+    assert getattr(assistant_widget, "full_text", "") == "hello"
+    assert app._current_assistant_chunks == []
+    assert app.fallback.count("hel") == 1
+    assert app.fallback.count("lo") == 1
 
 
 def test_handle_output_line_preserves_warning_during_structured_turn() -> None:

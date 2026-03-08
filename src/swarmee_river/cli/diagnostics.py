@@ -79,6 +79,49 @@ def render_git_diff(
     return _truncate(text, max_chars)
 
 
+def render_session_diff(
+    *,
+    cwd: Path,
+    session_id: str | None,
+    max_chars: int = 12000,
+    limit: int = 50,
+) -> str:
+    resolved_session_id = str(session_id or os.getenv("SWARMEE_SESSION_ID") or "").strip()
+    if not resolved_session_id:
+        return "No active session. Use `swarmee diff session <session_id>` or set SWARMEE_SESSION_ID."
+
+    store = ArtifactStore(artifacts_dir=_default_artifacts_dir(cwd=cwd))
+    entries = [
+        entry
+        for entry in reversed(store.list(limit=limit, kind="file_diff"))
+        if str(((entry.get("meta") or {}) if isinstance(entry, dict) else {}).get("session_id", "")).strip()
+        == resolved_session_id
+    ]
+    if not entries:
+        return f"No captured session diffs for {resolved_session_id}."
+
+    lines: list[str] = ["# Session Diffs", "", f"- session_id: {resolved_session_id}", ""]
+    for entry in entries:
+        meta = entry.get("meta") if isinstance(entry.get("meta"), dict) else {}
+        tool_name = str(meta.get("tool", entry.get("tool", "unknown_tool"))).strip() or "unknown_tool"
+        changed_paths = meta.get("changed_paths")
+        if not isinstance(changed_paths, list) or not changed_paths:
+            changed_paths = meta.get("touched_paths") if isinstance(meta.get("touched_paths"), list) else []
+        label = ", ".join(str(item).strip() for item in changed_paths if str(item).strip()) or "(unknown paths)"
+        lines.append(f"## {tool_name} - {label}")
+        path = str(entry.get("path", "")).strip()
+        if not path:
+            lines.append("(missing artifact path)")
+            lines.append("")
+            continue
+        try:
+            lines.append(store.read_text(path))
+        except Exception as exc:
+            lines.append(f"(failed to read artifact: {exc})")
+        lines.append("")
+    return _truncate("\n".join(lines).strip(), max_chars)
+
+
 _SECRET_KEY_SUBSTRINGS = ("KEY", "SECRET", "TOKEN", "PASSWORD")
 _SECRET_ENV_EXACT = {
     "OPENAI_API_KEY",
@@ -387,7 +430,13 @@ def render_replay_invocation(
     return _truncate("\n".join(lines).strip(), max_chars)
 
 
-def render_diagnostic_command(*, cmd: str, args: list[str], cwd: Path) -> str:
+def render_diagnostic_command(
+    *,
+    cmd: str,
+    args: list[str],
+    cwd: Path,
+    current_session_id: str | None = None,
+) -> str:
     command = (cmd or "").strip().lower()
     sub = list(args or [])
 
@@ -395,6 +444,12 @@ def render_diagnostic_command(*, cmd: str, args: list[str], cwd: Path) -> str:
         return render_git_status(cwd=cwd)
 
     if command == "diff":
+        if sub and sub[0].strip().lower() == "session":
+            explicit_session_id = sub[1].strip() if len(sub) >= 2 and sub[1].strip() else None
+            return render_session_diff(
+                cwd=cwd,
+                session_id=explicit_session_id or current_session_id,
+            )
         staged = False
         paths: list[str] = []
         for item in sub:
@@ -438,8 +493,15 @@ def render_diagnostic_command(*, cmd: str, args: list[str], cwd: Path) -> str:
     raise ValueError(f"Unknown diagnostic command: {command}")
 
 
-def render_diagnostic_command_for_surface(*, cmd: str, args: list[str], cwd: Path, surface: str = "raw") -> str:
-    text = render_diagnostic_command(cmd=cmd, args=args, cwd=cwd)
+def render_diagnostic_command_for_surface(
+    *,
+    cmd: str,
+    args: list[str],
+    cwd: Path,
+    surface: str = "raw",
+    current_session_id: str | None = None,
+) -> str:
+    text = render_diagnostic_command(cmd=cmd, args=args, cwd=cwd, current_session_id=current_session_id)
     kind = (surface or "raw").strip().lower()
 
     prefixes = {

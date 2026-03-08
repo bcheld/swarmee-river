@@ -179,6 +179,31 @@ Find the invocation ID in the session log filename or in `:session list`.
 
 ---
 
+### OpenAI Responses transport unavailable
+
+**Symptom:** OpenAI tiers appear unavailable, the daemon exits during startup, or you see an error mentioning `strands.models.openai_responses.OpenAIResponsesModel`.
+
+**Checks:**
+
+1. **Run diagnostics in the project venv:**
+   ```bash
+   .venv/bin/python -m swarmee_river.swarmee diagnostics doctor
+   ```
+   Confirm the report includes `openai_responses_transport`.
+
+2. **Confirm the daemon failure directly in the same venv:**
+   ```bash
+   .venv/bin/python -m swarmee_river.swarmee --tui-daemon
+   ```
+   If startup fails immediately, the structured error should explain the Strands/OpenAI transport mismatch.
+
+3. **Check both dependency versions:** OpenAI in Swarmee is Responses-only. Install a `strands-agents` version that includes `strands.models.openai_responses`, and ensure the environment also has `openai>=2.0.0`.
+   ```bash
+   .venv/bin/pip install -U 'strands-agents[ollama]>=1.29.0' 'openai>=2.0.0,<3.0.0'
+   ```
+
+---
+
 ### Plan approval stuck / approve button unresponsive
 
 **Symptom:** The agent generated a plan but the Approve/Cancel buttons don't respond, or `:approve` does nothing.

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import apply_project_env_overrides, load_project_env_overrides, load_settings
+from swarmee_river.utils.model_utils import OpenAIResponsesTransportStatus
 
 
 def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path) -> None:
@@ -195,6 +196,28 @@ def test_fallback_provider_overrides_settings_provider_for_session(tmp_path: Pat
     assert tiers["balanced"].provider == "openai"
 
 
+def test_openai_tiers_report_unavailable_when_responses_transport_missing(tmp_path: Path, monkeypatch) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({"models": {"provider": "openai"}}), encoding="utf-8")
+    settings = load_settings(settings_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "swarmee_river.session.models.model_utils.probe_openai_responses_transport",
+        lambda: OpenAIResponsesTransportStatus(
+            available=False,
+            strands_version="1.26.0",
+            openai_version="2.0.0",
+            reason="Installed strands-agents==1.26.0 is below Swarmee's supported runtime version.",
+        ),
+    )
+
+    manager = SessionModelManager(settings, fallback_provider="openai")
+    tiers = {t.name: t for t in manager.list_tiers()}
+
+    assert tiers["balanced"].available is False
+    assert "strands-agents==1.26.0" in str(tiers["balanced"].reason)
+
+
 def test_tier_model_id_settings_overrides_apply_for_github_copilot(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
@@ -231,19 +254,18 @@ def test_github_copilot_tier_overrides_are_per_tier(tmp_path: Path) -> None:
     assert tiers["balanced"].model_id != "gpt-4o-mini"
 
 
-def test_default_safety_rules_include_opencode_alias_entries(tmp_path: Path) -> None:
+def test_default_safety_rules_include_canonical_tool_entries(tmp_path: Path) -> None:
     settings = load_settings(tmp_path / "settings.json")
 
     rules = {rule.tool: rule.default for rule in settings.safety.tool_rules}
 
-    for alias_name in ["bash", "patch", "write", "edit"]:
-        assert rules[alias_name] == "ask"
-    for alias_name in ["grep", "read"]:
-        assert rules[alias_name] == "allow"
     assert rules["todoread"] == "allow"
     assert rules["todowrite"] == "ask"
     assert rules["shell"] == "ask"
+    assert rules["editor"] == "ask"
     assert rules["patch_apply"] == "ask"
+    assert rules["file_search"] == "allow"
+    assert rules["file_read"] == "allow"
 
 
 def test_load_settings_filters_hidden_tiers(tmp_path: Path) -> None:

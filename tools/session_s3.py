@@ -874,8 +874,13 @@ def session_s3(
     - list: list session prefixes in S3 and summarize metadata from meta.json
     - import: download a session from S3 into local session storage
     - sync: compare updated_at and import/export whichever is newer
-    - promote_to_kb: ingest session-derived content into Bedrock Knowledge Base
-    - promote_artifact: ingest a local artifact into Bedrock Knowledge Base with session metadata
+    - promote_to_kb: promote existing session-derived content into a Bedrock Knowledge Base
+    - promote_artifact: promote an existing local artifact into a Bedrock Knowledge Base with session metadata
+
+    Canonical KB paths:
+    - direct/raw content from the current turn: `store_in_kb`
+    - existing artifact content already on disk: `artifact(action="store_in_kb", ...)`
+    - existing session or artifact history: `session_s3(... promote_*)`
     """
     mode = (action or "export").strip().lower()
 

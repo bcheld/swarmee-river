@@ -138,7 +138,18 @@ class OutputMixin:
             lambda: self._complete_consent_prompt_hide(nonce),
         )
 
-    def _show_consent_prompt(self, *, context: str, options: list[str] | None = None, alert: bool = True) -> None:
+    def _show_consent_prompt(
+        self,
+        *,
+        context: str,
+        options: list[str] | None = None,
+        alert: bool = True,
+        changed_paths: list[str] | None = None,
+        diff_preview: str | None = None,
+        diff_hidden_lines: int = 0,
+        non_text_change_summary: str | None = None,
+        diff_stats: dict[str, Any] | None = None,
+    ) -> None:
         from swarmee_river.tui.widgets import ConsentPrompt, extract_consent_tool_name
 
         widget = self._consent_prompt_widget
@@ -153,7 +164,16 @@ class OutputMixin:
         self._consent_active = True
         self._consent_tool_name = extract_consent_tool_name(context)
         normalized_options = options or ["y", "n", "a", "v"]
-        widget.set_prompt(context=context, options=normalized_options, alert=alert)
+        widget.set_prompt(
+            context=context,
+            options=normalized_options,
+            alert=alert,
+            changed_paths=changed_paths,
+            diff_preview=diff_preview,
+            diff_hidden_lines=diff_hidden_lines,
+            non_text_change_summary=non_text_change_summary,
+            diff_stats=diff_stats,
+        )
 
     def _reset_consent_panel(self) -> None:
         self._cancel_consent_hide_timer()

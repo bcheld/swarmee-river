@@ -122,7 +122,11 @@ def _store_in_kb_background(content: str, title: str, kb_id: str, region_name: s
 @tool
 def store_in_kb(content: str, title: str | None = None, knowledge_base_id: str | None = None) -> Dict[str, Any]:
     """
-    Store content in a Bedrock Knowledge Base using real-time ingestion.
+    Store direct content from the current turn in a Bedrock Knowledge Base.
+
+    This is the canonical direct-ingest path for raw text you already have in hand.
+    For existing artifacts, use `artifact(action="store_in_kb", ...)`.
+    For existing session/artifact history, use `session_s3(action="promote_to_kb"| "promote_artifact", ...)`.
 
     This version runs asynchronously in a background thread and returns immediately.
 
@@ -146,7 +150,12 @@ def store_in_kb(content: str, title: str | None = None, knowledge_base_id: str |
         return {
             "status": "error",
             "content": [
-                {"text": "❌ No knowledge base ID provided or found in environment variables STRANDS_KNOWLEDGE_BASE_ID"}
+                {
+                    "text": (
+                        "❌ No knowledge base ID provided or found in STRANDS_KNOWLEDGE_BASE_ID. "
+                        "Use store_in_kb for direct content capture once a KB is configured."
+                    )
+                }
             ],
         }
 

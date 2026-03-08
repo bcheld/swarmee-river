@@ -31,11 +31,15 @@ def test_tools_include_core_coding_primitives():
     assert "todowrite" in tools
 
 
-def test_tools_include_opencode_aliases():
+def test_tools_expose_canonical_editing_surface_only():
     tools = get_tools()
 
+    assert "editor" in tools
+    assert "patch_apply" in tools
+    assert "run_checks" in tools
+    assert "file_write" not in tools
     for alias_name in ["grep", "read", "bash", "patch", "write", "edit"]:
-        assert alias_name in tools
+        assert alias_name not in tools
 
 
 def test_project_context_tool_disabled_by_default():
@@ -74,12 +78,11 @@ def _simulate_missing_strands_tools(monkeypatch) -> None:
     monkeypatch.setattr(tools_module.importlib, "import_module", _import_module)
 
 
-def test_get_tools_includes_editor_and_file_write_fallbacks_without_strands_tools(monkeypatch) -> None:
+def test_get_tools_includes_editor_fallback_without_strands_tools(monkeypatch) -> None:
     _simulate_missing_strands_tools(monkeypatch)
 
     tools = get_tools()
 
-    assert "file_write" in tools
     assert "editor" in tools
     assert "retrieve" in tools
     assert "http_request" in tools
@@ -90,22 +93,22 @@ def test_get_tools_includes_editor_and_file_write_fallbacks_without_strands_tool
     assert "use_llm" in tools
 
 
-def test_opencode_write_and_edit_aliases_work_without_strands_tools(tmp_path: Path, monkeypatch) -> None:
+def test_editor_write_and_edit_commands_work_without_strands_tools(tmp_path: Path, monkeypatch) -> None:
     _simulate_missing_strands_tools(monkeypatch)
     monkeypatch.chdir(tmp_path)
 
     tools = get_tools()
 
-    write_result = tools["write"](path="notes.txt", content="alpha\n", cwd=str(tmp_path))
+    write_result = tools["editor"](command="write", path="notes.txt", file_text="alpha\n", cwd=str(tmp_path))
     assert write_result.get("status") == "success"
     assert "unavailable" not in _result_text(write_result).lower()
     assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "alpha\n"
 
-    view_result = tools["edit"](command="view", path="notes.txt")
+    view_result = tools["editor"](command="view", path="notes.txt")
     assert view_result.get("status") == "success"
     assert "alpha" in _result_text(view_result)
 
-    replace_result = tools["edit"](
+    replace_result = tools["editor"](
         command="replace",
         path="notes.txt",
         old_str="alpha",
@@ -114,7 +117,7 @@ def test_opencode_write_and_edit_aliases_work_without_strands_tools(tmp_path: Pa
     assert replace_result.get("status") == "success"
     assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "beta\n"
 
-    insert_result = tools["edit"](
+    insert_result = tools["editor"](
         command="insert",
         path="notes.txt",
         insert_line=2,
@@ -124,7 +127,7 @@ def test_opencode_write_and_edit_aliases_work_without_strands_tools(tmp_path: Pa
     assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "beta\ngamma\n"
 
 
-def test_opencode_write_and_edit_aliases_block_parent_traversal_without_strands_tools(
+def test_editor_write_and_edit_commands_block_parent_traversal_without_strands_tools(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -135,13 +138,13 @@ def test_opencode_write_and_edit_aliases_block_parent_traversal_without_strands_
 
     tools = get_tools()
 
-    write_result = tools["write"](path="../escape.txt", content="x", cwd=str(subdir))
+    write_result = tools["editor"](command="write", path="../escape.txt", file_text="x", cwd=str(subdir))
     assert write_result.get("status") == "error"
     assert "outside cwd" in _result_text(write_result).lower()
     assert not (workspace / "escape.txt").exists()
 
     monkeypatch.chdir(subdir)
-    edit_result = tools["edit"](command="write", path="../escape.txt", file_text="x")
+    edit_result = tools["editor"](command="write", path="../escape.txt", file_text="x")
     assert edit_result.get("status") == "error"
     assert "outside cwd" in _result_text(edit_result).lower()
     assert not (workspace / "escape.txt").exists()

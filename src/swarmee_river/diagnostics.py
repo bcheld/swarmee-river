@@ -217,7 +217,9 @@ def render_diagnostics_tail(*, cwd: Path, lines: int = 100) -> str:
 
 def render_diagnostics_doctor(*, cwd: Path) -> str:
     from swarmee_river.runtime_service.client import runtime_discovery_path
-    from swarmee_river.utils.provider_utils import resolve_aws_auth_source
+    from swarmee_river.session.models import SessionModelManager
+    from swarmee_river.utils.model_utils import probe_openai_responses_transport
+    from swarmee_river.utils.provider_utils import resolve_aws_auth_source, resolve_model_provider
 
     discovery = runtime_discovery_path(cwd=cwd)
     discovery_exists = discovery.exists()
@@ -225,6 +227,17 @@ def render_diagnostics_doctor(*, cwd: Path) -> str:
     events = _iter_diag_files(session_events_dir(cwd=cwd))
     issues = _iter_diag_files(session_issues_dir(cwd=cwd))
     has_aws, aws_source = resolve_aws_auth_source()
+    settings_path = cwd / ".swarmee" / "settings.json"
+    settings = load_settings(settings_path)
+    selected_provider, provider_notice = resolve_model_provider(
+        cli_provider=None,
+        env_provider=None,
+        settings_provider=settings.models.provider,
+    )
+    model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
+    current_tier = str(model_manager.current_tier or "").strip().lower() or "balanced"
+    selected_tier = next((item for item in model_manager.list_tiers() if item.name == current_tier), None)
+    transport_status = probe_openai_responses_transport()
 
     lines = [
         "# Diagnostics doctor",
@@ -236,7 +249,23 @@ def render_diagnostics_doctor(*, cwd: Path) -> str:
         f"- session_events_files: {len(events)}",
         f"- session_issue_files: {len(issues)}",
         f"- aws_auth_source: {aws_source}{'' if has_aws else ' (unavailable)'}",
+        f"- selected_provider: {selected_provider or '(unknown)'}",
+        f"- selected_tier: {current_tier}",
+        f"- strands_agents_version: {transport_status.strands_version or 'missing'}",
+        f"- openai_sdk_version: {transport_status.openai_version or 'missing'}",
+        (
+            "- openai_responses_transport: available"
+            if transport_status.available
+            else f"- openai_responses_transport: unavailable ({transport_status.reason})"
+        ),
     ]
+    if provider_notice:
+        lines.append(f"- provider_notice: {provider_notice}")
+    if selected_tier is not None:
+        lines.append(
+            f"- selected_tier_available: {'yes' if selected_tier.available else 'no'}"
+            + (f" ({selected_tier.reason})" if selected_tier.reason else "")
+        )
     if events:
         lines.append(f"- latest_session_events: {events[0]}")
     if issues:

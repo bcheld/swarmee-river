@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import json as _json
+from pathlib import Path
 from typing import Any
 
+from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.diff_review import truncate_diff_preview
 from swarmee_river.error_classification import (
     ERROR_CATEGORY_AUTH_ERROR,
     ERROR_CATEGORY_ESCALATABLE,
@@ -599,7 +602,22 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         if not options:
             options = ["y", "n", "a", "v"]
         app._consent_buffer = [context]
-        app._show_consent_prompt(context=context, options=options, alert=True)
+        raw_paths = event.get("changed_paths", [])
+        changed_paths = (
+            [str(item).strip() for item in raw_paths if str(item).strip()]
+            if isinstance(raw_paths, (list, tuple))
+            else None
+        )
+        app._show_consent_prompt(
+            context=context,
+            options=options,
+            alert=True,
+            changed_paths=changed_paths,
+            diff_preview=str(event.get("diff_preview", "") or "") or None,
+            diff_hidden_lines=int(event.get("diff_hidden_lines", 0) or 0),
+            non_text_change_summary=str(event.get("non_text_change_summary", "") or "") or None,
+            diff_stats=event.get("diff_stats") if isinstance(event.get("diff_stats"), dict) else None,
+        )
         return True
 
     return False
@@ -704,6 +722,47 @@ def _handle_artifact_events(app: Any, etype: str, event: dict[str, Any]) -> bool
     paths = event.get("paths", [])
     if paths:
         app._add_artifact_paths(paths)
+    return True
+
+
+def _handle_diff_review_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
+    if etype != "file_diff":
+        return False
+
+    artifact_path = str(event.get("artifact_path", "")).strip()
+    if artifact_path:
+        app._add_artifact_paths([artifact_path])
+
+    diff_text = ""
+    if artifact_path:
+        with contextlib.suppress(Exception):
+            diff_text = ArtifactStore().read_text(Path(artifact_path))
+    if not diff_text:
+        diff_text = "(diff preview unavailable)"
+
+    preview_text, hidden_lines = truncate_diff_preview(diff_text)
+    paths = event.get("paths")
+    if not isinstance(paths, list):
+        paths = []
+    stats = event.get("stats") if isinstance(event.get("stats"), dict) else None
+    tool_name = str(event.get("tool", "file_diff")).strip() or "file_diff"
+
+    from swarmee_river.tui.widgets import render_diff_review_panel
+
+    plain_lines = [f"Δ {tool_name} changed {', '.join(str(item) for item in paths) or 'files'}"]
+    if preview_text:
+        plain_lines.append(preview_text)
+    app._mount_transcript_widget(
+        render_diff_review_panel(
+            tool_name=tool_name,
+            paths=[str(item).strip() for item in paths if str(item).strip()],
+            diff_text=preview_text or "(empty diff artifact)",
+            stats=stats,
+            artifact_path=artifact_path or None,
+            hidden_lines=hidden_lines,
+        ),
+        plain_text="\n".join(plain_lines),
+    )
     return True
 
 
@@ -850,6 +909,7 @@ def handle_daemon_event(app: Any, event_dict: dict[str, Any]) -> None:
         _handle_streaming_events,
         _handle_tool_events,
         _handle_plan_events,
+        _handle_diff_review_events,
         _handle_artifact_events,
         _handle_error_warning_events,
     )

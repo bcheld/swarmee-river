@@ -7,7 +7,7 @@ Every tool in Swarmee River declares its **permissions** — `read`, `write`, an
 | Permission | Meaning | Examples |
 |------------|---------|----------|
 | `read` | Inspects files, queries data, fetches metadata — no side effects | `file_read`, `glob`, `retrieve` |
-| `write` | Creates, modifies, or deletes files or persistent state | `file_write`, `editor`, `artifact` |
+| `write` | Creates, modifies, or deletes files or persistent state | `editor`, `patch_apply`, `artifact` |
 | `execute` | Runs commands, spawns processes, or makes network calls | `shell`, `python_repl`, `http_request` |
 
 A tool can have multiple permissions (e.g. `athena_query` has both `read` and `execute`). Informational tools like `calculator` and `plan_progress` declare no permissions at all.
@@ -113,7 +113,6 @@ In practice, all built-in tools now hit tier 1 or tier 2. Tier 3 exists for back
 | `file_list` | `tools/file_ops.py` | `read` |
 | `file_search` | `tools/file_ops.py` | `read` |
 | `file_read` | `tools/file_ops.py` | `read` |
-| `file_write` | `tools/file_write.py` | `write` |
 | `editor` | `tools/editor.py` | `write` |
 | `glob` | `tools/path_ops.py` | `read` |
 | `list` | `tools/path_ops.py` | `read` |
@@ -176,16 +175,12 @@ In practice, all built-in tools now hit tier 1 or tier 2. Tier 3 exists for back
 | `calculator` | `tools/calculator.py` | Pure compute, no side effects |
 | `plan_progress` | `tools/plan_progress.py` | Status reporting only |
 
-### OpenCode alias tools
+### Canonical coding workflow
 
-| Alias | Canonical | Permission(s) | File |
-|-------|-----------|---------------|------|
-| `grep` | `file_search` | `read` | `opencode_aliases.py` |
-| `read` | `file_read` | `read` | `opencode_aliases.py` |
-| `bash` | `shell` | `execute` | `opencode_aliases.py` |
-| `patch` | `patch_apply` | `write` | `opencode_aliases.py` |
-| `write` | `file_write` | `write` | `opencode_aliases.py` |
-| `edit` | `editor` | `write` | `opencode_aliases.py` |
+- Read/search: `file_list`, `file_search`, `file_read`
+- Edit one file: `editor`
+- Apply structured or multi-file changes: `patch_apply`
+- Verify: `run_checks` first, `shell` when you need a command outside the standard check runner
 
 ### Strands SDK tools (fallback map)
 
@@ -240,7 +235,7 @@ Users can override these flags per-tool via `.swarmee/tool_metadata.json`:
 
 `permissions.py` defines a static `_HIGH_RISK_TOOLS` set listing tools that require interactive user consent before execution. Every tool in this set should have `write` or `execute` permission, but not all `write`/`execute` tools are high-risk. The set is kept static (not derived at runtime) to avoid circular imports in the consent hot path.
 
-Current high-risk tools: `shell`, `bash`, `file_write`, `write`, `editor`, `edit`, `patch_apply`, `patch`, `http_request`.
+Current high-risk tools: `shell`, `editor`, `patch_apply`, `http_request`.
 
 ## Adding permissions to a new tool
 

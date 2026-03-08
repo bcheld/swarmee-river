@@ -253,7 +253,7 @@ The orchestrator is created in `src/swarmee_river/swarmee.py` via Strands `Agent
 The tool registry is built in `src/swarmee_river/tools.py::get_tools()`:
 
 1) **Strands Tools** (if installed): attempts to import individual tools from the optional `strands_tools` module.
-2) **Cross-platform fallbacks**: local implementations used when Strands Tools aren't present (e.g., `shell`, `editor`, `file_write`, `python_repl`, etc.).
+2) **Cross-platform fallbacks**: local implementations used when Strands Tools aren't present (e.g., `shell`, `editor`, `python_repl`, etc.).
 3) **Packaged custom tools**: repository-focused primitives such as:
    - `file_list`, `file_search`, `file_read` (`tools/file_ops.py`)
    - `git` (`tools/git.py`)
@@ -264,11 +264,11 @@ The tool registry is built in `src/swarmee_river/tools.py::get_tools()`:
    - `sop` (`tools/sop.py`)
    - `store_in_kb` (`tools/store_in_kb.py`)
    - multi-agent delegation tools like `use_agent`, `swarm`, `strand` (see below)
-4) **OpenCode-compatible aliases**: `grep/read/bash/patch/write/edit` mapped to canonical tools in `src/swarmee_river/opencode_aliases.py`.
 
 Notes:
 - Tool availability can vary by platform and optional dependencies.
 - You can list the *effective* tool set in-session with `:tools` (implemented in `src/swarmee_river/cli/builtin_commands.py`).
+- Preferred coding loop: `file_list` / `file_search` / `file_read` -> `editor` or `patch_apply` -> `run_checks`
 
 ### How defaults are overridden
 
@@ -554,9 +554,12 @@ Examples already persisted by default:
 If you run with `--kb <ID>` (or set `SWARMEE_KNOWLEDGE_BASE_ID` / `STRANDS_KNOWLEDGE_BASE_ID`):
 
 - Retrieval may be attempted for one-shot queries (`src/swarmee_river/swarmee.py`).
-- Conversations and approved plans can be stored via:
+- Direct/raw content generated in the current turn should go through `tools/store_in_kb.py`.
+- Existing artifacts can be stored through `tools/artifact.py (store_in_kb action)`, which is a thin wrapper around the same direct-ingest path.
+- Existing session or artifact history should be promoted through `tools/session_s3.py` (`promote_to_kb`, `promote_artifact`).
+- Conversations and approved plans currently flow through:
   - `src/swarmee_river/utils/kb_utils.py::store_conversation_in_kb`
-  - `tools/store_in_kb.py` / `tools/artifact.py (store_in_kb action)`
+  - `tools/store_in_kb.py`
 
 In TUI, the KB is set via an agent profile's `knowledge_base_id` field (single KB per session constraint).
 

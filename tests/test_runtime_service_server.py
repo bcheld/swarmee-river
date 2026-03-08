@@ -243,6 +243,75 @@ def test_runtime_service_attach_tracks_per_session_clients(monkeypatch, tmp_path
     asyncio.run(_scenario())
 
 
+def test_runtime_service_attach_surfaces_startup_failure(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "attach-token"
+    session_id = "session-startup-failure"
+    attach_cwd = tmp_path / "repo"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    class _FailingPopenFactory:
+        def __init__(self) -> None:
+            self.instances: list[_FakePopen] = []
+
+        def __call__(self, *args: Any, **kwargs: Any) -> _FakePopen:
+            proc = _FakePopen(list(args[0]) if args else [], kwargs)
+            proc.stdout.feed(
+                json.dumps(
+                    {
+                        "event": "error",
+                        "message": "Daemon startup failed: OpenAI Responses transport unavailable",
+                        "text": "Daemon startup failed: OpenAI Responses transport unavailable",
+                    }
+                )
+            )
+            proc.returncode = 1
+            proc.stdout.close()
+            self.instances.append(proc)
+            return proc
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        monkeypatch.setattr(server_module.subprocess, "Popen", _FailingPopenFactory())
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", service.port)
+            try:
+                writer.write(
+                    json.dumps(
+                        {"cmd": "hello", "token": token, "client_name": "test", "surface": "tests"},
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+                hello_event = await _read_event(reader)
+                assert hello_event["event"] == "hello_ack"
+
+                writer.write(
+                    json.dumps(
+                        {"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)},
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+                failure_event = await _read_event(reader)
+                assert failure_event["event"] == "error"
+                assert failure_event["code"] == "session_start_failed"
+                assert "OpenAI Responses transport unavailable" in str(failure_event.get("detail", ""))
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
 def test_runtime_service_attach_env_overrides_applied_to_session_process(monkeypatch, tmp_path: Path) -> None:
     state_root = tmp_path / ".swarmee"
     token = "attach-env-token"

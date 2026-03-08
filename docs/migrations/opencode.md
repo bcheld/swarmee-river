@@ -11,7 +11,7 @@ This guide maps common OpenCode workflows/config into the Swarmee River harness.
 | `/connect` | provider env vars (`OPENAI_API_KEY`, AWS credentials) |
 | `opencode.json(c)` | `.swarmee/settings.json` + `.env` |
 | `permission` | `safety.permission_rules` (`safety.tool_consent` + `safety.tool_rules` remain as simpler legacy defaults) |
-| built-in tools (`bash`, `edit`, `read`, …) | `shell`, `editor`/`file_write`/`file_read`, `patch_apply`, `project_context`, `git`, `run_checks` |
+| built-in tools (`bash`, `edit`, `read`, …) | `shell`, `editor`, `file_read`, `patch_apply`, `project_context`, `git`, `run_checks` |
 
 ## Commands
 
@@ -40,5 +40,6 @@ Swarmee River equivalents:
 
 ### Recommended baseline
 
-- Keep tool consent default `ask` for `shell`, `editor`, `file_write`, `http_request`, `git`, `patch_apply`, `run_checks`
+- Use the canonical loop: `file_read` / `file_search` -> `editor` or `patch_apply` -> `run_checks`
+- Keep tool consent default `ask` for `shell`, `editor`, `http_request`, `git`, `patch_apply`, `run_checks`
 - Use `deep` tier for harder reasoning and richer preflight context

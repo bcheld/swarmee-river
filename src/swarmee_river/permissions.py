@@ -22,13 +22,8 @@ _CONDITION_KEYS = {"command_regex", "command_glob", "path_regex", "path_glob", "
 #     require interactive consent by default.
 _HIGH_RISK_TOOLS = {
     "shell",
-    "bash",
-    "file_write",
-    "write",
     "editor",
-    "edit",
     "patch_apply",
-    "patch",
     "http_request",
 }
 

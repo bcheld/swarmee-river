@@ -1,10 +1,12 @@
 {
   "context": {
     "cache_safe_summary": false,
+    "compaction": "auto",
     "manager": "summarize",
     "max_prompt_tokens": 20000,
     "per_turn": 1,
     "preserve_recent_messages": 10,
+    "strategy": "balanced",
     "summary_ratio": 0.3,
     "truncate_results": true,
     "window_size": 20
@@ -61,9 +63,9 @@
     "availability": {},
     "default_selection": {
       "provider": "openai",
-      "tier": "deep"
+      "tier": "fast"
     },
-    "default_tier": "deep",
+    "default_tier": "fast",
     "hidden_tiers": [],
     "provider": "openai",
     "providers": {
@@ -72,10 +74,21 @@
         "display_name": "Amazon Bedrock",
         "tiers": {
           "balanced": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "balanced"
+            },
             "description": "Default tier for most coding and analysis work.",
             "display_name": "Claude Haiku 4.5 (fast)",
             "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-            "provider": "bedrock"
+            "provider": "bedrock",
+            "reasoning": {
+              "effort": "medium"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "standard"
+            }
           },
           "deep": {
             "additional_request_fields": {
@@ -84,22 +97,55 @@
                 "type": "enabled"
               }
             },
+            "context": {
+              "compaction": "auto",
+              "strategy": "cache_safe"
+            },
             "description": "Use when you need stronger reasoning.",
             "display_name": "Claude Opus 4.6 (deep)",
             "model_id": "us.anthropic.claude-opus-4-6-v1:0",
-            "provider": "bedrock"
+            "provider": "bedrock",
+            "reasoning": {
+              "effort": "high"
+            },
+            "tooling": {
+              "discovery": "search",
+              "mode": "tool-heavy"
+            }
           },
           "fast": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "balanced"
+            },
             "description": "Lower latency / lower cost default.",
             "display_name": "Claude Haiku 4.5 (fast)",
             "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-            "provider": "bedrock"
+            "provider": "bedrock",
+            "reasoning": {
+              "effort": "low"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "minimal"
+            }
           },
           "long": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "long_running"
+            },
             "description": "Use for long outputs and large refactors.",
             "display_name": "Claude Opus 4.6 (long)",
             "model_id": "us.anthropic.claude-opus-4-6-v1:0",
-            "provider": "bedrock"
+            "provider": "bedrock",
+            "reasoning": {
+              "effort": "high"
+            },
+            "tooling": {
+              "discovery": "search",
+              "mode": "tool-heavy"
+            }
           }
         }
       },
@@ -108,28 +154,72 @@
         "display_name": "GitHub Copilot",
         "tiers": {
           "balanced": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "balanced"
+            },
             "description": "Default Copilot tier for most coding tasks.",
             "display_name": "GPT-4o (Copilot)",
             "model_id": "gpt-4o",
-            "provider": "github_copilot"
+            "provider": "github_copilot",
+            "reasoning": {
+              "effort": "medium"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "standard"
+            }
           },
           "deep": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "cache_safe"
+            },
             "description": "Stronger reasoning where available.",
             "display_name": "GPT-5 (Copilot)",
             "model_id": "gpt-5",
-            "provider": "github_copilot"
+            "provider": "github_copilot",
+            "reasoning": {
+              "effort": "high"
+            },
+            "tooling": {
+              "discovery": "search",
+              "mode": "tool-heavy"
+            }
           },
           "fast": {
+            "context": {
+              "compaction": "manual",
+              "strategy": "balanced"
+            },
             "description": "Lower latency default for Copilot.",
             "display_name": "GPT-4o mini (Copilot)",
             "model_id": "gpt-4o-mini",
-            "provider": "github_copilot"
+            "provider": "github_copilot",
+            "reasoning": {
+              "effort": "low"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "minimal"
+            }
           },
           "long": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "long_running"
+            },
             "description": "Long-form outputs on Copilot.",
             "display_name": "GPT-5 (Copilot long)",
             "model_id": "gpt-5",
-            "provider": "github_copilot"
+            "provider": "github_copilot",
+            "reasoning": {
+              "effort": "medium"
+            },
+            "tooling": {
+              "discovery": "search",
+              "mode": "tool-heavy"
+            }
           }
         }
       },
@@ -138,28 +228,72 @@
         "display_name": "Ollama",
         "tiers": {
           "balanced": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "balanced"
+            },
             "description": "Local balanced default.",
             "display_name": "llama3.1",
             "model_id": "llama3.1",
-            "provider": "ollama"
+            "provider": "ollama",
+            "reasoning": {
+              "effort": "medium"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "standard"
+            }
           },
           "deep": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "balanced"
+            },
             "description": "Local deep tier.",
             "display_name": "llama3.1",
             "model_id": "llama3.1",
-            "provider": "ollama"
+            "provider": "ollama",
+            "reasoning": {
+              "effort": "high"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "standard"
+            }
           },
           "fast": {
+            "context": {
+              "compaction": "manual",
+              "strategy": "balanced"
+            },
             "description": "Local default for fast iteration.",
             "display_name": "llama3.1",
             "model_id": "llama3.1",
-            "provider": "ollama"
+            "provider": "ollama",
+            "reasoning": {
+              "effort": "low"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "minimal"
+            }
           },
           "long": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "long_running"
+            },
             "description": "Local long tier.",
             "display_name": "llama3.1",
             "model_id": "llama3.1",
-            "provider": "ollama"
+            "provider": "ollama",
+            "reasoning": {
+              "effort": "medium"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "standard"
+            }
           }
         }
       },
@@ -168,34 +302,94 @@
         "display_name": "OpenAI",
         "tiers": {
           "balanced": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "balanced"
+            },
             "description": "Default OpenAI tier for most coding tasks.",
             "display_name": "GPT-5 mini",
             "model_id": "gpt-5-mini",
-            "provider": "openai"
+            "provider": "openai",
+            "reasoning": {
+              "effort": "medium"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "standard"
+            },
+            "transport": "responses"
           },
           "coding": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "cache_safe"
+            },
             "description": "Optimized tier for coding-heavy workflows and refactors.",
             "display_name": "GPT-5.3 Codex (coding)",
             "model_id": "gpt-5.3-codex",
-            "provider": "openai"
+            "provider": "openai",
+            "reasoning": {
+              "effort": "high"
+            },
+            "tooling": {
+              "discovery": "search",
+              "mode": "tool-heavy"
+            },
+            "transport": "responses"
           },
           "deep": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "cache_safe"
+            },
             "description": "Stronger reasoning; slower / more expensive.",
             "display_name": "GPT-5.2",
             "model_id": "gpt-5.2",
-            "provider": "openai"
+            "provider": "openai",
+            "reasoning": {
+              "effort": "high"
+            },
+            "tooling": {
+              "discovery": "search",
+              "mode": "tool-heavy"
+            },
+            "transport": "responses"
           },
           "fast": {
+            "context": {
+              "compaction": "manual",
+              "strategy": "balanced"
+            },
             "description": "Lowest latency/cost; good for quick iterations.",
             "display_name": "GPT-5 nano",
             "model_id": "gpt-5-nano",
-            "provider": "openai"
+            "provider": "openai",
+            "reasoning": {
+              "effort": "low"
+            },
+            "tooling": {
+              "discovery": "off",
+              "mode": "minimal"
+            },
+            "transport": "responses"
           },
           "long": {
+            "context": {
+              "compaction": "auto",
+              "strategy": "long_running"
+            },
             "description": "Long-form outputs.",
             "display_name": "GPT-5.2 (long)",
             "model_id": "gpt-5.2",
-            "provider": "openai"
+            "provider": "openai",
+            "reasoning": {
+              "effort": "medium"
+            },
+            "tooling": {
+              "discovery": "search",
+              "mode": "tool-heavy"
+            },
+            "transport": "responses"
           }
         }
       }

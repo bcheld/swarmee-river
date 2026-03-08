@@ -27,10 +27,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "strands-agents[ollama]>=1.0.0",
+    "strands-agents[ollama]>=1.29.0",
     "strands-agents-sops>=1.0.6,<2.0.0",
     "boto3>=1.34.0,<2.0.0",
-    "openai>=1.0.0,<2.0.0",
+    "openai>=2.0.0,<3.0.0",
     "rich>=14.0.0,<15.0.0",
     "textual>=0.70.0",
     "prompt_toolkit>=3.0.51,<4.0.0",

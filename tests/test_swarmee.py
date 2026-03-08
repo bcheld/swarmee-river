@@ -16,6 +16,7 @@ from unittest import mock
 import pytest
 
 from swarmee_river import swarmee
+from swarmee_river.utils.model_utils import OpenAIResponsesTransportStatus
 
 
 def test_help_includes_runtime_broker_commands(monkeypatch, capsys) -> None:
@@ -460,7 +461,7 @@ class TestInteractiveMode:
     @mock.patch.object(swarmee, "get_user_input")
     @mock.patch.object(swarmee, "Agent")
     @mock.patch.object(swarmee, "render_goodbye_message")
-    def test_keyboard_interrupt_exception(self, mock_goodbye, mock_agent, mock_input):
+    def test_keyboard_interrupt_exception(self, mock_goodbye, mock_agent, mock_input, mock_bedrock):
         """Test handling of KeyboardInterrupt exception in interactive mode"""
         # Setup mocks
         mock_agent_instance = mock.MagicMock()
@@ -479,7 +480,7 @@ class TestInteractiveMode:
     @mock.patch.object(swarmee, "get_user_input")
     @mock.patch.object(swarmee, "Agent")
     @mock.patch.object(swarmee, "render_goodbye_message")
-    def test_eof_error_exception(self, mock_goodbye, mock_agent, mock_input):
+    def test_eof_error_exception(self, mock_goodbye, mock_agent, mock_input, mock_bedrock):
         """Test handling of EOFError exception in interactive mode"""
         # Setup mocks
         mock_agent_instance = mock.MagicMock()
@@ -499,7 +500,7 @@ class TestInteractiveMode:
     @mock.patch.object(swarmee, "Agent")
     @mock.patch.object(swarmee, "print")
     @mock.patch.object(swarmee, "callback_handler")
-    def test_general_exception_handling(self, mock_callback_handler, mock_print, mock_agent, mock_input):
+    def test_general_exception_handling(self, mock_callback_handler, mock_print, mock_agent, mock_input, mock_bedrock):
         """Test handling of general exceptions in interactive mode"""
         # Setup mocks
         mock_agent_instance = mock.MagicMock()
@@ -578,6 +579,43 @@ class TestTuiDaemonMode:
         assert any(
             event.get("event") == "warning"
             and "context refresh failed during daemon startup handshake" in str(event.get("text", "")).lower()
+            for event in events
+        )
+
+    def test_tui_daemon_reports_openai_transport_startup_failure(
+        self,
+        mock_agent,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "swarmee_river.utils.model_utils.probe_openai_responses_transport",
+            lambda: OpenAIResponsesTransportStatus(
+                available=False,
+                strands_version="1.26.0",
+                openai_version="2.0.0",
+                reason="Installed strands-agents==1.26.0 is below Swarmee's supported runtime version.",
+            ),
+        )
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon", "--model-provider", "openai"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+
+        stdout = io.StringIO()
+        with pytest.raises(SystemExit) as exc, contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert int(exc.value.code or 0) == 1
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert not any(event.get("event") == "ready" for event in events)
+        assert any(
+            event.get("event") == "error"
+            and event.get("phase") == "startup"
+            and "strands-agents==1.26.0" in str(event.get("message", ""))
+            for event in events
+        )
+        assert any(
+            event.get("event") == "warning"
+            and "daemon startup failed" in str(event.get("text", "")).lower()
             for event in events
         )
 
@@ -1284,7 +1322,7 @@ class TestCommandLine:
 
     @mock.patch.object(swarmee, "Agent")
     @mock.patch.object(swarmee, "store_conversation_in_kb")
-    def test_command_line_with_kb_environment(self, mock_store, mock_agent):
+    def test_command_line_with_kb_environment(self, mock_store, mock_agent, mock_bedrock):
         """KB env var is no longer a supported configuration surface (settings/CLI only)."""
         # Setup mocks
         mock_agent_instance = mock.MagicMock()

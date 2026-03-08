@@ -8,24 +8,9 @@ from typing import Any, Optional
 from strands import tool
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.diff_review import extract_patch_target_files
 from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
-
-
-def _extract_target_files(patch_text: str) -> list[str]:
-    targets: list[str] = []
-    for line in (patch_text or "").splitlines():
-        if not line.startswith("+++ "):
-            continue
-        raw = line[4:].strip()
-        if raw == "/dev/null":
-            continue
-        if raw.startswith("b/") or raw.startswith("a/"):
-            raw = raw[2:]
-        raw = raw.strip()
-        if raw and raw not in targets:
-            targets.append(raw)
-    return targets
 
 
 @tool
@@ -52,7 +37,7 @@ def patch_apply(
     store = ArtifactStore()
 
     patch_ref = store.write_text(kind="patch_apply", text=patch, suffix="diff", metadata={"dry_run": dry_run})
-    touched = _extract_target_files(patch)
+    touched = extract_patch_target_files(patch)
 
     backups: list[str] = []
     for rel in touched:

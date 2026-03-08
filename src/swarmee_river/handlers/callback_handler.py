@@ -234,6 +234,42 @@ class CallbackHandler:
         self.current_tool: str | None = None
         self.tool_histories: dict[str, dict[str, Any]] = {}
         self.interrupt_event: Event | None = None
+        self._assistant_stream_buffer: str = ""
+
+    def _reset_text_turn_state(self) -> None:
+        self._assistant_stream_buffer = ""
+
+    @staticmethod
+    def _unprinted_suffix(full_text: str, printed_text: str) -> str:
+        if not printed_text:
+            return full_text
+        if full_text.startswith(printed_text):
+            return full_text[len(printed_text) :]
+        max_overlap = min(len(full_text), len(printed_text))
+        for size in range(max_overlap, 0, -1):
+            if printed_text.endswith(full_text[:size]):
+                return full_text[size:]
+        return full_text
+
+    def _emit_terminal_text(self, text: str, *, complete: bool) -> None:
+        if not text:
+            if complete:
+                _safe_print("")
+                self._reset_text_turn_state()
+            return
+        if complete:
+            suffix = self._unprinted_suffix(text, self._assistant_stream_buffer)
+            if self._assistant_stream_buffer and suffix != text:
+                _LOGGER.debug("Suppressing duplicate terminal completion snapshot after streamed deltas.")
+            if suffix:
+                _safe_print(f"{Fore.WHITE}{suffix}{Style.RESET_ALL}")
+            else:
+                _safe_print("")
+            self._reset_text_turn_state()
+            return
+
+        self._assistant_stream_buffer += text
+        _safe_print(f"{Fore.WHITE}{text}{Style.RESET_ALL}", end="")
 
     def notify(self, title: str, message: str, sound: bool = True) -> None:
         """Send a native notification using mac_automation tool."""
@@ -274,6 +310,7 @@ class CallbackHandler:
                 self.thinking_spinner.stop()
             if self.current_spinner:
                 self.current_spinner.stop()
+            self._reset_text_turn_state()
             return
 
         if self.interrupt_event is not None and self.interrupt_event.is_set():
@@ -283,6 +320,7 @@ class CallbackHandler:
                 self.thinking_spinner.stop()
             if self.current_spinner:
                 self.current_spinner.stop()
+            self._reset_text_turn_state()
             return
 
         try:
@@ -293,6 +331,7 @@ class CallbackHandler:
                 self.thinking_spinner.stop()
 
             if init_event_loop and not truthy_env("SWARMEE_TUI_EVENTS", False):
+                self._reset_text_turn_state()
                 self.thinking_spinner = Status(
                     "[blue] retrieving memories...[/blue]",
                     spinner="dots",
@@ -323,11 +362,9 @@ class CallbackHandler:
         # Handle regular output
         if data:
             _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
-            # Print to stdout
-            if complete:
-                _safe_print(f"{Fore.WHITE}{data}{Style.RESET_ALL}")
-            else:
-                _safe_print(f"{Fore.WHITE}{data}{Style.RESET_ALL}", end="")
+            self._emit_terminal_text(data, complete=complete)
+        elif complete:
+            self._reset_text_turn_state()
 
         # Handle tool input streaming
         if current_tool_use and current_tool_use.get("input"):
@@ -418,6 +455,7 @@ class TuiCallbackHandler:
         self.interrupt_event: Event | None = None
         self._saw_text_delta: bool = False
         self._assistant_text_snapshot: str = ""
+        self._assistant_text_sources_turn: set[str] = set()
         self._text_complete_emitted_turn: bool = False
         self._emitted_tool_results: set[str] = set()
         self._plan_step_status: dict[int, str] = {}
@@ -436,6 +474,7 @@ class TuiCallbackHandler:
     def _reset_turn_state(self) -> None:
         self._saw_text_delta = False
         self._assistant_text_snapshot = ""
+        self._assistant_text_sources_turn.clear()
         self._text_complete_emitted_turn = False
         self.current_tool = None
         self.tool_histories.clear()
@@ -824,6 +863,8 @@ class TuiCallbackHandler:
             return False
         if not text:
             return False
+        self._assistant_text_sources_turn.add("result")
+        self._assistant_text_snapshot = text
         self._emit({"event": "text_delta", "data": text})
         if not self._text_complete_emitted_turn:
             self._emit({"event": "text_complete"})
@@ -939,8 +980,8 @@ class TuiCallbackHandler:
         return found
 
     def _extract_text_from_bedrock_extra_fields(self, extra_fields: dict[str, Any]) -> str | None:
-        candidates: list[Any] = [extra_fields]
-        for key in ("message", "event", "chunk", "content", "response", "payload", "raw_event"):
+        candidates: list[Any] = []
+        for key in ("payload", "raw_event", "response"):
             if key in extra_fields:
                 candidates.append(extra_fields.get(key))
 
@@ -955,11 +996,24 @@ class TuiCallbackHandler:
         token = value.strip().lower()
         return token in _NON_TEXT_EVENT_TOKENS
 
-    def _emit_assistant_message_text(self, text: str | None) -> bool:
+    def _emit_assistant_text_delta(self, text: str | None, *, source: str) -> bool:
         if not isinstance(text, str):
             return False
         if not text:
             return False
+        self._assistant_text_sources_turn.add(source)
+        self._assistant_text_snapshot += text
+        self._emit({"event": "text_delta", "data": text})
+        self._consume_text_for_plan_markers(text)
+        self._saw_text_delta = True
+        return True
+
+    def _emit_assistant_message_text(self, text: str | None, *, source: str) -> bool:
+        if not isinstance(text, str):
+            return False
+        if not text:
+            return False
+        self._assistant_text_sources_turn.add(source)
 
         delta = self._merge_assistant_text_snapshot(text)
 
@@ -1022,10 +1076,6 @@ class TuiCallbackHandler:
         return None
 
     def _extract_text_from_extra_fields(self, extra_fields: dict[str, Any]) -> str | None:
-        bedrock_text = self._extract_text_from_bedrock_extra_fields(extra_fields)
-        if isinstance(bedrock_text, str) and bedrock_text:
-            return bedrock_text
-
         for key in (
             "data",
             "text",
@@ -1047,15 +1097,18 @@ class TuiCallbackHandler:
                 nested_text = self._extract_text_from_delta_payload(nested)
                 if isinstance(nested_text, str) and nested_text:
                     return nested_text
-        for key in ("message", "event", "chunk", "content", "response", "payload"):
-            nested = extra_fields.get(key)
-            if key in {"event", "type", "kind"} and isinstance(nested, str):
-                if self._is_non_text_event_token(nested):
-                    continue
-            text = self._extract_text_from_result(nested)
-            if isinstance(text, str) and text:
-                return text
         return None
+
+    def _extract_transport_text_from_extra_fields(
+        self,
+        *,
+        extra_fields: dict[str, Any],
+        invocation_state: Any,
+    ) -> str | None:
+        provider, _tier, _model_id = self._invocation_model_tokens(invocation_state)
+        if provider != "bedrock":
+            return None
+        return self._extract_text_from_bedrock_extra_fields(extra_fields)
 
     def _extract_reasoning_text_from_value(
         self,
@@ -1248,6 +1301,14 @@ class TuiCallbackHandler:
 
         assistant_snapshot_text = self._extract_text_from_assistant_message(message)
         extra_snapshot_text = self._extract_text_from_extra_fields(extra_event_fields) if extra_event_fields else None
+        transport_snapshot_text = (
+            self._extract_transport_text_from_extra_fields(
+                extra_fields=extra_event_fields,
+                invocation_state=invocation_state,
+            )
+            if extra_event_fields and not data and not assistant_snapshot_text and not extra_snapshot_text
+            else None
+        )
         result_text = self._extract_text_from_result(result) if result is not None else None
 
         saw_text_before = self._saw_text_delta
@@ -1258,6 +1319,7 @@ class TuiCallbackHandler:
                 for source, payload in (
                     ("message", assistant_snapshot_text),
                     ("extra", extra_snapshot_text),
+                    ("transport", transport_snapshot_text),
                     ("result", result_text),
                 )
                 if isinstance(payload, str) and payload
@@ -1273,16 +1335,23 @@ class TuiCallbackHandler:
         if saw_bedrock_chunk:
             self._saw_bedrock_stream_chunk = True
         if data:
-            emitted_stream_text = self._emit_assistant_message_text(data) or emitted_stream_text
+            emitted_stream_text = self._emit_assistant_text_delta(data, source="data") or emitted_stream_text
 
         if not suppress_snapshot_reemit:
             emitted_stream_text = (
-                self._emit_assistant_message_text(assistant_snapshot_text)
+                self._emit_assistant_message_text(assistant_snapshot_text, source="message")
                 or emitted_stream_text
             )
 
             if extra_event_fields:
-                emitted_stream_text = self._emit_assistant_message_text(extra_snapshot_text) or emitted_stream_text
+                emitted_stream_text = (
+                    self._emit_assistant_message_text(extra_snapshot_text, source="extra")
+                    or emitted_stream_text
+                )
+                emitted_stream_text = (
+                    self._emit_assistant_message_text(transport_snapshot_text, source="transport")
+                    or emitted_stream_text
+                )
 
         if self._saw_text_delta and not saw_text_before:
             _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
@@ -1395,15 +1464,18 @@ class TuiCallbackHandler:
             )
 
         emitted_text_fallback = False
+        allow_result_text_fallback = not bool(
+            self._assistant_text_sources_turn.intersection({"data", "message", "extra", "transport"})
+        )
         if isinstance(result, dict):
             tid = result.get("toolUseId")
             status = result.get("status")
             if isinstance(tid, str) and status is not None:
                 tool_label = result.get("name")
                 self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
-            elif not suppress_snapshot_reemit:
+            elif not suppress_snapshot_reemit and allow_result_text_fallback:
                 emitted_text_fallback = self._emit_text_fallback_if_needed(result_text)
-        elif result is not None and not suppress_snapshot_reemit:
+        elif result is not None and not suppress_snapshot_reemit and allow_result_text_fallback:
             emitted_text_fallback = self._emit_text_fallback_if_needed(result_text)
             if isinstance(result, str):
                 self._consume_text_for_plan_markers(result)

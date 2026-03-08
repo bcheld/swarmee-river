@@ -1,5 +1,6 @@
+import importlib
+import importlib.metadata
 import pathlib
-import sys
 import unittest.mock
 
 import pytest
@@ -400,27 +401,90 @@ def test_openai_model_supports_responses_reasoning_flags_unsupported_variants():
     assert swarmee_river.utils.model_utils.openai_model_supports_responses_reasoning("gpt-5-micro") is False
 
 
-def test_openai_provider_module_requires_responses_provider(monkeypatch):
-    import importlib
-    import types
+def test_probe_openai_responses_transport_available(monkeypatch):
+    def _fake_version(name: str) -> str:
+        if name == "strands-agents":
+            return "1.29.0"
+        if name == "openai":
+            return "2.0.0"
+        return ""
 
-    module_name = "swarmee_river.models.openai"
-    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    monkeypatch.setattr(swarmee_river.utils.model_utils.importlib.metadata, "version", _fake_version)
 
-    fake_strands = types.ModuleType("strands")
-    fake_strands_models = types.ModuleType("strands.models")
+    status = swarmee_river.utils.model_utils.probe_openai_responses_transport()
 
-    class _FakeModel:
-        pass
+    assert status.available is True
+    assert status.strands_version == "1.29.0"
+    assert status.openai_version == "2.0.0"
+    assert "available" in status.reason.lower()
 
-    fake_strands_models.Model = _FakeModel
 
-    monkeypatch.setitem(sys.modules, "strands", fake_strands)
-    monkeypatch.setitem(sys.modules, "strands.models", fake_strands_models)
-    monkeypatch.delitem(sys.modules, "strands.models.openai_responses", raising=False)
+def test_probe_openai_responses_transport_reports_unsupported_strands_version(monkeypatch):
+    def _fake_version(name: str) -> str:
+        if name == "strands-agents":
+            return "1.26.0"
+        if name == "openai":
+            return "2.0.0"
+        raise importlib.metadata.PackageNotFoundError(name)
 
-    with pytest.raises(ImportError, match="OpenAI Responses transport is required"):
-        importlib.import_module(module_name)
+    monkeypatch.setattr(swarmee_river.utils.model_utils.importlib.metadata, "version", _fake_version)
+
+    status = swarmee_river.utils.model_utils.probe_openai_responses_transport()
+
+    assert status.available is False
+    assert status.strands_version == "1.26.0"
+    assert status.openai_version == "2.0.0"
+    assert "strands-agents==1.26.0" in status.reason
+    assert ">=1.29.0" in status.reason
+
+
+def test_probe_openai_responses_transport_missing_package(monkeypatch):
+    def _fake_version(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(swarmee_river.utils.model_utils.importlib.metadata, "version", _fake_version)
+
+    status = swarmee_river.utils.model_utils.probe_openai_responses_transport()
+
+    assert status.available is False
+    assert status.strands_version is None
+    assert status.openai_version is None
+    assert "strands-agents is not installed" in status.reason
+
+
+def test_probe_openai_responses_transport_reports_incompatible_openai_sdk(monkeypatch):
+    def _fake_version(name: str) -> str:
+        if name == "strands-agents":
+            return "1.29.0"
+        if name == "openai":
+            return "1.109.1"
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(swarmee_river.utils.model_utils.importlib.metadata, "version", _fake_version)
+
+    status = swarmee_river.utils.model_utils.probe_openai_responses_transport()
+
+    assert status.available is False
+    assert status.strands_version == "1.29.0"
+    assert status.openai_version == "1.109.1"
+    assert "openai==1.109.1" in status.reason
+    assert "openai>=2.0.0,<3.0.0" in status.reason
+
+
+def test_ensure_openai_responses_transport_available_raises_for_incompatible_runtime(monkeypatch):
+    monkeypatch.setattr(
+        swarmee_river.utils.model_utils,
+        "probe_openai_responses_transport",
+        lambda: swarmee_river.utils.model_utils.OpenAIResponsesTransportStatus(
+            available=False,
+            strands_version="1.26.0",
+            openai_version="2.0.0",
+            reason="Installed strands-agents==1.26.0 is below Swarmee's supported runtime version.",
+        ),
+    )
+
+    with pytest.raises(ImportError, match="Swarmee's OpenAI runtime is unavailable"):
+        swarmee_river.utils.model_utils.ensure_openai_responses_transport_available()
 
 
 def test_load_model(custom_model_dir):
@@ -430,3 +494,19 @@ def test_load_model(custom_model_dir):
     tru_result = swarmee_river.utils.model_utils.load_model(model_path, {"k1": "v1"})
     exp_result = {"k1": "v1"}
     assert tru_result == exp_result
+
+
+def test_load_model_openai_provider_uses_unique_dynamic_module_name():
+    provider_path = swarmee_river.utils.model_utils.load_path("openai")
+
+    model = swarmee_river.utils.model_utils.load_model(
+        provider_path,
+        {
+            "model_id": "gpt-5-nano",
+            "client_args": {"api_key": "sk-test"},
+            "params": {"max_output_tokens": 32},
+            "transport": "responses",
+        },
+    )
+
+    assert type(model).__module__.startswith("_swarmee_dynamic_model_openai_")

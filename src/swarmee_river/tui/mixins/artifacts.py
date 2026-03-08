@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
+from swarmee_river.diff_review import truncate_diff_preview
 from swarmee_river.tui.sidebar_artifacts import (
     add_recent_artifacts,
     build_artifact_table_rows,
@@ -90,7 +91,7 @@ class ArtifactsMixin:
     def _artifact_looks_textual(self, entry: dict[str, Any]) -> bool:
         path = str(entry.get("path", "")).strip()
         kind = str(entry.get("kind", "")).strip().lower()
-        if kind in {"tui_transcript", "tool_result", "diagnostic", "project_map"}:
+        if kind in {"tui_transcript", "tool_result", "diagnostic", "project_map", "file_diff"}:
             return True
         suffix = Path(path).suffix.lower()
         if suffix in {".txt", ".md", ".json", ".jsonl", ".log", ".yaml", ".yml", ".csv", ".patch", ".diff"}:
@@ -134,11 +135,48 @@ class ArtifactsMixin:
             return self._artifact_metadata_preview(entry)
         try:
             store = ArtifactStore()
-            body = store.read_text(artifact_path, max_chars=5000)
+            if str(entry.get("kind", "")).strip().lower() == "file_diff":
+                body = store.read_text(artifact_path)
+            else:
+                body = store.read_text(artifact_path, max_chars=5000)
         except Exception as exc:
             return self._artifact_metadata_preview(entry) + f"\n\nFailed to read artifact: {exc}"
         header = self._artifact_metadata_preview(entry)
         return f"{header}\n\nPreview:\n{body}"
+
+    def _artifact_preview_renderable(self, entry: dict[str, Any]) -> Any:
+        kind = str(entry.get("kind", "")).strip().lower()
+        if kind != "file_diff":
+            return self._artifact_preview_text(entry)
+
+        path = str(entry.get("path", "")).strip()
+        if not path:
+            return self._artifact_metadata_preview(entry)
+        artifact_path = Path(path).expanduser()
+        if not artifact_path.exists() or not artifact_path.is_file():
+            return self._artifact_metadata_preview(entry) + "\n\nFile not found."
+
+        try:
+            store = ArtifactStore()
+            diff_text = store.read_text(artifact_path)
+        except Exception as exc:
+            return self._artifact_metadata_preview(entry) + f"\n\nFailed to read artifact: {exc}"
+
+        from swarmee_river.tui.widgets import render_diff_review_panel
+
+        meta = entry.get("meta") if isinstance(entry.get("meta"), dict) else {}
+        paths = meta.get("changed_paths")
+        if not isinstance(paths, list) or not paths:
+            paths = meta.get("touched_paths") if isinstance(meta.get("touched_paths"), list) else []
+        preview_text, hidden_lines = truncate_diff_preview(diff_text, max_lines=400, max_chars=40000)
+        return render_diff_review_panel(
+            tool_name=str(meta.get("tool", "file_diff")).strip() or "file_diff",
+            paths=[str(item).strip() for item in paths if str(item).strip()],
+            diff_text=preview_text or "(empty diff artifact)",
+            stats=meta.get("stats") if isinstance(meta, dict) else None,
+            artifact_path=path,
+            hidden_lines=hidden_lines,
+        )
 
     def _set_artifact_selection(self, entry: dict[str, Any] | None) -> None:
         detail = self._artifacts_detail
@@ -150,7 +188,7 @@ class ArtifactsMixin:
             detail.set_actions([])
             return
         self.state.artifacts.selected_item_id = str(entry.get("item_id", "")).strip() or None
-        detail.set_preview(self._artifact_preview_text(entry))
+        detail.set_preview(self._artifact_preview_renderable(entry))
         detail.set_actions(
             [
                 {"id": "artifact_action_open", "label": "Open", "variant": "default"},

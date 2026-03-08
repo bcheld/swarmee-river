@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-from swarmee_river.opencode_aliases import configure_alias_targets, opencode_alias_tools
 from swarmee_river.settings import SwarmeeSettings
 from swarmee_river.utils.import_utils import load_optional_attr
 
@@ -30,7 +29,6 @@ from tools.calculator import calculator as calculator_fallback
 from tools.current_time import current_time as current_time_fallback
 from tools.editor import editor as editor_fallback
 from tools.environment import environment as environment_fallback
-from tools.file_write import file_write as file_write_fallback
 from tools.http_request import http_request as http_request_fallback
 from tools.office import office
 from tools.python_repl import python_repl as python_repl_fallback
@@ -49,7 +47,6 @@ _OPTIONAL_STRANDS_TOOL_NAMES: tuple[str, ...] = (
     "editor",
     "environment",
     "file_read",
-    "file_write",
     "generate_image",
     "http_request",
     "image_reader",
@@ -77,7 +74,6 @@ _OPTIONAL_STRANDS_TOOL_NAMES: tuple[str, ...] = (
 _FALLBACK_TOOLS: dict[str, Any] = {
     "shell": shell_fallback,
     "python_repl": python_repl_fallback,
-    "file_write": file_write_fallback,
     "editor": editor_fallback,
     "retrieve": retrieve_fallback,
     "http_request": http_request_fallback,
@@ -142,8 +138,5 @@ def get_tools(settings: SwarmeeSettings | None = None) -> dict[str, Any]:
     if settings is not None and settings.runtime.enable_project_context_tool:
         custom_tools["project_context"] = project_context
     tools |= custom_tools
-
-    configure_alias_targets(tools)
-    tools |= opencode_alias_tools()
 
     return tools

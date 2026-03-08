@@ -32,7 +32,7 @@ The `strand` tool is available to the orchestrator. You can guide its use via a 
 
 ```markdown
 ## Rules
-- For all data transformation tasks, delegate to a strand with access to `python_repl` and `file_write`.
+- For all data transformation tasks, delegate to a strand with access to `python_repl` and `editor`.
   Pass the full data file path and the expected output format.
 ```
 
@@ -40,7 +40,7 @@ The `strand` tool is available to the orchestrator. You can guide its use via a 
 ```
 strand(
   query="Read the CSV at /data/sales.csv, calculate monthly totals, and write a summary to /data/summary.txt",
-  tools=["python_repl", "file_read", "file_write"],
+  tools=["python_repl", "file_read", "editor"],
   system_prompt="You are a data transformation specialist. Use pandas. Always validate the input before processing."
 )
 ```
@@ -117,7 +117,7 @@ Team presets are pre-configured swarm layouts defined in `.swarmee/settings.json
         {
           "id": "implementer",
           "role": "Write the fix",
-          "tool_names": ["file_read", "file_write", "git", "run_checks"],
+          "tool_names": ["file_read", "editor", "git", "run_checks"],
           "sop_names": ["code-change"]
         }
       ]

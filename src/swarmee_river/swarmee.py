@@ -81,6 +81,7 @@ Panel: Any = _RichPanel
 Text: Any = _RichText
 
 try:
+    from swarmee_river.hooks.file_diff_review import FileDiffReviewHooks as _FileDiffReviewHooks
     from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks as _JSONLLoggerHooks
     from swarmee_river.hooks.tui_metrics import TuiMetricsHooks as _TuiMetricsHooks
     from swarmee_river.hooks.tool_consent import ToolConsentHooks as _ToolConsentHooks
@@ -89,12 +90,14 @@ try:
 
     _HAS_STRANDS_HOOKS = True
 except Exception:
+    _FileDiffReviewHooks = None  # type: ignore[misc,assignment]
     _JSONLLoggerHooks = None  # type: ignore[misc,assignment]
     _TuiMetricsHooks = None  # type: ignore[misc,assignment]
     _ToolConsentHooks = None  # type: ignore[misc,assignment]
     _ToolResultLimiterHooks = None  # type: ignore[misc,assignment]
     _ToolPolicyHooks = None  # type: ignore[misc,assignment]
     _HAS_STRANDS_HOOKS = False
+FileDiffReviewHooks: Any = _FileDiffReviewHooks
 JSONLLoggerHooks: Any = _JSONLLoggerHooks
 TuiMetricsHooks: Any = _TuiMetricsHooks
 ToolConsentHooks: Any = _ToolConsentHooks
@@ -125,6 +128,7 @@ from swarmee_river.cli.diagnostics import (
 )
 from swarmee_river.cli.repl import run_repl
 from swarmee_river.context.prompt_cache import PromptCacheState
+from swarmee_river.diagnostics import append_session_event, append_session_issue
 from swarmee_river.error_classification import (
     ERROR_CATEGORY_AUTH_ERROR,
     ERROR_CATEGORY_FATAL,
@@ -185,7 +189,12 @@ from swarmee_river.utils import model_utils
 from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
 from swarmee_river.utils.process_liveness import is_process_running
-from swarmee_river.utils.provider_utils import has_aws_credentials, resolve_aws_auth_source, resolve_model_provider
+from swarmee_river.utils.provider_utils import (
+    has_aws_credentials,
+    has_github_copilot_token,
+    resolve_aws_auth_source,
+    resolve_model_provider,
+)
 from swarmee_river.utils.stdio_utils import configure_stdio_for_utf8, write_stdout_jsonl
 from swarmee_river.utils.welcome_utils import render_goodbye_message, render_welcome_message
 from tools.sop import run_sop
@@ -978,17 +987,21 @@ def _build_runtime_hooks(
     if not _HAS_STRANDS_HOOKS:
         return []
 
-    def _consent_prompt(text: str) -> str:
+    def _consent_prompt(text: str, payload: dict[str, Any] | None = None) -> str:
         if callable(consent_prompt_fn):
-            return str(consent_prompt_fn(text) or "")
+            try:
+                return str(consent_prompt_fn(text, payload) or "")
+            except TypeError:
+                return str(consent_prompt_fn(text) or "")
         if _tui_events_enabled():
-            _emit_tui_event(
-                {
-                    "event": "consent_prompt",
-                    "context": text,
-                    "options": ["y", "n", "a", "v"],
-                }
-            )
+            event_payload = {
+                "event": "consent_prompt",
+                "context": text,
+                "options": ["y", "n", "a", "v"],
+            }
+            if isinstance(payload, dict):
+                event_payload.update(payload)
+            _emit_tui_event(event_payload)
             try:
                 return input().strip()
             except (KeyboardInterrupt, EOFError):
@@ -1013,6 +1026,7 @@ def _build_runtime_hooks(
             auto_approve=auto_approve,
             prompt=_consent_prompt,
         ),
+        FileDiffReviewHooks(),
         ToolResultLimiterHooks(enabled=settings.runtime.limit_tool_results),
     ]
     if ToolMessageRepairHooks is not None:
@@ -1039,6 +1053,17 @@ def _resolve_provider_and_model_manager(
         env_provider=None,
         settings_provider=settings.models.provider,
     )
+    provider_explicit = bool(args.model_provider is not None) or bool(str(settings.models.provider or "").strip())
+    if selected_provider == "openai" and not provider_explicit:
+        compatibility = model_utils.probe_openai_responses_transport()
+        if not compatibility.available:
+            fallback_provider = "github_copilot" if has_github_copilot_token() else "bedrock"
+            selected_provider = fallback_provider
+            notice = (
+                "Skipping implicit OpenAI provider selection because Swarmee's OpenAI Responses runtime "
+                f"is unavailable. {compatibility.reason} Falling back to {fallback_provider}."
+            )
+            provider_notice = f"{provider_notice} {notice}".strip() if provider_notice else notice
     model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
     model_manager.set_fallback_config(args.model_config)
     return selected_provider, provider_notice, model_manager
@@ -3316,7 +3341,15 @@ def main() -> None:
             return
 
         if cmd in _DIAGNOSTIC_COMMANDS:
-            print(render_diagnostic_command_for_surface(cmd=cmd, args=sub, cwd=Path.cwd(), surface="cli"))
+            print(
+                render_diagnostic_command_for_surface(
+                    cmd=cmd,
+                    args=sub,
+                    cwd=Path.cwd(),
+                    surface="cli",
+                    current_session_id=(os.getenv("SWARMEE_SESSION_ID") or "").strip() or None,
+                )
+            )
             return
 
     daemon_consent_event = threading.Event()
@@ -3333,27 +3366,47 @@ def main() -> None:
             daemon_consent_state["response"] = ""
             return response
 
-    def _daemon_consent_prompt(text: str) -> str:
-        _write_stdout_jsonl(
-            {
-                "event": "consent_prompt",
-                "context": text,
-                "options": ["y", "n", "a", "v"],
-            }
-        )
+    def _daemon_consent_prompt(text: str, payload: dict[str, Any] | None = None) -> str:
+        event_payload = {
+            "event": "consent_prompt",
+            "context": text,
+            "options": ["y", "n", "a", "v"],
+        }
+        if isinstance(payload, dict):
+            event_payload.update(payload)
+        _write_stdout_jsonl(event_payload)
         _set_daemon_consent_response("")
         daemon_consent_event.clear()
         daemon_consent_event.wait()
         return _consume_daemon_consent_response().strip()
 
-    runtime = _build_agent_runtime(
-        args,
-        settings,
-        auto_approve,
-        _daemon_consent_prompt if args.tui_daemon else None,
-        knowledge_base_id=knowledge_base_id,
-        settings_path_for_project=settings_path_for_project,
-    )
+    try:
+        runtime = _build_agent_runtime(
+            args,
+            settings,
+            auto_approve,
+            _daemon_consent_prompt if args.tui_daemon else None,
+            knowledge_base_id=knowledge_base_id,
+            settings_path_for_project=settings_path_for_project,
+        )
+    except Exception as exc:
+        if not args.tui_daemon:
+            raise
+        startup_text = str(exc).strip() or "Daemon startup failed"
+        daemon_session_id = (os.getenv("SWARMEE_SESSION_ID") or "").strip() or None
+        startup_event = _build_tui_error_event(startup_text, category_hint=ERROR_CATEGORY_FATAL)
+        startup_event["phase"] = "startup"
+        _write_stdout_jsonl(startup_event)
+        _write_stdout_jsonl({"event": "warning", "text": f"Daemon startup failed: {startup_text}"})
+        with contextlib.suppress(Exception):
+            append_session_event(session_id=daemon_session_id, event=startup_event, cwd=Path.cwd())
+        with contextlib.suppress(Exception):
+            append_session_issue(
+                session_id=daemon_session_id,
+                line=f"{time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())} startup failed: {startup_text}",
+                cwd=Path.cwd(),
+            )
+        raise SystemExit(1) from exc
 
     selected_provider = runtime["selected_provider"]
     provider_notice = runtime["provider_notice"]
