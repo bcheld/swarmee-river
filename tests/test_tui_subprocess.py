@@ -2575,6 +2575,42 @@ def test_agent_editor_create_prompt_asset_record_generates_unique_selection():
     assert asset["content"] == "New prompt body"
 
 
+def test_agent_editor_nested_screens_use_app_push_screen():
+    from textual.message_pump import active_app
+
+    from swarmee_river.tui.widgets import AgentEditorScreen, CatalogMultiSelectScreen, CatalogSingleSelectScreen
+
+    class _FakeApp:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object]] = []
+
+        def push_screen(self, screen, callback=None):  # noqa: ANN001
+            self.calls.append((screen, callback))
+
+    app = _FakeApp()
+    token = active_app.set(app)
+    try:
+        screen = AgentEditorScreen(
+            {"id": "writer", "name": "Writer"},
+            tool_options=["git", "shell"],
+            sop_options=["qa_pass"],
+            kb_options=[("Primary KB (kb-primary)", "kb-primary")],
+        )
+        screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="agent_editor_tools_edit")))
+        screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="agent_editor_sops_edit")))
+        screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="agent_editor_kb_edit")))
+    finally:
+        active_app.reset(token)
+
+    assert len(app.calls) == 3
+    assert isinstance(app.calls[0][0], CatalogMultiSelectScreen)
+    assert callable(app.calls[0][1])
+    assert isinstance(app.calls[1][0], CatalogMultiSelectScreen)
+    assert callable(app.calls[1][1])
+    assert isinstance(app.calls[2][0], CatalogSingleSelectScreen)
+    assert callable(app.calls[2][1])
+
+
 def test_agent_manager_screen_updates_and_deletes_agents():
     from swarmee_river.tui.widgets import AgentManagerScreen
 
@@ -2609,6 +2645,42 @@ def test_agent_manager_screen_updates_and_deletes_agents():
 
     screen._delete_selected()
     assert all(agent["id"] != "writer" for agent in screen._agents)
+
+
+def test_agent_manager_screen_new_and_edit_use_app_push_screen():
+    from textual.message_pump import active_app
+
+    from swarmee_river.tui.widgets import AgentEditorScreen, AgentManagerScreen
+
+    class _FakeApp:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object]] = []
+
+        def push_screen(self, screen, callback=None):  # noqa: ANN001
+            self.calls.append((screen, callback))
+
+    app = _FakeApp()
+    token = active_app.set(app)
+    try:
+        screen = AgentManagerScreen(
+            [
+                {"id": "orchestrator", "name": "Orchestrator", "activated": False},
+                {"id": "writer", "name": "Writer", "activated": True},
+            ],
+            prompt_assets=[],
+            tool_options=["git", "shell"],
+            sop_options=["qa_pass"],
+            kb_options=[("Primary KB (kb-primary)", "kb-primary")],
+            selected_id="writer",
+        )
+        screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="agent_manager_new")))
+        screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="agent_manager_edit")))
+    finally:
+        active_app.reset(token)
+
+    assert len(app.calls) == 2
+    assert all(isinstance(pushed_screen, AgentEditorScreen) for pushed_screen, _callback in app.calls)
+    assert all(callable(callback) for _pushed_screen, callback in app.calls)
 
 
 def test_agent_manager_screen_preserves_orchestrator_on_delete():

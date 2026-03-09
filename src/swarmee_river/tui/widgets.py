@@ -3715,7 +3715,7 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
             self.query_one("#agent_editor_kb_summary", Static).update(f"KB: {kb_label}")
 
     def _open_tools_editor(self) -> None:
-        self.push_screen(
+        self.app.push_screen(
             CatalogMultiSelectScreen(
                 title="Select Agent Tools",
                 options=list(self._tool_options),
@@ -3733,7 +3733,7 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         self._refresh_capability_summaries()
 
     def _open_sops_editor(self) -> None:
-        self.push_screen(
+        self.app.push_screen(
             CatalogMultiSelectScreen(
                 title="Select Agent SOPs",
                 options=list(self._sop_options),
@@ -3751,7 +3751,7 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         self._refresh_capability_summaries()
 
     def _open_kb_editor(self) -> None:
-        self.push_screen(
+        self.app.push_screen(
             CatalogSingleSelectScreen(
                 title="Select Agent KB",
                 options=list(self._kb_options),
@@ -4124,7 +4124,7 @@ class AgentManagerScreen(ModalScreen[dict[str, Any] | None]):
         }
 
     def _open_editor(self, agent: dict[str, Any], *, source_id: str | None) -> None:
-        self.push_screen(
+        self.app.push_screen(
             AgentEditorScreen(
                 agent,
                 prompt_assets=list(self._prompt_assets),
