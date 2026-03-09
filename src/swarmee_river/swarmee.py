@@ -3480,10 +3480,15 @@ def main() -> None:
 
         session_store = ctx.session_store if isinstance(ctx.session_store, SessionStore) else SessionStore()
         refresh_lock = threading.Lock()
-        refresh_state = {"running": False}
+        refresh_state = {"running": False, "generation": 0, "refreshed_generation": -1}
 
         # Hard-coded: non-secret env tuning knobs are no longer supported.
         refresh_timeout_s = 6.0
+
+        def _mark_query_context_stale(*, reason: str) -> None:
+            del reason
+            with refresh_lock:
+                refresh_state["generation"] += 1
 
         def _refresh_query_context_guarded(
             *,
@@ -3493,6 +3498,8 @@ def main() -> None:
         ) -> bool:
             timeout = refresh_timeout_s if timeout_s is None else max(0.1, float(timeout_s))
             with refresh_lock:
+                if refresh_state["refreshed_generation"] == refresh_state["generation"]:
+                    return True
                 if refresh_state["running"]:
                     _write_stdout_jsonl(
                         {
@@ -3546,6 +3553,41 @@ def main() -> None:
                     }
                 )
                 return False
+            with refresh_lock:
+                refresh_state["refreshed_generation"] = refresh_state["generation"]
+            return True
+
+        def _switch_runtime_provider(
+            provider: str,
+            *,
+            preferred_tier: str | None = None,
+            warning_text: str | None = None,
+        ) -> bool:
+            nonlocal model_manager, selected_provider
+            normalized = normalize_provider_name(provider)
+            if not normalized:
+                return False
+            target_manager = SessionModelManager(settings, fallback_provider=normalized)
+            target_manager.set_fallback_config(args.model_config)
+            target_tier = str(preferred_tier or model_manager.current_tier or settings.models.default_tier or "balanced")
+            target_tier = target_tier.strip().lower() or "balanced"
+            available = {item.name for item in target_manager.list_tiers() if item.available}
+            if target_tier not in available:
+                if "balanced" in available:
+                    target_tier = "balanced"
+                elif available:
+                    target_tier = sorted(available)[0]
+                else:
+                    return False
+            target_manager.set_tier(ctx.agent, target_tier)
+            model_manager = target_manager
+            selected_provider = normalized
+            agent_kwargs["model"] = ctx.agent.model
+            _refresh_conversation_manager()
+            _mark_query_context_stale(reason=f"provider switch to {normalized}")
+            if warning_text:
+                _write_stdout_jsonl({"event": "warning", "text": warning_text})
+            _write_stdout_jsonl(_current_model_info_event())
             return True
 
         def _persist_messages_async(*, session_id: str, messages_snapshot: list[Any]) -> None:
@@ -3603,10 +3645,13 @@ def main() -> None:
                 state = getattr(ctx.agent, "state", None)
                 with contextlib.suppress(Exception):
                     ctx.swap_agent(messages, state)
+                    _mark_query_context_stale(reason="session restore")
                     _refresh_query_context_guarded(
                         interactive=True,
                         phase="session restore",
                     )
+            else:
+                _mark_query_context_stale(reason="session restore")
 
             active_session_id = sid
             os.environ["SWARMEE_SESSION_ID"] = sid
@@ -3736,10 +3781,19 @@ def main() -> None:
                         )
                         _best_effort_retrieve(query_text, warn_on_error=False)
                         if _active_runtime_provider_name() == "bedrock" and not has_aws_credentials():
+                            if has_github_copilot_token() and _switch_runtime_provider(
+                                "github_copilot",
+                                preferred_tier=model_manager.current_tier,
+                                warning_text=(
+                                    "[provider] AWS credentials are unavailable for Bedrock; "
+                                    "falling back to GitHub Copilot for this session."
+                                ),
+                            ):
+                                continue
                             _write_stdout_jsonl(
                                 _build_tui_error_event(
-                                    "AWS credentials are unavailable for Bedrock. "
-                                    "Run connect for bedrock and retry.",
+                                    "AWS credentials are unavailable for Bedrock and no OpenAI key is configured. "
+                                    "Run connect aws [profile] or configure another provider, then retry.",
                                     category_hint=ERROR_CATEGORY_AUTH_ERROR,
                                 )
                             )
@@ -3869,6 +3923,7 @@ def main() -> None:
                         model_manager.set_tier(ctx.agent, requested_tier.strip().lower())
                         agent_kwargs["model"] = ctx.agent.model
                         _refresh_conversation_manager()
+                        _mark_query_context_stale(reason="query tier switch")
                         _refresh_query_context_guarded(
                             interactive=True,
                             phase="query tier switch",
@@ -3901,6 +3956,7 @@ def main() -> None:
                 sources_payload = payload.get("sources", [])
                 try:
                     _set_user_context_sources(sources_payload)
+                    _mark_query_context_stale(reason="set_context_sources")
                 except Exception as e:
                     _write_stdout_jsonl({"event": "warning", "text": f"Failed to set context sources: {e}"})
                 continue
@@ -3945,6 +4001,7 @@ def main() -> None:
                     continue
                 _set_daemon_sop_override(raw_name, raw_content)
                 ctx.refresh_system_prompt()
+                _mark_query_context_stale(reason="set_sop")
                 with contextlib.suppress(Exception):
                     session_store.save(active_session_id, meta=ctx.build_session_meta())
                 continue
@@ -3970,6 +4027,7 @@ def main() -> None:
                 before_model_info = _current_model_info_event()
                 try:
                     applied_profile = _apply_profile(raw_profile)
+                    _mark_query_context_stale(reason="set_profile")
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
                     continue
@@ -4048,6 +4106,7 @@ def main() -> None:
                 before_model_info = _current_model_info_event()
                 try:
                     applied_bundle = _apply_bundle(raw_id.strip())
+                    _mark_query_context_stale(reason="apply_bundle")
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
                     continue
@@ -4089,6 +4148,7 @@ def main() -> None:
                     continue
                 try:
                     applied = _apply_session_safety_overrides(payload_update)
+                    _mark_query_context_stale(reason="set_safety_overrides")
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
                     continue
@@ -4111,6 +4171,7 @@ def main() -> None:
                 try:
                     payload_event = _set_prompt_asset(payload.get("asset"))
                     _write_stdout_jsonl(payload_event)
+                    _mark_query_context_stale(reason="set_prompt_asset")
                     _refresh_query_context_guarded(interactive=True, phase="set_prompt_asset")
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
@@ -4128,6 +4189,7 @@ def main() -> None:
                 try:
                     payload_event = _delete_prompt_asset(str(payload.get("id", "")))
                     _write_stdout_jsonl(payload_event)
+                    _mark_query_context_stale(reason="delete_prompt_asset")
                     _refresh_query_context_guarded(interactive=True, phase="delete_prompt_asset")
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_FATAL))
@@ -4187,6 +4249,7 @@ def main() -> None:
                             model_manager.set_tier(ctx.agent, model_manager.current_tier)
                             agent_kwargs["model"] = ctx.agent.model
                             _refresh_conversation_manager()
+                            _mark_query_context_stale(reason="connect bedrock")
                             _refresh_query_context_guarded(interactive=True, phase="connect bedrock")
                         _write_stdout_jsonl(
                             {
@@ -4286,6 +4349,7 @@ def main() -> None:
                     model_manager.set_tier(ctx.agent, tier.strip().lower())
                     agent_kwargs["model"] = ctx.agent.model
                     _refresh_conversation_manager()
+                    _mark_query_context_stale(reason="set_tier")
                     _refresh_query_context_guarded(interactive=True, phase="set_tier")
                     _write_stdout_jsonl(_current_model_info_event())
                 except Exception as e:

@@ -227,6 +227,35 @@ def test_result_fallback_does_not_duplicate_streamed_text():
     ]
 
 
+def test_bedrock_completion_does_not_reemit_reasoning_as_final_output():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(
+            reasoningText="planner trace",
+            invocation_state={"swarmee": {"provider": "bedrock", "tier": "deep"}},
+        )
+        h.callback_handler(
+            complete=True,
+            result={
+                "message": {
+                    "content": [
+                        {"reasoningContent": {"text": "planner trace"}},
+                        {"text": "final answer"},
+                    ]
+                }
+            },
+            invocation_state={"swarmee": {"provider": "bedrock", "tier": "deep"}},
+        )
+
+    events = _capture_events(h, run)
+    assert events == [
+        {"event": "thinking", "text": "planner trace"},
+        {"event": "text_delta", "data": "final answer"},
+        {"event": "text_complete"},
+    ]
+
+
 def test_complete_snapshot_fields_do_not_duplicate_streamed_text():
     h = TuiCallbackHandler()
 
@@ -652,7 +681,7 @@ def test_reasoning_capability_missing_stream_logs_diagnostic(caplog):
                 "swarmee": {
                     "provider": "bedrock",
                     "tier": "deep",
-                    "model_id": "us.anthropic.claude-opus-4-6-v1:0",
+                    "model_id": "us.anthropic.claude-opus-4-6-v1",
                     "reasoning_effort": "high",
                     "reasoning_mode": "adaptive",
                 }

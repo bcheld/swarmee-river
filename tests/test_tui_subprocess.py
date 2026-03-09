@@ -2744,6 +2744,47 @@ def test_model_manager_result_payload_preserves_guided_openai_fields():
     assert deep["context"]["strategy"] == "cache_safe"
 
 
+def test_model_manager_screen_accepts_raw_model_id_input():
+    from swarmee_river.tui.widgets import ModelConfigManagerScreen
+
+    class _Widget:
+        def __init__(self, value: str = "") -> None:
+            self.value = value
+            self.text = ""
+
+        def set_options(self, _options) -> None:
+            return None
+
+        def update(self, text: str) -> None:
+            self.text = text
+
+    screen = ModelConfigManagerScreen({"models": {"providers": {}}, "env": {}})
+    widgets = {
+        "#model_edit_provider": _Widget("bedrock"),
+        "#model_edit_tier": _Widget("deep"),
+        "#model_edit_model_id": _Widget("us.anthropic.claude-opus-4-6-v1"),
+        "#model_edit_reasoning": _Widget("high"),
+        "#model_edit_tool_mode": _Widget("tool-heavy"),
+        "#model_edit_context_strategy": _Widget("cache_safe"),
+        "#model_edit_context_compaction": _Widget("auto"),
+        "#model_edit_display_name": _Widget("Claude Opus 4.6 (deep)"),
+        "#model_edit_description": _Widget("Adaptive Claude reasoning for harder analytics tasks."),
+        "#model_edit_price_input": _Widget(""),
+        "#model_edit_price_output": _Widget(""),
+        "#model_edit_price_cached": _Widget(""),
+        "#model_manager_model_select": _Widget("__none__"),
+        "#model_manager_preview": _Widget(""),
+        "#model_manager_status": _Widget(""),
+    }
+    screen.query_one = lambda selector, _widget_type=None: widgets[selector]  # type: ignore[method-assign]
+
+    assert screen._save_editor_entry() is True
+    saved = screen.build_result_payload()["models"]["providers"]["bedrock"]["tiers"]["deep"]
+    assert saved["model_id"] == "us.anthropic.claude-opus-4-6-v1"
+    assert saved["tooling"]["mode"] == "tool-heavy"
+    assert "Model ID: us.anthropic.claude-opus-4-6-v1" in widgets["#model_manager_preview"].text
+
+
 def test_prompt_row_selected_opens_metadata_editor_for_editable_columns():
     class _Column:
         def __init__(self, key: str) -> None:
@@ -3530,7 +3571,7 @@ def test_reasoning_unavailable_notice_emits_once_for_responses_or_bedrock_reason
                 {
                     "name": "deep",
                     "provider": "bedrock",
-                    "model_id": "us.anthropic.claude-opus-4-6-v1:0",
+                    "model_id": "us.anthropic.claude-opus-4-6-v1",
                     "reasoning_effort": "high",
                     "reasoning_mode": "adaptive",
                 }

@@ -466,6 +466,7 @@ class TuiCallbackHandler:
         self._saw_bedrock_stream_chunk: bool = False
         self._bedrock_stream_markers_seen: set[str] = set()
         self._bedrock_missing_text_warning_emitted: bool = False
+        self._emitted_reasoning_texts_turn: set[str] = set()
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Write a single JSONL event to stdout."""
@@ -484,6 +485,7 @@ class TuiCallbackHandler:
         self._plan_total_steps = 0
         self._plan_complete_emitted = False
         self._llm_start_emitted = False
+        self._emitted_reasoning_texts_turn.clear()
         self._reset_bedrock_stream_state()
 
     def _reset_bedrock_stream_state(self) -> None:
@@ -872,13 +874,20 @@ class TuiCallbackHandler:
         self._saw_text_delta = True
         return True
 
-    def _extract_text_from_result(self, result: Any) -> str | None:
+    def _emit_reasoning_text(self, text: str | None) -> None:
+        chunk = str(text or "").strip()
+        if not chunk or chunk in self._emitted_reasoning_texts_turn:
+            return
+        self._emitted_reasoning_texts_turn.add(chunk)
+        self._emit({"event": "thinking", "text": chunk})
+
+    def _extract_text_from_result(self, result: Any, *, exclude_reasoning_wrappers: bool = False) -> str | None:
         if isinstance(result, str):
             return result
         if isinstance(result, list):
             chunks: list[str] = []
             for item in result:
-                text = self._extract_text_from_result(item)
+                text = self._extract_text_from_result(item, exclude_reasoning_wrappers=exclude_reasoning_wrappers)
                 if isinstance(text, str) and text:
                     chunks.append(text)
             if chunks:
@@ -901,12 +910,12 @@ class TuiCallbackHandler:
                         return nested_text
             message = result.get("message")
             if isinstance(message, dict):
-                return self._extract_text_from_result(message)
+                return self._extract_text_from_result(message, exclude_reasoning_wrappers=exclude_reasoning_wrappers)
             if isinstance(message, list):
-                return self._extract_text_from_result(message)
+                return self._extract_text_from_result(message, exclude_reasoning_wrappers=exclude_reasoning_wrappers)
             content = result.get("content")
             if content is not None:
-                extracted = self._extract_text_from_result(content)
+                extracted = self._extract_text_from_result(content, exclude_reasoning_wrappers=exclude_reasoning_wrappers)
                 if isinstance(extracted, str) and extracted:
                     return extracted
             for key in ("chunk", "event", "response"):
@@ -914,7 +923,10 @@ class TuiCallbackHandler:
                 if key in {"event", "type", "kind"} and isinstance(nested_value, str):
                     if self._is_non_text_event_token(nested_value):
                         continue
-                extracted = self._extract_text_from_result(nested_value)
+                extracted = self._extract_text_from_result(
+                    nested_value,
+                    exclude_reasoning_wrappers=exclude_reasoning_wrappers,
+                )
                 if isinstance(extracted, str) and extracted:
                     return extracted
         return None
@@ -1058,7 +1070,12 @@ class TuiCallbackHandler:
         self._assistant_text_snapshot = snapshot + text
         return text
 
-    def _extract_text_from_assistant_message(self, message: dict[str, Any]) -> str | None:
+    def _extract_text_from_assistant_message(
+        self,
+        message: dict[str, Any],
+        *,
+        exclude_reasoning_wrappers: bool = False,
+    ) -> str | None:
         if message.get("role") != "assistant":
             return None
         raw_content = message.get("content")
@@ -1068,7 +1085,7 @@ class TuiCallbackHandler:
         for item in raw_content:
             if isinstance(item, dict) and (item.get("toolUse") or item.get("toolResult")):
                 continue
-            text = self._extract_text_from_result(item)
+            text = self._extract_text_from_result(item, exclude_reasoning_wrappers=exclude_reasoning_wrappers)
             if isinstance(text, str) and text:
                 chunks.append(text)
         if chunks:
@@ -1293,13 +1310,15 @@ class TuiCallbackHandler:
             extra_event_fields=extra_event_fields,
         )
         if reasoningText:
-            self._emit({"event": "thinking", "text": str(reasoningText)})
+            self._emit_reasoning_text(str(reasoningText))
         for chunk in reasoning_chunks:
-            if reasoningText and str(reasoningText).strip() == chunk:
-                continue
-            self._emit({"event": "thinking", "text": chunk})
+            self._emit_reasoning_text(chunk)
 
-        assistant_snapshot_text = self._extract_text_from_assistant_message(message)
+        suppress_reasoning_snapshot_text = bool(self._emitted_reasoning_texts_turn)
+        assistant_snapshot_text = self._extract_text_from_assistant_message(
+            message,
+            exclude_reasoning_wrappers=suppress_reasoning_snapshot_text,
+        )
         extra_snapshot_text = self._extract_text_from_extra_fields(extra_event_fields) if extra_event_fields else None
         transport_snapshot_text = (
             self._extract_transport_text_from_extra_fields(
@@ -1309,7 +1328,14 @@ class TuiCallbackHandler:
             if extra_event_fields and not data and not assistant_snapshot_text and not extra_snapshot_text
             else None
         )
-        result_text = self._extract_text_from_result(result) if result is not None else None
+        result_text = (
+            self._extract_text_from_result(
+                result,
+                exclude_reasoning_wrappers=suppress_reasoning_snapshot_text,
+            )
+            if result is not None
+            else None
+        )
 
         saw_text_before = self._saw_text_delta
         suppress_snapshot_reemit = should_emit_complete and saw_text_before

@@ -53,6 +53,11 @@ DEFAULT_MODEL_PRICING: dict[str, TokenPricing] = {
         output_per_1m=5.0,
         cached_input_per_1m=0.1,
     ),
+    "us.anthropic.claude-opus-4-6-v1": TokenPricing(
+        input_per_1m=15.0,
+        output_per_1m=75.0,
+        cached_input_per_1m=1.5,
+    ),
     "us.anthropic.claude-opus-4-6-v1:0": TokenPricing(
         input_per_1m=15.0,
         output_per_1m=75.0,

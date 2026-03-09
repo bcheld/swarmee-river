@@ -152,7 +152,7 @@ def test_default_model_config_bedrock_no_longer_emits_reasoning_fields_by_defaul
 
 
 def test_bedrock_model_capabilities_detects_current_claude_families():
-    adaptive = swarmee_river.utils.model_utils.bedrock_model_capabilities("us.anthropic.claude-opus-4-6-v1:0")
+    adaptive = swarmee_river.utils.model_utils.bedrock_model_capabilities("us.anthropic.claude-opus-4-6-v1")
     extended = swarmee_river.utils.model_utils.bedrock_model_capabilities(
         "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
     )

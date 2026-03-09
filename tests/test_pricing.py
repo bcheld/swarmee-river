@@ -21,7 +21,7 @@ def test_resolve_pricing_openai_gpt53_codex_uses_model_specific_rate() -> None:
 
 def test_resolve_pricing_bedrock_new_model_ids_have_defaults() -> None:
     haiku = resolve_pricing(provider="bedrock", model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0")
-    opus = resolve_pricing(provider="bedrock", model_id="us.anthropic.claude-opus-4-6-v1:0")
+    opus = resolve_pricing(provider="bedrock", model_id="us.anthropic.claude-opus-4-6-v1")
     assert haiku is not None
     assert opus is not None
     assert haiku.input_per_1m == 1.0
@@ -30,3 +30,9 @@ def test_resolve_pricing_bedrock_new_model_ids_have_defaults() -> None:
     assert opus.input_per_1m == 15.0
     assert opus.output_per_1m == 75.0
     assert opus.cached_input_per_1m == 1.5
+
+
+def test_resolve_pricing_bedrock_opus_legacy_suffix_still_resolves() -> None:
+    pricing = resolve_pricing(provider="bedrock", model_id="us.anthropic.claude-opus-4-6-v1:0")
+    assert pricing is not None
+    assert pricing.input_per_1m == 15.0

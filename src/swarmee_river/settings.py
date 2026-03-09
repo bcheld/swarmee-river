@@ -1613,7 +1613,7 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "deep": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-opus-4-6-v1:0",
+                            model_id="us.anthropic.claude-opus-4-6-v1",
                             display_name="Claude Opus 4.6 (deep)",
                             description="Adaptive Claude reasoning for harder analytics tasks.",
                             reasoning=ModelReasoningConfig(effort="high"),
@@ -1622,7 +1622,7 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "long": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-opus-4-6-v1:0",
+                            model_id="us.anthropic.claude-opus-4-6-v1",
                             display_name="Claude Opus 4.6 (long)",
                             description="Use for long-running Bedrock sessions and larger outputs.",
                             reasoning=ModelReasoningConfig(effort="high"),

@@ -103,7 +103,7 @@
             },
             "description": "Use when you need stronger reasoning.",
             "display_name": "Claude Opus 4.6 (deep)",
-            "model_id": "us.anthropic.claude-opus-4-6-v1:0",
+            "model_id": "us.anthropic.claude-opus-4-6-v1",
             "provider": "bedrock",
             "reasoning": {
               "effort": "high"
@@ -137,7 +137,7 @@
             },
             "description": "Use for long outputs and large refactors.",
             "display_name": "Claude Opus 4.6 (long)",
-            "model_id": "us.anthropic.claude-opus-4-6-v1:0",
+            "model_id": "us.anthropic.claude-opus-4-6-v1",
             "provider": "bedrock",
             "reasoning": {
               "effort": "high"

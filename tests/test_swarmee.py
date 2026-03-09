@@ -743,10 +743,108 @@ class TestTuiDaemonMode:
 
         assert run_query_spy.call_count == 0
         events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert any(event.get("event") == "ready" for event in events)
         error_events = [event for event in events if event.get("event") == "error"]
         assert error_events
         assert error_events[0].get("category") == "auth_error"
+        assert "connect aws" in str(error_events[0].get("message", "")).lower()
         assert any(event.get("event") == "turn_complete" and event.get("exit_status") == "error" for event in events)
+
+    def test_tui_daemon_query_bedrock_without_credentials_falls_back_to_copilot(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("GITHUB_TOKEN", "ghu-test-token")
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: False)
+        run_query_spy = mock.Mock(return_value=(None, "ok", True))
+        monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", run_query_spy)
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"query","text":"hello"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert run_query_spy.call_count == 1
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert any("falling back to github copilot" in str(event.get("text", "")).lower() for event in events)
+        assert not any(event.get("event") == "error" for event in events)
+        assert any(event.get("event") == "turn_complete" and event.get("exit_status") == "ok" for event in events)
+
+    def test_tui_daemon_skips_redundant_query_preflight_when_context_is_fresh(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SWARMEE_PREFLIGHT", "enabled")
+        calls: list[bool] = []
+        original_build_runtime = swarmee._build_agent_runtime
+
+        def _wrapped_build_runtime(*args, **kwargs):
+            runtime = original_build_runtime(*args, **kwargs)
+            original_refresh = runtime["refresh_query_context"]
+
+            def _tracked_refresh(*, interactive=True):
+                calls.append(bool(interactive))
+                return original_refresh(interactive=interactive)
+
+            runtime["refresh_query_context"] = _tracked_refresh
+            return runtime
+
+        run_query_spy = mock.Mock(return_value=(None, "ok", True))
+        monkeypatch.setattr(swarmee, "_build_agent_runtime", _wrapped_build_runtime)
+        monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", run_query_spy)
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: True)
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"query","text":"hello"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert run_query_spy.call_count == 1
+        assert calls == [True]
+
+    def test_tui_daemon_set_tier_invalidates_context_and_refreshes_once(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SWARMEE_PREFLIGHT", "enabled")
+        calls: list[bool] = []
+        original_build_runtime = swarmee._build_agent_runtime
+
+        def _wrapped_build_runtime(*args, **kwargs):
+            runtime = original_build_runtime(*args, **kwargs)
+            original_refresh = runtime["refresh_query_context"]
+
+            def _tracked_refresh(*, interactive=True):
+                calls.append(bool(interactive))
+                return original_refresh(interactive=interactive)
+
+            runtime["refresh_query_context"] = _tracked_refresh
+            return runtime
+
+        monkeypatch.setattr(swarmee, "_build_agent_runtime", _wrapped_build_runtime)
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: True)
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"set_tier","tier":"deep"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert calls == [True, True]
 
     def test_tui_daemon_query_continues_when_preflight_refresh_fails(
         self,
@@ -755,6 +853,7 @@ class TestTuiDaemonMode:
         mock_load_prompt,
         monkeypatch,
     ):
+        monkeypatch.setenv("SWARMEE_PREFLIGHT", "enabled")
         class _Snapshot:
             preflight_prompt_section = ""
             project_map_prompt_section = ""
@@ -771,7 +870,11 @@ class TestTuiDaemonMode:
         monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: True)
         monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
         monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
-        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"query","text":"hello"}\n{"cmd":"shutdown"}\n'))
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO('{"cmd":"set_context_sources","sources":[]}\n{"cmd":"query","text":"hello"}\n{"cmd":"shutdown"}\n'),
+        )
 
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
