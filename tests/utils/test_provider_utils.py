@@ -14,7 +14,7 @@ def test_resolve_model_provider_prefers_cli() -> None:
     assert notice is None
 
 
-def test_resolve_model_provider_falls_back_to_openai_when_bedrock_unavailable(monkeypatch) -> None:
+def test_resolve_model_provider_keeps_explicit_settings_provider_when_bedrock_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(provider_utils, "has_aws_credentials", lambda: False)
     monkeypatch.setattr(provider_utils, "has_openai_api_key", lambda: True)
 
@@ -23,8 +23,8 @@ def test_resolve_model_provider_falls_back_to_openai_when_bedrock_unavailable(mo
         env_provider=None,
         settings_provider="bedrock",
     )
-    assert provider == "openai"
-    assert notice is not None
+    assert provider == "bedrock"
+    assert notice is None
 
 
 def test_resolve_model_provider_keeps_explicit_env_provider(monkeypatch) -> None:
@@ -55,7 +55,21 @@ def test_normalize_provider_name_maps_aws_alias_to_bedrock() -> None:
     assert provider_utils.normalize_provider_name("amazon-bedrock") == "bedrock"
 
 
-def test_resolve_model_provider_falls_back_to_github_copilot_when_bedrock_unavailable(monkeypatch) -> None:
+def test_resolve_model_provider_auto_falls_back_to_openai_when_bedrock_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(provider_utils, "has_aws_credentials", lambda: False)
+    monkeypatch.setattr(provider_utils, "has_openai_api_key", lambda: True)
+    monkeypatch.setattr(provider_utils, "has_github_copilot_token", lambda: False)
+
+    provider, notice = provider_utils.resolve_model_provider(
+        cli_provider=None,
+        env_provider=None,
+        settings_provider=None,
+    )
+    assert provider == "openai"
+    assert notice is None
+
+
+def test_resolve_model_provider_auto_falls_back_to_github_copilot_when_bedrock_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(provider_utils, "has_aws_credentials", lambda: False)
     monkeypatch.setattr(provider_utils, "has_openai_api_key", lambda: False)
     monkeypatch.setattr(provider_utils, "has_github_copilot_token", lambda: True)
@@ -63,10 +77,10 @@ def test_resolve_model_provider_falls_back_to_github_copilot_when_bedrock_unavai
     provider, notice = provider_utils.resolve_model_provider(
         cli_provider=None,
         env_provider=None,
-        settings_provider="bedrock",
+        settings_provider=None,
     )
     assert provider == "github_copilot"
-    assert notice is not None
+    assert notice is None
 
 
 def test_has_github_copilot_token_reads_auth_store(tmp_path, monkeypatch) -> None:

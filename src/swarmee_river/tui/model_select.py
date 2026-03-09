@@ -92,6 +92,43 @@ def _model_option_model_id(
     return model_id
 
 
+def _configured_provider_tier_rows(
+    *,
+    settings: Any,
+) -> list[tuple[str, str, str | None]]:
+    rows: list[tuple[str, str, str | None]] = []
+    global_tier_names = [
+        str(name).strip().lower() for name in getattr(settings.models, "tiers", {}).keys() if str(name).strip()
+    ]
+    for provider_name in (
+        str(name).strip().lower() for name in getattr(settings.models, "providers", {}).keys() if str(name).strip()
+    ):
+        provider_cfg = settings.models.providers.get(provider_name)
+        tier_names: list[str] = []
+        seen: set[str] = set()
+        provider_tiers = getattr(provider_cfg, "tiers", {}) if provider_cfg is not None else {}
+        for tier_name in provider_tiers.keys():
+            normalized = str(tier_name).strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            tier_names.append(normalized)
+        for tier_name in global_tier_names:
+            if tier_name in seen:
+                continue
+            seen.add(tier_name)
+            tier_names.append(tier_name)
+        for tier_name in tier_names:
+            rows.append(
+                (
+                    provider_name,
+                    tier_name,
+                    _model_option_model_id(settings=settings, provider_name=provider_name, tier_name=tier_name),
+                )
+            )
+    return rows
+
+
 def model_select_options(
     *,
     provider_override: str | None = None,
@@ -126,17 +163,19 @@ def model_select_options(
     selected_tier = tier_override if tier_override is not None else settings.models.default_tier
     selected_provider = (selected_provider or "").strip().lower()
     selected_tier = (selected_tier or "").strip().lower()
-
-    provider_cfg = settings.models.providers.get(selected_provider)
-    tier_names = sorted(provider_cfg.tiers.keys()) if provider_cfg and provider_cfg.tiers else []
-
-    for tier_name in tier_names:
-        value = f"{selected_provider}|{tier_name}"
-        model_id = _model_option_model_id(settings=settings, provider_name=selected_provider, tier_name=tier_name)
+    for provider_name, tier_name, model_id in _configured_provider_tier_rows(settings=settings):
+        value = f"{provider_name}|{tier_name}"
         suffix = f" ({model_id})" if model_id else ""
-        options.append((f"{selected_provider}/{tier_name}{suffix}", value))
-        if tier_name == selected_tier:
+        options.append((f"{provider_name}/{tier_name}{suffix}", value))
+        if provider_name == selected_provider and tier_name == selected_tier:
             selected_value = value
+
+    explicit_value = (
+        f"{selected_provider}|{selected_tier}" if selected_provider and selected_tier and provider_override is not None else ""
+    )
+    if explicit_value and explicit_value not in {value for _label, value in options}:
+        options.insert(1, (f"{selected_provider}/{selected_tier} (selected)", explicit_value))
+        selected_value = explicit_value
 
     if provider_override is None and tier_override is None:
         selected_value = _MODEL_AUTO_VALUE
@@ -185,8 +224,8 @@ def choose_daemon_model_select_value(
 
     override_provider_name = (override_provider or "").strip().lower()
     override_tier_name = (override_tier or "").strip().lower()
-    if provider_name and override_provider_name == provider_name and override_tier_name:
-        override_value = f"{provider_name}|{override_tier_name}"
+    if override_provider_name and override_tier_name:
+        override_value = f"{override_provider_name}|{override_tier_name}"
         if override_value in available:
             return override_value
 
@@ -206,20 +245,23 @@ def daemon_model_select_options(
     override_tier: str | None = None,
 ) -> tuple[list[tuple[str, str]], str]:
     """Build model selector options for daemon-backed provider/tier metadata."""
-    provider_name = (provider or "").strip().lower()
-
     options: list[tuple[str, str]] = []
     for item in tiers:
         item_provider = str(item.get("provider", "")).strip().lower()
         item_tier = str(item.get("name", "")).strip().lower()
-        if not item_tier or item_provider != provider_name:
-            continue
-        if not bool(item.get("available", False)):
+        if not item_tier or not item_provider:
             continue
         model_id = str(item.get("model_id", "")).strip()
+        available = bool(item.get("available", False))
+        reason = str(item.get("reason", "")).strip()
         suffix = f" ({model_id})" if model_id else ""
         value = f"{item_provider}|{item_tier}"
-        options.append((f"{item_provider}/{item_tier}{suffix}", value))
+        if not available and reason:
+            options.append((f"{item_provider}/{item_tier}{suffix} [unavailable: {reason}]", value))
+        elif not available:
+            options.append((f"{item_provider}/{item_tier}{suffix} [unavailable]", value))
+        else:
+            options.append((f"{item_provider}/{item_tier}{suffix}", value))
 
     available_values = {value for _label, value in options}
 
@@ -232,7 +274,7 @@ def daemon_model_select_options(
         pending_provider, pending_tier = pending.split("|", 1)
         pending_provider = pending_provider.strip().lower()
         pending_tier = pending_tier.strip().lower()
-        if pending_provider == provider_name and pending_tier:
+        if pending_provider and pending_tier:
             options.insert(0, (f"{pending_provider}/{pending_tier} (pending)", pending))
             available_values.add(pending)
 
@@ -241,7 +283,7 @@ def daemon_model_select_options(
     override_value = (
         f"{override_provider_name}|{override_tier_name}" if override_provider_name and override_tier_name else ""
     )
-    if override_value and override_value not in available_values and override_provider_name == provider_name:
+    if override_value and override_value not in available_values:
         options.insert(0, (f"{override_provider_name}/{override_tier_name} (selected)", override_value))
         available_values.add(override_value)
 
@@ -249,7 +291,7 @@ def daemon_model_select_options(
         return [("No available tiers", _MODEL_LOADING_VALUE)], _MODEL_LOADING_VALUE
 
     selected_value = choose_daemon_model_select_value(
-        provider=provider_name,
+        provider=provider,
         tier=tier,
         option_values=[value for _label, value in options],
         pending_value=pending_value,

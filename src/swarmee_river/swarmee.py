@@ -621,9 +621,10 @@ def _build_resolved_invocation_state(
     resolved_state: dict[str, Any] = dict(invocation_state) if isinstance(invocation_state, dict) else {}
     sw_state = resolved_state.setdefault("swarmee", {})
     if isinstance(sw_state, dict):
+        current_provider = normalize_provider_name(getattr(model_manager, "current_provider", "") or selected_provider)
         sw_state.setdefault("runtime_environment", dict(runtime_environment))
         sw_state["tier"] = model_manager.current_tier
-        sw_state["provider"] = selected_provider
+        sw_state["provider"] = current_provider
         profile = settings.harness.tier_profiles.get(model_manager.current_tier)
         if profile is not None:
             sw_state["tool_profile"] = profile.to_dict()
@@ -636,7 +637,15 @@ def _build_resolved_invocation_state(
                     merged.update(str(item).strip() for item in existing if str(item).strip())
                 sw_state["plan_allowed_tools"] = sorted(merged)
         tiers = model_manager.list_tiers()
-        current = next((item for item in tiers if item.name == model_manager.current_tier), None)
+        current = next(
+            (
+                item
+                for item in tiers
+                if item.name == model_manager.current_tier
+                and normalize_provider_name(getattr(item, "provider", current_provider)) == current_provider
+            ),
+            None,
+        )
         if current is not None:
             sw_state["model_id"] = getattr(current, "model_id", None)
             sw_state["transport"] = getattr(current, "transport", None)
@@ -718,11 +727,20 @@ def _build_model_info_event_payload(
     tool_names: list[str] | None = None,
 ) -> dict[str, Any]:
     tiers = model_manager.list_tiers()
-    current = next((item for item in tiers if item.name == model_manager.current_tier), None)
+    current_provider = normalize_provider_name(getattr(model_manager, "current_provider", "") or selected_provider)
+    current = next(
+        (
+            item
+            for item in tiers
+            if item.name == model_manager.current_tier
+            and normalize_provider_name(getattr(item, "provider", current_provider)) == current_provider
+        ),
+        None,
+    )
     normalized_tool_names = sorted({str(name).strip() for name in (tool_names or []) if str(name).strip()})
     return {
         "event": "model_info",
-        "provider": current.provider if current is not None else selected_provider,
+        "provider": current.provider if current is not None else current_provider,
         "tier": model_manager.current_tier,
         "model_id": current.model_id if current is not None else None,
         "tool_names": normalized_tool_names,
@@ -1414,7 +1432,8 @@ def _build_agent_runtime(
         return None
 
     def _current_provider_name() -> str | None:
-        return _provider_for_tier_name(model_manager.current_tier)
+        provider = normalize_provider_name(getattr(model_manager, "current_provider", ""))
+        return provider or _provider_for_tier_name(model_manager.current_tier)
 
     def _resolve_sop_content(name: str) -> str | None:
         sop_name = name.strip()
@@ -2062,7 +2081,11 @@ def _build_agent_runtime(
         normalized_sources = _normalize_daemon_context_sources(next_context_sources)
 
         if requested_tier:
-            model_manager.set_tier(ctx.agent, requested_tier)
+            model_manager.set_selection(
+                ctx.agent,
+                provider_name=requested_provider or _current_provider_name(),
+                tier_name=requested_tier,
+            )
             agent_kwargs["model"] = ctx.agent.model
             _refresh_conversation_manager_for_current_tier()
             _refresh_query_context(interactive=True)
@@ -3409,6 +3432,7 @@ def main() -> None:
         raise SystemExit(1) from exc
 
     selected_provider = runtime["selected_provider"]
+    selection_is_auto = not bool(args.model_provider is not None or str(settings.models.provider or "").strip())
     provider_notice = runtime["provider_notice"]
     if provider_notice:
         if args.tui_daemon:
@@ -3444,9 +3468,7 @@ def main() -> None:
     _apply_bundle = runtime["apply_bundle"]
 
     def _active_runtime_provider_name() -> str:
-        tiers = model_manager.list_tiers()
-        current = next((item for item in tiers if item.name == model_manager.current_tier), None)
-        provider = current.provider if current is not None else selected_provider
+        provider = normalize_provider_name(getattr(model_manager, "current_provider", "") or selected_provider)
         normalized = normalize_provider_name(provider)
         if normalized:
             return normalized
@@ -3562,26 +3584,53 @@ def main() -> None:
             *,
             preferred_tier: str | None = None,
             warning_text: str | None = None,
+            allow_unavailable: bool = False,
         ) -> bool:
-            nonlocal model_manager, selected_provider
+            nonlocal selected_provider, selection_is_auto
             normalized = normalize_provider_name(provider)
             if not normalized:
                 return False
-            target_manager = SessionModelManager(settings, fallback_provider=normalized)
-            target_manager.set_fallback_config(args.model_config)
+            previous_provider = normalize_provider_name(getattr(model_manager, "current_provider", "") or selected_provider)
+            previous_default = normalize_provider_name(getattr(model_manager, "_default_provider", "") or previous_provider)
+            previous_fallback = normalize_provider_name(
+                getattr(model_manager, "_fallback_provider", "") or previous_provider
+            )
+            model_manager.current_provider = normalized
+            model_manager._default_provider = normalized
+            model_manager._fallback_provider = normalized
+            model_manager.set_fallback_config(args.model_config)
             target_tier = str(preferred_tier or model_manager.current_tier or settings.models.default_tier or "balanced")
             target_tier = target_tier.strip().lower() or "balanced"
-            available = {item.name for item in target_manager.list_tiers() if item.available}
-            if target_tier not in available:
-                if "balanced" in available:
+            known = {
+                item.name
+                for item in model_manager.list_tiers()
+                if normalize_provider_name(item.provider) == normalized
+            }
+            available = {
+                item.name
+                for item in model_manager.list_tiers()
+                if item.available and normalize_provider_name(item.provider) == normalized
+            }
+            tier_choices = known if allow_unavailable else available
+            if target_tier not in tier_choices:
+                if "balanced" in tier_choices:
                     target_tier = "balanced"
-                elif available:
-                    target_tier = sorted(available)[0]
+                elif tier_choices:
+                    target_tier = sorted(tier_choices)[0]
                 else:
+                    model_manager.current_provider = previous_provider
+                    model_manager._default_provider = previous_default
+                    model_manager._fallback_provider = previous_fallback
                     return False
-            target_manager.set_tier(ctx.agent, target_tier)
-            model_manager = target_manager
+            try:
+                model_manager.set_selection(ctx.agent, provider_name=normalized, tier_name=target_tier)
+            except Exception:
+                model_manager.current_provider = previous_provider
+                model_manager._default_provider = previous_default
+                model_manager._fallback_provider = previous_fallback
+                raise
             selected_provider = normalized
+            selection_is_auto = False
             agent_kwargs["model"] = ctx.agent.model
             _refresh_conversation_manager()
             _mark_query_context_stale(reason=f"provider switch to {normalized}")
@@ -3589,6 +3638,34 @@ def main() -> None:
                 _write_stdout_jsonl({"event": "warning", "text": warning_text})
             _write_stdout_jsonl(_current_model_info_event())
             return True
+
+        def _apply_runtime_model_selection(
+            *,
+            provider: str | None,
+            tier: str,
+            allow_unavailable: bool = False,
+        ) -> None:
+            nonlocal selected_provider, selection_is_auto
+            requested_provider = normalize_provider_name(provider or _active_runtime_provider_name() or selected_provider)
+            requested_tier = str(tier or "").strip().lower()
+            if not requested_provider or not requested_tier:
+                raise ValueError("Both provider and tier are required")
+            if requested_provider != _active_runtime_provider_name():
+                if not _switch_runtime_provider(
+                    requested_provider,
+                    preferred_tier=requested_tier,
+                    allow_unavailable=allow_unavailable,
+                ):
+                    raise ValueError(f"Unknown provider/tier selection: {requested_provider}/{requested_tier}")
+                return
+            model_manager.set_selection(ctx.agent, provider_name=requested_provider, tier_name=requested_tier)
+            selected_provider = requested_provider
+            selection_is_auto = False
+            agent_kwargs["model"] = ctx.agent.model
+            _refresh_conversation_manager()
+            _mark_query_context_stale(reason="set_model")
+            _refresh_query_context_guarded(interactive=True, phase="set_model")
+            _write_stdout_jsonl(_current_model_info_event())
 
         def _persist_messages_async(*, session_id: str, messages_snapshot: list[Any]) -> None:
             def _worker() -> None:
@@ -3724,8 +3801,13 @@ def main() -> None:
 
         def _next_available_tier() -> str | None:
             current = str(model_manager.current_tier or "").strip().lower()
+            current_provider = _active_runtime_provider_name()
             with contextlib.suppress(Exception):
-                tiers = [tier.name.strip().lower() for tier in model_manager.list_tiers() if tier.available]
+                tiers = [
+                    tier.name.strip().lower()
+                    for tier in model_manager.list_tiers()
+                    if tier.available and normalize_provider_name(tier.provider) == current_provider
+                ]
                 if current in tiers:
                     idx = tiers.index(current)
                     for candidate in tiers[idx + 1 :]:
@@ -3781,7 +3863,7 @@ def main() -> None:
                         )
                         _best_effort_retrieve(query_text, warn_on_error=False)
                         if _active_runtime_provider_name() == "bedrock" and not has_aws_credentials():
-                            if has_github_copilot_token() and _switch_runtime_provider(
+                            if selection_is_auto and has_github_copilot_token() and _switch_runtime_provider(
                                 "github_copilot",
                                 preferred_tier=model_manager.current_tier,
                                 warning_text=(
@@ -3792,7 +3874,7 @@ def main() -> None:
                                 continue
                             _write_stdout_jsonl(
                                 _build_tui_error_event(
-                                    "AWS credentials are unavailable for Bedrock and no OpenAI key is configured. "
+                                    "AWS credentials are unavailable for Bedrock. "
                                     "Run connect aws [profile] or configure another provider, then retry.",
                                     category_hint=ERROR_CATEGORY_AUTH_ERROR,
                                 )
@@ -3917,18 +3999,15 @@ def main() -> None:
                     _emit_turn_error("A query is already running", category_hint=ERROR_CATEGORY_FATAL)
                     continue
 
+                requested_provider = payload.get("provider")
                 requested_tier = payload.get("tier")
                 if isinstance(requested_tier, str) and requested_tier.strip():
                     try:
-                        model_manager.set_tier(ctx.agent, requested_tier.strip().lower())
-                        agent_kwargs["model"] = ctx.agent.model
-                        _refresh_conversation_manager()
-                        _mark_query_context_stale(reason="query tier switch")
-                        _refresh_query_context_guarded(
-                            interactive=True,
-                            phase="query tier switch",
+                        _apply_runtime_model_selection(
+                            provider=requested_provider if isinstance(requested_provider, str) else None,
+                            tier=requested_tier.strip().lower(),
+                            allow_unavailable=True,
                         )
-                        _write_stdout_jsonl(_current_model_info_event())
                     except Exception as e:
                         _emit_turn_error(str(e), category_hint=ERROR_CATEGORY_ESCALATABLE)
                         continue
@@ -4346,12 +4425,42 @@ def main() -> None:
                     )
                     continue
                 try:
-                    model_manager.set_tier(ctx.agent, tier.strip().lower())
-                    agent_kwargs["model"] = ctx.agent.model
-                    _refresh_conversation_manager()
-                    _mark_query_context_stale(reason="set_tier")
-                    _refresh_query_context_guarded(interactive=True, phase="set_tier")
-                    _write_stdout_jsonl(_current_model_info_event())
+                    _apply_runtime_model_selection(
+                        provider=_active_runtime_provider_name(),
+                        tier=tier.strip().lower(),
+                        allow_unavailable=True,
+                    )
+                except Exception as e:
+                    _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_ESCALATABLE))
+                continue
+
+            if cmd == "set_model":
+                provider = payload.get("provider")
+                tier = payload.get("tier")
+                if not isinstance(provider, str) or not provider.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event("set_model.provider is required", category_hint=ERROR_CATEGORY_FATAL)
+                    )
+                    continue
+                if not isinstance(tier, str) or not tier.strip():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event("set_model.tier is required", category_hint=ERROR_CATEGORY_FATAL)
+                    )
+                    continue
+                if _worker_is_running():
+                    _write_stdout_jsonl(
+                        _build_tui_error_event(
+                            "Cannot set model while a query is running",
+                            category_hint=ERROR_CATEGORY_FATAL,
+                        )
+                    )
+                    continue
+                try:
+                    _apply_runtime_model_selection(
+                        provider=provider.strip().lower(),
+                        tier=tier.strip().lower(),
+                        allow_unavailable=True,
+                    )
                 except Exception as e:
                     _write_stdout_jsonl(_build_tui_error_event(str(e), category_hint=ERROR_CATEGORY_ESCALATABLE))
                 continue

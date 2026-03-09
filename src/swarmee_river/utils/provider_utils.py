@@ -128,8 +128,8 @@ def resolve_model_provider(
 ) -> Tuple[str, Optional[str]]:
     """
     Resolve provider with safe fallback:
-    - Respect explicit CLI/env provider choice.
-    - If provider resolves to Bedrock but AWS credentials are missing:
+    - Respect explicit CLI/env/settings provider choice.
+    - If provider is auto-selected as Bedrock but AWS credentials are missing:
       - fall back to OpenAI when OPENAI_API_KEY is available
       - else fall back to GitHub Copilot when a Copilot token is available
     """
@@ -141,10 +141,10 @@ def resolve_model_provider(
         return cli, None
     if env:
         return env, None
+    if settings:
+        return settings, None
 
-    selected = settings or (
-        "openai" if has_openai_api_key() else "github_copilot" if has_github_copilot_token() else "bedrock"
-    )
+    selected = "openai" if has_openai_api_key() else "github_copilot" if has_github_copilot_token() else "bedrock"
     if selected == "bedrock" and not has_aws_credentials():
         if has_openai_api_key():
             return (

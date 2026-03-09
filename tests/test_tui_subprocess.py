@@ -43,7 +43,7 @@ def test_build_swarmee_daemon_cmd():
     assert command == [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"]
 
 
-def test_model_select_options_only_includes_configured_provider_tiers(monkeypatch):
+def test_model_select_options_lists_all_configured_provider_tiers(monkeypatch):
     class _Tier:
         def __init__(self, model_id: str) -> None:
             self.model_id = model_id
@@ -81,9 +81,50 @@ def test_model_select_options_only_includes_configured_provider_tiers(monkeypatc
 
     assert "__auto__" in values
     assert "openai|balanced" in values
-    assert "openai|fast" not in values
-    assert "bedrock|balanced" not in values
+    assert "bedrock|balanced" in values
+    assert "bedrock|fast" in values
+    assert "openai|fast" in values
     assert selected == "__auto__"
+
+
+def test_model_select_options_keeps_explicit_bedrock_override_selected(monkeypatch):
+    class _Tier:
+        def __init__(self, model_id: str) -> None:
+            self.model_id = model_id
+
+    class _Provider:
+        def __init__(self, tiers: dict[str, _Tier]) -> None:
+            self.tiers = tiers
+
+    class _Models:
+        def __init__(self) -> None:
+            self.provider = None
+            self.default_tier = "balanced"
+            self.providers = {
+                "openai": _Provider({"balanced": _Tier("gpt-5-mini")}),
+                "bedrock": _Provider({"deep": _Tier("anthropic.claude-sonnet")}),
+            }
+            self.tiers = {}
+
+    class _Settings:
+        def __init__(self) -> None:
+            self.models = _Models()
+
+    import swarmee_river.settings as settings_module
+    import swarmee_river.utils.provider_utils as provider_utils_module
+
+    monkeypatch.setattr(settings_module, "load_settings", lambda: _Settings())
+    monkeypatch.setattr(
+        provider_utils_module,
+        "resolve_model_provider",
+        lambda **kwargs: (kwargs.get("cli_provider") or "openai", None),
+    )
+
+    options, selected = tui_app.model_select_options(provider_override="bedrock", tier_override="deep")
+    values = [value for _label, value in options]
+
+    assert "bedrock|deep" in values
+    assert selected == "bedrock|deep"
 
 
 def test_choose_daemon_model_select_value_prefers_pending_then_daemon():
@@ -433,6 +474,30 @@ def test_daemon_model_select_options_injects_override_when_missing_from_availabl
     assert "openai|deep" in values
     assert selected == "openai|deep"
     assert options[0][0].endswith("(selected)")
+
+
+def test_daemon_model_select_options_includes_other_provider_unavailable_rows():
+    options, selected = tui_app.daemon_model_select_options(
+        provider="openai",
+        tier="balanced",
+        tiers=[
+            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5-mini"},
+            {
+                "provider": "bedrock",
+                "name": "deep",
+                "available": False,
+                "model_id": "us.anthropic.claude-sonnet",
+                "reason": "AWS credentials missing/expired",
+            },
+        ],
+        override_provider="bedrock",
+        override_tier="deep",
+    )
+    labels = [label for label, _value in options]
+    values = [value for _label, value in options]
+    assert "bedrock|deep" in values
+    assert any("[unavailable:" in label for label in labels)
+    assert selected == "bedrock|deep"
 
 
 def test_choose_model_summary_parts_prefers_pending_until_confirmed():

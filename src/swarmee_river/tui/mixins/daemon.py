@@ -388,11 +388,14 @@ class DaemonMixin:
         self._current_assistant_timestamp = self._turn_timestamp()
         self._assistant_placeholder_written = False
         desired_tier = ""
+        desired_provider = ""
         pending_value = (self.state.daemon.pending_model_select_value or "").strip().lower()
         if "|" in pending_value:
-            _pending_provider, pending_tier = pending_value.split("|", 1)
+            pending_provider, pending_tier = pending_value.split("|", 1)
+            desired_provider = pending_provider.strip().lower()
             desired_tier = pending_tier.strip().lower()
         if not desired_tier:
+            desired_provider = (self.state.daemon.model_provider_override or "").strip().lower()
             desired_tier = (self.state.daemon.model_tier_override or "").strip().lower()
         if not desired_tier:
             with contextlib.suppress(Exception):
@@ -402,13 +405,16 @@ class DaemonMixin:
 
                 parsed = parse_model_select_value(selected_value)
                 if parsed is not None:
-                    _provider_name, parsed_tier = parsed
+                    provider_name, parsed_tier = parsed
+                    desired_provider = provider_name.strip().lower()
                     desired_tier = parsed_tier.strip().lower()
         command: dict[str, Any] = {
             "cmd": "query",
             "text": prompt,
             "auto_approve": bool(auto_approve),
         }
+        if desired_provider:
+            command["provider"] = desired_provider
         if desired_tier:
             command["tier"] = desired_tier
         if mode:

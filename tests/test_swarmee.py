@@ -639,6 +639,31 @@ class TestTuiDaemonMode:
         assert len(model_events) >= 2
         assert any(event.get("tier") == "deep" for event in model_events)
 
+    def test_tui_daemon_set_model_switches_provider_and_emits_updated_model_info(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("openai", None))
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: False)
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO('{"cmd":"set_model","provider":"bedrock","tier":"deep"}\n{"cmd":"shutdown"}\n'),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        model_events = [event for event in events if event.get("event") == "model_info"]
+        assert len(model_events) >= 2
+        assert any(event.get("provider") == "bedrock" and event.get("tier") == "deep" for event in model_events)
+
     def test_tui_daemon_applies_project_env_overrides_before_loading_settings(
         self,
         mock_agent,
@@ -757,9 +782,12 @@ class TestTuiDaemonMode:
         mock_load_prompt,
         monkeypatch,
     ):
+        from swarmee_river.settings import default_settings_template
+
         monkeypatch.setenv("GITHUB_TOKEN", "ghu-test-token")
         monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
         monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: False)
+        monkeypatch.setattr(swarmee, "load_settings", lambda *_args, **_kwargs: default_settings_template())
         run_query_spy = mock.Mock(return_value=(None, "ok", True))
         monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", run_query_spy)
         monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
@@ -774,6 +802,62 @@ class TestTuiDaemonMode:
         assert any("falling back to github copilot" in str(event.get("text", "")).lower() for event in events)
         assert not any(event.get("event") == "error" for event in events)
         assert any(event.get("event") == "turn_complete" and event.get("exit_status") == "ok" for event in events)
+
+    def test_tui_daemon_query_explicit_bedrock_selection_switches_provider_before_invocation(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("openai", None))
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: True)
+        run_query_spy = mock.Mock(return_value=(None, "ok", True))
+        monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", run_query_spy)
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO('{"cmd":"query","text":"hello","provider":"bedrock","tier":"deep"}\n{"cmd":"shutdown"}\n'),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert run_query_spy.call_count == 1
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert any(event.get("event") == "model_info" and event.get("provider") == "bedrock" for event in events)
+        assert any(event.get("event") == "turn_complete" and event.get("exit_status") == "ok" for event in events)
+
+    def test_tui_daemon_query_explicit_bedrock_without_credentials_does_not_fall_back_to_copilot(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("GITHUB_TOKEN", "ghu-test-token")
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("openai", None))
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: False)
+        run_query_spy = mock.Mock(return_value=(None, "ok", True))
+        monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", run_query_spy)
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO('{"cmd":"query","text":"hello","provider":"bedrock","tier":"deep"}\n{"cmd":"shutdown"}\n'),
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert run_query_spy.call_count == 0
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        assert any(event.get("event") == "error" and event.get("category") == "auth_error" for event in events)
+        assert not any("falling back to github copilot" in str(event.get("text", "")).lower() for event in events)
+        assert not any("openai_api_key" in str(event.get("message", "")).lower() for event in events)
 
     def test_tui_daemon_skips_redundant_query_preflight_when_context_is_fresh(
         self,

@@ -52,11 +52,27 @@ class SessionModelManager:
         chosen_provider = normalize_provider_name(fallback_provider or settings.models.provider or "bedrock")
         self._fallback_provider = chosen_provider
         self._default_provider = chosen_provider
+        self.current_provider: str = chosen_provider
         self._fallback_config: dict[str, Any] | None = None
         self.current_tier: str = settings.models.default_tier.strip().lower() or "balanced"
         self.auto_escalation_enabled: bool = settings.models.auto_escalation.enabled
         self.max_escalations_per_task: int = max(0, settings.models.auto_escalation.max_escalations_per_task)
         self._auto_escalation_order: list[str] = list(settings.models.auto_escalation.order)
+
+    def _provider_names(self) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for candidate in (
+            self.current_provider,
+            self._default_provider,
+            *(str(name).strip().lower() for name in self._settings.models.providers.keys() if str(name).strip()),
+        ):
+            provider = normalize_provider_name(candidate)
+            if not provider or provider in seen:
+                continue
+            seen.add(provider)
+            ordered.append(provider)
+        return ordered
 
     def _available_tiers_for_provider(self, provider_name: str) -> list[str]:
         provider_name = normalize_provider_name(provider_name)
@@ -92,64 +108,71 @@ class SessionModelManager:
 
     def list_tiers(self) -> list[TierStatus]:
         out: list[TierStatus] = []
-        for name in self._available_tiers_for_provider(self._default_provider):
-            tier = self._resolve_tier(name)
-            effective_model_id = self._effective_model_id(tier, tier_name=name)
-            available, reason = self._is_tier_available(tier)
-            capabilities = (
-                model_utils.bedrock_model_capabilities(effective_model_id)
-                if tier.provider == "bedrock"
-                else None
-            )
-            reasoning_effort = tier.reasoning.effort if tier.reasoning is not None else None
-            reasoning_mode = capabilities.reasoning_mode if capabilities is not None else None
-            if tier.provider == "openai" and not model_utils.openai_model_supports_responses_reasoning(
-                effective_model_id
-            ):
-                reasoning_effort = None
-                reasoning_mode = "none"
-            out.append(
-                TierStatus(
-                    name=name,
-                    provider=tier.provider,
-                    model_id=effective_model_id,
-                    display_name=tier.display_name,
-                    description=tier.description,
-                    transport=tier.transport,
-                    reasoning_effort=reasoning_effort,
-                    tooling_mode=tier.tooling.mode if tier.tooling is not None else None,
-                    tooling_discovery=tier.tooling.discovery if tier.tooling is not None else None,
-                    context_strategy=tier.context.strategy if tier.context is not None else None,
-                    context_compaction=tier.context.compaction if tier.context is not None else None,
-                    reasoning_mode=reasoning_mode,
-                    supports_guardrails=capabilities.supports_guardrails if capabilities is not None else None,
-                    supports_cache_tools=capabilities.supports_cache_tools if capabilities is not None else None,
-                    supports_forced_tool_with_reasoning=(
-                        capabilities.supports_forced_tool_with_reasoning if capabilities is not None else None
-                    ),
-                    available=available,
-                    reason=reason,
+        for provider_name in self._provider_names():
+            for name in self._available_tiers_for_provider(provider_name):
+                tier = self._resolve_tier(name, provider_name=provider_name)
+                effective_model_id = self._effective_model_id(tier, tier_name=name)
+                available, reason = self._is_tier_available(tier)
+                capabilities = (
+                    model_utils.bedrock_model_capabilities(effective_model_id)
+                    if tier.provider == "bedrock"
+                    else None
                 )
-            )
+                reasoning_effort = tier.reasoning.effort if tier.reasoning is not None else None
+                reasoning_mode = capabilities.reasoning_mode if capabilities is not None else None
+                if tier.provider == "openai" and not model_utils.openai_model_supports_responses_reasoning(
+                    effective_model_id
+                ):
+                    reasoning_effort = None
+                    reasoning_mode = "none"
+                out.append(
+                    TierStatus(
+                        name=name,
+                        provider=tier.provider,
+                        model_id=effective_model_id,
+                        display_name=tier.display_name,
+                        description=tier.description,
+                        transport=tier.transport,
+                        reasoning_effort=reasoning_effort,
+                        tooling_mode=tier.tooling.mode if tier.tooling is not None else None,
+                        tooling_discovery=tier.tooling.discovery if tier.tooling is not None else None,
+                        context_strategy=tier.context.strategy if tier.context is not None else None,
+                        context_compaction=tier.context.compaction if tier.context is not None else None,
+                        reasoning_mode=reasoning_mode,
+                        supports_guardrails=capabilities.supports_guardrails if capabilities is not None else None,
+                        supports_cache_tools=capabilities.supports_cache_tools if capabilities is not None else None,
+                        supports_forced_tool_with_reasoning=(
+                            capabilities.supports_forced_tool_with_reasoning if capabilities is not None else None
+                        ),
+                        available=available,
+                        reason=reason,
+                    )
+                )
         return out
 
     def set_auto_escalation(self, enabled: bool) -> None:
         self.auto_escalation_enabled = enabled
 
     def set_tier(self, agent: Any, tier_name: str) -> None:
+        self.set_selection(agent, provider_name=self.current_provider, tier_name=tier_name)
+
+    def set_selection(self, agent: Any, *, provider_name: str | None, tier_name: str) -> None:
+        provider = normalize_provider_name(provider_name or self.current_provider or self._default_provider)
         tier_name = (tier_name or "").strip().lower()
-        available_tiers = self._available_tiers_for_provider(self._default_provider)
+        available_tiers = self._available_tiers_for_provider(provider)
         if not tier_name or tier_name not in set(available_tiers):
             raise ValueError(f"Unknown tier: {tier_name}. Available tiers: {', '.join(available_tiers)}")
 
-        model = self._build_model_for_tier(tier_name)
+        model = self._build_model_for_tier(tier_name, provider_name=provider)
         agent.model = model
+        self.current_provider = provider
         self.current_tier = tier_name
 
-    def build_model(self, tier_name: str | None = None) -> Model:
+    def build_model(self, tier_name: str | None = None, *, provider_name: str | None = None) -> Model:
         """Build a model for the given tier (or current tier) without mutating an agent."""
         resolved = (tier_name or self.current_tier or "balanced").strip().lower()
-        return self._build_model_for_tier(resolved)
+        provider = normalize_provider_name(provider_name or self.current_provider or self._default_provider)
+        return self._build_model_for_tier(resolved, provider_name=provider)
 
     def maybe_escalate(self, agent: Any, *, attempted: set[str]) -> bool:
         """Escalate to the next tier if possible. Returns True if a switch occurred."""
@@ -164,22 +187,22 @@ class SessionModelManager:
         except ValueError:
             return False
 
-        available_tiers = set(self._available_tiers_for_provider(self._default_provider))
+        available_tiers = set(self._available_tiers_for_provider(self.current_provider))
         for next_tier in ordered[idx + 1 :]:
             if next_tier not in available_tiers:
                 continue
             if next_tier in attempted:
                 continue
             try:
-                self.set_tier(agent, next_tier)
+                self.set_selection(agent, provider_name=self.current_provider, tier_name=next_tier)
                 return True
             except Exception:
                 attempted.add(next_tier)
                 continue
         return False
 
-    def _build_model_for_tier(self, tier_name: str) -> Model:
-        tier = self._resolve_tier(tier_name)
+    def _build_model_for_tier(self, tier_name: str, *, provider_name: str | None = None) -> Model:
+        tier = self._resolve_tier(tier_name, provider_name=provider_name)
 
         provider = normalize_provider_name(tier.provider)
         if provider not in {"bedrock", "openai", "ollama", "github_copilot"}:
@@ -226,29 +249,47 @@ class SessionModelManager:
         return model_utils.load_model(model_path, config)
 
     def current_context_behavior(self, tier_name: str | None = None) -> ModelContextBehavior:
-        tier = self._resolve_tier((tier_name or self.current_tier or "balanced").strip().lower())
+        tier = self._resolve_tier(
+            (tier_name or self.current_tier or "balanced").strip().lower(),
+            provider_name=self.current_provider,
+        )
         return tier.context or ModelContextBehavior()
 
     def current_reasoning_config(self, tier_name: str | None = None) -> ModelReasoningConfig:
-        tier = self._resolve_tier((tier_name or self.current_tier or "balanced").strip().lower())
+        tier = self._resolve_tier(
+            (tier_name or self.current_tier or "balanced").strip().lower(),
+            provider_name=self.current_provider,
+        )
         return tier.reasoning or ModelReasoningConfig()
 
     def current_tooling_config(self, tier_name: str | None = None) -> ModelToolingConfig:
-        tier = self._resolve_tier((tier_name or self.current_tier or "balanced").strip().lower())
+        tier = self._resolve_tier(
+            (tier_name or self.current_tier or "balanced").strip().lower(),
+            provider_name=self.current_provider,
+        )
         return tier.tooling or ModelToolingConfig()
 
-    def _resolve_tier(self, tier_name: str) -> ModelTier:
+    def _resolve_tier(self, tier_name: str, provider_name: str | None = None) -> ModelTier:
         tier_name = (tier_name or "").strip().lower()
         global_override = self._settings.models.tiers.get(tier_name)
 
-        provider = self._default_provider
-        if global_override and global_override.provider and global_override.provider.strip():
+        provider = normalize_provider_name(provider_name or self.current_provider or self._default_provider)
+        if (
+            not provider_name
+            and global_override
+            and global_override.provider
+            and global_override.provider.strip()
+        ):
             provider = normalize_provider_name(global_override.provider)
 
         provider_tier = self._provider_tier(provider, tier_name)
         resolved = provider_tier
         if global_override:
             resolved = self._merge_tiers(resolved, global_override, default_provider=provider)
+            if provider_name:
+                resolved_dict = resolved.to_dict()
+                resolved_dict["provider"] = provider
+                resolved = ModelTier.from_dict(resolved_dict, default_provider=provider)
 
         # Ensure provider is always set.
         if not resolved.provider:

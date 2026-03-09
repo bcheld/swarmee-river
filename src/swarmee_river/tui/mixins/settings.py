@@ -1300,8 +1300,11 @@ class SettingsMixin:
             and self.state.daemon.proc.poll() is None
             and not self.state.daemon.query_active
         ):
-            if not send_daemon_command(self.state.daemon.proc, {"cmd": "set_tier", "tier": requested_tier}):
-                self._write_transcript_line("[model] failed to send tier change to daemon.")
+            if not send_daemon_command(
+                self.state.daemon.proc,
+                {"cmd": "set_model", "provider": requested_provider, "tier": requested_tier},
+            ):
+                self._write_transcript_line("[model] failed to send model change to daemon.")
             else:
                 self.state.daemon.pending_model_select_value = f"{requested_provider}|{requested_tier}"
         if self._status_bar is not None:
@@ -1412,9 +1415,12 @@ class SettingsMixin:
                     (self.state.daemon.model_provider_override or self.state.daemon.provider or "").strip().lower()
                 )
                 requested_tier = tier.strip().lower()
-                if not send_daemon_command(self.state.daemon.proc, {"cmd": "set_tier", "tier": tier}):
+                if not send_daemon_command(
+                    self.state.daemon.proc,
+                    {"cmd": "set_model", "provider": requested_provider, "tier": tier},
+                ):
                     self.state.daemon.pending_model_select_value = None
-                    self._write_transcript_line("[model] failed to send tier change to daemon.")
+                    self._write_transcript_line("[model] failed to send model change to daemon.")
                 elif requested_provider and requested_tier:
                     self.state.daemon.pending_model_select_value = f"{requested_provider}|{requested_tier}"
             self._write_transcript_line(self._current_model_summary())
