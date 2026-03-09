@@ -18,8 +18,8 @@ from swarmee_river.tui.transport import (
 
 _BROKER_STARTUP_TIMEOUT_S = 6.0
 _BROKER_STARTUP_TIMEOUT_WINDOWS_S = 20.0
-_BROKER_ATTACH_ATTEMPTS_WINDOWS = 6
-_BROKER_ATTACH_RETRY_DELAY_S = 0.35
+_BROKER_ATTACH_ATTEMPTS_WINDOWS = 12
+_BROKER_ATTACH_RETRY_DELAY_S = 0.5
 
 
 def _is_retryable_broker_connect_error(exc: Exception) -> bool:
@@ -188,6 +188,7 @@ class DaemonMixin:
         self._write_transcript_line("[daemon] failed to send shutdown command.")
 
     def _spawn_daemon(self, *, restart: bool = False) -> None:
+        from swarmee_river.runtime_service.client import shutdown_runtime_broker
         from swarmee_river.tui.transport import spawn_swarmee_daemon
 
         self.state.daemon.is_shutting_down = False
@@ -249,6 +250,8 @@ class DaemonMixin:
 
             if daemon is None:
                 try:
+                    with contextlib.suppress(Exception):
+                        shutdown_runtime_broker(cwd=cwd)
                     daemon_proc = spawn_swarmee_daemon(
                         session_id=requested_session_id,
                         env_overrides=env_overrides,

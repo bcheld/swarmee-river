@@ -184,6 +184,8 @@ def ensure_runtime_broker(
         }
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
+        elif os.name == "nt":
+            popen_kwargs["creationflags"] = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         try:
             process = subprocess.Popen(
                 cmd,

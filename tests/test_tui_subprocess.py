@@ -1095,11 +1095,18 @@ def test_spawn_daemon_retries_windows_broker_attach_before_fallback(monkeypatch,
         spawn_calls.append({"session_id": session_id, "env_overrides": dict(env_overrides or {})})
         raise AssertionError("local daemon fallback should not run when broker attach succeeds during retries")
 
+    shutdown_calls: list[dict[str, object]] = []
+
+    def _fake_shutdown_runtime_broker(*, cwd=None, timeout_s=6.0):
+        shutdown_calls.append({"cwd": cwd, "timeout_s": timeout_s})
+        return True
+
     monkeypatch.setattr(daemon_mixin, "_is_windows_platform", lambda: True)
     monkeypatch.setattr(daemon_mixin, "ensure_runtime_broker", _fake_ensure_runtime_broker)
     monkeypatch.setattr(daemon_mixin._SocketTransport, "connect", classmethod(_fake_connect))
     monkeypatch.setattr(daemon_mixin.threading, "Thread", _FakeThread)
     monkeypatch.setattr(daemon_mixin.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr("swarmee_river.runtime_service.client.shutdown_runtime_broker", _fake_shutdown_runtime_broker)
     monkeypatch.setattr(transport, "spawn_swarmee_daemon", _fake_spawn_swarmee_daemon)
 
     harness = _Harness()
@@ -1110,6 +1117,7 @@ def test_spawn_daemon_retries_windows_broker_attach_before_fallback(monkeypatch,
     assert len(connect_calls) == 3
     assert connect_calls[0]["env_overrides"] == {"AWS_PROFILE": "ds-pr"}
     assert spawn_calls == []
+    assert shutdown_calls == []
     assert isinstance(harness.state.daemon.proc, tui_app._SocketTransport)
     assert harness.saved is True
 
@@ -1187,11 +1195,18 @@ def test_spawn_daemon_windows_falls_back_once_after_retry_exhaustion(monkeypatch
         spawn_calls.append({"session_id": session_id, "env_overrides": dict(env_overrides or {})})
         return _FakeProc()
 
+    shutdown_calls: list[dict[str, object]] = []
+
+    def _fake_shutdown_runtime_broker(*, cwd=None, timeout_s=6.0):
+        shutdown_calls.append({"cwd": cwd, "timeout_s": timeout_s})
+        return True
+
     monkeypatch.setattr(daemon_mixin, "_is_windows_platform", lambda: True)
     monkeypatch.setattr(daemon_mixin, "ensure_runtime_broker", _fake_ensure_runtime_broker)
     monkeypatch.setattr(daemon_mixin._SocketTransport, "connect", classmethod(_fake_connect))
     monkeypatch.setattr(daemon_mixin.threading, "Thread", _FakeThread)
     monkeypatch.setattr(daemon_mixin.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr("swarmee_river.runtime_service.client.shutdown_runtime_broker", _fake_shutdown_runtime_broker)
     monkeypatch.setattr(transport, "spawn_swarmee_daemon", _fake_spawn_swarmee_daemon)
 
     harness = _Harness()
@@ -1199,7 +1214,89 @@ def test_spawn_daemon_windows_falls_back_once_after_retry_exhaustion(monkeypatch
 
     assert connect_calls == daemon_mixin._BROKER_ATTACH_ATTEMPTS_WINDOWS
     assert len(spawn_calls) == 1
+    assert len(shutdown_calls) == 1
     assert spawn_calls[0]["env_overrides"] == {"AWS_PROFILE": "ds-pr", "AWS_REGION": "us-east-1"}
+    assert isinstance(harness.state.daemon.proc, transport._SubprocessTransport)
+    assert harness.saved is True
+
+
+def test_spawn_daemon_windows_fallback_continues_when_broker_shutdown_raises(monkeypatch, tmp_path):
+    import swarmee_river.tui.mixins.daemon as daemon_mixin
+    import swarmee_river.tui.transport as transport
+
+    class _FakeThread:
+        def __init__(self, *args, **kwargs) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
+        def start(self) -> None:
+            return None
+
+    class _FakeProc:
+        pid = 778
+        stdin = None
+        stdout = None
+
+        def poll(self) -> int | None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            _ = timeout
+            return 0
+
+    class _Harness(DaemonMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    is_shutting_down=False,
+                    proc=None,
+                    session_id="sess-3",
+                    ready=False,
+                    pending_model_select_value=None,
+                    runner_thread=None,
+                )
+            )
+            self._test_transport_factory = None
+            self._context_sources = []
+            self._active_sop_names = []
+            self.messages: list[str] = []
+            self.saved = False
+
+        def _model_env_overrides(self) -> dict[str, str]:
+            return {"AWS_PROFILE": "ds-pr"}
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.messages.append(text)
+
+        def _save_session(self) -> None:
+            self.saved = True
+
+        def _stream_daemon_output(self, proc) -> None:  # noqa: ANN001
+            _ = proc
+            return None
+
+    monkeypatch.setattr(daemon_mixin, "_is_windows_platform", lambda: True)
+    monkeypatch.setattr(daemon_mixin, "ensure_runtime_broker", lambda **_kwargs: tmp_path / "runtime.json")
+    monkeypatch.setattr(
+        daemon_mixin._SocketTransport,
+        "connect",
+        classmethod(lambda cls, **kwargs: (_ for _ in ()).throw(ConnectionRefusedError("still booting"))),
+    )
+    monkeypatch.setattr(daemon_mixin.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(daemon_mixin.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        "swarmee_river.runtime_service.client.shutdown_runtime_broker",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("shutdown failed")),
+    )
+    monkeypatch.setattr(
+        transport,
+        "spawn_swarmee_daemon",
+        lambda **_kwargs: _FakeProc(),
+    )
+
+    harness = _Harness()
+    harness._spawn_daemon()
+
     assert isinstance(harness.state.daemon.proc, transport._SubprocessTransport)
     assert harness.saved is True
 
@@ -3199,6 +3296,36 @@ def test_spawn_swarmee_daemon_configures_subprocess(monkeypatch):
     assert env["SWARMEE_MODEL_TIER"] == "fast"
     assert env["SWARMEE_TUI_EVENTS"] == "1"
     assert env["SWARMEE_LOG_EVENTS"] == "1"
+
+
+def test_spawn_swarmee_daemon_windows_sets_creationflags(monkeypatch):
+    import swarmee_river.tui.transport as transport
+
+    captured: dict[str, object] = {}
+    fake_proc = object()
+    monkeypatch.setattr(tui_app.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+
+    def _fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return fake_proc
+
+    class _OsModule:
+        name = "nt"
+        environ: dict[str, str] = {}
+
+    proc = transport._spawn_swarmee_process(
+        [sys.executable, "-u", "-m", "swarmee_river.swarmee", "--tui-daemon"],
+        session_id="abc123",
+        popen=_fake_popen,
+        subprocess_module=tui_app.subprocess,
+        os_module=_OsModule,
+    )
+
+    assert proc is fake_proc
+    kwargs = captured["kwargs"]
+    assert kwargs["creationflags"] == 0x200
+    assert "start_new_session" not in kwargs
     from swarmee_river.tui.widgets import _format_tool_input
 
     result = _format_tool_input("shell", {"command": "git status", "cwd": "/tmp"})

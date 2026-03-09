@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import signal
 import sys
@@ -95,6 +96,45 @@ def test_ensure_runtime_broker_spawns_when_missing(monkeypatch: pytest.MonkeyPat
         assert command[:4] == [sys.executable, "-u", "-m", "swarmee_river.swarmee"]
         assert command[4:6] == ["serve", "--state-dir"]
         assert str(tmp_path / ".swarmee") in {str(item) for item in command}
+    finally:
+        set_state_dir_override(None)
+
+
+def test_ensure_runtime_broker_windows_sets_creationflags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import swarmee_river.runtime_service.client as client_module
+
+    set_state_dir_override(tmp_path / ".swarmee", cwd=tmp_path)
+    reachable = iter([False, False, True])
+    monkeypatch.setattr(client_module, "_discovery_is_reachable", lambda _path: next(reachable))
+    monkeypatch.setattr(client_module.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+
+    class _FakeProc:
+        returncode = None
+
+        def poll(self) -> int | None:
+            return None
+
+    spawned: dict[str, object] = {}
+
+    def _fake_popen(cmd: list[str], **kwargs: object) -> _FakeProc:
+        spawned["cmd"] = cmd
+        spawned["kwargs"] = kwargs
+        return _FakeProc()
+
+    class _OsModule:
+        name = "nt"
+        environ = client_module.os.environ
+
+    monkeypatch.setattr(client_module, "os", _OsModule)
+    monkeypatch.setattr(client_module.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(client_module, "_runtime_start_lock", lambda **_kwargs: contextlib.nullcontext())
+
+    try:
+        discovery = ensure_runtime_broker(cwd=tmp_path, timeout_s=1.0, poll_interval_s=0.01)
+        assert discovery == runtime_discovery_path(cwd=tmp_path)
+        kwargs = spawned["kwargs"]
+        assert kwargs["creationflags"] == 0x200
+        assert "start_new_session" not in kwargs
     finally:
         set_state_dir_override(None)
 

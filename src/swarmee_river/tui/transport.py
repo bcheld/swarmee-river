@@ -303,20 +303,23 @@ def _spawn_swarmee_process(
     env_builder: Callable[..., dict[str, str]] = _build_swarmee_subprocess_env,
 ) -> subprocess.Popen[str]:
     env = env_builder(session_id=session_id, env_overrides=env_overrides, os_module=os_module)
-    return popen(
-        command,
-        stdin=subprocess_module.PIPE,
-        stdout=subprocess_module.PIPE,
-        stderr=subprocess_module.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        env=env,
-        # Isolate child subprocesses from the interactive terminal session to
-        # prevent terminal-title churn while tools (git/rg/etc.) execute.
-        start_new_session=True,
-    )
+    popen_kwargs: dict[str, Any] = {
+        "stdin": subprocess_module.PIPE,
+        "stdout": subprocess_module.PIPE,
+        "stderr": subprocess_module.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "bufsize": 1,
+        "env": env,
+    }
+    # Isolate child subprocesses from the interactive terminal session to
+    # prevent terminal-title churn while tools (git/rg/etc.) execute.
+    if os_module.name == "nt":
+        popen_kwargs["creationflags"] = int(getattr(subprocess_module, "CREATE_NEW_PROCESS_GROUP", 0))
+    else:
+        popen_kwargs["start_new_session"] = True
+    return popen(command, **popen_kwargs)
 
 
 def spawn_swarmee(
