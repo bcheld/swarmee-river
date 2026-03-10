@@ -35,6 +35,18 @@ def test_file_read_reads_with_line_numbers(tmp_path: Path) -> None:
     assert "2 | line2" in text
 
 
+def test_file_read_uses_cache_friendly_defaults(tmp_path: Path) -> None:
+    body = "\n".join(f"line {idx} {'x' * 40}" for idx in range(1, 301))
+    (tmp_path / "big.txt").write_text(body, encoding="utf-8")
+
+    result = file_read("big.txt", cwd=str(tmp_path))
+
+    assert result.get("status") == "success"
+    text = (result.get("content") or [{"text": ""}])[0].get("text", "")
+    assert "truncated to 4000 chars" in text
+    assert "121 |" not in text
+
+
 def test_file_read_suggests_office_tool_for_office_extensions(tmp_path: Path) -> None:
     path = tmp_path / "sample.docx"
     path.write_bytes(b"PK\x03\x04not-a-real-docx")

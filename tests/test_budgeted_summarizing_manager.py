@@ -141,3 +141,151 @@ def test_compact_to_budget_reports_over_budget_when_recent_context_alone_is_too_
 
     assert result["within_budget"] is False
     assert result["trimmed_messages"] == 0
+
+
+def _tool_exchange(
+    tool_use_id: str,
+    *,
+    tool_name: str,
+    tool_input: dict[str, object],
+    text: str,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "toolUse": {
+                        "toolUseId": tool_use_id,
+                        "name": tool_name,
+                        "input": tool_input,
+                    }
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "toolResult": {
+                        "toolUseId": tool_use_id,
+                        "status": "success",
+                        "content": [{"text": text}],
+                    }
+                }
+            ],
+        },
+    ]
+
+
+def test_cache_safe_compacts_older_file_reads_before_budget_pass() -> None:
+    manager = BudgetedSummarizingConversationManager(strategy="cache_safe", compaction_mode="auto")
+
+    class _Agent:
+        messages = (
+            _tool_exchange(
+                "t1",
+                tool_name="file_read",
+                tool_input={"path": "a.py", "start_line": 1, "max_lines": 20},
+                text="A" * 200,
+            )
+            + _tool_exchange(
+                "t2",
+                tool_name="file_read",
+                tool_input={"path": "b.py", "start_line": 1, "max_lines": 20},
+                text="B" * 200,
+            )
+            + _tool_exchange(
+                "t3",
+                tool_name="file_read",
+                tool_input={"path": "c.py", "start_line": 1, "max_lines": 20},
+                text="C" * 200,
+            )
+            + _tool_exchange(
+                "t4",
+                tool_name="file_search",
+                tool_input={"query": "needle"},
+                text="D" * 200,
+            )
+        )
+
+    result = manager.compact_to_budget(agent=_Agent())
+
+    texts = [
+        item["toolResult"]["content"][0]["text"]
+        for message in _Agent.messages
+        for item in message.get("content", [])
+        if "toolResult" in item
+    ]
+    assert result["compacted_read_results"] == 2
+    assert texts[0].startswith("[cache-compacted]")
+    assert texts[1].startswith("[cache-compacted]")
+    assert texts[2] == "C" * 200
+    assert texts[3] == "D" * 200
+
+
+def test_long_running_collapses_duplicate_reads_even_within_keep_window() -> None:
+    manager = BudgetedSummarizingConversationManager(strategy="long_running", compaction_mode="auto")
+
+    class _Agent:
+        messages = (
+            _tool_exchange(
+                "t1",
+                tool_name="file_read",
+                tool_input={"path": "dup.py", "start_line": 1, "max_lines": 20},
+                text="same excerpt",
+            )
+            + _tool_exchange(
+                "t2",
+                tool_name="file_read",
+                tool_input={"path": "dup.py", "start_line": 1, "max_lines": 20},
+                text="same excerpt",
+            )
+            + _tool_exchange(
+                "t3",
+                tool_name="file_read",
+                tool_input={"path": "dup.py", "start_line": 1, "max_lines": 20},
+                text="same excerpt",
+            )
+        )
+
+    result = manager.compact_to_budget(agent=_Agent())
+
+    texts = [
+        item["toolResult"]["content"][0]["text"]
+        for message in _Agent.messages
+        for item in message.get("content", [])
+        if "toolResult" in item
+    ]
+    assert result["compacted_read_results"] == 2
+    assert texts[0].startswith("[cache-compacted]")
+    assert texts[1].startswith("[cache-compacted]")
+    assert texts[2] == "same excerpt"
+
+
+def test_balanced_strategy_leaves_read_results_uncompacted() -> None:
+    manager = BudgetedSummarizingConversationManager(strategy="balanced", compaction_mode="auto")
+
+    class _Agent:
+        messages = _tool_exchange(
+            "t1",
+            tool_name="file_read",
+            tool_input={"path": "a.py", "start_line": 1, "max_lines": 20},
+            text="raw excerpt",
+        ) + _tool_exchange(
+            "t2",
+            tool_name="file_search",
+            tool_input={"query": "needle"},
+            text="search excerpt",
+        )
+
+    result = manager.compact_to_budget(agent=_Agent())
+
+    texts = [
+        item["toolResult"]["content"][0]["text"]
+        for message in _Agent.messages
+        for item in message.get("content", [])
+        if "toolResult" in item
+    ]
+    assert result["compacted_read_results"] == 0
+    assert texts == ["raw excerpt", "search excerpt"]

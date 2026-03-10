@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from botocore.config import Config
 from packaging.version import InvalidVersion, Version
-from strands.models import Model
+from strands.models import CacheConfig, Model
 
 from swarmee_river.config.env_policy import getenv_secret
 from swarmee_river.settings import ModelTier, ProviderModels, SwarmeeSettings
@@ -322,6 +322,11 @@ def sanitize_bedrock_converse_config(
             config.pop("cache_tools", None)
     else:
         config.pop("cache_tools", None)
+
+    if tier.context is not None and tier.context.strategy in {"cache_safe", "long_running"}:
+        config["cache_config"] = CacheConfig(strategy="auto")
+    else:
+        config.pop("cache_config", None)
 
     if _forced_bedrock_tool_choice(tool_choice) or _bedrock_reasoning_disabled(settings):
         if additional:

@@ -177,8 +177,8 @@ def file_read(
     *,
     cwd: Optional[str] = None,
     start_line: int = 1,
-    max_lines: int = 300,
-    max_chars: int = 12000,
+    max_lines: int = 120,
+    max_chars: int = 4000,
 ) -> dict[str, Any]:
     """
     Read a text file with line numbers.

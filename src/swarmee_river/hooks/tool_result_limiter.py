@@ -13,6 +13,11 @@ from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.hooks._compat import register_hook_callback
 from swarmee_river.state_paths import artifacts_dir as _default_artifacts_dir
 
+_TOOL_TEXT_LIMITS = {
+    "file_read": 4000,
+    "file_search": 4000,
+}
+
 
 class ToolResultLimiterHooks(HookProvider):
     """
@@ -45,6 +50,7 @@ class ToolResultLimiterHooks(HookProvider):
         tool_use = event.tool_use
         tool_use_id = tool_use.get("toolUseId") or result.get("toolUseId") or "unknown_tool_use"
         tool_name = tool_use.get("name") or "unknown_tool"
+        max_chars_for_tool = _TOOL_TEXT_LIMITS.get(str(tool_name).strip(), self.max_text_chars)
 
         changed = False
         new_content: list[ToolResultContent] = []
@@ -55,7 +61,7 @@ class ToolResultLimiterHooks(HookProvider):
                 new_content.append(item)
                 continue
 
-            if len(text) <= self.max_text_chars:
+            if len(text) <= max_chars_for_tool:
                 new_content.append(item)
                 continue
 
@@ -90,17 +96,18 @@ class ToolResultLimiterHooks(HookProvider):
                         "toolUseId": tool_use_id,
                         "tool": tool_name,
                         "original_chars": len(text),
-                        "kept_chars": self.max_text_chars,
+                        "kept_chars": max_chars_for_tool,
                     }
                 )
             except Exception:
                 pass
 
-            truncated = text[: self.max_text_chars]
+            truncated = text[: max_chars_for_tool]
+            artifact_id = f"{ts}_{tool_name}_{tool_use_id}"
             suffix = (
                 "\n\n"
-                f"[tool result truncated: kept {self.max_text_chars} chars of {len(text)}; "
-                f"full output saved to {artifact_path}]"
+                f"[tool result truncated: kept {max_chars_for_tool} chars of {len(text)}; "
+                f"artifact={artifact_id}]"
             )
             new_item = cast(ToolResultContent, {**item, "text": truncated + suffix})
             new_content.append(new_item)

@@ -235,18 +235,25 @@ The orchestrator is created in `src/swarmee_river/swarmee.py` via Strands `Agent
 
 ### Effective system prompt (how it's assembled)
 
-`refresh_system_prompt(...)` in `src/swarmee_river/swarmee.py` composes the final system prompt in this order:
+There are two layers:
 
-1) Base system prompt (resolved from prompt assets via `load_system_prompt()`)
-2) Built-in tool usage rules (the `_TOOL_USAGE_RULES` string)
-3) Runtime environment section
-4) Pack system prompts (enabled packs)
-5) Project map section (if enabled)
-6) Preflight snapshot section (if enabled)
-7) Optional welcome text (only if `--include-welcome-in-prompt`)
-8) Active SOP contents (if an SOP is active)
-9) Active profile system prompt snippets (if a profile is applied)
-10) Active approved plan (during execute-with-plan only)
+1) **Stable base system prompt** via `build_base_system_prompt(...)`
+   - base orchestrator prompt (prompt assets / fallback system prompt)
+   - built-in tool usage rules
+   - system-reminder handling rules
+   - runtime environment section
+   - enabled pack prompt sections
+
+2) **Dynamic reminder context** via `PromptCacheState` + `refresh_system_prompt(...)`
+   - project map
+   - preflight snapshot
+   - active SOP contents
+   - active profile system prompt snippets
+   - optional welcome text reference
+   - active approved plan
+
+The dynamic pieces are intentionally queued into `<system-reminder>` blocks and prepended to the next user
+message only when they change. This keeps the API-level system prompt more stable for provider-side caching.
 
 ### Default tools (what's available "out of the box")
 
@@ -323,15 +330,14 @@ The user-facing choices are:
 
 - `context.strategy=balanced`
   - Default behavior for day-to-day work.
-  - Uses tool-aware summarization with stable tool ordering and automatic compaction.
+  - Uses the generic token-budget compaction path only.
 - `context.strategy=cache_safe`
-  - Optimized for long Responses sessions where prefix stability matters.
-  - Preserves stable tool presence, keeps tool ordering deterministic, and favors deferred discovery over
-    tool-set churn.
+  - Optimized for Bedrock/OpenAI sessions where prompt-prefix reuse matters.
+  - Keeps only the 2 most recent raw `file_read` / `file_search` results; older or duplicate excerpts are
+    compacted into short deterministic summaries before the next invocation.
 - `context.strategy=long_running`
   - Optimized for tool-heavy or artifact-heavy sessions.
-  - Compacts more aggressively while still preserving tool-call IDs, tool-result references, reasoning
-    summaries, and artifact links.
+  - Same read/search compaction behavior, but keeps the 4 most recent raw excerpts before compacting older ones.
 
 Compaction mode is layered on top:
 
@@ -346,8 +352,18 @@ Implementation notes:
   `src/swarmee_river/context/budgeted_summarizing_conversation_manager.py`.
 - Token estimation now accounts for assistant reasoning blocks, tool calls, and tool results instead of
   only plain message text.
-- Stable tool names are passed into the conversation manager so cache-sensitive strategies can keep a
-  deterministic tool prefix across turns.
+- Cache-sensitive strategies now proactively compact older read/search tool results even when the full prompt
+  is still under the context budget, because cache misses can get expensive long before the provider hard limit.
+
+### Bedrock prompt caching
+
+For Bedrock Claude tiers using `cache_safe` or `long_running`, Swarmee enables:
+
+- tool cache checkpoints (`cache_tools="default"`)
+- message cache checkpoints (`cache_config=CacheConfig(strategy="auto")`)
+
+This matters because Bedrock only reuses prompt content that appears before a cache checkpoint. Without the
+message-level checkpoint, only the tool schema benefits and repeated tool loops still suffer large cache misses.
 
 The lower-level runtime knobs still exist for internal tuning:
 
@@ -367,7 +383,8 @@ The lower-level runtime knobs still exist for internal tuning:
 Tool results are often the #1 driver of runaway context. Swarmee mitigates this with:
 
 - Hook: `src/swarmee_river/hooks/tool_result_limiter.py::ToolResultLimiterHooks`
-- Behavior: truncates large `toolResult` text *before* it is added to the conversation, and writes the full output to an artifact file.
+- Behavior: truncates large `toolResult` text *before* it is added to the conversation, and writes the full
+  output to an artifact file. Read/search tools now use a tighter cap than generic tools.
 
 Controls:
 - `SWARMEE_LIMIT_TOOL_RESULTS=true|false`
@@ -378,6 +395,8 @@ Guidance for Responses-backed sessions:
 - Prefer `context.strategy=cache_safe` when stable prompt prefixes matter more than immediate detail.
 - Prefer `context.strategy=long_running` when tools emit large outputs and you want artifact references to
   survive compaction cleanly.
+- `file_read` now defaults to smaller excerpts (`max_lines=120`, `max_chars=4000`) so repeated repository reads
+  do not add multi-thousand-token tails by default.
 - Keep the tool catalog stable during a session and use discovery/search to reveal more detail instead of
   swapping tools in and out.
 - For Bedrock Claude tiers, remember that forced tool choice suppresses reasoning fields for that request, so

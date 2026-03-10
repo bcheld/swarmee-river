@@ -1,10 +1,122 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+from dataclasses import dataclass
 from typing import Any
 
 from strands.agent.conversation_manager import SummarizingConversationManager
+
+_CACHE_COMPACTED_PREFIX = "[cache-compacted]"
+_CACHE_SENSITIVE_TOOLS = {"file_read", "file_search"}
+_STRATEGY_RAW_RESULT_KEEP = {
+    "cache_safe": 2,
+    "long_running": 4,
+}
+
+
+@dataclass
+class _ToolResultRecord:
+    tool_name: str
+    tool_use_id: str
+    tool_input: dict[str, Any]
+    tool_result: dict[str, Any]
+    text: str
+
+
+def _tool_result_text(tool_result: dict[str, Any]) -> str:
+    parts: list[str] = []
+    content = tool_result.get("content")
+    if not isinstance(content, list):
+        return ""
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+    return "\n\n".join(parts).strip()
+
+
+def _tool_result_signature(record: _ToolResultRecord) -> tuple[str, str]:
+    input_payload = record.tool_input if isinstance(record.tool_input, dict) else {}
+    encoded = json.dumps(input_payload, ensure_ascii=False, sort_keys=True)
+    digest = hashlib.sha1(record.text.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return f"{record.tool_name}|{encoded}", digest
+
+
+def _tool_result_descriptor(record: _ToolResultRecord) -> str:
+    tool_name = record.tool_name
+    payload = record.tool_input if isinstance(record.tool_input, dict) else {}
+    if tool_name == "file_read":
+        path = str(payload.get("path") or "").strip() or "(unknown path)"
+        start_line = payload.get("start_line")
+        max_lines = payload.get("max_lines")
+        if isinstance(start_line, int) and isinstance(max_lines, int) and max_lines > 0:
+            end_line = start_line + max_lines - 1
+            return f"path={path} lines={start_line}-{end_line}"
+        return f"path={path}"
+    if tool_name == "file_search":
+        query = str(payload.get("query") or "").strip() or "(unknown query)"
+        return f"query={query}"
+    return tool_name
+
+
+def _summarize_tool_result(record: _ToolResultRecord, *, duplicate: bool) -> str:
+    descriptor = _tool_result_descriptor(record)
+    original_chars = len(record.text)
+    if duplicate:
+        detail = "duplicate excerpt elided; same input/content appeared earlier"
+    else:
+        detail = "older excerpt elided for cache stability; rerun the tool if exact text is needed"
+    return (
+        f"{_CACHE_COMPACTED_PREFIX} {record.tool_name} {descriptor}; "
+        f"original_chars={original_chars}; {detail}."
+    )
+
+
+def _iter_tool_result_records(messages: list[dict[str, Any]]) -> list[_ToolResultRecord]:
+    tool_uses: dict[str, tuple[str, dict[str, Any]]] = {}
+    records: list[_ToolResultRecord] = []
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            tool_use = item.get("toolUse")
+            if isinstance(tool_use, dict):
+                tool_use_id = str(tool_use.get("toolUseId") or tool_use.get("id") or "").strip()
+                if not tool_use_id:
+                    continue
+                tool_name = str(tool_use.get("name") or "unknown").strip() or "unknown"
+                tool_input = tool_use.get("input")
+                tool_uses[tool_use_id] = (tool_name, tool_input if isinstance(tool_input, dict) else {})
+            tool_result = item.get("toolResult")
+            if not isinstance(tool_result, dict):
+                continue
+            tool_use_id = str(tool_result.get("toolUseId") or "").strip()
+            if not tool_use_id:
+                continue
+            tool_name, tool_input = tool_uses.get(tool_use_id, ("unknown", {}))
+            text = _tool_result_text(tool_result)
+            if not text:
+                continue
+            records.append(
+                _ToolResultRecord(
+                    tool_name=tool_name,
+                    tool_use_id=tool_use_id,
+                    tool_input=tool_input,
+                    tool_result=tool_result,
+                    text=text,
+                )
+            )
+    return records
 
 
 def _extract_reasoning_fragments(value: Any, *, depth: int = 4, in_reasoning: bool = False) -> list[str]:
@@ -133,6 +245,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         self.strategy = strategy.strip().lower() if isinstance(strategy, str) else "balanced"
         self.compaction_mode = compaction_mode.strip().lower() if isinstance(compaction_mode, str) else "auto"
         self.stable_tool_names = [str(name).strip() for name in (stable_tool_names or []) if str(name).strip()]
+        self._last_compacted_read_results = 0
 
     def estimate_tokens_for_agent(self, agent: "Any") -> int:
         return estimate_tokens(
@@ -170,8 +283,67 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
             trimmed += remove_count
         return trimmed
 
+    def _compact_tool_results_for_strategy(self, agent: "Any") -> int:
+        keep_count = _STRATEGY_RAW_RESULT_KEEP.get(self.strategy)
+        messages = getattr(agent, "messages", [])
+        if keep_count is None or not isinstance(messages, list) or not messages:
+            return 0
+
+        records = [
+            record
+            for record in _iter_tool_result_records(messages)
+            if record.tool_name in _CACHE_SENSITIVE_TOOLS and not record.text.startswith(_CACHE_COMPACTED_PREFIX)
+        ]
+        if not records:
+            return 0
+
+        latest_by_signature: dict[tuple[str, str], int] = {}
+        for idx, record in enumerate(records):
+            latest_by_signature[_tool_result_signature(record)] = idx
+
+        keep_start = max(0, len(records) - keep_count)
+        raw_keep_indices = set(range(keep_start, len(records)))
+        compacted = 0
+
+        for idx, record in enumerate(records):
+            signature = _tool_result_signature(record)
+            latest_idx = latest_by_signature.get(signature, idx)
+            should_compact = latest_idx != idx or idx not in raw_keep_indices
+            if not should_compact:
+                continue
+            summary = _summarize_tool_result(record, duplicate=latest_idx != idx)
+            record.tool_result["content"] = [{"text": summary}]
+            compacted += 1
+
+        return compacted
+
+    def estimate_uncached_tail_tokens(self, agent: "Any") -> int:
+        messages = getattr(agent, "messages", [])
+        if not isinstance(messages, list) or not messages:
+            return 0
+        last_assistant_idx = -1
+        for idx, message in enumerate(messages):
+            if isinstance(message, dict) and str(message.get("role", "")).strip().lower() == "assistant":
+                last_assistant_idx = idx
+        tail_messages = messages[last_assistant_idx + 1 :] if last_assistant_idx >= 0 else messages
+        return estimate_tokens(system_prompt=None, messages=tail_messages, chars_per_token=self.chars_per_token)
+
+    def cache_diagnostics_for_agent(self, agent: "Any") -> dict[str, int]:
+        records = _iter_tool_result_records(getattr(agent, "messages", []) or [])
+        raw_recent = sum(
+            1
+            for record in records
+            if record.tool_name in _CACHE_SENSITIVE_TOOLS and not record.text.startswith(_CACHE_COMPACTED_PREFIX)
+        )
+        return {
+            "uncached_tail_tokens_est": self.estimate_uncached_tail_tokens(agent),
+            "recent_read_tool_results": raw_recent,
+            "compacted_read_results": int(self._last_compacted_read_results),
+        }
+
     def compact_to_budget(self, agent: "Any", **kwargs: Any) -> dict[str, Any]:
         before_tokens = self.estimate_tokens_for_agent(agent)
+        self._last_compacted_read_results = 0
         if not self.enabled or self.compaction_mode == "manual":
             return {
                 "before_tokens_est": before_tokens,
@@ -179,8 +351,11 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
                 "within_budget": before_tokens <= self.max_prompt_tokens,
                 "summary_passes": 0,
                 "trimmed_messages": 0,
+                "compacted_read_results": 0,
             }
 
+        compacted_read_results = self._compact_tool_results_for_strategy(agent)
+        self._last_compacted_read_results = compacted_read_results
         summary_passes = 0
         for _ in range(max(1, self.max_reduce_passes)):
             tokens = self.estimate_tokens_for_agent(agent)
@@ -191,6 +366,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
                     "within_budget": True,
                     "summary_passes": summary_passes,
                     "trimmed_messages": 0,
+                    "compacted_read_results": compacted_read_results,
                 }
             self.reduce_context(agent, e=None, **kwargs)
             summary_passes += 1
@@ -202,6 +378,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
             "within_budget": after_tokens <= self.max_prompt_tokens,
             "summary_passes": summary_passes,
             "trimmed_messages": trimmed_messages,
+            "compacted_read_results": compacted_read_results,
         }
 
     def apply_management(self, agent: "Any", **kwargs: Any) -> None:

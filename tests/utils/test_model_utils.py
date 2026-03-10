@@ -4,6 +4,7 @@ import pathlib
 import unittest.mock
 
 import pytest
+from strands.models import CacheConfig
 
 import swarmee_river
 import swarmee_river.utils.model_utils
@@ -226,6 +227,8 @@ def test_sanitize_bedrock_converse_config_emits_adaptive_thinking_for_opus_46():
     swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(config, tier=tier, settings=settings)
 
     assert config["cache_tools"] == "default"
+    assert isinstance(config["cache_config"], CacheConfig)
+    assert config["cache_config"].strategy == "auto"
     assert config["additional_request_fields"]["thinking"] == {"type": "adaptive"}
     assert config["additional_request_fields"]["output_config"] == {"effort": "high"}
     assert "anthropic_beta" not in config["additional_request_fields"]
@@ -279,6 +282,18 @@ def test_sanitize_bedrock_converse_config_skips_reasoning_for_non_claude_models(
     assert capabilities.reasoning_mode == "none"
     assert "additional_request_fields" not in config
     assert "cache_tools" not in config
+    assert "cache_config" not in config
+
+
+def test_sanitize_bedrock_converse_config_keeps_balanced_tier_message_cache_disabled():
+    settings = _settings_with({})
+    tier = settings.models.providers["bedrock"].tiers["balanced"]
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
+    config["model_id"] = tier.model_id
+
+    swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(config, tier=tier, settings=settings)
+
+    assert "cache_config" not in config
 
 
 def test_default_model_config_openai_includes_max_retries_default_zero():

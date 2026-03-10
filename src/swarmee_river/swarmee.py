@@ -206,6 +206,10 @@ _TOOL_USAGE_RULES = (
     "Tool usage rules:\n"
     "- Use list/glob/file_list/file_search/file_read for repository exploration and file reading.\n"
     "- Do not use shell for ls/find/sed/cat/grep/rg when file tools can do it.\n"
+    "- Use file_search before file_read whenever you need to narrow to a specific file or symbol.\n"
+    "- Keep file_read narrow: request the smallest practical line range and avoid broad repeated reads.\n"
+    "- Do not reread the same file range unless the previous excerpt was insufficient or the file changed.\n"
+    "- Prefer targeted rereads over reopening large file sections you already inspected.\n"
     "- Reserve shell for real command execution tasks."
 )
 _SYSTEM_REMINDER_RULES = (
@@ -663,6 +667,10 @@ def _build_resolved_invocation_state(
             sw_state["supports_forced_tool_with_reasoning"] = getattr(
                 current, "supports_forced_tool_with_reasoning", None
             )
+            sw_state["bedrock_message_cache_enabled"] = _bedrock_message_cache_enabled(
+                model_manager=model_manager,
+                selected_provider=selected_provider,
+            )
         sw_state["session_safety_overrides"] = _normalized_session_safety_overrides_payload(session_safety_overrides)
     return resolved_state
 
@@ -673,6 +681,26 @@ def _resolved_context_budget_tokens(
     model_manager: SessionModelManager,
 ) -> int:
     return model_manager.resolve_effective_context_budget()
+
+
+def _bedrock_message_cache_enabled(*, model_manager: SessionModelManager, selected_provider: str) -> bool:
+    tiers = model_manager.list_tiers()
+    current_provider = normalize_provider_name(getattr(model_manager, "current_provider", "") or selected_provider)
+    current = next(
+        (
+            item
+            for item in tiers
+            if item.name == model_manager.current_tier
+            and normalize_provider_name(getattr(item, "provider", current_provider)) == current_provider
+        ),
+        None,
+    )
+    if current is None:
+        return False
+    return current_provider == "bedrock" and str(getattr(current, "context_strategy", "")).strip().lower() in {
+        "cache_safe",
+        "long_running",
+    }
 
 
 def _emit_tui_context_event_if_enabled(
@@ -693,6 +721,13 @@ def _emit_tui_context_event_if_enabled(
             chars_per_token=chars_per_token,
         )
         budget = _resolved_context_budget_tokens(settings=settings, model_manager=model_manager)
+        diagnostics: dict[str, Any] = {}
+        manager = getattr(agent, "conversation_manager", None)
+        cache_diag_fn = getattr(manager, "cache_diagnostics_for_agent", None)
+        if callable(cache_diag_fn):
+            raw_diag = cache_diag_fn(agent)
+            if isinstance(raw_diag, dict):
+                diagnostics.update(raw_diag)
         _emit_tui_event(
             {
                 "event": "context",
@@ -700,6 +735,11 @@ def _emit_tui_context_event_if_enabled(
                 "budget_tokens": budget,
                 "chars_per_token": chars_per_token,
                 "messages": len(getattr(agent, "messages", []) or []),
+                "bedrock_message_cache_enabled": _bedrock_message_cache_enabled(
+                    model_manager=model_manager,
+                    selected_provider=getattr(model_manager, "current_provider", "") or "bedrock",
+                ),
+                **diagnostics,
             }
         )
     except Exception:
@@ -754,12 +794,17 @@ def _build_model_info_event_payload(
         None,
     )
     normalized_tool_names = sorted({str(name).strip() for name in (tool_names or []) if str(name).strip()})
+    message_cache_enabled = _bedrock_message_cache_enabled(
+        model_manager=model_manager,
+        selected_provider=selected_provider,
+    )
     return {
         "event": "model_info",
         "provider": current.provider if current is not None else current_provider,
         "tier": model_manager.current_tier,
         "model_id": current.model_id if current is not None else None,
         "context_budget_tokens": model_manager.resolve_effective_context_budget(),
+        "bedrock_message_cache_enabled": message_cache_enabled,
         "tool_names": normalized_tool_names,
         "tiers": [
             {
@@ -1644,6 +1689,7 @@ def _build_agent_runtime(
         before_tokens: int | None = None
         after_tokens: int | None = None
         compacted = False
+        compacted_read_results = 0
         warning: str | None = None
 
         with contextlib.suppress(Exception):
@@ -1664,8 +1710,11 @@ def _build_agent_runtime(
                 apply_fn = getattr(manager, "apply_management", None)
                 if callable(compact_fn):
                     result = compact_fn(agent)
+                    compacted_read_results = int(result.get("compacted_read_results", 0) or 0)
                     compacted = bool(
-                        int(result.get("summary_passes", 0) or 0) > 0 or int(result.get("trimmed_messages", 0) or 0) > 0
+                        int(result.get("summary_passes", 0) or 0) > 0
+                        or int(result.get("trimmed_messages", 0) or 0) > 0
+                        or compacted_read_results > 0
                     )
                 elif callable(reduce_fn):
                     reduce_fn(agent, e=None)
@@ -1698,6 +1747,7 @@ def _build_agent_runtime(
             "compacted": compacted,
             "before_tokens_est": before_tokens,
             "after_tokens_est": after_tokens,
+            "compacted_read_results": compacted_read_results,
             "warning": warning,
         }
 
@@ -1839,9 +1889,16 @@ def _build_agent_runtime(
                     after_tokens = compact_result.get("after_tokens_est")
                     summary_passes = int(compact_result.get("summary_passes", 0) or 0)
                     trimmed_messages = int(compact_result.get("trimmed_messages", 0) or 0)
+                    compacted_read_results = int(compact_result.get("compacted_read_results", 0) or 0)
                     within_budget = bool(compact_result.get("within_budget", False))
-                    if summary_passes > 0 or trimmed_messages > 0:
+                    _emit_tui_context_event_if_enabled(agent, settings=settings, model_manager=model_manager)
+                    if summary_passes > 0 or trimmed_messages > 0 or compacted_read_results > 0:
                         details: list[str] = []
+                        if compacted_read_results > 0:
+                            details.append(
+                                f"compacted {compacted_read_results} older read/search result"
+                                f"{'s' if compacted_read_results != 1 else ''}"
+                            )
                         if summary_passes > 0:
                             details.append(f"summarized {summary_passes} pass{'es' if summary_passes != 1 else ''}")
                         if trimmed_messages > 0:
@@ -4145,6 +4202,7 @@ def main() -> None:
                         "compacted": bool(compact_result.get("compacted", False)),
                         "before_tokens_est": compact_result.get("before_tokens_est"),
                         "after_tokens_est": compact_result.get("after_tokens_est"),
+                        "compacted_read_results": compact_result.get("compacted_read_results", 0),
                         "warning": compact_result.get("warning"),
                     }
                 )
