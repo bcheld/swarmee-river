@@ -71,11 +71,11 @@
       "surface": "runtime_internal",
       "usage_count": 0,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3245",
-        "src/swarmee_river/swarmee.py:772",
-        "src/swarmee_river/swarmee.py:794",
-        "src/swarmee_river/tui/app.py:2382",
-        "src/swarmee_river/tui/mixins/settings.py:1437"
+        "src/swarmee_river/swarmee.py:3293",
+        "src/swarmee_river/swarmee.py:799",
+        "src/swarmee_river/swarmee.py:821",
+        "src/swarmee_river/tui/app.py:2371",
+        "src/swarmee_river/tui/mixins/settings.py:1443"
       ],
       "where_set": [
         "code-only/runtime wiring"
@@ -186,7 +186,7 @@
     },
     {
       "classification_reason": "Status derived by deterministic inventory classification rules.",
-      "controls": "Controls runtime behavior at src/swarmee_river/tui/mixins/artifacts.py:241 and related callsites.",
+      "controls": "Controls runtime behavior at src/swarmee_river/tui/mixins/artifacts.py:279 and related callsites.",
       "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
       "documented": false,
       "dup_group": null,
@@ -204,7 +204,7 @@
       "surface": "runtime_internal",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/mixins/artifacts.py:241"
+        "src/swarmee_river/tui/mixins/artifacts.py:279"
       ],
       "where_set": [
         "code-only/runtime wiring"
@@ -213,7 +213,7 @@
     },
     {
       "classification_reason": "Alias-chain compatibility key mapped to canonical `SWARMEE_GITHUB_COPILOT_API_KEY`.",
-      "controls": "Controls runtime behavior at src/swarmee_river/utils/model_utils.py:287 and related callsites.",
+      "controls": "Controls runtime behavior at src/swarmee_river/utils/model_utils.py:416 and related callsites.",
       "controls_plain": "Legacy compatibility variable; use SWARMEE_GITHUB_COPILOT_API_KEY for new configuration.",
       "documented": true,
       "dup_group": "SWARMEE_GITHUB_COPILOT_API_KEY",
@@ -229,7 +229,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/utils/model_utils.py:287"
+        "src/swarmee_river/utils/model_utils.py:416"
       ],
       "where_set": [
         "process environment",
@@ -239,7 +239,7 @@
     },
     {
       "classification_reason": "Alias-chain compatibility key mapped to canonical `SWARMEE_GITHUB_COPILOT_API_KEY`.",
-      "controls": "Controls runtime behavior at src/swarmee_river/utils/model_utils.py:286 and related callsites.",
+      "controls": "Controls runtime behavior at src/swarmee_river/utils/model_utils.py:415 and related callsites.",
       "controls_plain": "Legacy compatibility variable; use SWARMEE_GITHUB_COPILOT_API_KEY for new configuration.",
       "documented": true,
       "dup_group": "SWARMEE_GITHUB_COPILOT_API_KEY",
@@ -255,7 +255,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/utils/model_utils.py:286"
+        "src/swarmee_river/utils/model_utils.py:415"
       ],
       "where_set": [
         "process environment",
@@ -281,8 +281,8 @@
       "surface": "cli",
       "usage_count": 3,
       "where_read": [
-        "src/swarmee_river/session/models.py:342",
-        "src/swarmee_river/utils/model_utils.py:247",
+        "src/swarmee_river/session/models.py:393",
+        "src/swarmee_river/utils/model_utils.py:376",
         "src/swarmee_river/utils/provider_utils.py:27"
       ],
       "where_set": [
@@ -394,7 +394,7 @@
       "surface": "runtime_internal",
       "usage_count": 0,
       "where_read": [
-        "src/swarmee_river/swarmee.py:194"
+        "src/swarmee_river/swarmee.py:203"
       ],
       "where_set": [
         "code-only/runtime wiring"
@@ -419,8 +419,8 @@
       "surface": "cli",
       "usage_count": 2,
       "where_read": [
-        "src/swarmee_river/swarmee.py:899",
-        "src/swarmee_river/utils/model_utils.py:285"
+        "src/swarmee_river/swarmee.py:926",
+        "src/swarmee_river/utils/model_utils.py:414"
       ],
       "where_set": [
         "process environment",
@@ -484,7 +484,7 @@
     },
     {
       "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
-      "controls": "Controls runtime behavior at src/swarmee_river/hooks/jsonl_logger.py:155 and related callsites.",
+      "controls": "Controls runtime behavior at src/swarmee_river/cli/diagnostics.py:89 and related callsites.",
       "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
       "documented": false,
       "dup_group": null,
@@ -497,20 +497,24 @@
         "process environment",
         "built-in defaults"
       ],
-      "read_count": 6,
+      "read_count": 10,
       "status": "internal_only",
       "surface": "runtime_internal",
-      "usage_count": 6,
+      "usage_count": 10,
       "where_read": [
+        "src/swarmee_river/cli/diagnostics.py:89",
+        "src/swarmee_river/hooks/file_diff_review.py:135",
         "src/swarmee_river/hooks/jsonl_logger.py:155",
         "src/swarmee_river/hooks/session_s3.py:55",
         "src/swarmee_river/jupyter/magic.py:296",
-        "src/swarmee_river/runtime_service/server.py:656",
-        "src/swarmee_river/swarmee.py:3227",
-        "src/swarmee_river/swarmee.py:3228",
-        "src/swarmee_river/swarmee.py:3424",
-        "src/swarmee_river/swarmee.py:3559",
-        "src/swarmee_river/swarmee.py:3599",
+        "src/swarmee_river/runtime_service/server.py:666",
+        "src/swarmee_river/swarmee.py:3275",
+        "src/swarmee_river/swarmee.py:3276",
+        "src/swarmee_river/swarmee.py:3373",
+        "src/swarmee_river/swarmee.py:3419",
+        "src/swarmee_river/swarmee.py:3499",
+        "src/swarmee_river/swarmee.py:3742",
+        "src/swarmee_river/swarmee.py:3782",
         "src/swarmee_river/tui/event_types.py:91",
         "src/swarmee_river/tui/transport.py:279"
       ],
@@ -548,7 +552,7 @@
     },
     {
       "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
-      "controls": "Controls runtime behavior at src/swarmee_river/handlers/callback_handler.py:1455 and related callsites.",
+      "controls": "Controls runtime behavior at src/swarmee_river/handlers/callback_handler.py:1556 and related callsites.",
       "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
       "documented": false,
       "dup_group": null,
@@ -561,18 +565,19 @@
         "process environment",
         "built-in defaults"
       ],
-      "read_count": 6,
+      "read_count": 7,
       "status": "internal_only",
       "surface": "runtime_internal",
-      "usage_count": 6,
+      "usage_count": 7,
       "where_read": [
-        "src/swarmee_river/handlers/callback_handler.py:1455",
+        "src/swarmee_river/handlers/callback_handler.py:1556",
         "src/swarmee_river/handlers/callback_handler.py:160",
-        "src/swarmee_river/handlers/callback_handler.py:295",
-        "src/swarmee_river/handlers/callback_handler.py:307",
+        "src/swarmee_river/handlers/callback_handler.py:333",
+        "src/swarmee_river/handlers/callback_handler.py:346",
+        "src/swarmee_river/hooks/file_diff_review.py:156",
         "src/swarmee_river/hooks/tui_metrics.py:159",
-        "src/swarmee_river/runtime_service/server.py:655",
-        "src/swarmee_river/swarmee.py:378",
+        "src/swarmee_river/runtime_service/server.py:665",
+        "src/swarmee_river/swarmee.py:387",
         "src/swarmee_river/tui/transport.py:257"
       ],
       "where_set": [
@@ -629,7 +634,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3162"
+        "src/swarmee_river/swarmee.py:3210"
       ],
       "where_set": [
         "CLI flag"
@@ -657,7 +662,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3155"
+        "src/swarmee_river/swarmee.py:3203"
       ],
       "where_set": [
         "CLI flag"
@@ -685,7 +690,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3149"
+        "src/swarmee_river/swarmee.py:3197"
       ],
       "where_set": [
         "CLI flag"
@@ -713,7 +718,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3168"
+        "src/swarmee_river/swarmee.py:3216"
       ],
       "where_set": [
         "CLI flag"
@@ -742,7 +747,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3119"
+        "src/swarmee_river/swarmee.py:3167"
       ],
       "where_set": [
         "CLI flag"
@@ -770,7 +775,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3137"
+        "src/swarmee_river/swarmee.py:3185"
       ],
       "where_set": [
         "CLI flag"
@@ -798,7 +803,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3131"
+        "src/swarmee_river/swarmee.py:3179"
       ],
       "where_set": [
         "CLI flag"
@@ -826,7 +831,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3125"
+        "src/swarmee_river/swarmee.py:3173"
       ],
       "where_set": [
         "CLI flag"
@@ -854,7 +859,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3183"
+        "src/swarmee_river/swarmee.py:3231"
       ],
       "where_set": [
         "CLI flag"
@@ -882,7 +887,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3189"
+        "src/swarmee_river/swarmee.py:3237"
       ],
       "where_set": [
         "CLI flag"
@@ -910,7 +915,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3178"
+        "src/swarmee_river/swarmee.py:3226"
       ],
       "where_set": [
         "CLI flag"
@@ -938,7 +943,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3143"
+        "src/swarmee_river/swarmee.py:3191"
       ],
       "where_set": [
         "CLI flag"
@@ -966,7 +971,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3173"
+        "src/swarmee_river/swarmee.py:3221"
       ],
       "where_set": [
         "CLI flag"
@@ -994,7 +999,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2225"
+        "src/swarmee_river/swarmee.py:2273"
       ],
       "where_set": [
         "CLI flag"
@@ -1022,7 +1027,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2224"
+        "src/swarmee_river/swarmee.py:2272"
       ],
       "where_set": [
         "CLI flag"
@@ -1050,7 +1055,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2227"
+        "src/swarmee_river/swarmee.py:2275"
       ],
       "where_set": [
         "CLI flag"
@@ -1078,7 +1083,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2226"
+        "src/swarmee_river/swarmee.py:2274"
       ],
       "where_set": [
         "CLI flag"
@@ -1106,7 +1111,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2252"
+        "src/swarmee_river/swarmee.py:2300"
       ],
       "where_set": [
         "CLI flag"
@@ -1134,7 +1139,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2253"
+        "src/swarmee_river/swarmee.py:2301"
       ],
       "where_set": [
         "CLI flag"
@@ -1162,7 +1167,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/cli/diagnostics.py:425"
+        "src/swarmee_river/cli/diagnostics.py:483"
       ],
       "where_set": [
         "CLI flag"
@@ -1191,7 +1196,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/cli/diagnostics.py:397"
+        "src/swarmee_river/cli/diagnostics.py:449"
       ],
       "where_set": [
         "CLI flag"
@@ -1219,7 +1224,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2204"
+        "src/swarmee_river/swarmee.py:2252"
       ],
       "where_set": [
         "CLI flag"
@@ -1247,7 +1252,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2210"
+        "src/swarmee_river/swarmee.py:2258"
       ],
       "where_set": [
         "CLI flag"
@@ -1275,7 +1280,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2197"
+        "src/swarmee_river/swarmee.py:2245"
       ],
       "where_set": [
         "CLI flag"
@@ -1303,7 +1308,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2198"
+        "src/swarmee_river/swarmee.py:2246"
       ],
       "where_set": [
         "CLI flag"
@@ -1331,7 +1336,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2852"
+        "src/swarmee_river/swarmee.py:2900"
       ],
       "where_set": [
         "CLI flag"
@@ -1359,7 +1364,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2854"
+        "src/swarmee_river/swarmee.py:2902"
       ],
       "where_set": [
         "CLI flag"
@@ -1387,7 +1392,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2853"
+        "src/swarmee_river/swarmee.py:2901"
       ],
       "where_set": [
         "CLI flag"
@@ -1415,7 +1420,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2843"
+        "src/swarmee_river/swarmee.py:2891"
       ],
       "where_set": [
         "CLI flag"
@@ -1443,7 +1448,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2849"
+        "src/swarmee_river/swarmee.py:2897"
       ],
       "where_set": [
         "CLI flag"
@@ -1471,7 +1476,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2842"
+        "src/swarmee_river/swarmee.py:2890"
       ],
       "where_set": [
         "CLI flag"
@@ -1499,7 +1504,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2839"
+        "src/swarmee_river/swarmee.py:2887"
       ],
       "where_set": [
         "CLI flag"
@@ -1527,7 +1532,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2836"
+        "src/swarmee_river/swarmee.py:2884"
       ],
       "where_set": [
         "CLI flag"
@@ -1555,7 +1560,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2756"
+        "src/swarmee_river/swarmee.py:2804"
       ],
       "where_set": [
         "CLI flag"
@@ -1583,7 +1588,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2750"
+        "src/swarmee_river/swarmee.py:2798"
       ],
       "where_set": [
         "CLI flag"
@@ -4435,7 +4440,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3412"
+        "src/swarmee_river/tui/app.py:3401"
       ],
       "where_set": [
         "TUI Advanced settings",
@@ -4460,7 +4465,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3434"
+        "src/swarmee_river/tui/app.py:3423"
       ],
       "where_set": [
         "TUI Advanced settings",
@@ -4485,7 +4490,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3450"
+        "src/swarmee_river/tui/app.py:3439"
       ],
       "where_set": [
         "TUI Advanced settings",
@@ -4510,7 +4515,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:2723"
+        "src/swarmee_river/tui/app.py:2712"
       ],
       "where_set": [
         "TUI Settings select control",
@@ -4534,7 +4539,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:2729"
+        "src/swarmee_river/tui/app.py:2718"
       ],
       "where_set": [
         "TUI Settings select control",
@@ -4558,7 +4563,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:2735"
+        "src/swarmee_river/tui/app.py:2724"
       ],
       "where_set": [
         "TUI Settings select control",
@@ -4582,7 +4587,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3468"
+        "src/swarmee_river/tui/app.py:3457"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4606,7 +4611,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3287"
+        "src/swarmee_river/tui/app.py:3276"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4630,7 +4635,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3298"
+        "src/swarmee_river/tui/app.py:3287"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4654,7 +4659,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3311"
+        "src/swarmee_river/tui/app.py:3300"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4678,7 +4683,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3385"
+        "src/swarmee_river/tui/app.py:3374"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4702,7 +4707,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3353"
+        "src/swarmee_river/tui/app.py:3342"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4726,7 +4731,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3335"
+        "src/swarmee_river/tui/app.py:3324"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4750,7 +4755,7 @@
       "surface": "tui",
       "usage_count": 2,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3371"
+        "src/swarmee_river/tui/app.py:3360"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4774,7 +4779,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3344"
+        "src/swarmee_river/tui/app.py:3333"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4798,7 +4803,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3326"
+        "src/swarmee_river/tui/app.py:3315"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4822,7 +4827,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3362"
+        "src/swarmee_river/tui/app.py:3351"
       ],
       "where_set": [
         "TUI Settings control",

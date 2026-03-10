@@ -615,13 +615,21 @@ def test_runtime_service_query_broadcast_and_controller_consent(monkeypatch, tmp
             assert len(fake_popen.instances) == 1
             proc = fake_popen.instances[0]
 
-            writer1.write(json.dumps({"cmd": "query", "text": "hello runtime"}).encode("utf-8") + b"\n")
+            writer1.write(
+                json.dumps(
+                    {"cmd": "query", "text": "hello runtime", "provider": "bedrock", "tier": "deep"}
+                ).encode("utf-8")
+                + b"\n"
+            )
             await writer1.drain()
             await asyncio.sleep(0.05)
             assert proc.stdin.writes, "query command should be forwarded to daemon stdin"
             forwarded_query = json.loads(proc.stdin.writes[-1].strip())
             assert forwarded_query["cmd"] == "query"
             assert forwarded_query["text"] == "hello runtime"
+            assert forwarded_query["provider"] == "bedrock"
+            assert forwarded_query["tier"] == "deep"
+            assert service.sessions[session_id].provider_hint == "bedrock"
 
             proc.stdout.feed(json.dumps({"event": "text_delta", "text": "hello"}))
             event1 = await _read_event(reader1)
@@ -671,6 +679,86 @@ def test_runtime_service_query_broadcast_and_controller_consent(monkeypatch, tmp
             await writer1.wait_closed()
             writer2.close()
             await writer2.wait_closed()
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_runtime_service_set_model_proxies_provider_aware_selection(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "set-model-token"
+    session_id = "provider-routing"
+    attach_cwd = tmp_path / "workspace"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _connect_and_attach(*, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            json.dumps(
+                {"cmd": "hello", "token": token, "client_name": "controller", "surface": "tests"},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+
+        writer.write(
+            json.dumps({"cmd": "attach", "session_id": session_id, "cwd": str(attach_cwd)}, ensure_ascii=False).encode(
+                "utf-8"
+            )
+            + b"\n"
+        )
+        await writer.drain()
+        attached_event = await _read_event(reader)
+        assert attached_event["event"] == "attached"
+        return reader, writer
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader, writer = await _connect_and_attach(port=service.port)
+            try:
+                assert len(fake_popen.instances) == 1
+                proc = fake_popen.instances[0]
+
+                writer.write(
+                    json.dumps({"cmd": "set_model", "provider": "bedrock", "tier": "deep"}).encode("utf-8") + b"\n"
+                )
+                await writer.drain()
+                await asyncio.sleep(0.05)
+                assert proc.stdin.writes, "set_model should be forwarded to daemon stdin"
+                forwarded_set_model = json.loads(proc.stdin.writes[-1].strip())
+                assert forwarded_set_model == {"cmd": "set_model", "provider": "bedrock", "tier": "deep"}
+                assert service.sessions[session_id].provider_hint == "bedrock"
+
+                writer.write(
+                    json.dumps(
+                        {"cmd": "query", "text": "use bedrock", "provider": "bedrock", "tier": "deep"}
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+                await asyncio.sleep(0.05)
+                forwarded_query = json.loads(proc.stdin.writes[-1].strip())
+                assert forwarded_query == {
+                    "cmd": "query",
+                    "text": "use bedrock",
+                    "provider": "bedrock",
+                    "tier": "deep",
+                }
+            finally:
+                writer.close()
+                await writer.wait_closed()
         finally:
             await service.stop()
 

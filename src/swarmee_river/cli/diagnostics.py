@@ -172,7 +172,10 @@ def render_effective_config(
     tier_status = None
     try:
         for t in model_manager.list_tiers():
-            if getattr(t, "name", None) == tier:
+            if (
+                getattr(t, "name", None) == tier
+                and getattr(t, "provider", None) == getattr(model_manager, "current_provider", None)
+            ):
                 tier_status = t
                 break
     except Exception:

@@ -915,7 +915,10 @@ class TuiCallbackHandler:
                 return self._extract_text_from_result(message, exclude_reasoning_wrappers=exclude_reasoning_wrappers)
             content = result.get("content")
             if content is not None:
-                extracted = self._extract_text_from_result(content, exclude_reasoning_wrappers=exclude_reasoning_wrappers)
+                extracted = self._extract_text_from_result(
+                    content,
+                    exclude_reasoning_wrappers=exclude_reasoning_wrappers,
+                )
                 if isinstance(extracted, str) and extracted:
                     return extracted
             for key in ("chunk", "event", "response"):

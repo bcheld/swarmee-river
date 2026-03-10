@@ -3590,8 +3590,12 @@ def main() -> None:
             normalized = normalize_provider_name(provider)
             if not normalized:
                 return False
-            previous_provider = normalize_provider_name(getattr(model_manager, "current_provider", "") or selected_provider)
-            previous_default = normalize_provider_name(getattr(model_manager, "_default_provider", "") or previous_provider)
+            previous_provider = normalize_provider_name(
+                getattr(model_manager, "current_provider", "") or selected_provider
+            )
+            previous_default = normalize_provider_name(
+                getattr(model_manager, "_default_provider", "") or previous_provider
+            )
             previous_fallback = normalize_provider_name(
                 getattr(model_manager, "_fallback_provider", "") or previous_provider
             )
@@ -3599,7 +3603,9 @@ def main() -> None:
             model_manager._default_provider = normalized
             model_manager._fallback_provider = normalized
             model_manager.set_fallback_config(args.model_config)
-            target_tier = str(preferred_tier or model_manager.current_tier or settings.models.default_tier or "balanced")
+            target_tier = str(
+                preferred_tier or model_manager.current_tier or settings.models.default_tier or "balanced"
+            )
             target_tier = target_tier.strip().lower() or "balanced"
             known = {
                 item.name
@@ -3646,7 +3652,9 @@ def main() -> None:
             allow_unavailable: bool = False,
         ) -> None:
             nonlocal selected_provider, selection_is_auto
-            requested_provider = normalize_provider_name(provider or _active_runtime_provider_name() or selected_provider)
+            requested_provider = normalize_provider_name(
+                provider or _active_runtime_provider_name() or selected_provider
+            )
             requested_tier = str(tier or "").strip().lower()
             if not requested_provider or not requested_tier:
                 raise ValueError("Both provider and tier are required")

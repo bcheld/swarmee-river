@@ -9,6 +9,10 @@ from swarmee_river.settings import apply_project_env_overrides, load_project_env
 from swarmee_river.utils.model_utils import OpenAIResponsesTransportStatus
 
 
+def _tiers_by_provider_and_name(manager: SessionModelManager) -> dict[tuple[str, str], object]:
+    return {(t.provider, t.name): t for t in manager.list_tiers()}
+
+
 def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
 
@@ -123,10 +127,10 @@ def test_tier_model_id_settings_overrides_apply(tmp_path: Path) -> None:
     settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="openai")
-    tiers = {t.name: t for t in manager.list_tiers()}
+    tiers = _tiers_by_provider_and_name(manager)
 
-    assert tiers["fast"].provider == "openai"
-    assert tiers["fast"].model_id == "gpt-4o-mini"
+    assert tiers[("openai", "fast")].provider == "openai"
+    assert tiers[("openai", "fast")].model_id == "gpt-4o-mini"
 
 
 def test_tier_model_id_settings_overrides_can_apply_to_multiple_tiers(tmp_path: Path) -> None:
@@ -151,10 +155,10 @@ def test_tier_model_id_settings_overrides_can_apply_to_multiple_tiers(tmp_path: 
     settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="openai")
-    tiers = {t.name: t for t in manager.list_tiers()}
+    tiers = _tiers_by_provider_and_name(manager)
 
-    assert tiers["fast"].model_id == "gpt-4o-mini"
-    assert tiers["balanced"].model_id == "gpt-4o-mini"
+    assert tiers[("openai", "fast")].model_id == "gpt-4o-mini"
+    assert tiers[("openai", "balanced")].model_id == "gpt-4o-mini"
 
 
 def test_tier_model_id_override_is_per_tier(tmp_path: Path) -> None:
@@ -179,10 +183,10 @@ def test_tier_model_id_override_is_per_tier(tmp_path: Path) -> None:
     settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="openai")
-    tiers = {t.name: t for t in manager.list_tiers()}
+    tiers = _tiers_by_provider_and_name(manager)
 
-    assert tiers["fast"].model_id == "gpt-5-nano"
-    assert tiers["balanced"].model_id == "gpt-4o-mini"
+    assert tiers[("openai", "fast")].model_id == "gpt-5-nano"
+    assert tiers[("openai", "balanced")].model_id == "gpt-4o-mini"
 
 
 def test_fallback_provider_overrides_settings_provider_for_session(tmp_path: Path) -> None:
@@ -191,9 +195,9 @@ def test_fallback_provider_overrides_settings_provider_for_session(tmp_path: Pat
     settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="openai")
-    tiers = {t.name: t for t in manager.list_tiers()}
+    tiers = _tiers_by_provider_and_name(manager)
 
-    assert tiers["balanced"].provider == "openai"
+    assert tiers[("openai", "balanced")].provider == "openai"
 
 
 def test_openai_tiers_report_unavailable_when_responses_transport_missing(tmp_path: Path, monkeypatch) -> None:
@@ -212,10 +216,10 @@ def test_openai_tiers_report_unavailable_when_responses_transport_missing(tmp_pa
     )
 
     manager = SessionModelManager(settings, fallback_provider="openai")
-    tiers = {t.name: t for t in manager.list_tiers()}
+    tiers = _tiers_by_provider_and_name(manager)
 
-    assert tiers["balanced"].available is False
-    assert "strands-agents==1.26.0" in str(tiers["balanced"].reason)
+    assert tiers[("openai", "balanced")].available is False
+    assert "strands-agents==1.26.0" in str(tiers[("openai", "balanced")].reason)
 
 
 def test_tier_model_id_settings_overrides_apply_for_github_copilot(tmp_path: Path) -> None:
@@ -227,10 +231,10 @@ def test_tier_model_id_settings_overrides_apply_for_github_copilot(tmp_path: Pat
     settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="github_copilot")
-    tiers = {t.name: t for t in manager.list_tiers()}
+    tiers = _tiers_by_provider_and_name(manager)
 
-    assert tiers["fast"].model_id == "gpt-4.1"
-    assert tiers["balanced"].model_id is not None
+    assert tiers[("github_copilot", "fast")].model_id == "gpt-4.1"
+    assert tiers[("github_copilot", "balanced")].model_id is not None
 
 
 def test_github_copilot_tier_overrides_are_per_tier(tmp_path: Path) -> None:
@@ -248,10 +252,10 @@ def test_github_copilot_tier_overrides_are_per_tier(tmp_path: Path) -> None:
     settings = load_settings(settings_path)
 
     manager = SessionModelManager(settings, fallback_provider="github_copilot")
-    tiers = {t.name: t for t in manager.list_tiers()}
+    tiers = _tiers_by_provider_and_name(manager)
 
-    assert tiers["fast"].model_id == "gpt-4o-mini"
-    assert tiers["balanced"].model_id != "gpt-4o-mini"
+    assert tiers[("github_copilot", "fast")].model_id == "gpt-4o-mini"
+    assert tiers[("github_copilot", "balanced")].model_id != "gpt-4o-mini"
 
 
 def test_default_safety_rules_include_canonical_tool_entries(tmp_path: Path) -> None:

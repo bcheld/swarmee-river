@@ -171,7 +171,9 @@ def model_select_options(
             selected_value = value
 
     explicit_value = (
-        f"{selected_provider}|{selected_tier}" if selected_provider and selected_tier and provider_override is not None else ""
+        f"{selected_provider}|{selected_tier}"
+        if selected_provider and selected_tier and provider_override is not None
+        else ""
     )
     if explicit_value and explicit_value not in {value for _label, value in options}:
         options.insert(1, (f"{selected_provider}/{selected_tier} (selected)", explicit_value))

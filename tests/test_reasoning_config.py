@@ -9,6 +9,18 @@ from swarmee_river.settings import load_settings
 from swarmee_river.utils import model_utils
 
 
+def _tier_status_by_provider_and_name(
+    manager: SessionModelManager,
+    *,
+    provider: str,
+    name: str,
+):
+    for item in manager.list_tiers():
+        if item.provider == provider and item.name == name:
+            return item
+    raise AssertionError(f"Missing tier status for {provider}/{name}")
+
+
 def test_bedrock_deep_tier_sets_adaptive_reasoning_for_opus_46(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -84,9 +96,9 @@ def test_openai_balanced_gpt5_mini_uses_responses_without_reasoning(
     assert config["model_id"] == "gpt-5-mini"
     assert config["transport"] == "responses"
     assert "reasoning" not in config["params"]
-    tiers = {item.name: item for item in manager.list_tiers()}
-    assert tiers["balanced"].reasoning_effort is None
-    assert tiers["balanced"].reasoning_mode == "none"
+    tier = _tier_status_by_provider_and_name(manager, provider="openai", name="balanced")
+    assert tier.reasoning_effort is None
+    assert tier.reasoning_mode == "none"
 
 
 def test_bedrock_deep_tier_strips_thinking_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,13 +144,13 @@ def test_bedrock_balanced_tier_uses_extended_thinking_and_capabilities(
 
     monkeypatch.setattr(model_utils, "load_model", fake_load_model)
 
-    tiers = {item.name: item for item in manager.list_tiers()}
+    tier = _tier_status_by_provider_and_name(manager, provider="bedrock", name="balanced")
     manager.build_model("balanced")
 
     config = captured.get("config")
     assert isinstance(config, dict)
     assert config["additional_request_fields"]["thinking"]["type"] == "enabled"
     assert config["additional_request_fields"]["thinking"]["budget_tokens"] == 4096
-    assert tiers["balanced"].reasoning_mode == "extended"
-    assert tiers["balanced"].supports_cache_tools is True
-    assert tiers["balanced"].supports_forced_tool_with_reasoning is False
+    assert tier.reasoning_mode == "extended"
+    assert tier.supports_cache_tools is True
+    assert tier.supports_forced_tool_with_reasoning is False

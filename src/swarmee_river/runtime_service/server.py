@@ -1028,6 +1028,10 @@ class RuntimeServiceServer:
                 await self._send_error(client, "invalid_query", "query.text is required")
                 return
             forwarded: dict[str, Any] = {"cmd": "query", "text": text.strip()}
+            provider = payload.get("provider")
+            if isinstance(provider, str) and provider.strip():
+                forwarded["provider"] = provider.strip()
+                session.provider_hint = provider.strip().lower()
             mode = payload.get("mode")
             if isinstance(mode, str) and mode.strip():
                 forwarded["mode"] = mode.strip()
@@ -1091,6 +1095,18 @@ class RuntimeServiceServer:
                 await self._send_error(client, "invalid_tier", "set_tier.tier is required")
                 return
             forwarded = {"cmd": "set_tier", "tier": tier.strip()}
+        elif cmd == "set_model":
+            provider = payload.get("provider")
+            tier = payload.get("tier")
+            if not isinstance(provider, str) or not provider.strip():
+                await self._send_error(client, "invalid_provider", "set_model.provider is required")
+                return
+            if not isinstance(tier, str) or not tier.strip():
+                await self._send_error(client, "invalid_tier", "set_model.tier is required")
+                return
+            normalized_provider = provider.strip().lower()
+            forwarded = {"cmd": "set_model", "provider": normalized_provider, "tier": tier.strip()}
+            session.provider_hint = normalized_provider
         elif cmd == "set_profile":
             if session.query_active:
                 await self._send_error(client, "query_active", "Cannot set profile while a query is running")
@@ -1252,6 +1268,7 @@ class RuntimeServiceServer:
             "set_context_sources",
             "set_sop",
             "set_tier",
+            "set_model",
             "set_profile",
             "get_bundles",
             "set_bundle",

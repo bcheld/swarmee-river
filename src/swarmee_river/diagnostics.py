@@ -236,7 +236,14 @@ def render_diagnostics_doctor(*, cwd: Path) -> str:
     )
     model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
     current_tier = str(model_manager.current_tier or "").strip().lower() or "balanced"
-    selected_tier = next((item for item in model_manager.list_tiers() if item.name == current_tier), None)
+    selected_tier = next(
+        (
+            item
+            for item in model_manager.list_tiers()
+            if item.name == current_tier and item.provider == model_manager.current_provider
+        ),
+        None,
+    )
     transport_status = probe_openai_responses_transport()
 
     lines = [
