@@ -97,3 +97,47 @@ def test_estimate_tokens_counts_tool_and_reasoning_content() -> None:
     tokens = estimate_tokens(system_prompt="system", messages=messages, chars_per_token=4)
 
     assert tokens > 0
+
+
+def test_compact_to_budget_trims_old_messages_when_summarization_insufficient(monkeypatch) -> None:
+    manager = BudgetedSummarizingConversationManager(
+        max_prompt_tokens=5,
+        preserve_recent_messages=2,
+        compaction_mode="auto",
+    )
+
+    class _Agent:
+        messages = [
+            {"role": "user", "content": [{"text": "first older message"}]},
+            {"role": "assistant", "content": [{"text": "second older message"}]},
+            {"role": "user", "content": [{"text": "keep recent one"}]},
+            {"role": "assistant", "content": [{"text": "keep recent two"}]},
+        ]
+
+    monkeypatch.setattr(manager, "reduce_context", lambda *_args, **_kwargs: None)
+
+    result = manager.compact_to_budget(agent=_Agent())
+
+    assert result["trimmed_messages"] > 0
+    assert len(_Agent.messages) == 2
+
+
+def test_compact_to_budget_reports_over_budget_when_recent_context_alone_is_too_large(monkeypatch) -> None:
+    manager = BudgetedSummarizingConversationManager(
+        max_prompt_tokens=1,
+        preserve_recent_messages=2,
+        compaction_mode="auto",
+    )
+
+    class _Agent:
+        messages = [
+            {"role": "user", "content": [{"text": "keep me"}]},
+            {"role": "assistant", "content": [{"text": "also keep me"}]},
+        ]
+
+    monkeypatch.setattr(manager, "reduce_context", lambda *_args, **_kwargs: None)
+
+    result = manager.compact_to_budget(agent=_Agent())
+
+    assert result["within_budget"] is False
+    assert result["trimmed_messages"] == 0

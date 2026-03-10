@@ -874,8 +874,25 @@ class TuiCallbackHandler:
         self._saw_text_delta = True
         return True
 
+    @staticmethod
+    def _normalize_reasoning_chunk(text: str | None) -> str:
+        raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        lines: list[str] = []
+        previous_blank = False
+        for line in raw.split("\n"):
+            cleaned = re.sub(r"[ \t]+", " ", line).strip()
+            if not cleaned:
+                if previous_blank:
+                    continue
+                lines.append("")
+                previous_blank = True
+                continue
+            lines.append(cleaned)
+            previous_blank = False
+        return "\n".join(lines).strip()
+
     def _emit_reasoning_text(self, text: str | None) -> None:
-        chunk = str(text or "").strip()
+        chunk = self._normalize_reasoning_chunk(text)
         if not chunk or chunk in self._emitted_reasoning_texts_turn:
             return
         self._emitted_reasoning_texts_turn.add(chunk)
@@ -1204,6 +1221,13 @@ class TuiCallbackHandler:
         result: Any,
         extra_event_fields: dict[str, Any],
     ) -> list[str]:
+        structured_chunks = self._extract_structured_reasoning_text_candidates(
+            message=message,
+            result=result,
+            extra_event_fields=extra_event_fields,
+        )
+        if structured_chunks:
+            return structured_chunks
         chunks: list[str] = []
         chunks.extend(self._extract_reasoning_text_from_value(message))
         chunks.extend(self._extract_reasoning_text_from_value(result))
@@ -1211,13 +1235,58 @@ class TuiCallbackHandler:
         deduped: list[str] = []
         seen: set[str] = set()
         for chunk in chunks:
-            text = str(chunk or "").strip()
+            text = self._normalize_reasoning_chunk(chunk)
             if not text:
                 continue
             if text in seen:
                 continue
             seen.add(text)
             deduped.append(text)
+        return deduped
+
+    def _extract_structured_reasoning_text_candidates(
+        self,
+        *,
+        message: dict[str, Any],
+        result: Any,
+        extra_event_fields: dict[str, Any],
+    ) -> list[str]:
+        def _collect(value: Any, out: list[str]) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    _collect(item, out)
+                return
+            if not isinstance(value, dict):
+                return
+            reasoning_content = value.get("reasoningContent")
+            if isinstance(reasoning_content, dict):
+                reasoning_text = reasoning_content.get("reasoningText")
+                if isinstance(reasoning_text, dict):
+                    normalized = self._normalize_reasoning_chunk(reasoning_text.get("text"))
+                    if normalized:
+                        out.append(normalized)
+                normalized = self._normalize_reasoning_chunk(reasoning_content.get("text"))
+                if normalized:
+                    out.append(normalized)
+            reasoning_text = value.get("reasoningText")
+            if isinstance(reasoning_text, dict):
+                normalized = self._normalize_reasoning_chunk(reasoning_text.get("text"))
+                if normalized:
+                    out.append(normalized)
+            for nested in value.values():
+                if isinstance(nested, (dict, list)):
+                    _collect(nested, out)
+
+        chunks: list[str] = []
+        for source in (message, result, extra_event_fields):
+            _collect(source, chunks)
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for chunk in chunks:
+            if not chunk or chunk in seen:
+                continue
+            seen.add(chunk)
+            deduped.append(chunk)
         return deduped
 
     @staticmethod
@@ -1358,35 +1427,12 @@ class TuiCallbackHandler:
                     "Suppressing duplicate assistant snapshot on completion after streamed deltas (sources=%s).",
                     ",".join(snapshot_sources),
                 )
-        emitted_stream_text = False
         saw_bedrock_chunk = self._record_bedrock_stream_markers(extra_event_fields)
         saw_bedrock_chunk = self._record_bedrock_stream_markers(result) or saw_bedrock_chunk
         if saw_bedrock_chunk:
             self._saw_bedrock_stream_chunk = True
-        if data:
-            emitted_stream_text = self._emit_assistant_text_delta(data, source="data") or emitted_stream_text
-
-        if not suppress_snapshot_reemit:
-            emitted_stream_text = (
-                self._emit_assistant_message_text(assistant_snapshot_text, source="message")
-                or emitted_stream_text
-            )
-
-            if extra_event_fields:
-                emitted_stream_text = (
-                    self._emit_assistant_message_text(extra_snapshot_text, source="extra")
-                    or emitted_stream_text
-                )
-                emitted_stream_text = (
-                    self._emit_assistant_message_text(transport_snapshot_text, source="transport")
-                    or emitted_stream_text
-                )
-
-        if self._saw_text_delta and not saw_text_before:
-            _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
 
         if should_emit_complete:
-            self._flush_plan_marker_buffer()
             _mark_invoke_diag(invocation_state, stage="complete", saw_complete=True)
 
         if current_tool_use:
@@ -1484,6 +1530,15 @@ class TuiCallbackHandler:
                             tool_name=str(tool_label) if tool_label else None,
                         )
 
+        result_tool_emitted = False
+        if isinstance(result, dict):
+            tid = result.get("toolUseId")
+            status = result.get("status")
+            if isinstance(tid, str) and status is not None:
+                tool_label = result.get("name")
+                self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
+                result_tool_emitted = True
+
         if event_loop_throttled_delay:
             self._emit(
                 {
@@ -1492,22 +1547,40 @@ class TuiCallbackHandler:
                 }
             )
 
+        emitted_stream_text = False
+        if data:
+            emitted_stream_text = self._emit_assistant_text_delta(data, source="data") or emitted_stream_text
+        if not suppress_snapshot_reemit:
+            emitted_stream_text = (
+                self._emit_assistant_message_text(assistant_snapshot_text, source="message")
+                or emitted_stream_text
+            )
+            if extra_event_fields:
+                emitted_stream_text = (
+                    self._emit_assistant_message_text(extra_snapshot_text, source="extra")
+                    or emitted_stream_text
+                )
+                emitted_stream_text = (
+                    self._emit_assistant_message_text(transport_snapshot_text, source="transport")
+                    or emitted_stream_text
+                )
+        if self._saw_text_delta and not saw_text_before:
+            _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
+
         emitted_text_fallback = False
         allow_result_text_fallback = not bool(
             self._assistant_text_sources_turn.intersection({"data", "message", "extra", "transport"})
         )
         if isinstance(result, dict):
-            tid = result.get("toolUseId")
-            status = result.get("status")
-            if isinstance(tid, str) and status is not None:
-                tool_label = result.get("name")
-                self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
-            elif not suppress_snapshot_reemit and allow_result_text_fallback:
+            if not result_tool_emitted and not suppress_snapshot_reemit and allow_result_text_fallback:
                 emitted_text_fallback = self._emit_text_fallback_if_needed(result_text)
         elif result is not None and not suppress_snapshot_reemit and allow_result_text_fallback:
             emitted_text_fallback = self._emit_text_fallback_if_needed(result_text)
             if isinstance(result, str):
                 self._consume_text_for_plan_markers(result)
+
+        if should_emit_complete:
+            self._flush_plan_marker_buffer()
 
         self._emit_tool_heartbeats()
 

@@ -31,6 +31,7 @@ class TierStatus:
     tooling_discovery: str | None
     context_strategy: str | None
     context_compaction: str | None
+    context_max_prompt_tokens: int | None
     reasoning_mode: str | None
     supports_guardrails: bool | None
     supports_cache_tools: bool | None
@@ -138,6 +139,11 @@ class SessionModelManager:
                         tooling_discovery=tier.tooling.discovery if tier.tooling is not None else None,
                         context_strategy=tier.context.strategy if tier.context is not None else None,
                         context_compaction=tier.context.compaction if tier.context is not None else None,
+                        context_max_prompt_tokens=(
+                            int(tier.context.max_prompt_tokens)
+                            if tier.context is not None and tier.context.max_prompt_tokens is not None
+                            else None
+                        ),
                         reasoning_mode=reasoning_mode,
                         supports_guardrails=capabilities.supports_guardrails if capabilities is not None else None,
                         supports_cache_tools=capabilities.supports_cache_tools if capabilities is not None else None,
@@ -255,6 +261,29 @@ class SessionModelManager:
         )
         return tier.context or ModelContextBehavior()
 
+    def resolve_effective_context_budget(
+        self,
+        *,
+        tier_name: str | None = None,
+        provider_name: str | None = None,
+        override_tokens: int | None = None,
+    ) -> int:
+        provider = normalize_provider_name(provider_name or self.current_provider or self._default_provider)
+        resolved_tier = (tier_name or self.current_tier or "balanced").strip().lower()
+        tier = self._resolve_tier(resolved_tier, provider_name=provider)
+        requested = override_tokens
+        if requested is None:
+            requested = self._settings.context.max_prompt_tokens
+        if requested is None and tier.context is not None:
+            requested = tier.context.max_prompt_tokens
+        cap = self._provider_context_cap(provider=provider, model_id=tier.model_id)
+        if requested is None:
+            requested = cap if cap is not None else 20000
+        resolved = max(1, int(requested))
+        if cap is not None:
+            resolved = min(resolved, cap)
+        return resolved
+
     def current_reasoning_config(self, tier_name: str | None = None) -> ModelReasoningConfig:
         tier = self._resolve_tier(
             (tier_name or self.current_tier or "balanced").strip().lower(),
@@ -310,6 +339,16 @@ class SessionModelManager:
     def _effective_model_id(self, tier: ModelTier, *, tier_name: str) -> str | None:
         _ = tier_name
         return tier.model_id
+
+    @staticmethod
+    def _provider_context_cap(*, provider: str, model_id: str | None) -> int | None:
+        normalized_provider = normalize_provider_name(provider)
+        normalized_model_id = str(model_id or "").strip().lower()
+        if normalized_provider == "bedrock" and normalized_model_id.startswith("us.anthropic.claude-"):
+            return 200000
+        if normalized_provider == "openai" and normalized_model_id.startswith("gpt-5"):
+            return 400000
+        return None
 
     def _merge_tiers(self, base: ModelTier, override: ModelTier, *, default_provider: str) -> ModelTier:
         provider = normalize_provider_name(

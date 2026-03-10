@@ -445,6 +445,8 @@ def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> boo
         app._cancel_streaming_flush_timer()
         app._flush_streaming_buffer()
         app._finalize_assistant_message()
+        with contextlib.suppress(Exception):
+            app._force_transcript_tail_after_refresh()
         return True
 
     if etype == "thinking":

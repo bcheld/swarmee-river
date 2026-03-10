@@ -134,6 +134,13 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         self.compaction_mode = compaction_mode.strip().lower() if isinstance(compaction_mode, str) else "auto"
         self.stable_tool_names = [str(name).strip() for name in (stable_tool_names or []) if str(name).strip()]
 
+    def estimate_tokens_for_agent(self, agent: "Any") -> int:
+        return estimate_tokens(
+            system_prompt=getattr(agent, "system_prompt", None),
+            messages=getattr(agent, "messages", []),
+            chars_per_token=self.chars_per_token,
+        )
+
     def reduce_context(self, agent: "Any", e: Exception | None = None, **kwargs: Any) -> None:
         messages = getattr(agent, "messages", [])
         if not isinstance(messages, list) or len(messages) < 2:
@@ -146,19 +153,60 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
                 return
             raise
 
+    def _trim_history_to_budget(self, agent: "Any") -> int:
+        messages = getattr(agent, "messages", [])
+        if not isinstance(messages, list) or not messages:
+            return 0
+        minimum_keep = max(2, int(self.preserve_recent_messages))
+        trimmed = 0
+        while len(messages) > minimum_keep:
+            tokens = self.estimate_tokens_for_agent(agent)
+            if tokens <= self.max_prompt_tokens:
+                break
+            remove_count = min(max(1, len(messages) // 8), len(messages) - minimum_keep)
+            if remove_count <= 0:
+                break
+            del messages[:remove_count]
+            trimmed += remove_count
+        return trimmed
+
+    def compact_to_budget(self, agent: "Any", **kwargs: Any) -> dict[str, Any]:
+        before_tokens = self.estimate_tokens_for_agent(agent)
+        if not self.enabled or self.compaction_mode == "manual":
+            return {
+                "before_tokens_est": before_tokens,
+                "after_tokens_est": before_tokens,
+                "within_budget": before_tokens <= self.max_prompt_tokens,
+                "summary_passes": 0,
+                "trimmed_messages": 0,
+            }
+
+        summary_passes = 0
+        for _ in range(max(1, self.max_reduce_passes)):
+            tokens = self.estimate_tokens_for_agent(agent)
+            if tokens <= self.max_prompt_tokens:
+                return {
+                    "before_tokens_est": before_tokens,
+                    "after_tokens_est": tokens,
+                    "within_budget": True,
+                    "summary_passes": summary_passes,
+                    "trimmed_messages": 0,
+                }
+            self.reduce_context(agent, e=None, **kwargs)
+            summary_passes += 1
+        trimmed_messages = self._trim_history_to_budget(agent)
+        after_tokens = self.estimate_tokens_for_agent(agent)
+        return {
+            "before_tokens_est": before_tokens,
+            "after_tokens_est": after_tokens,
+            "within_budget": after_tokens <= self.max_prompt_tokens,
+            "summary_passes": summary_passes,
+            "trimmed_messages": trimmed_messages,
+        }
+
     def apply_management(self, agent: "Any", **kwargs: Any) -> None:
         if not self.enabled:
             return
         if self.compaction_mode == "manual":
             return
-
-        for _ in range(max(1, self.max_reduce_passes)):
-            tokens = estimate_tokens(
-                system_prompt=getattr(agent, "system_prompt", None),
-                messages=getattr(agent, "messages", []),
-                chars_per_token=self.chars_per_token,
-            )
-            if tokens <= self.max_prompt_tokens:
-                return
-            # Summarize once; re-check and repeat if still over budget.
-            self.reduce_context(agent, e=None, **kwargs)
+        self.compact_to_budget(agent, **kwargs)

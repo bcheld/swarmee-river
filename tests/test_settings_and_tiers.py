@@ -329,3 +329,26 @@ def test_load_settings_hidden_tier_overrides_are_ignored(tmp_path: Path) -> None
     settings = load_settings(settings_path)
 
     assert "balanced" not in settings.models.providers["openai"].tiers
+
+
+def test_default_context_budget_resolves_from_shipped_tier_limits(tmp_path: Path) -> None:
+    settings = load_settings(tmp_path / "settings.json")
+
+    openai = SessionModelManager(settings, fallback_provider="openai")
+    bedrock = SessionModelManager(settings, fallback_provider="bedrock")
+
+    assert openai.resolve_effective_context_budget(tier_name="fast") == 400000
+    assert openai.resolve_effective_context_budget(tier_name="deep") == 200000
+    assert bedrock.resolve_effective_context_budget(tier_name="balanced") == 200000
+
+
+def test_custom_context_budget_is_clamped_to_provider_cap(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"context": {"max_prompt_tokens": 999999}, "models": {"provider": "bedrock"}}),
+        encoding="utf-8",
+    )
+    settings = load_settings(settings_path)
+    manager = SessionModelManager(settings, fallback_provider="bedrock")
+
+    assert manager.resolve_effective_context_budget(tier_name="deep") == 200000

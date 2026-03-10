@@ -356,6 +356,30 @@ def compose_settings_tab() -> Iterator[Any]:
                         id="settings_general_preflight_level",
                         compact=True,
                     )
+                with Horizontal(id="settings_general_context_budget_row"):
+                    yield Select(
+                        options=[
+                            ("Context Budget: Auto", "auto"),
+                            ("Context Budget: Custom", "custom"),
+                        ],
+                        allow_blank=False,
+                        id="settings_general_context_budget_mode",
+                        compact=True,
+                    )
+                    yield Input(placeholder="Custom budget tokens", id="settings_general_context_budget_input")
+                with Horizontal(id="settings_general_context_budget_actions"):
+                    yield Button(
+                        "Apply Budget",
+                        id="settings_general_context_budget_apply",
+                        compact=True,
+                        variant="success",
+                    )
+                    yield Button(
+                        "Reset To Auto",
+                        id="settings_general_context_budget_reset",
+                        compact=True,
+                        variant="default",
+                    )
 
                 yield Static("Features", classes="settings-section-label")
                 with Horizontal(id="settings_general_features_row"):
@@ -410,7 +434,7 @@ def compose_settings_tab() -> Iterator[Any]:
                     yield Button("Connect AWS", id="settings_auth_connect_aws", compact=True, variant="primary")
                     yield Button("Refresh Status", id="settings_auth_refresh", compact=True, variant="default")
                 with Horizontal(id="settings_aws_profile_row"):
-                    yield Input(placeholder="AWS profile (default)", id="settings_aws_profile_input")
+                    yield Input(placeholder="AWS profile (blank = default chain)", id="settings_aws_profile_input")
                     yield Button("Apply", id="settings_aws_profile_apply", compact=True, variant="default")
                 yield Static("", id="settings_auth_status")
                 yield Static("Manage model catalog and tiers in popup editor.", id="settings_models_detail")
@@ -495,6 +519,8 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_general_context_manager_select = app.query_one("#settings_general_context_manager", Select)
     app._settings_general_preflight_select = app.query_one("#settings_general_preflight", Select)
     app._settings_general_preflight_level_select = app.query_one("#settings_general_preflight_level", Select)
+    app._settings_general_context_budget_mode_select = app.query_one("#settings_general_context_budget_mode", Select)
+    app._settings_general_context_budget_input = app.query_one("#settings_general_context_budget_input", Input)
     app._settings_toggle_swarm_button = app.query_one("#settings_toggle_swarm", Button)
     app._settings_toggle_log_events_button = app.query_one("#settings_toggle_log_events", Button)
     app._settings_toggle_project_map_button = app.query_one("#settings_toggle_project_map", Button)

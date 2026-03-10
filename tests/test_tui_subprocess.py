@@ -4915,6 +4915,7 @@ def test_streaming_handler_complete_events_finalize_once_per_turn() -> None:
             self.finalize_calls = 0
             self.flush_calls = 0
             self.cancel_calls = 0
+            self.tail_calls = 0
 
         def _cancel_streaming_flush_timer(self) -> None:
             self.cancel_calls += 1
@@ -4925,6 +4926,9 @@ def test_streaming_handler_complete_events_finalize_once_per_turn() -> None:
         def _finalize_assistant_message(self) -> None:
             self.finalize_calls += 1
 
+        def _force_transcript_tail_after_refresh(self) -> None:
+            self.tail_calls += 1
+
     app = FakeApp()
     handled_first = _handle_streaming_events(app, "text_complete", {"event": "text_complete"})
     handled_second = _handle_streaming_events(app, "complete", {"event": "complete"})
@@ -4934,6 +4938,7 @@ def test_streaming_handler_complete_events_finalize_once_per_turn() -> None:
     assert app.cancel_calls == 1
     assert app.flush_calls == 1
     assert app.finalize_calls == 1
+    assert app.tail_calls == 1
 
 
 def test_suppressed_raw_echo_stays_suppressed_through_complete_and_turn_complete() -> None:
@@ -4964,6 +4969,7 @@ def test_suppressed_raw_echo_stays_suppressed_through_complete_and_turn_complete
             self.flush_calls = 0
             self.cancel_calls = 0
             self.timeline_refreshes = 0
+            self.tail_calls = 0
 
         def _append_plain_text(self, text: str) -> None:
             self.plain.append(text)
@@ -4988,6 +4994,9 @@ def test_suppressed_raw_echo_stays_suppressed_through_complete_and_turn_complete
 
         def _finalize_assistant_message(self) -> None:
             self.assistant_finalize_calls += 1
+
+        def _force_transcript_tail_after_refresh(self) -> None:
+            self.tail_calls += 1
 
         def _finalize_turn(self, *, exit_status: str) -> None:
             assert exit_status == "ok"
@@ -5016,5 +5025,6 @@ def test_suppressed_raw_echo_stays_suppressed_through_complete_and_turn_complete
     assert app.assistant_finalize_calls == 1
     assert app.turn_finalize_calls == 1
     assert app.timeline_refreshes == 1
+    assert app.tail_calls == 1
     assert "text_complete" in app._callback_event_trace_turn
     assert app._callback_event_trace_turn[-1] == "turn_complete"

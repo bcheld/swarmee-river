@@ -193,6 +193,7 @@ from swarmee_river.utils.provider_utils import (
     has_aws_credentials,
     has_github_copilot_token,
     resolve_aws_auth_source,
+    resolve_bedrock_runtime_profile,
     resolve_model_provider,
 )
 from swarmee_river.utils.stdio_utils import configure_stdio_for_utf8, write_stdout_jsonl
@@ -655,6 +656,8 @@ def _build_resolved_invocation_state(
             sw_state["tooling_discovery"] = getattr(current, "tooling_discovery", None)
             sw_state["context_strategy"] = getattr(current, "context_strategy", None)
             sw_state["context_compaction"] = getattr(current, "context_compaction", None)
+            resolve_budget = getattr(model_manager, "resolve_effective_context_budget", None)
+            sw_state["context_budget_tokens"] = resolve_budget() if callable(resolve_budget) else None
             sw_state["supports_guardrails"] = getattr(current, "supports_guardrails", None)
             sw_state["supports_cache_tools"] = getattr(current, "supports_cache_tools", None)
             sw_state["supports_forced_tool_with_reasoning"] = getattr(
@@ -664,7 +667,20 @@ def _build_resolved_invocation_state(
     return resolved_state
 
 
-def _emit_tui_context_event_if_enabled(agent: Any, *, settings: SwarmeeSettings) -> None:
+def _resolved_context_budget_tokens(
+    *,
+    settings: SwarmeeSettings,
+    model_manager: SessionModelManager,
+) -> int:
+    return model_manager.resolve_effective_context_budget()
+
+
+def _emit_tui_context_event_if_enabled(
+    agent: Any,
+    *,
+    settings: SwarmeeSettings,
+    model_manager: SessionModelManager,
+) -> None:
     if not _tui_events_enabled():
         return
     try:
@@ -676,7 +692,7 @@ def _emit_tui_context_event_if_enabled(agent: Any, *, settings: SwarmeeSettings)
             messages=getattr(agent, "messages", []),
             chars_per_token=chars_per_token,
         )
-        budget = int(settings.context.max_prompt_tokens)
+        budget = _resolved_context_budget_tokens(settings=settings, model_manager=model_manager)
         _emit_tui_event(
             {
                 "event": "context",
@@ -743,6 +759,7 @@ def _build_model_info_event_payload(
         "provider": current.provider if current is not None else current_provider,
         "tier": model_manager.current_tier,
         "model_id": current.model_id if current is not None else None,
+        "context_budget_tokens": model_manager.resolve_effective_context_budget(),
         "tool_names": normalized_tool_names,
         "tiers": [
             {
@@ -758,6 +775,7 @@ def _build_model_info_event_payload(
                 "tooling_discovery": item.tooling_discovery,
                 "context_strategy": item.context_strategy,
                 "context_compaction": item.context_compaction,
+                "context_budget_tokens": item.context_max_prompt_tokens,
                 "supports_guardrails": item.supports_guardrails,
                 "supports_cache_tools": item.supports_cache_tools,
                 "supports_forced_tool_with_reasoning": item.supports_forced_tool_with_reasoning,
@@ -818,6 +836,7 @@ def _connect_aws_credentials(
         raise RuntimeError("AWS CLI was not found on PATH. Install AWS CLI v2 and configure a profile.")
     explicit_profile = str(profile or "").strip()
     if explicit_profile:
+        previous_profile = os.environ.get("AWS_PROFILE")
         os.environ["AWS_PROFILE"] = explicit_profile
         emit(f"Checking AWS credentials for profile '{explicit_profile}'...")
         ok, check_message = _run_aws_identity_check(profile=explicit_profile)
@@ -826,6 +845,17 @@ def _connect_aws_credentials(
             resolved_source = source if has_creds else "profile"
             emit(f"AWS credentials already valid for profile '{explicit_profile}' (source={resolved_source}).")
             return resolved_source
+        _ambient_profile, ambient_has_creds, ambient_source, _ambient_warning = resolve_bedrock_runtime_profile(None)
+        if ambient_has_creds:
+            if previous_profile is None:
+                os.environ.pop("AWS_PROFILE", None)
+            else:
+                os.environ["AWS_PROFILE"] = previous_profile
+            emit(
+                f"Profile '{explicit_profile}' is unavailable; using the default credential chain instead "
+                f"(source={ambient_source})."
+            )
+            return ambient_source
         emit(f"AWS credentials unavailable for profile '{explicit_profile}'. Starting aws sso login...")
         login_cmd = [aws_path, "sso", "login", "--profile", explicit_profile]
         login_env = dict(os.environ)
@@ -943,6 +973,7 @@ def _build_conversation_manager(
     settings: SwarmeeSettings,
     window_size: int | None,
     per_turn: int | None,
+    max_prompt_tokens: int | None = None,
     summarization_system_prompt: str | None = None,
     strategy: str | None = None,
     compaction_mode: str | None = None,
@@ -968,7 +999,7 @@ def _build_conversation_manager(
             return None
 
         return BudgetedSummarizingConversationManager(
-            max_prompt_tokens=int(settings.context.max_prompt_tokens),
+            max_prompt_tokens=max_prompt_tokens,
             summary_ratio=float(settings.context.summary_ratio),
             preserve_recent_messages=int(settings.context.preserve_recent_messages),
             summarization_system_prompt=summarization_system_prompt,
@@ -1136,6 +1167,7 @@ def _build_agent_runtime(
         settings=settings,
         window_size=args.window_size,
         per_turn=args.context_per_turn,
+        max_prompt_tokens=model_manager.resolve_effective_context_budget(),
         summarization_system_prompt=summarization_system_prompt,
         strategy=initial_context_strategy,
         compaction_mode=initial_compaction_mode,
@@ -1190,6 +1222,7 @@ def _build_agent_runtime(
             settings=settings,
             window_size=args.window_size,
             per_turn=args.context_per_turn,
+            max_prompt_tokens=model_manager.resolve_effective_context_budget(),
             summarization_system_prompt=summarization_system_prompt,
             strategy=strategy,
             compaction_mode=compaction_mode,
@@ -1626,9 +1659,15 @@ def _build_agent_runtime(
             warning = "Context compaction is unavailable for this session."
         else:
             try:
+                compact_fn = getattr(manager, "compact_to_budget", None)
                 reduce_fn = getattr(manager, "reduce_context", None)
                 apply_fn = getattr(manager, "apply_management", None)
-                if callable(reduce_fn):
+                if callable(compact_fn):
+                    result = compact_fn(agent)
+                    compacted = bool(
+                        int(result.get("summary_passes", 0) or 0) > 0 or int(result.get("trimmed_messages", 0) or 0) > 0
+                    )
+                elif callable(reduce_fn):
                     reduce_fn(agent, e=None)
                     compacted = True
                 elif callable(apply_fn):
@@ -1763,7 +1802,7 @@ def _build_agent_runtime(
         structured_output_prompt: str | None = None,
     ) -> Any:
         nonlocal agent
-        _emit_tui_context_event_if_enabled(agent, settings=settings)
+        _emit_tui_context_event_if_enabled(agent, settings=settings, model_manager=model_manager)
         invocation_state = _build_resolved_invocation_state(
             invocation_state=invocation_state,
             runtime_environment=runtime_environment,
@@ -1790,6 +1829,48 @@ def _build_agent_runtime(
         set_interrupt_event(interrupt_event)
         with interrupt_watcher_from_env(interrupt_event):
             try:
+                budget_manager = conversation_manager
+                effective_budget = model_manager.resolve_effective_context_budget()
+                compact_result: dict[str, Any] | None = None
+                compact_fn = getattr(budget_manager, "compact_to_budget", None)
+                if callable(compact_fn):
+                    compact_result = compact_fn(agent)
+                if isinstance(compact_result, dict):
+                    after_tokens = compact_result.get("after_tokens_est")
+                    summary_passes = int(compact_result.get("summary_passes", 0) or 0)
+                    trimmed_messages = int(compact_result.get("trimmed_messages", 0) or 0)
+                    within_budget = bool(compact_result.get("within_budget", False))
+                    if summary_passes > 0 or trimmed_messages > 0:
+                        details: list[str] = []
+                        if summary_passes > 0:
+                            details.append(f"summarized {summary_passes} pass{'es' if summary_passes != 1 else ''}")
+                        if trimmed_messages > 0:
+                            details.append(
+                                f"trimmed {trimmed_messages} older "
+                                f"message{'s' if trimmed_messages != 1 else ''}"
+                            )
+                        detail_text = ", ".join(details)
+                        _emit_tui_event(
+                            {
+                                "event": "warning",
+                                "text": (
+                                    f"Context compacted to stay within the {effective_budget:,}-token budget"
+                                    + (f" ({detail_text})." if detail_text else ".")
+                                ),
+                            }
+                        )
+                    if not within_budget:
+                        after_label = f"{int(after_tokens):,}" if isinstance(after_tokens, int) else "unknown"
+                        error_msg = (
+                            "Prompt still exceeds the configured context budget after compaction.\n"
+                            f"- Current budget: {effective_budget:,} tokens\n"
+                            f"- Current estimate after compaction: {after_label} tokens\n"
+                            "- Fix: open Settings > General and increase Context Budget, or shorten the conversation."
+                        )
+                        _emit_classified_tui_error(error_msg, category_hint=ERROR_CATEGORY_ESCALATABLE)
+                        if not _tui_events_enabled():
+                            print(f"\n{error_msg}")
+                        raise RuntimeError(error_msg)
                 system_reminder = prompt_cache.pop_reminder()
                 return invoke_agent(
                     agent,
@@ -3289,10 +3370,9 @@ def main() -> None:
     bedrock = settings.models.providers.get("bedrock")
     bedrock_extra = dict(getattr(bedrock, "extra", {}) or {})
     aws_profile = str(bedrock_extra.get("aws_profile") or "").strip()
-    if aws_profile:
-        os.environ["AWS_PROFILE"] = aws_profile
-    else:
-        os.environ.pop("AWS_PROFILE", None)
+    resolved_aws_profile, _has_aws_creds, _aws_source, _aws_warning = resolve_bedrock_runtime_profile(aws_profile)
+    if resolved_aws_profile:
+        os.environ["AWS_PROFILE"] = resolved_aws_profile
 
     # Apply CLI overrides to the in-memory settings object (no env mutation).
     from dataclasses import replace
@@ -4058,7 +4138,7 @@ def main() -> None:
                     )
                     continue
                 compact_result = _compact_context()
-                _emit_tui_context_event_if_enabled(ctx.agent, settings=settings)
+                _emit_tui_context_event_if_enabled(ctx.agent, settings=settings, model_manager=model_manager)
                 _write_stdout_jsonl(
                     {
                         "event": "compact_complete",

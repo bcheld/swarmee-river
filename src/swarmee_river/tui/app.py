@@ -1449,6 +1449,8 @@ def run_tui() -> int:
         #settings_interrupt_control_row,
         #settings_interrupt_control_actions,
         #settings_general_context_row,
+        #settings_general_context_budget_row,
+        #settings_general_context_budget_actions,
         #settings_general_features_row,
         #settings_general_guardrails_row,
         #settings_scope_row {
@@ -1474,6 +1476,11 @@ def run_tui() -> int:
             width: 1fr;
             margin: 0 1 0 0;
         }
+        #settings_general_context_budget_row Select,
+        #settings_general_context_budget_row Input {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
         #settings_interrupt_control_row Input,
         #settings_interrupt_control_row Select {
             width: 1fr;
@@ -1484,7 +1491,15 @@ def run_tui() -> int:
             min-width: 10;
             margin: 0 1 0 0;
         }
+        #settings_general_context_budget_actions Button {
+            width: 1fr;
+            min-width: 10;
+            margin: 0 1 0 0;
+        }
         #settings_interrupt_control_actions Button:last-child {
+            margin-right: 0;
+        }
+        #settings_general_context_budget_actions Button:last-child {
             margin-right: 0;
         }
 
@@ -2226,6 +2241,8 @@ def run_tui() -> int:
         _settings_general_context_manager_select: Any = None  # Select | None
         _settings_general_preflight_select: Any = None  # Select | None
         _settings_general_preflight_level_select: Any = None  # Select | None
+        _settings_general_context_budget_mode_select: Any = None  # Select | None
+        _settings_general_context_budget_input: Any = None  # Input | None
         _settings_toggle_swarm_button: Any = None  # Button | None
         _settings_toggle_log_events_button: Any = None  # Button | None
         _settings_toggle_project_map_button: Any = None  # Button | None
@@ -2357,6 +2374,7 @@ def run_tui() -> int:
         def _apply_startup_env(self) -> None:
             from swarmee_river.settings import load_settings
             from swarmee_river.state_paths import set_state_dir_override
+            from swarmee_river.utils.provider_utils import resolve_bedrock_runtime_profile
 
             self._apply_project_settings_env_overrides()
             settings = load_settings()
@@ -2367,10 +2385,9 @@ def run_tui() -> int:
             bedrock = settings.models.providers.get("bedrock")
             extra = dict(getattr(bedrock, "extra", {}) or {})
             aws_profile = str(extra.get("aws_profile") or "").strip()
-            if aws_profile:
-                os.environ["AWS_PROFILE"] = aws_profile
-            else:
-                os.environ.pop("AWS_PROFILE", None)
+            resolved_profile, _aws_ok, _aws_source, _aws_warning = resolve_bedrock_runtime_profile(aws_profile)
+            if resolved_profile:
+                os.environ["AWS_PROFILE"] = resolved_profile
 
         def _reset_ui_panels(self) -> None:
             self._status_bar.set_model(self._current_model_summary())
@@ -2726,6 +2743,13 @@ def run_tui() -> int:
                 if value in {"summary", "summary+tree", "summary+files"}:
                     self._persist_project_setting_env_override("SWARMEE_PREFLIGHT_LEVEL", value)
                     self._write_transcript_line(f"[settings] preflight level set to {value}.")
+                return
+            if select_id == "settings_general_context_budget_mode":
+                mode = str(getattr(event, "value", "")).strip().lower()
+                input_widget = self._settings_general_context_budget_input
+                if input_widget is not None:
+                    with contextlib.suppress(Exception):
+                        input_widget.styles.display = "block" if mode == "custom" else "none"
                 return
             if select_id in {"settings_models_provider_select", "settings_models_default_tier_select"}:
                 if self.state.daemon.model_select_syncing:
@@ -3311,6 +3335,15 @@ def run_tui() -> int:
                 return
             if button_id == "settings_interrupt_control_reset":
                 self._reset_interrupt_control_settings()
+                return
+            if button_id == "settings_general_context_budget_apply":
+                self._apply_context_budget_setting(
+                    str(getattr(self._settings_general_context_budget_input, "value", "")).strip()
+                )
+                return
+            if button_id == "settings_general_context_budget_reset":
+                self._persist_project_context_budget_tokens(None)
+                self._write_transcript_line("[settings] context budget reset to auto.")
                 return
             if button_id == "settings_toggle_swarm":
                 from swarmee_river.settings import load_settings

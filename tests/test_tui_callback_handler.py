@@ -256,6 +256,48 @@ def test_bedrock_completion_does_not_reemit_reasoning_as_final_output():
     ]
 
 
+def test_bedrock_completion_normalizes_reasoning_and_keeps_final_answer_last():
+    h = TuiCallbackHandler()
+
+    def run():
+        h.callback_handler(
+            event={
+                "contentBlockDelta": {
+                    "delta": {
+                        "reasoningContent": {
+                            "reasoningText": {
+                                "text": "planner    trace\n\nwith   spacing",
+                            }
+                        }
+                    }
+                }
+            },
+            invocation_state={"swarmee": {"provider": "bedrock", "tier": "deep"}},
+        )
+        h.callback_handler(
+            complete=True,
+            message={
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "tool-1", "name": "shell", "input": {"command": "pwd"}}},
+                    {"text": "final answer"},
+                ],
+            },
+            result={"toolUseId": "tool-1", "status": "success", "name": "shell"},
+            invocation_state={"swarmee": {"provider": "bedrock", "tier": "deep"}},
+        )
+
+    events = _capture_events(h, run)
+    assert events[0] == {"event": "thinking", "text": "planner trace\n\nwith spacing"}
+    assert events[1]["event"] == "tool_start"
+    assert events[2]["event"] == "tool_input"
+    assert events[3]["event"] == "tool_result"
+    assert events[4:] == [
+        {"event": "text_delta", "data": "final answer"},
+        {"event": "text_complete"},
+    ]
+
+
 def test_complete_snapshot_fields_do_not_duplicate_streamed_text():
     h = TuiCallbackHandler()
 

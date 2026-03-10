@@ -44,6 +44,7 @@ class _Widget:
         self.label = value
         self.variant = "default"
         self.text = ""
+        self.styles = SimpleNamespace(display="block")
 
     def update(self, text: str) -> None:
         self.text = text
@@ -73,11 +74,15 @@ class _SettingsHarness(SettingsMixin):
             "#settings_bedrock_connect_timeout_input": _Widget("10"),
             "#settings_bedrock_max_retries_input": _Widget("1"),
             "#settings_interrupt_timeout_input": _Widget("2.0"),
+            "#settings_general_context_budget_mode": _Widget("auto"),
+            "#settings_general_context_budget_input": _Widget(""),
         }
         self._settings_bedrock_read_timeout_input = self._widgets["#settings_bedrock_read_timeout_input"]
         self._settings_bedrock_connect_timeout_input = self._widgets["#settings_bedrock_connect_timeout_input"]
         self._settings_bedrock_max_retries_input = self._widgets["#settings_bedrock_max_retries_input"]
         self._settings_interrupt_timeout_input = self._widgets["#settings_interrupt_timeout_input"]
+        self._settings_general_context_budget_mode_select = self._widgets["#settings_general_context_budget_mode"]
+        self._settings_general_context_budget_input = self._widgets["#settings_general_context_budget_input"]
         self._settings_interrupt_force_restart_select = None
         self._settings_diag_level_select = None
         self._settings_diag_redact_toggle = None
@@ -88,6 +93,9 @@ class _SettingsHarness(SettingsMixin):
             daemon=SimpleNamespace(
                 model_provider_override=None,
                 model_tier_override=None,
+                provider=None,
+                proc=None,
+                ready=False,
             )
         )
 
@@ -319,3 +327,23 @@ def test_apply_settings_model_manager_result_persists_models_and_env() -> None:
     assert "env" not in harness.saved_payload or (
         "SWARMEE_BEDROCK_READ_TIMEOUT_SEC" not in harness.saved_payload.get("env", {})
     )
+
+
+def test_apply_context_budget_setting_persists_custom_value() -> None:
+    harness = _SettingsHarness({"context": {}, "models": {}, "env": {}}, selected_id=None)
+
+    harness._apply_context_budget_setting("250000")
+
+    assert harness.saved_payload is not None
+    assert harness.saved_payload["context"]["max_prompt_tokens"] == 250000
+    assert any("250,000" in message for message in harness.messages)
+
+
+def test_apply_context_budget_setting_can_reset_to_auto() -> None:
+    harness = _SettingsHarness({"context": {"max_prompt_tokens": 40000}, "models": {}, "env": {}}, selected_id=None)
+
+    harness._apply_context_budget_setting("")
+
+    assert harness.saved_payload is not None
+    assert "max_prompt_tokens" not in harness.saved_payload.get("context", {})
+    assert any("reset to auto" in message for message in harness.messages)

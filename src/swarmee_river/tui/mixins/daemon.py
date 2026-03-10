@@ -490,10 +490,19 @@ class DaemonMixin:
                 configured_profile = str(extra.get("aws_profile") or "").strip()
             except Exception:
                 configured_profile = ""
-            resolved_profile = (profile or "").strip() or configured_profile or "default"
-            payload.update({"method": "sso", "profile": resolved_profile})
-            self._write_transcript_line(f"[connect] starting provider auth for bedrock (profile={resolved_profile})...")
-            self._show_auth_connect_popup("bedrock", profile=resolved_profile)
+            resolved_profile = (profile or "").strip() or configured_profile
+            payload.update({"method": "sso"})
+            if resolved_profile:
+                payload["profile"] = resolved_profile
+                self._write_transcript_line(
+                    f"[connect] starting provider auth for bedrock (profile={resolved_profile})..."
+                )
+                self._show_auth_connect_popup("bedrock", profile=resolved_profile)
+            else:
+                self._write_transcript_line(
+                    "[connect] starting provider auth for bedrock (default credential chain)..."
+                )
+                self._show_auth_connect_popup("bedrock", profile="default credential chain")
         self._pending_connect_payload = dict(payload)
         if not send_daemon_command(proc, payload):
             self._write_transcript_line("[connect] failed to send command.")

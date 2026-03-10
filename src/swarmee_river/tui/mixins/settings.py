@@ -24,6 +24,7 @@ from swarmee_river.tui.views.settings import (
     env_category_options,
     env_spec_by_key,
 )
+from swarmee_river.utils.provider_utils import normalize_provider_name
 
 _RUN_ACTIVE_TIER_WARNING = "[model] cannot change tier while a run is active."
 
@@ -154,6 +155,54 @@ class SettingsMixin:
             return None
         return value
 
+    def _refresh_context_budget_controls(self, settings: Any) -> None:
+        mode_widget = self._settings_general_context_budget_mode_select
+        input_widget = self._settings_general_context_budget_input
+        mode_value = "custom" if settings.context.max_prompt_tokens is not None else "auto"
+        if mode_widget is not None:
+            with contextlib.suppress(Exception):
+                mode_widget.value = mode_value
+        if input_widget is not None:
+            with contextlib.suppress(Exception):
+                input_widget.value = (
+                    "" if settings.context.max_prompt_tokens is None else str(settings.context.max_prompt_tokens)
+                )
+                input_widget.styles.display = "block" if mode_value == "custom" else "none"
+
+    def _persist_project_context_budget_tokens(self, value: int | None) -> None:
+        payload, path = self._load_project_settings_payload()
+        next_payload = dict(payload)
+        context_payload = (
+            dict(next_payload.get("context") or {})
+            if isinstance(next_payload.get("context"), dict)
+            else {}
+        )
+        if value is None:
+            context_payload.pop("max_prompt_tokens", None)
+        else:
+            context_payload["max_prompt_tokens"] = int(value)
+        if context_payload:
+            next_payload["context"] = context_payload
+        else:
+            next_payload.pop("context", None)
+        self._save_project_settings_payload(next_payload, path)
+        self._refresh_settings_general()
+        self._refresh_settings_env_list()
+        self._refresh_settings_env_detail(self._settings_env_selected_key)
+
+    def _apply_context_budget_setting(self, raw: str) -> None:
+        token = str(raw or "").strip()
+        if not token:
+            self._persist_project_context_budget_tokens(None)
+            self._write_transcript_line("[settings] context budget reset to auto.")
+            return
+        value = self._parse_non_negative_int_setting(token, label="context budget")
+        if value is None or value <= 0:
+            self._write_transcript_line("[settings] context budget must be > 0.")
+            return
+        self._persist_project_context_budget_tokens(value)
+        self._write_transcript_line(f"[settings] context budget set to {value:,} tokens.")
+
     def _apply_bedrock_runtime_settings(self) -> None:
         read_raw = str(getattr(self._settings_bedrock_read_timeout_input, "value", "")).strip()
         connect_raw = str(getattr(self._settings_bedrock_connect_timeout_input, "value", "")).strip()
@@ -272,19 +321,24 @@ class SettingsMixin:
 
     def _settings_auth_status_lines(self) -> list[str]:
         from swarmee_river.settings import load_settings
-        from swarmee_river.utils.provider_utils import has_aws_credentials, has_github_copilot_token
+        from swarmee_river.utils.provider_utils import has_github_copilot_token, resolve_bedrock_runtime_profile
 
         active_provider = self.state.daemon.model_provider_override or self.state.daemon.provider or "(auto)"
         settings = load_settings()
         bedrock = settings.models.providers.get("bedrock")
         extra = dict(getattr(bedrock, "extra", {}) or {})
-        aws_profile = str(extra.get("aws_profile") or "").strip() or "default"
-        aws_ok = has_aws_credentials()
+        configured_profile = str(extra.get("aws_profile") or "").strip()
+        _resolved_profile, aws_ok, aws_source, aws_warning = resolve_bedrock_runtime_profile(configured_profile)
         copilot_ok = has_github_copilot_token()
+        aws_label = f"profile {configured_profile}" if configured_profile else "default credential chain"
+        aws_line = f"AWS ({aws_label}): {'connected' if aws_ok else 'not connected'}"
+        if aws_ok and aws_source:
+            aws_line += f" [source={aws_source}]"
         return [
             f"Active provider: {active_provider}",
-            f"AWS (profile={aws_profile}): {'connected' if aws_ok else 'not connected'}",
+            aws_line,
             f"GitHub Copilot: {'connected' if copilot_ok else 'not connected'}",
+            *([f"Note: {aws_warning}"] if aws_warning else []),
         ]
 
     def _set_settings_env_value_controls(self, *, key: str, current_value: str, default_value: str) -> None:
@@ -448,9 +502,8 @@ class SettingsMixin:
             bedrock = settings.models.providers.get("bedrock")
             extra = dict(getattr(bedrock, "extra", {}) or {})
             configured_profile = str(extra.get("aws_profile") or "").strip()
-            if configured_profile and not str(getattr(aws_input, "value", "")).strip():
-                with contextlib.suppress(Exception):
-                    aws_input.value = configured_profile
+            with contextlib.suppress(Exception):
+                aws_input.value = configured_profile
 
         self._refresh_settings_model_detail()
 
@@ -993,6 +1046,7 @@ class SettingsMixin:
             val = str(settings.context.manager or "summarize").strip().lower()
             with contextlib.suppress(Exception):
                 sel.value = val
+        self._refresh_context_budget_controls(settings)
 
         # -- Preflight select --
         sel = self._settings_general_preflight_select
@@ -1435,6 +1489,8 @@ class SettingsMixin:
         return str(getattr(widget, "value", "")).strip()
 
     def _apply_settings_aws_profile(self, profile: str, *, announce: bool = True) -> None:
+        from swarmee_river.tui.transport import send_daemon_command
+
         normalized = profile.strip()
         if normalized:
             # Persist as structured settings, but also set AWS_PROFILE for this process so
@@ -1448,6 +1504,16 @@ class SettingsMixin:
             os.environ.pop("AWS_PROFILE", None)
             if announce:
                 self._write_transcript_line("[settings] AWS profile cleared (using default credential chain).")
+        active_provider = normalize_provider_name(
+            self.state.daemon.model_provider_override or self.state.daemon.provider or ""
+        )
+        proc = self.state.daemon.proc
+        if proc is not None and proc.poll() is None and self.state.daemon.ready and active_provider == "bedrock":
+            payload: dict[str, Any] = {"cmd": "connect", "provider": "bedrock"}
+            if normalized:
+                payload["profile"] = normalized
+            if send_daemon_command(proc, payload):
+                self._write_transcript_line("[settings] refreshed live Bedrock credentials.")
         self._refresh_settings_env_list()
         self._refresh_settings_env_detail(self._settings_env_selected_key)
         self._refresh_settings_models()

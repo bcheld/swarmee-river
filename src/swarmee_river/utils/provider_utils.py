@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Optional, Tuple
 
@@ -85,6 +86,52 @@ def resolve_aws_auth_source() -> tuple[bool, str]:
     if raw_method:
         return True, raw_method
     return True, "unknown"
+
+
+def resolve_aws_auth_source_for_profile(
+    profile: str | None,
+    *,
+    clear_existing_profile: bool = False,
+) -> tuple[bool, str]:
+    previous = os.environ.get("AWS_PROFILE")
+    resolved_profile = str(profile or "").strip()
+    try:
+        if resolved_profile:
+            os.environ["AWS_PROFILE"] = resolved_profile
+        elif clear_existing_profile:
+            os.environ.pop("AWS_PROFILE", None)
+        return resolve_aws_auth_source()
+    finally:
+        with contextlib.suppress(Exception):
+            if previous is None:
+                os.environ.pop("AWS_PROFILE", None)
+            else:
+                os.environ["AWS_PROFILE"] = previous
+
+
+def resolve_bedrock_runtime_profile(
+    configured_profile: str | None,
+) -> tuple[str | None, bool, str, str | None]:
+    resolved_profile = str(configured_profile or "").strip()
+    if resolved_profile:
+        explicit_has_creds, explicit_source = resolve_aws_auth_source_for_profile(resolved_profile)
+        if explicit_has_creds:
+            return resolved_profile, True, explicit_source, None
+        ambient_has_creds, ambient_source = resolve_aws_auth_source_for_profile(
+            None,
+            clear_existing_profile=True,
+        )
+        if ambient_has_creds:
+            return (
+                None,
+                True,
+                ambient_source,
+                f"Configured AWS profile '{resolved_profile}' is unavailable; using the default credential chain.",
+            )
+        return resolved_profile, False, explicit_source, None
+
+    has_creds, source = resolve_aws_auth_source()
+    return None, has_creds, source, None
 
 
 def resolve_aws_region_source() -> tuple[str | None, str]:

@@ -111,6 +111,41 @@ def test_resolve_aws_auth_source_maps_profile(monkeypatch) -> None:
     assert source == "profile"
 
 
+def test_resolve_aws_auth_source_for_profile_temporarily_overrides_env(monkeypatch) -> None:
+    observed: list[str] = []
+
+    def _fake_resolve() -> tuple[bool, str]:
+        observed.append(str(provider_utils.os.getenv("AWS_PROFILE") or ""))
+        return True, "profile"
+
+    monkeypatch.setenv("AWS_PROFILE", "ambient")
+    monkeypatch.setattr(provider_utils, "resolve_aws_auth_source", _fake_resolve)
+
+    has_creds, source = provider_utils.resolve_aws_auth_source_for_profile("named")
+
+    assert (has_creds, source) == (True, "profile")
+    assert observed == ["named"]
+    assert provider_utils.os.getenv("AWS_PROFILE") == "ambient"
+
+
+def test_resolve_bedrock_runtime_profile_falls_back_to_ambient_chain(monkeypatch) -> None:
+    def _fake_resolve(profile: str | None, *, clear_existing_profile: bool = False) -> tuple[bool, str]:
+        if profile == "broken":
+            return False, "unknown"
+        if clear_existing_profile:
+            return True, "imds"
+        return True, "env"
+
+    monkeypatch.setattr(provider_utils, "resolve_aws_auth_source_for_profile", _fake_resolve)
+
+    profile, has_creds, source, warning = provider_utils.resolve_bedrock_runtime_profile("broken")
+
+    assert profile is None
+    assert has_creds is True
+    assert source == "imds"
+    assert isinstance(warning, str) and "broken" in warning
+
+
 def test_resolve_aws_region_source_reads_botocore_runtime_region(monkeypatch) -> None:
     import botocore.session
 

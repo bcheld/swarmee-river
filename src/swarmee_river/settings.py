@@ -156,6 +156,7 @@ class ModelToolingConfig:
 class ModelContextBehavior:
     strategy: str = "balanced"  # balanced|cache_safe|long_running
     compaction: str = "auto"  # auto|manual
+    max_prompt_tokens: int | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ModelContextBehavior":
@@ -170,19 +171,23 @@ class ModelContextBehavior:
                 allowed={"auto", "manual"},
                 default="auto",
             ),
+            max_prompt_tokens=_as_int(raw.get("max_prompt_tokens"), default=None, min_value=1),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "strategy": self.strategy,
             "compaction": self.compaction,
         }
+        if self.max_prompt_tokens is not None:
+            out["max_prompt_tokens"] = self.max_prompt_tokens
+        return out
 
 
 @dataclass(frozen=True)
 class ContextConfig:
     manager: str = "summarize"  # summarize|sliding|none
-    max_prompt_tokens: int = 20000
+    max_prompt_tokens: int | None = None
     window_size: int = 20
     per_turn: int = 1
     truncate_results: bool = True
@@ -203,7 +208,7 @@ class ContextConfig:
             manager = "summarize"
         return cls(
             manager=manager,
-            max_prompt_tokens=_as_int(raw.get("max_prompt_tokens"), default=20000, min_value=1) or 20000,
+            max_prompt_tokens=_as_int(raw.get("max_prompt_tokens"), default=None, min_value=1),
             window_size=_as_int(raw.get("window_size"), default=20, min_value=1) or 20,
             per_turn=_as_int(raw.get("per_turn"), default=1, min_value=1) or 1,
             truncate_results=bool(_as_bool(raw.get("truncate_results"), default=True)),
@@ -223,9 +228,8 @@ class ContextConfig:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "manager": self.manager,
-            "max_prompt_tokens": self.max_prompt_tokens,
             "window_size": self.window_size,
             "per_turn": self.per_turn,
             "truncate_results": self.truncate_results,
@@ -235,6 +239,9 @@ class ContextConfig:
             "strategy": self.strategy,
             "compaction": self.compaction,
         }
+        if self.max_prompt_tokens is not None:
+            out["max_prompt_tokens"] = self.max_prompt_tokens
+        return out
 
 
 @dataclass(frozen=True)
@@ -1600,7 +1607,11 @@ def default_settings_template() -> SwarmeeSettings:
                             description="Fast Bedrock tier for quick low-cost iterations.",
                             reasoning=ModelReasoningConfig(effort="low"),
                             tooling=ModelToolingConfig(mode="minimal", discovery="off"),
-                            context=ModelContextBehavior(strategy="balanced", compaction="auto"),
+                            context=ModelContextBehavior(
+                                strategy="balanced",
+                                compaction="auto",
+                                max_prompt_tokens=200000,
+                            ),
                         ),
                         "balanced": ModelTier(
                             provider="bedrock",
@@ -1609,7 +1620,11 @@ def default_settings_template() -> SwarmeeSettings:
                             description="Default Bedrock tier for enterprise analytics and coding work.",
                             reasoning=ModelReasoningConfig(effort="medium"),
                             tooling=ModelToolingConfig(mode="standard", discovery="off"),
-                            context=ModelContextBehavior(strategy="balanced", compaction="auto"),
+                            context=ModelContextBehavior(
+                                strategy="balanced",
+                                compaction="auto",
+                                max_prompt_tokens=200000,
+                            ),
                         ),
                         "deep": ModelTier(
                             provider="bedrock",
@@ -1618,7 +1633,11 @@ def default_settings_template() -> SwarmeeSettings:
                             description="Adaptive Claude reasoning for harder analytics tasks.",
                             reasoning=ModelReasoningConfig(effort="high"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
-                            context=ModelContextBehavior(strategy="cache_safe", compaction="auto"),
+                            context=ModelContextBehavior(
+                                strategy="cache_safe",
+                                compaction="auto",
+                                max_prompt_tokens=200000,
+                            ),
                         ),
                         "long": ModelTier(
                             provider="bedrock",
@@ -1627,7 +1646,11 @@ def default_settings_template() -> SwarmeeSettings:
                             description="Use for long-running Bedrock sessions and larger outputs.",
                             reasoning=ModelReasoningConfig(effort="high"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
-                            context=ModelContextBehavior(strategy="long_running", compaction="auto"),
+                            context=ModelContextBehavior(
+                                strategy="long_running",
+                                compaction="auto",
+                                max_prompt_tokens=200000,
+                            ),
                         ),
                     },
                 ),
@@ -1643,7 +1666,11 @@ def default_settings_template() -> SwarmeeSettings:
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="low"),
                             tooling=ModelToolingConfig(mode="minimal", discovery="off"),
-                            context=ModelContextBehavior(strategy="balanced", compaction="manual"),
+                            context=ModelContextBehavior(
+                                strategy="balanced",
+                                compaction="manual",
+                                max_prompt_tokens=400000,
+                            ),
                         ),
                         "balanced": ModelTier(
                             provider="openai",
@@ -1653,7 +1680,11 @@ def default_settings_template() -> SwarmeeSettings:
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="medium"),
                             tooling=ModelToolingConfig(mode="standard", discovery="off"),
-                            context=ModelContextBehavior(strategy="balanced", compaction="auto"),
+                            context=ModelContextBehavior(
+                                strategy="balanced",
+                                compaction="auto",
+                                max_prompt_tokens=400000,
+                            ),
                         ),
                         "deep": ModelTier(
                             provider="openai",
@@ -1663,7 +1694,11 @@ def default_settings_template() -> SwarmeeSettings:
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="high"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
-                            context=ModelContextBehavior(strategy="cache_safe", compaction="auto"),
+                            context=ModelContextBehavior(
+                                strategy="cache_safe",
+                                compaction="auto",
+                                max_prompt_tokens=200000,
+                            ),
                         ),
                         "long": ModelTier(
                             provider="openai",
@@ -1673,7 +1708,11 @@ def default_settings_template() -> SwarmeeSettings:
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="medium"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
-                            context=ModelContextBehavior(strategy="long_running", compaction="auto"),
+                            context=ModelContextBehavior(
+                                strategy="long_running",
+                                compaction="auto",
+                                max_prompt_tokens=200000,
+                            ),
                         ),
                         "coding": ModelTier(
                             provider="openai",
@@ -1683,7 +1722,11 @@ def default_settings_template() -> SwarmeeSettings:
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="high"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
-                            context=ModelContextBehavior(strategy="cache_safe", compaction="auto"),
+                            context=ModelContextBehavior(
+                                strategy="cache_safe",
+                                compaction="auto",
+                                max_prompt_tokens=200000,
+                            ),
                         ),
                     },
                 ),
