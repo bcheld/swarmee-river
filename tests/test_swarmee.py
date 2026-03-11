@@ -1282,6 +1282,10 @@ class TestTuiDaemonMode:
         compact_events = [event for event in events if event.get("event") == "compact_complete"]
         assert compact_events
         assert "compacted" in compact_events[0]
+        assert compact_events[0]["automatic"] is False
+        assert "summary_passes" in compact_events[0]
+        assert "trimmed_messages" in compact_events[0]
+        assert "budget_tokens" in compact_events[0]
 
     def test_tui_daemon_emits_session_available_for_same_cwd(
         self,

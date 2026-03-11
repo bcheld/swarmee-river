@@ -60,10 +60,9 @@ class _SyncRecordingAgent:
         return self.return_value
 
 
-def test_invoke_agent_emits_stall_warning_for_bedrock(monkeypatch) -> None:
-    # Env overrides are no longer supported; monkeypatch the internal constant
-    # to keep the test fast.
+def test_invoke_agent_emits_pre_progress_warning_for_bedrock(monkeypatch) -> None:
     monkeypatch.setattr(agent_runner, "_BEDROCK_STALL_WARN_SEC", 0.04)
+    monkeypatch.setattr(agent_runner, "_BEDROCK_PRE_PROGRESS_WARN_SEC", 0.04)
 
     callback_calls: list[dict[str, Any]] = []
 
@@ -82,11 +81,13 @@ def test_invoke_agent_emits_stall_warning_for_bedrock(monkeypatch) -> None:
     assert result == "ok"
     warning_calls = [item for item in callback_calls if isinstance(item.get("warning_text"), str)]
     assert warning_calls, "expected at least one stall warning callback"
-    assert "stalled" in warning_calls[0]["warning_text"].lower()
+    assert "still thinking" in warning_calls[0]["warning_text"].lower()
+    assert warning_calls[0]["warning_metadata"]["invoke_phase"] == "pre_progress"
 
 
-def test_invoke_agent_stall_warning_is_throttled(monkeypatch) -> None:
+def test_invoke_agent_pre_progress_warning_is_throttled(monkeypatch) -> None:
     monkeypatch.setattr(agent_runner, "_BEDROCK_STALL_WARN_SEC", 0.05)
+    monkeypatch.setattr(agent_runner, "_BEDROCK_PRE_PROGRESS_WARN_SEC", 0.05)
 
     callback_calls: list[dict[str, Any]] = []
 
@@ -105,6 +106,64 @@ def test_invoke_agent_stall_warning_is_throttled(monkeypatch) -> None:
     assert result == "ok"
     warning_calls = [item for item in callback_calls if isinstance(item.get("warning_text"), str)]
     assert len(warning_calls) >= 2
+
+
+def test_bedrock_stall_monitor_waits_for_higher_pre_progress_threshold(monkeypatch) -> None:
+    monkeypatch.setattr(agent_runner, "_BEDROCK_STALL_WARN_SEC", 0.05)
+    monkeypatch.setattr(agent_runner, "_BEDROCK_PRE_PROGRESS_WARN_SEC", 0.2)
+
+    callback_calls: list[dict[str, Any]] = []
+    invocation_state = {"swarmee": {"provider": "bedrock"}}
+    stop_event, thread = agent_runner._start_stall_monitor(
+        callback_handler=lambda **kwargs: callback_calls.append(dict(kwargs)),
+        invocation_state=invocation_state,
+    )
+
+    try:
+        time.sleep(0.07)
+    finally:
+        assert stop_event is not None
+        stop_event.set()
+        assert thread is not None
+        thread.join(timeout=0.3)
+
+    assert callback_calls == []
+
+
+def test_bedrock_stall_monitor_emits_post_progress_warning(monkeypatch) -> None:
+    monkeypatch.setattr(agent_runner, "_BEDROCK_STALL_WARN_SEC", 0.04)
+    monkeypatch.setattr(agent_runner, "_BEDROCK_PRE_PROGRESS_WARN_SEC", 0.2)
+
+    callback_calls: list[dict[str, Any]] = []
+    now = time.monotonic()
+    invocation_state = {
+        "swarmee": {
+            "provider": "bedrock",
+            "invoke_diag": {
+                "invoke_start_mono": now - 0.2,
+                "first_progress_mono": now - 0.2,
+                "last_progress_mono": now - 0.2,
+                "stage": "tool_progress",
+            },
+        }
+    }
+    stop_event, thread = agent_runner._start_stall_monitor(
+        callback_handler=lambda **kwargs: callback_calls.append(dict(kwargs)),
+        invocation_state=invocation_state,
+    )
+
+    try:
+        time.sleep(0.08)
+    finally:
+        assert stop_event is not None
+        stop_event.set()
+        assert thread is not None
+        thread.join(timeout=0.3)
+
+    warning_calls = [item for item in callback_calls if isinstance(item.get("warning_text"), str)]
+    assert warning_calls
+    assert "stalled" in warning_calls[0]["warning_text"].lower()
+    assert warning_calls[0]["warning_metadata"]["invoke_phase"] == "post_progress"
 
 
 def test_windows_loop_policy_auto_does_not_override(monkeypatch) -> None:

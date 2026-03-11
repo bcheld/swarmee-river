@@ -20,6 +20,7 @@ from swarmee_river.tui.mixins.daemon import DaemonMixin
 from swarmee_river.tui.mixins.output import OutputMixin
 from swarmee_river.tui.mixins.plan import PlanMixin
 from swarmee_river.tui.mixins.session import SessionMixin
+from swarmee_river.tui.mixins.settings import SettingsMixin
 from swarmee_river.tui.mixins.thinking import ThinkingMixin
 from swarmee_river.tui.mixins.tools import ToolsMixin
 from swarmee_river.tui.mixins.transcript import TranscriptMixin
@@ -143,6 +144,145 @@ def test_choose_daemon_model_select_value_prefers_pending_then_daemon():
         option_values=values,
     )
     assert selected_no_pending == "openai|balanced"
+
+
+def test_handle_model_info_updates_runtime_context_budget():
+    class _StatusBar:
+        def __init__(self) -> None:
+            self.context_calls: list[tuple[int | None, int | None]] = []
+            self.model_calls: list[str] = []
+
+        def set_context(self, *, prompt_tokens_est, budget_tokens) -> None:  # noqa: ANN001
+            self.context_calls.append((prompt_tokens_est, budget_tokens))
+
+        def set_model(self, summary: str) -> None:
+            self.model_calls.append(summary)
+
+    class _Harness(SettingsMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.daemon.last_prompt_tokens_est = 12_345
+            self._status_bar = _StatusBar()
+            self._model_select_target_until_mono = None
+            self._model_select_target_value = None
+            self._engage_orchestrator_status = None
+            self._settings_general_view = None
+            self._settings_models_view = None
+            self._settings_advanced_view = None
+            self._settings_view_general_button = None
+            self._settings_view_models_button = None
+            self._settings_view_advanced_button = None
+            self.prompt_metric_refreshes = 0
+
+        def _handle_connect_model_info_event(self, _event: dict[str, object]) -> None:
+            return None
+
+        def _refresh_agent_tool_catalog(self, _tool_names) -> None:  # noqa: ANN001
+            return None
+
+        def _refresh_model_select_from_daemon(self, **_kwargs) -> None:
+            return None
+
+        def _refresh_model_select(self) -> None:
+            return None
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _current_model_summary(self) -> str:
+            return "bedrock/deep"
+
+        def _refresh_agent_summary(self) -> None:
+            return None
+
+        def _render_agent_builder_panel(self) -> None:
+            return None
+
+        def _refresh_prompt_metrics(self) -> None:
+            self.prompt_metric_refreshes += 1
+
+    harness = _Harness()
+    harness._handle_model_info(
+        {
+            "provider": "bedrock",
+            "tier": "deep",
+            "model_id": "us.anthropic.claude-opus-4-6-v1",
+            "context_budget_tokens": 200000,
+            "tiers": [
+                {
+                    "provider": "bedrock",
+                    "name": "deep",
+                    "context_budget_tokens": 200000,
+                }
+            ],
+        }
+    )
+
+    assert harness.state.daemon.last_budget_tokens == 200000
+    assert harness._status_bar.context_calls[-1] == (12_345, 200000)
+    assert harness.prompt_metric_refreshes == 1
+
+
+def test_set_model_tier_from_value_updates_budget_optimistically(monkeypatch):
+    sent_commands: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "swarmee_river.tui.transport.send_daemon_command",
+        lambda _proc, payload: sent_commands.append(dict(payload)) or True,
+    )
+
+    class _StatusBar:
+        def __init__(self) -> None:
+            self.context_calls: list[tuple[int | None, int | None]] = []
+            self.model_calls: list[str] = []
+
+        def set_context(self, *, prompt_tokens_est, budget_tokens) -> None:  # noqa: ANN001
+            self.context_calls.append((prompt_tokens_est, budget_tokens))
+
+        def set_model(self, summary: str) -> None:
+            self.model_calls.append(summary)
+
+    class _Proc:
+        def poll(self) -> None:
+            return None
+
+    class _Harness(SettingsMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.daemon.ready = True
+            self.state.daemon.proc = _Proc()
+            self.state.daemon.last_prompt_tokens_est = 5000
+            self.state.daemon.tiers = [
+                {"provider": "openai", "name": "balanced", "context_budget_tokens": 400000},
+                {"provider": "bedrock", "name": "deep", "context_budget_tokens": 200000},
+            ]
+            self._status_bar = _StatusBar()
+            self.prompt_metric_refreshes = 0
+
+        def _refresh_model_select(self) -> None:
+            return None
+
+        def _update_header_status(self) -> None:
+            return None
+
+        def _update_prompt_placeholder(self) -> None:
+            return None
+
+        def _write_transcript_line(self, _text: str) -> None:
+            return None
+
+        def _current_model_summary(self) -> str:
+            return "bedrock/deep"
+
+        def _refresh_prompt_metrics(self) -> None:
+            self.prompt_metric_refreshes += 1
+
+    harness = _Harness()
+    harness._set_model_tier_from_value("bedrock|deep")
+
+    assert harness.state.daemon.last_budget_tokens == 200000
+    assert harness._status_bar.context_calls[-1] == (5000, 200000)
+    assert sent_commands == [{"cmd": "set_model", "provider": "bedrock", "tier": "deep"}]
 
 
 def test_parse_model_select_value_handles_valid_and_special_values():
@@ -3814,7 +3954,7 @@ def test_command_palette_includes_thinking():
     assert palette._filtered[0][0] == "/thinking"
 
 
-def test_render_thinking_indicator_includes_counts_and_preview():
+def test_render_thinking_indicator_stays_single_line_without_preview_text():
     from swarmee_river.tui.widgets import render_thinking_indicator
 
     rendered = render_thinking_indicator(char_count=1247, elapsed_s=8.1, preview="line one\nline two")
@@ -3822,7 +3962,7 @@ def test_render_thinking_indicator_includes_counts_and_preview():
     assert "thinking" in plain
     assert "1,247 chars" in plain
     assert "8s" in plain
-    assert "line two" in plain
+    assert "line two" not in plain
 
 
 def test_reasoning_unavailable_notice_emits_once_for_responses_or_bedrock_reasoning_modes():
@@ -4614,6 +4754,65 @@ def test_usage_event_handler_prefers_event_cost_over_fallback(monkeypatch, tmp_p
     assert handled is True
     assert app.state.daemon.last_cost_usd == 0.1234
     assert status_costs == [0.1234]
+
+
+def test_compact_complete_event_writes_transcript_and_updates_budget() -> None:
+    from swarmee_river.tui.event_router import _handle_usage_and_compaction_events
+
+    notifications: list[tuple[str, str, float]] = []
+    transcript_lines: list[str] = []
+
+    class _StatusBar:
+        def __init__(self) -> None:
+            self.context_calls: list[tuple[int | None, int | None]] = []
+
+        def set_context(self, *, prompt_tokens_est, budget_tokens) -> None:  # noqa: ANN001
+            self.context_calls.append((prompt_tokens_est, budget_tokens))
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    last_usage=None,
+                    last_cost_usd=None,
+                    last_prompt_tokens_est=180000,
+                    last_budget_tokens=200000,
+                )
+            )
+            self._status_bar = _StatusBar()
+            self.refresh_calls = 0
+
+        def _refresh_prompt_metrics(self) -> None:
+            self.refresh_calls += 1
+
+        def _notify(self, text: str, severity: str = "information", timeout: float = 0.0) -> None:
+            notifications.append((text, severity, timeout))
+
+        def _write_transcript_line(self, text: str) -> None:
+            transcript_lines.append(text)
+
+    app = FakeApp()
+    handled = _handle_usage_and_compaction_events(
+        app,
+        "compact_complete",
+        {
+            "automatic": True,
+            "compacted": True,
+            "before_tokens_est": 230000,
+            "after_tokens_est": 180000,
+            "budget_tokens": 200000,
+            "summary_passes": 1,
+            "trimmed_messages": 2,
+            "compacted_read_results": 3,
+        },
+    )
+
+    assert handled is True
+    assert app.state.daemon.last_budget_tokens == 200000
+    assert app.state.daemon.last_prompt_tokens_est == 180000
+    assert "auto-compacted 180,000/200,000 tokens" in transcript_lines[0]
+    assert "summarized 1 pass" in transcript_lines[0]
+    assert notifications == [("Context compacted.", "information", 4.0)]
 
 
 def test_flush_streaming_buffer_keeps_transcript_follow_state() -> None:

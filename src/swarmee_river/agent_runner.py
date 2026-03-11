@@ -24,6 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Internal diagnostic guardrail (not end-user configurable).
 _BEDROCK_STALL_WARN_SEC: float = 90.0
+_BEDROCK_PRE_PROGRESS_WARN_SEC: float = 180.0
 
 
 def _resolve_windows_event_loop_policy() -> str:
@@ -168,46 +169,67 @@ def _start_stall_monitor(
     invocation_state: dict[str, Any],
 ) -> tuple[threading.Event | None, threading.Thread | None]:
     # Fixed diagnostic guardrail (not end-user configurable).
-    warn_sec = float(_BEDROCK_STALL_WARN_SEC)
+    post_progress_warn_sec = float(_BEDROCK_STALL_WARN_SEC)
+    pre_progress_warn_sec = max(float(_BEDROCK_PRE_PROGRESS_WARN_SEC), post_progress_warn_sec)
     if not _is_bedrock_invocation(invocation_state):
         return None, None
 
     dump_enabled = False
     stop_event = threading.Event()
-    check_interval = max(0.05, min(2.0, float(warn_sec) / 4.0))
+    check_interval = max(0.05, min(2.0, float(post_progress_warn_sec) / 4.0))
 
-    def _emit_warning(text: str, *, elapsed_s: float, stage: str) -> None:
+    def _emit_warning(text: str, *, elapsed_s: float, stage: str, phase: str, threshold_s: float) -> None:
         metadata = {
-            "bedrock_stall_warn_sec": float(warn_sec),
+            "bedrock_stall_warn_sec": float(threshold_s),
             "bedrock_stall_elapsed_sec": round(elapsed_s, 2),
             "invoke_stage": stage,
+            "invoke_phase": phase,
         }
         with contextlib.suppress(Exception):
             callback_handler(warning_text=text, warning_metadata=metadata)
 
     def _run() -> None:
-        last_warn_mono = -float(warn_sec)
+        last_warn_mono = -float(pre_progress_warn_sec)
         dumped = False
         while not stop_event.wait(check_interval):
             diag = _ensure_invoke_diag(invocation_state)
             now = time.monotonic()
-            raw_last = diag.get("last_callback_mono", diag.get("invoke_start_mono", now))
-            try:
-                last_callback_mono = float(raw_last)
-            except (TypeError, ValueError):
-                last_callback_mono = now
-            elapsed = now - last_callback_mono
-            if elapsed < float(warn_sec):
-                continue
-            if (now - last_warn_mono) < float(warn_sec):
-                continue
             stage = str(diag.get("stage", "unknown")).strip() or "unknown"
-            warning_text = (
-                f"Bedrock stream appears stalled: no callback events for {elapsed:.1f}s "
-                f"(stage={stage})."
-            )
+            if "first_progress_mono" in diag:
+                raw_last = diag.get("last_progress_mono", diag.get("first_progress_mono", now))
+            else:
+                raw_last = diag.get("invoke_start_mono", now)
+            try:
+                last_progress_mono = float(raw_last)
+            except (TypeError, ValueError):
+                last_progress_mono = now
+            elapsed = now - last_progress_mono
+            if "first_progress_mono" in diag:
+                phase = "post_progress"
+                threshold_s = post_progress_warn_sec
+                warning_text = (
+                    f"Bedrock stream appears stalled: no model/tool progress for {elapsed:.1f}s "
+                    f"(stage={stage})."
+                )
+            else:
+                phase = "pre_progress"
+                threshold_s = pre_progress_warn_sec
+                warning_text = (
+                    f"Bedrock invocation is still thinking with no streamed progress for {elapsed:.1f}s "
+                    f"(stage={stage}). This can be normal for long reasoning turns."
+                )
+            if elapsed < float(threshold_s):
+                continue
+            if (now - last_warn_mono) < float(threshold_s):
+                continue
             _LOGGER.warning(warning_text)
-            _emit_warning(warning_text, elapsed_s=elapsed, stage=stage)
+            _emit_warning(
+                warning_text,
+                elapsed_s=elapsed,
+                stage=stage,
+                phase=phase,
+                threshold_s=threshold_s,
+            )
             if dump_enabled and not dumped:
                 dumped = True
                 with contextlib.suppress(Exception):

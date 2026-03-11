@@ -387,9 +387,16 @@ def _handle_usage_and_compaction_events(app: Any, etype: str, event: dict[str, A
 
     if etype == "compact_complete":
         compacted = bool(event.get("compacted", False))
+        automatic = bool(event.get("automatic", False))
         warning_text = str(event.get("warning", "")).strip()
         before_tokens = event.get("before_tokens_est")
         after_tokens = event.get("after_tokens_est")
+        budget_tokens = event.get("budget_tokens")
+        summary_passes = _as_int(event.get("summary_passes")) or 0
+        trimmed_messages = _as_int(event.get("trimmed_messages")) or 0
+        compacted_read_results = _as_int(event.get("compacted_read_results")) or 0
+        if isinstance(budget_tokens, int) and budget_tokens > 0:
+            app.state.daemon.last_budget_tokens = budget_tokens
         if isinstance(before_tokens, int) and isinstance(after_tokens, int):
             app.state.daemon.last_prompt_tokens_est = after_tokens
             if app._status_bar is not None:
@@ -399,8 +406,27 @@ def _handle_usage_and_compaction_events(app: Any, etype: str, event: dict[str, A
                 )
             app._refresh_prompt_metrics()
         if compacted:
+            details: list[str] = []
+            if compacted_read_results > 0:
+                details.append(
+                    f"compacted {compacted_read_results} read/search result"
+                    f"{'s' if compacted_read_results != 1 else ''}"
+                )
+            if summary_passes > 0:
+                details.append(f"summarized {summary_passes} pass{'es' if summary_passes != 1 else ''}")
+            if trimmed_messages > 0:
+                details.append(f"trimmed {trimmed_messages} message{'s' if trimmed_messages != 1 else ''}")
+            detail_text = f" ({', '.join(details)})" if details else ""
+            token_text = ""
+            if isinstance(after_tokens, int) and isinstance(app.state.daemon.last_budget_tokens, int):
+                token_text = f" {after_tokens:,}/{app.state.daemon.last_budget_tokens:,} tokens"
+            line = f"[context] {'auto-' if automatic else ''}compacted{token_text}{detail_text}."
+            with contextlib.suppress(Exception):
+                app._write_transcript_line(line)
             app._notify("Context compacted.", severity="information", timeout=4.0)
         elif warning_text:
+            with contextlib.suppress(Exception):
+                app._write_transcript_line(f"[context] {warning_text}")
             app._notify(warning_text, severity="warning", timeout=6.0)
         else:
             app._notify("Context compaction made no changes.", severity="information", timeout=4.0)

@@ -97,6 +97,34 @@ class SettingsMixin:
         summary = self._current_model_summary()
         widget.update(f"Orchestrator: {summary}" if summary else "Orchestrator")
 
+    def _resolve_daemon_tier_budget_tokens(self, provider: str, tier: str) -> int | None:
+        normalized_provider = str(provider or "").strip().lower()
+        normalized_tier = str(tier or "").strip().lower()
+        if not normalized_provider or not normalized_tier:
+            return None
+        for item in self.state.daemon.tiers:
+            if not isinstance(item, dict):
+                continue
+            item_provider = str(item.get("provider", "") or "").strip().lower()
+            item_tier = str(item.get("name", "") or "").strip().lower()
+            if item_provider != normalized_provider or item_tier != normalized_tier:
+                continue
+            raw_budget = item.get("context_budget_tokens")
+            if isinstance(raw_budget, int) and raw_budget > 0:
+                return raw_budget
+        return None
+
+    def _apply_runtime_context_budget_tokens(self, budget_tokens: int | None) -> None:
+        self.state.daemon.last_budget_tokens = (
+            budget_tokens if isinstance(budget_tokens, int) and budget_tokens > 0 else None
+        )
+        if self._status_bar is not None:
+            self._status_bar.set_context(
+                prompt_tokens_est=self.state.daemon.last_prompt_tokens_est,
+                budget_tokens=self.state.daemon.last_budget_tokens,
+            )
+        self._refresh_prompt_metrics()
+
     def _refresh_settings_bedrock_runtime_controls(self) -> None:
         from swarmee_river.settings import load_settings
 
@@ -1246,6 +1274,7 @@ class SettingsMixin:
             self._handle_connect_model_info_event(event)
         provider = str(event.get("provider", "")).strip().lower()
         tier = str(event.get("tier", "")).strip().lower()
+        budget_tokens_raw = event.get("context_budget_tokens")
         tool_names_raw = event.get("tool_names")
         if isinstance(tool_names_raw, list):
             self._refresh_agent_tool_catalog([str(item) for item in tool_names_raw])
@@ -1273,6 +1302,10 @@ class SettingsMixin:
         self.state.daemon.tier = tier or None
         self.state.daemon.model_id = str(model_id).strip() if model_id is not None and str(model_id).strip() else None
         self.state.daemon.tiers = tiers if isinstance(tiers, list) else []
+        budget_tokens = budget_tokens_raw if isinstance(budget_tokens_raw, int) and budget_tokens_raw > 0 else None
+        if budget_tokens is None and self.state.daemon.provider and self.state.daemon.tier:
+            budget_tokens = self._resolve_daemon_tier_budget_tokens(self.state.daemon.provider, self.state.daemon.tier)
+        self._apply_runtime_context_budget_tokens(budget_tokens)
         self.state.daemon.current_model = self.state.daemon.model_id or (
             f"{self.state.daemon.provider}/{self.state.daemon.tier}"
             if self.state.daemon.provider and self.state.daemon.tier
@@ -1345,6 +1378,9 @@ class SettingsMixin:
         self.state.daemon.pending_model_select_value = None
         self.state.daemon.model_provider_override = requested_provider or None
         self.state.daemon.model_tier_override = requested_tier or None
+        self._apply_runtime_context_budget_tokens(
+            self._resolve_daemon_tier_budget_tokens(requested_provider, requested_tier)
+        )
         self._refresh_model_select()
         self._update_header_status()
         self._update_prompt_placeholder()

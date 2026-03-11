@@ -70,12 +70,7 @@ def render_thinking_indicator(
         rendered.append(f" ({char_count:,} chars)", style="dim")
     if elapsed_s > 0:
         rendered.append(f" · {elapsed_s:.0f}s", style="dim")
-    if preview:
-        truncated = str(preview).replace("\n", " ").strip()
-        if truncated:
-            if len(truncated) > 60:
-                truncated = "…" + truncated[-59:]
-            rendered.append(f"\n  ╰ {truncated}", style="dim italic")
+    del preview
     return rendered
 
 
@@ -1708,8 +1703,8 @@ class ThinkingBar(Static):
     DEFAULT_CSS = """
     ThinkingBar {
         dock: bottom;
-        height: auto;
-        max-height: 2;
+        height: 1;
+        max-height: 1;
         padding: 0 1;
         background: $surface;
         color: $text-muted;

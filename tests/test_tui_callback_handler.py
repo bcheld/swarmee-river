@@ -46,6 +46,31 @@ def test_thinking_emitted():
     assert events[0] == {"event": "thinking", "text": "pondering..."}
 
 
+def test_reasoning_and_tool_events_mark_invoke_progress() -> None:
+    h = TuiCallbackHandler()
+    invocation_state = {"swarmee": {"provider": "bedrock"}}
+
+    _capture_events(
+        h,
+        lambda: h.callback_handler(reasoningText="pondering...", invocation_state=invocation_state),
+    )
+    diag = invocation_state["swarmee"]["invoke_diag"]
+    assert diag["stage"] == "reasoning"
+    assert "first_progress_mono" in diag
+    first_progress = diag["first_progress_mono"]
+
+    _capture_events(
+        h,
+        lambda: h.callback_handler(
+            current_tool_use={"toolUseId": "t1", "name": "shell", "input": {"command": "pwd"}},
+            invocation_state=invocation_state,
+        ),
+    )
+    diag = invocation_state["swarmee"]["invoke_diag"]
+    assert diag["stage"] in {"tool_start", "tool_progress"}
+    assert diag["last_progress_mono"] >= first_progress
+
+
 def test_tool_start_and_result():
     h = TuiCallbackHandler()
 

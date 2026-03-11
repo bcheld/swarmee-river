@@ -683,6 +683,16 @@ def _resolved_context_budget_tokens(
     return model_manager.resolve_effective_context_budget()
 
 
+def _estimate_agent_prompt_tokens(agent: Any, *, chars_per_token: int = 4) -> tuple[int, int]:
+    from swarmee_river.context.budgeted_summarizing_conversation_manager import (
+        estimate_tokens_for_agent,
+        estimate_tool_schema_chars,
+    )
+
+    tool_schema_chars = estimate_tool_schema_chars(getattr(agent, "tools", None))
+    return estimate_tokens_for_agent(agent, chars_per_token=chars_per_token), tool_schema_chars
+
+
 def _bedrock_message_cache_enabled(*, model_manager: SessionModelManager, selected_provider: str) -> bool:
     tiers = model_manager.list_tiers()
     current_provider = normalize_provider_name(getattr(model_manager, "current_provider", "") or selected_provider)
@@ -712,14 +722,8 @@ def _emit_tui_context_event_if_enabled(
     if not _tui_events_enabled():
         return
     try:
-        from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
-
         chars_per_token = 4
-        prompt_tokens_est = estimate_tokens(
-            system_prompt=getattr(agent, "system_prompt", None),
-            messages=getattr(agent, "messages", []),
-            chars_per_token=chars_per_token,
-        )
+        prompt_tokens_est, tool_schema_chars = _estimate_agent_prompt_tokens(agent, chars_per_token=chars_per_token)
         budget = _resolved_context_budget_tokens(settings=settings, model_manager=model_manager)
         diagnostics: dict[str, Any] = {}
         manager = getattr(agent, "conversation_manager", None)
@@ -735,6 +739,7 @@ def _emit_tui_context_event_if_enabled(
                 "budget_tokens": budget,
                 "chars_per_token": chars_per_token,
                 "messages": len(getattr(agent, "messages", []) or []),
+                "tool_schema_chars": tool_schema_chars,
                 "bedrock_message_cache_enabled": _bedrock_message_cache_enabled(
                     model_manager=model_manager,
                     selected_provider=getattr(model_manager, "current_provider", "") or "bedrock",
@@ -1039,6 +1044,7 @@ def _build_conversation_manager(
         try:
             from swarmee_river.context.budgeted_summarizing_conversation_manager import (
                 BudgetedSummarizingConversationManager,
+                SWARMEE_SUMMARIZATION_SYSTEM_PROMPT,
             )
         except Exception:
             return None
@@ -1047,7 +1053,7 @@ def _build_conversation_manager(
             max_prompt_tokens=max_prompt_tokens,
             summary_ratio=float(settings.context.summary_ratio),
             preserve_recent_messages=int(settings.context.preserve_recent_messages),
-            summarization_system_prompt=summarization_system_prompt,
+            summarization_system_prompt=summarization_system_prompt or SWARMEE_SUMMARIZATION_SYSTEM_PROMPT,
             strategy=resolved_strategy,
             compaction_mode=resolved_compaction,
             stable_tool_names=stable_tool_names,
@@ -1203,11 +1209,7 @@ def _build_agent_runtime(
     initial_context_behavior = model_manager.current_context_behavior()
     initial_context_strategy = str(initial_context_behavior.strategy or settings.context.strategy or "balanced")
     initial_compaction_mode = str(initial_context_behavior.compaction or settings.context.compaction or "auto")
-    summarization_system_prompt = (
-        base_system_prompt
-        if settings.context.cache_safe_summary or initial_context_strategy.strip().lower() == "cache_safe"
-        else None
-    )
+    summarization_system_prompt = None
     conversation_manager = _build_conversation_manager(
         settings=settings,
         window_size=args.window_size,
@@ -1260,9 +1262,7 @@ def _build_agent_runtime(
         behavior = model_manager.current_context_behavior()
         strategy = str(behavior.strategy or settings.context.strategy or "balanced").strip().lower() or "balanced"
         compaction_mode = str(behavior.compaction or settings.context.compaction or "auto").strip().lower() or "auto"
-        summarization_system_prompt = (
-            base_system_prompt if settings.context.cache_safe_summary or strategy == "cache_safe" else None
-        )
+        summarization_system_prompt = None
         conversation_manager = _build_conversation_manager(
             settings=settings,
             window_size=args.window_size,
@@ -1690,16 +1690,13 @@ def _build_agent_runtime(
         after_tokens: int | None = None
         compacted = False
         compacted_read_results = 0
+        summary_passes = 0
+        trimmed_messages = 0
         warning: str | None = None
+        effective_budget = model_manager.resolve_effective_context_budget()
 
         with contextlib.suppress(Exception):
-            from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
-
-            before_tokens = estimate_tokens(
-                system_prompt=getattr(agent, "system_prompt", None),
-                messages=getattr(agent, "messages", []),
-                chars_per_token=4,
-            )
+            before_tokens, _tool_schema_chars = _estimate_agent_prompt_tokens(agent, chars_per_token=4)
 
         if manager is None:
             warning = "Context compaction is unavailable for this session."
@@ -1711,16 +1708,20 @@ def _build_agent_runtime(
                 if callable(compact_fn):
                     result = compact_fn(agent)
                     compacted_read_results = int(result.get("compacted_read_results", 0) or 0)
+                    summary_passes = int(result.get("summary_passes", 0) or 0)
+                    trimmed_messages = int(result.get("trimmed_messages", 0) or 0)
                     compacted = bool(
-                        int(result.get("summary_passes", 0) or 0) > 0
-                        or int(result.get("trimmed_messages", 0) or 0) > 0
+                        summary_passes > 0
+                        or trimmed_messages > 0
                         or compacted_read_results > 0
                     )
                 elif callable(reduce_fn):
                     reduce_fn(agent, e=None)
+                    summary_passes = 1
                     compacted = True
                 elif callable(apply_fn):
                     apply_fn(agent)
+                    summary_passes = 1
                     compacted = True
                 else:
                     warning = "Current conversation manager does not support compaction."
@@ -1728,13 +1729,7 @@ def _build_agent_runtime(
                 warning = f"Context compaction failed: {exc}"
 
         with contextlib.suppress(Exception):
-            from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tokens
-
-            after_tokens = estimate_tokens(
-                system_prompt=getattr(agent, "system_prompt", None),
-                messages=getattr(agent, "messages", []),
-                chars_per_token=4,
-            )
+            after_tokens, _tool_schema_chars = _estimate_agent_prompt_tokens(agent, chars_per_token=4)
         if (
             isinstance(before_tokens, int)
             and isinstance(after_tokens, int)
@@ -1747,6 +1742,10 @@ def _build_agent_runtime(
             "compacted": compacted,
             "before_tokens_est": before_tokens,
             "after_tokens_est": after_tokens,
+            "summary_passes": summary_passes,
+            "trimmed_messages": trimmed_messages,
+            "within_budget": bool(isinstance(after_tokens, int) and after_tokens <= effective_budget),
+            "budget_tokens": effective_budget,
             "compacted_read_results": compacted_read_results,
             "warning": warning,
         }
@@ -1871,7 +1870,9 @@ def _build_agent_runtime(
             agent_tools = getattr(agent, "tools", None) or []
             sw["tool_count"] = len(agent_tools)
             try:
-                sw["tool_schema_chars"] = sum(len(json.dumps(t, default=str)) for t in agent_tools)
+                from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tool_schema_chars
+
+                sw["tool_schema_chars"] = estimate_tool_schema_chars(agent_tools)
             except Exception:
                 sw["tool_schema_chars"] = 0
 
@@ -1886,34 +1887,27 @@ def _build_agent_runtime(
                 if callable(compact_fn):
                     compact_result = compact_fn(agent)
                 if isinstance(compact_result, dict):
+                    before_tokens = compact_result.get("before_tokens_est")
                     after_tokens = compact_result.get("after_tokens_est")
                     summary_passes = int(compact_result.get("summary_passes", 0) or 0)
                     trimmed_messages = int(compact_result.get("trimmed_messages", 0) or 0)
                     compacted_read_results = int(compact_result.get("compacted_read_results", 0) or 0)
                     within_budget = bool(compact_result.get("within_budget", False))
+                    compacted = bool(summary_passes > 0 or trimmed_messages > 0 or compacted_read_results > 0)
                     _emit_tui_context_event_if_enabled(agent, settings=settings, model_manager=model_manager)
-                    if summary_passes > 0 or trimmed_messages > 0 or compacted_read_results > 0:
-                        details: list[str] = []
-                        if compacted_read_results > 0:
-                            details.append(
-                                f"compacted {compacted_read_results} older read/search result"
-                                f"{'s' if compacted_read_results != 1 else ''}"
-                            )
-                        if summary_passes > 0:
-                            details.append(f"summarized {summary_passes} pass{'es' if summary_passes != 1 else ''}")
-                        if trimmed_messages > 0:
-                            details.append(
-                                f"trimmed {trimmed_messages} older "
-                                f"message{'s' if trimmed_messages != 1 else ''}"
-                            )
-                        detail_text = ", ".join(details)
+                    if compacted or not within_budget:
                         _emit_tui_event(
                             {
-                                "event": "warning",
-                                "text": (
-                                    f"Context compacted to stay within the {effective_budget:,}-token budget"
-                                    + (f" ({detail_text})." if detail_text else ".")
-                                ),
+                                "event": "compact_complete",
+                                "automatic": True,
+                                "compacted": compacted,
+                                "before_tokens_est": before_tokens,
+                                "after_tokens_est": after_tokens,
+                                "budget_tokens": effective_budget,
+                                "summary_passes": summary_passes,
+                                "trimmed_messages": trimmed_messages,
+                                "compacted_read_results": compacted_read_results,
+                                "warning": compact_result.get("warning"),
                             }
                         )
                     if not within_budget:
@@ -4199,9 +4193,13 @@ def main() -> None:
                 _write_stdout_jsonl(
                     {
                         "event": "compact_complete",
+                        "automatic": False,
                         "compacted": bool(compact_result.get("compacted", False)),
                         "before_tokens_est": compact_result.get("before_tokens_est"),
                         "after_tokens_est": compact_result.get("after_tokens_est"),
+                        "budget_tokens": compact_result.get("budget_tokens"),
+                        "summary_passes": compact_result.get("summary_passes", 0),
+                        "trimmed_messages": compact_result.get("trimmed_messages", 0),
                         "compacted_read_results": compact_result.get("compacted_read_results", 0),
                         "warning": compact_result.get("warning"),
                     }

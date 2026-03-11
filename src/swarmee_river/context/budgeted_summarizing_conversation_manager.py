@@ -9,11 +9,16 @@ from typing import Any
 from strands.agent.conversation_manager import SummarizingConversationManager
 
 _CACHE_COMPACTED_PREFIX = "[cache-compacted]"
-_CACHE_SENSITIVE_TOOLS = {"file_read", "file_search"}
+_COMPACTABLE_TOOLS = {"file_read", "file_search"}
 _STRATEGY_RAW_RESULT_KEEP = {
     "cache_safe": 2,
     "long_running": 4,
 }
+SWARMEE_SUMMARIZATION_SYSTEM_PROMPT = """You are compressing prior conversation state for a future model turn.
+Return only a concise plain-text summary of durable facts, decisions, open questions,
+and exact file or path references that still matter.
+Do not emit chain-of-thought, reasoning narration, tool calls, tool transcripts, XML, JSON, or role labels.
+If tools were used, summarize only the durable outcome in plain language."""
 
 
 @dataclass
@@ -37,6 +42,25 @@ def _tool_result_text(tool_result: dict[str, Any]) -> str:
         if isinstance(text, str) and text.strip():
             parts.append(text.strip())
     return "\n\n".join(parts).strip()
+
+
+def estimate_tool_schema_chars(tools: Any) -> int:
+    if tools is None:
+        return 0
+    if isinstance(tools, dict):
+        values = list(tools.values())
+    elif isinstance(tools, (list, tuple, set)):
+        values = list(tools)
+    else:
+        values = [tools]
+
+    total = 0
+    for tool in values:
+        try:
+            total += len(json.dumps(tool, ensure_ascii=False, sort_keys=True, default=str))
+        except Exception:
+            total += len(str(tool))
+    return total
 
 
 def _tool_result_signature(record: _ToolResultRecord) -> tuple[str, str]:
@@ -195,17 +219,130 @@ def _extract_message_text(message: dict[str, Any]) -> str:
 
     return "\n".join(parts)
 
-
-def estimate_tokens(*, system_prompt: str | None, messages: list[dict[str, Any]], chars_per_token: int) -> int:
+def estimate_tokens(
+    *,
+    system_prompt: str | None,
+    messages: list[dict[str, Any]],
+    chars_per_token: int,
+    tool_schema_chars: int = 0,
+) -> int:
     total_chars = 0
     if system_prompt:
         total_chars += len(system_prompt)
+    total_chars += max(0, int(tool_schema_chars or 0))
     for message in messages:
         if isinstance(message, dict):
             total_chars += len(_extract_message_text(message))
 
     divisor = max(1, chars_per_token)
     return int(math.ceil(total_chars / divisor))
+
+
+def estimate_tokens_for_agent(agent: Any, *, chars_per_token: int = 4) -> int:
+    return estimate_tokens(
+        system_prompt=getattr(agent, "system_prompt", None),
+        messages=getattr(agent, "messages", []),
+        chars_per_token=chars_per_token,
+        tool_schema_chars=estimate_tool_schema_chars(getattr(agent, "tools", None)),
+    )
+
+
+def _tool_activity_descriptor(tool_name: str, tool_input: dict[str, Any] | None) -> str:
+    return _tool_result_descriptor(
+        _ToolResultRecord(
+            tool_name=tool_name,
+            tool_use_id="summary",
+            tool_input=tool_input if isinstance(tool_input, dict) else {},
+            tool_result={},
+            text="",
+        )
+    )
+
+
+def _summarize_tool_use(tool_name: str, tool_input: dict[str, Any] | None) -> str:
+    descriptor = _tool_activity_descriptor(tool_name, tool_input)
+    return f"[tool request] {tool_name}; {descriptor}"
+
+
+def _summarize_tool_result_for_summary(
+    *,
+    tool_name: str,
+    tool_input: dict[str, Any] | None,
+    tool_result: dict[str, Any],
+) -> str:
+    descriptor = _tool_activity_descriptor(tool_name, tool_input)
+    status = str(tool_result.get("status") or "unknown").strip() or "unknown"
+    text = _tool_result_text(tool_result)
+    original_chars = len(text)
+    return f"[tool result] {tool_name}; {descriptor}; status={status}; chars={original_chars}"
+
+
+def _sanitize_messages_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tool_uses: dict[str, tuple[str, dict[str, Any]]] = {}
+    sanitized: list[dict[str, Any]] = []
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "user").strip() or "user"
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+
+            tool_use = item.get("toolUse")
+            if isinstance(tool_use, dict):
+                tool_use_id = str(tool_use.get("toolUseId") or tool_use.get("id") or "").strip()
+                tool_name = str(tool_use.get("name") or "unknown").strip() or "unknown"
+                tool_input = tool_use.get("input")
+                normalized_input = tool_input if isinstance(tool_input, dict) else {}
+                if tool_use_id:
+                    tool_uses[tool_use_id] = (tool_name, normalized_input)
+                parts.append(_summarize_tool_use(tool_name, normalized_input))
+
+            tool_result = item.get("toolResult")
+            if isinstance(tool_result, dict):
+                tool_use_id = str(tool_result.get("toolUseId") or "").strip()
+                tool_name, tool_input = tool_uses.get(tool_use_id, ("unknown", {}))
+                parts.append(
+                    _summarize_tool_result_for_summary(
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                        tool_result=tool_result,
+                    )
+                )
+
+        merged = "\n".join(part for part in parts if part).strip()
+        if not merged:
+            continue
+        sanitized.append({"role": role, "content": [{"text": merged}]})
+
+    return sanitized
+
+
+def _sanitize_summary_message(message: Any) -> dict[str, Any]:
+    parts: list[str] = []
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+        elif isinstance(message.get("text"), str) and str(message.get("text")).strip():
+            parts.append(str(message.get("text")).strip())
+
+    summary_text = "\n\n".join(parts).strip() or "Conversation summary unavailable."
+    return {"role": "user", "content": [{"text": summary_text}]}
 
 
 class BudgetedSummarizingConversationManager(SummarizingConversationManager):
@@ -229,6 +366,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         strategy: str = "balanced",
         compaction_mode: str = "auto",
         stable_tool_names: list[str] | None = None,
+        compactable_tool_names: list[str] | None = None,
     ) -> None:
         super().__init__(
             summary_ratio=summary_ratio,
@@ -245,14 +383,21 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         self.strategy = strategy.strip().lower() if isinstance(strategy, str) else "balanced"
         self.compaction_mode = compaction_mode.strip().lower() if isinstance(compaction_mode, str) else "auto"
         self.stable_tool_names = [str(name).strip() for name in (stable_tool_names or []) if str(name).strip()]
+        configured_compactable = (
+            compactable_tool_names if compactable_tool_names is not None else list(_COMPACTABLE_TOOLS)
+        )
+        self.compactable_tool_names = {
+            str(name).strip() for name in configured_compactable if str(name).strip()
+        } or set(_COMPACTABLE_TOOLS)
         self._last_compacted_read_results = 0
 
     def estimate_tokens_for_agent(self, agent: "Any") -> int:
-        return estimate_tokens(
-            system_prompt=getattr(agent, "system_prompt", None),
-            messages=getattr(agent, "messages", []),
-            chars_per_token=self.chars_per_token,
-        )
+        return estimate_tokens_for_agent(agent, chars_per_token=self.chars_per_token)
+
+    def _generate_summary(self, messages: list[dict[str, Any]], agent: "Any") -> dict[str, Any]:
+        sanitized_messages = _sanitize_messages_for_summary(messages)
+        summary_message = super()._generate_summary(sanitized_messages, agent)
+        return _sanitize_summary_message(summary_message)
 
     def reduce_context(self, agent: "Any", e: Exception | None = None, **kwargs: Any) -> None:
         messages = getattr(agent, "messages", [])
@@ -292,7 +437,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         records = [
             record
             for record in _iter_tool_result_records(messages)
-            if record.tool_name in _CACHE_SENSITIVE_TOOLS and not record.text.startswith(_CACHE_COMPACTED_PREFIX)
+            if record.tool_name in self.compactable_tool_names and not record.text.startswith(_CACHE_COMPACTED_PREFIX)
         ]
         if not records:
             return 0
@@ -333,7 +478,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         raw_recent = sum(
             1
             for record in records
-            if record.tool_name in _CACHE_SENSITIVE_TOOLS and not record.text.startswith(_CACHE_COMPACTED_PREFIX)
+            if record.tool_name in self.compactable_tool_names and not record.text.startswith(_CACHE_COMPACTED_PREFIX)
         )
         return {
             "uncached_tail_tokens_est": self.estimate_uncached_tail_tokens(agent),

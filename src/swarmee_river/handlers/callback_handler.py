@@ -124,6 +124,7 @@ def _mark_invoke_diag(
     *,
     stage: str | None = None,
     saw_callback: bool = False,
+    saw_progress: bool = False,
     saw_text_delta: bool = False,
     saw_complete: bool = False,
 ) -> None:
@@ -135,6 +136,11 @@ def _mark_invoke_diag(
         diag["last_callback_mono"] = now
         callback_count = int(diag.get("callback_count", 0) or 0)
         diag["callback_count"] = callback_count + 1
+    if saw_progress:
+        diag["last_progress_mono"] = now
+        diag.setdefault("first_progress_mono", now)
+        progress_count = int(diag.get("progress_count", 0) or 0)
+        diag["progress_count"] = progress_count + 1
     if stage:
         normalized_stage = str(stage).strip()
         if normalized_stage:
@@ -342,6 +348,7 @@ class CallbackHandler:
 
             if reasoningText:
                 _safe_print(reasoningText, end="")
+                _mark_invoke_diag(invocation_state, stage="reasoning", saw_progress=True)
 
             if start_event_loop and self.thinking_spinner is not None and not truthy_env("SWARMEE_TUI_EVENTS", False):
                 self.thinking_spinner.update("[blue] thinking...[/blue]")
@@ -361,7 +368,12 @@ class CallbackHandler:
 
         # Handle regular output
         if data:
-            _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
+            _mark_invoke_diag(
+                invocation_state,
+                stage="first_text_delta",
+                saw_progress=True,
+                saw_text_delta=True,
+            )
             self._emit_terminal_text(data, complete=complete)
         elif complete:
             self._reset_text_turn_state()
@@ -391,12 +403,14 @@ class CallbackHandler:
                         "start_time": time.time(),
                         "input_size": 0,
                     }
+                    _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
 
                 # Update tool progress
                 if tool_id in self.tool_histories:
                     current_size = len(tool_input)
                     if current_size > self.tool_histories[tool_id]["input_size"]:
                         self.tool_histories[tool_id]["input_size"] = current_size
+                        _mark_invoke_diag(invocation_state, stage="tool_progress", saw_progress=True)
                         if self.current_spinner:
                             self.current_spinner.update(f"🛠️  {tool_name}: {current_size} chars")
 
@@ -406,6 +420,7 @@ class CallbackHandler:
                 tool_use = content.get("toolUse")
                 if tool_use:
                     tool_name = tool_use.get("name")
+                    _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
                     if self.current_spinner:
                         self.current_spinner.info(f"🔧 Starting {tool_name}...")
 
@@ -415,6 +430,7 @@ class CallbackHandler:
                 if tool_result:
                     tool_id = tool_result.get("toolUseId")
                     status = tool_result.get("status")
+                    _mark_invoke_diag(invocation_state, stage="tool_result", saw_progress=True)
 
                     if isinstance(tool_id, str) and tool_id in self.tool_histories:
                         tool_info = self.tool_histories[tool_id]
@@ -730,9 +746,11 @@ class TuiCallbackHandler:
     def _flush_tool_progress(self, tool_use_id: str) -> None:
         del tool_use_id
 
-    def _emit_tool_heartbeats(self) -> None:
+    def _emit_tool_heartbeats(self) -> bool:
+        emitted = False
         for tool_use_id in list(self.tool_histories.keys()):
-            self._emit_tool_progress_if_due(tool_use_id, heartbeat_only=True)
+            emitted = self._emit_tool_progress_if_due(tool_use_id, heartbeat_only=True) or emitted
+        return emitted
 
     def _extract_tool_progress_chunks(
         self,
@@ -1381,10 +1399,15 @@ class TuiCallbackHandler:
             result=result,
             extra_event_fields=extra_event_fields,
         )
+        emitted_reasoning = False
         if reasoningText:
             self._emit_reasoning_text(str(reasoningText))
+            emitted_reasoning = True
         for chunk in reasoning_chunks:
             self._emit_reasoning_text(chunk)
+            emitted_reasoning = True
+        if emitted_reasoning:
+            _mark_invoke_diag(invocation_state, stage="reasoning", saw_progress=True)
 
         suppress_reasoning_snapshot_text = bool(self._emitted_reasoning_texts_turn)
         assistant_snapshot_text = self._extract_text_from_assistant_message(
@@ -1448,6 +1471,7 @@ class TuiCallbackHandler:
                     tool_input=tool_input,
                     emit_start=(tool_id not in self.tool_histories),
                 )
+                _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
 
                 if tool_input is not None and tool_id in self.tool_histories:
                     current_size = len(str(tool_input))
@@ -1465,6 +1489,7 @@ class TuiCallbackHandler:
                                 }
                             )
                             info["last_progress_emit_mono"] = now
+                            _mark_invoke_diag(invocation_state, stage="tool_progress", saw_progress=True)
                 self._emit_plan_progress_from_tool(tool_name=tool_name, tool_input=tool_input)
 
         extra_tool_start = self._extract_tool_start_from_extra_fields(extra_event_fields)
@@ -1476,6 +1501,7 @@ class TuiCallbackHandler:
                 tool_input=tool_input,
                 emit_start=(tool_use_id not in self.tool_histories),
             )
+            _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
             self._emit_plan_progress_from_tool(tool_name=tool_name, tool_input=tool_input)
 
         for tool_use_id, stream, content in self._extract_tool_progress_chunks(
@@ -1484,11 +1510,13 @@ class TuiCallbackHandler:
             extra_event_fields=extra_event_fields,
         ):
             self._append_tool_progress(tool_use_id, content, stream=stream)
+            _mark_invoke_diag(invocation_state, stage="tool_progress", saw_progress=True)
 
         extra_tool_result = self._extract_tool_result_from_extra_fields(extra_event_fields)
         if extra_tool_result is not None:
             tool_use_id, status, tool_name = extra_tool_result
             self._emit_tool_result(tool_use_id, status, tool_name=tool_name)
+            _mark_invoke_diag(invocation_state, stage="tool_result", saw_progress=True)
 
         if message.get("role") == "assistant":
             for content in _message_content_blocks(message):
@@ -1507,6 +1535,7 @@ class TuiCallbackHandler:
                             tool_input=tool_input,
                             emit_start=(tid not in self.tool_histories),
                         )
+                        _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
                         if isinstance(tool_input, dict):
                             self._emit(
                                 {
@@ -1529,6 +1558,7 @@ class TuiCallbackHandler:
                             str(status),
                             tool_name=str(tool_label) if tool_label else None,
                         )
+                        _mark_invoke_diag(invocation_state, stage="tool_result", saw_progress=True)
 
         result_tool_emitted = False
         if isinstance(result, dict):
@@ -1538,6 +1568,7 @@ class TuiCallbackHandler:
                 tool_label = result.get("name")
                 self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
                 result_tool_emitted = True
+                _mark_invoke_diag(invocation_state, stage="tool_result", saw_progress=True)
 
         if event_loop_throttled_delay:
             self._emit(
@@ -1565,7 +1596,14 @@ class TuiCallbackHandler:
                     or emitted_stream_text
                 )
         if self._saw_text_delta and not saw_text_before:
-            _mark_invoke_diag(invocation_state, stage="first_text_delta", saw_text_delta=True)
+            _mark_invoke_diag(
+                invocation_state,
+                stage="first_text_delta",
+                saw_progress=True,
+                saw_text_delta=True,
+            )
+        elif emitted_stream_text:
+            _mark_invoke_diag(invocation_state, stage="text_delta", saw_progress=True)
 
         emitted_text_fallback = False
         allow_result_text_fallback = not bool(
@@ -1582,7 +1620,8 @@ class TuiCallbackHandler:
         if should_emit_complete:
             self._flush_plan_marker_buffer()
 
-        self._emit_tool_heartbeats()
+        if self._emit_tool_heartbeats():
+            _mark_invoke_diag(invocation_state, stage="tool_progress", saw_progress=True)
 
         if (
             should_emit_complete
@@ -1621,6 +1660,7 @@ class TuiCallbackHandler:
             self._reset_bedrock_stream_state()
 
         if emitted_text_fallback:
+            _mark_invoke_diag(invocation_state, stage="result_text", saw_progress=True)
             self._flush_plan_marker_buffer()
             self._reset_turn_state()
 
