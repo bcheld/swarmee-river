@@ -214,7 +214,7 @@ TOOL_SPEC = {
 }
 
 
-def rich_interface(tool: ToolUse) -> ToolResult:
+def rich_interface(tool: ToolUse, **_kwargs: object) -> ToolResult:
     tool_use_id = tool["toolUseId"]
     tool_input = tool["input"]
     console = Console()

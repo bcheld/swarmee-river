@@ -93,6 +93,30 @@ async def test_new_command_resets_session_timeline(tui_app_factory):
         assert app.state.session.timeline_events == [], "timeline_events should be cleared after _start_fresh_session()"
 
 
+async def test_new_command_resets_prompt_metrics_and_error_ui(tui_app_factory):
+    async with tui_app_factory() as (app, pilot, transport):
+        transport.emit_ready(session_id="old-session")
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+
+        app.state.daemon.last_prompt_tokens_est = 180000
+        app.state.daemon.last_budget_tokens = 200000
+        app.state.session.error_count = 2
+        app.state.session.issues = [{"id": "issue-1", "text": "boom"}]
+        app._pending_error_action = {"kind": "tool"}
+        app._record_thinking_event("reasoning text")
+        await pilot.pause(delay=0.1)
+
+        app._start_fresh_session()
+        await pilot.pause(delay=0.1)
+
+        assert app.state.daemon.last_prompt_tokens_est == 0
+        assert app.state.daemon.last_budget_tokens == 200000
+        assert app.state.session.error_count == 0
+        assert app.state.session.issues == []
+        assert app._pending_error_action is None
+        assert app._active_reasoning_block is None
+
+
 # ---------------------------------------------------------------------------
 # Scenario 4 — error output goes to issues panel
 # ---------------------------------------------------------------------------
@@ -222,6 +246,67 @@ async def test_thinking_bar_stays_visible_briefly_on_immediate_first_delta(tui_a
         await pilot.pause(delay=0.40)
         assert str(app._thinking_bar.styles.display) == "none"
         assert app._active_thinking_indicator is None
+
+
+async def test_assistant_output_is_segmented_around_tool_blocks(tui_app_factory):
+    from textual.containers import VerticalScroll
+
+    from swarmee_river.tui.widgets import AssistantMessage
+
+    async with tui_app_factory() as (app, pilot, transport):
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+        app._current_assistant_chunks = []
+        app._streaming_buffer = []
+        app._active_assistant_message = None
+        app._assistant_placeholder_written = False
+        app._last_structured_assistant_text_turn = ""
+
+        transport.emit_event({"event": "text_delta", "data": "Investigating."})
+        transport.emit_event({"event": "tool_start", "tool_use_id": "tool-1", "tool": "file_search", "input": {}})
+        transport.emit_event(
+            {"event": "tool_result", "tool_use_id": "tool-1", "tool": "file_search", "status": "success"}
+        )
+        transport.emit_event({"event": "text_delta", "data": "Final answer."})
+        transport.emit_event({"event": "text_complete"})
+        await pilot.pause(delay=0.25)
+
+        transcript = app.query_one("#transcript", VerticalScroll)
+        assistant_messages = [child for child in transcript.children if isinstance(child, AssistantMessage)]
+
+        assert len(assistant_messages) == 2
+        assert assistant_messages[-2].full_text == "Investigating."
+        assert assistant_messages[-1].full_text == "Final answer."
+
+
+async def test_assistant_output_is_segmented_around_reasoning_blocks(tui_app_factory):
+    from textual.containers import VerticalScroll
+
+    from swarmee_river.tui.widgets import AssistantMessage, ReasoningBlock
+
+    async with tui_app_factory() as (app, pilot, transport):
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+        app._current_assistant_chunks = []
+        app._streaming_buffer = []
+        app._active_assistant_message = None
+        app._assistant_placeholder_written = False
+        app._last_structured_assistant_text_turn = ""
+
+        transport.emit_event({"event": "text_delta", "data": "Let me think."})
+        transport.emit_event({"event": "thinking", "text": "Reasoning details"})
+        transport.emit_event({"event": "text_delta", "data": "Done."})
+        transport.emit_event({"event": "text_complete"})
+        await pilot.pause(delay=0.25)
+
+        transcript = app.query_one("#transcript", VerticalScroll)
+        assistant_messages = [child for child in transcript.children if isinstance(child, AssistantMessage)]
+        reasoning_blocks = [child for child in transcript.children if isinstance(child, ReasoningBlock)]
+
+        assert len(assistant_messages) == 2
+        assert len(reasoning_blocks) == 1
+        assert assistant_messages[-2].full_text == "Let me think."
+        assert assistant_messages[-1].full_text == "Done."
 
 
 async def test_model_selector_moves_to_agents_overview_and_updates_runtime_state(tui_app_factory):

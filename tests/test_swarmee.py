@@ -1844,6 +1844,18 @@ class TestOverflowErrorClassification:
         assert event["retryable"] is True
         assert event["retry_after_s"] == 4
 
+    def test_build_tui_error_event_marks_escalatable_as_non_retryable(self):
+        event = swarmee._build_tui_error_event(
+            "Prompt still exceeds the configured context budget after compaction.",
+            category_hint="escalatable",
+        )
+        assert event["category"] == "escalatable"
+        assert event["retryable"] is False
+
+    def test_escalatable_retry_exception_filter_rejects_generic_errors(self):
+        assert swarmee._is_escalatable_retry_exception(RuntimeError("maximum context length exceeded")) is True
+        assert swarmee._is_escalatable_retry_exception(RuntimeError("ValidationException: malformed request")) is False
+
     def test_build_tui_error_event_extracts_tool_use_id(self):
         event = swarmee._build_tui_error_event(
             "tool execution failed: tool_use_id=t-99",

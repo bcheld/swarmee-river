@@ -19,11 +19,23 @@ def test_classify_bedrock_throttling_as_transient() -> None:
 def test_classify_openai_context_length_as_escalatable() -> None:
     result = classify_error_message("OpenAI error: context_length_exceeded")
     assert result["category"] == ERROR_CATEGORY_ESCALATABLE
-    assert result["retryable"] is True
+    assert result["retryable"] is False
 
 
-def test_classify_ollama_connection_refused_as_transient() -> None:
-    result = classify_error_message("Ollama request failed: connection refused")
+def test_classify_validation_exception_as_fatal() -> None:
+    result = classify_error_message("ValidationException: malformed request")
+    assert result["category"] == ERROR_CATEGORY_FATAL
+    assert result["retryable"] is False
+
+
+def test_classify_param_validation_error_as_fatal() -> None:
+    result = classify_error_message("Parameter validation failed: invalid type for parameter messages")
+    assert result["category"] == ERROR_CATEGORY_FATAL
+    assert result["retryable"] is False
+
+
+def test_classify_http_503_as_transient() -> None:
+    result = classify_error_message("ServiceUnavailableException: HTTP 503 from upstream stream")
     assert result["category"] == ERROR_CATEGORY_TRANSIENT
     assert result["retryable"] is True
 

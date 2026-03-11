@@ -66,6 +66,24 @@ class OutputMixin:
             parts.append(full_text)
         return self._normalize_assistant_compare_text("".join(parts))
 
+    def _has_live_assistant_segment(self) -> bool:
+        current_chunks = getattr(self, "_current_assistant_chunks", None)
+        if isinstance(current_chunks, list) and current_chunks:
+            return True
+        streaming_buffer = getattr(self, "_streaming_buffer", None)
+        if isinstance(streaming_buffer, list) and streaming_buffer:
+            return True
+        active = getattr(self, "_active_assistant_message", None)
+        if active is None:
+            return False
+        full_text = getattr(active, "full_text", None)
+        return isinstance(full_text, str) and bool(full_text)
+
+    def _finalize_assistant_segment_before_intermediate_block(self) -> None:
+        if not self._has_live_assistant_segment():
+            return
+        self._finalize_assistant_message()
+
     def _should_suppress_raw_assistant_output(self, text: str) -> bool:
         if not self.state.daemon.query_active:
             return False
@@ -192,6 +210,56 @@ class OutputMixin:
         if widget is not None:
             with contextlib.suppress(Exception):
                 widget.hide_prompt()
+
+    def _reset_run_local_ui_state(self, *, clear_prompt_context: bool) -> None:
+        self._reset_consent_panel()
+        self._reset_error_action_prompt()
+        self._flush_all_streaming_buffers()
+        self._finalize_assistant_message()
+        self._dismiss_thinking(emit_summary=False)
+        self._clear_pending_tool_starts()
+        self._cancel_tool_progress_flush_timer()
+        self._tool_progress_pending_ids = set()
+        self.state.daemon.run_tool_count = 0
+        self.state.daemon.run_start_time = None
+        self.state.daemon.query_active = False
+        self._current_assistant_chunks = []
+        self._streaming_buffer = []
+        self._streaming_last_flush_mono = 0.0
+        self._current_assistant_model = None
+        self._current_assistant_timestamp = None
+        self._assistant_completion_seen_turn = False
+        self._assistant_placeholder_written = False
+        self._stream_render_warning_emitted_turn = False
+        self._structured_assistant_seen_turn = False
+        self._raw_assistant_lines_suppressed_turn = 0
+        self._last_structured_assistant_text_turn = ""
+        self._callback_event_trace_turn = []
+        self._active_assistant_message = None
+        self._active_reasoning_block = None
+        self._last_thinking_text = ""
+        self._thinking_seen_turn = False
+        self._thinking_unavailable_notice_emitted_turn = False
+        self._tool_blocks = {}
+        self.state.daemon.turn_output_chunks = []
+        self.state.daemon.last_usage = None
+        self.state.daemon.last_cost_usd = None
+        if clear_prompt_context:
+            self.state.daemon.last_prompt_tokens_est = 0
+            self._prompt_input_tokens_est = 0
+        if self.state.daemon.status_timer is not None:
+            self.state.daemon.status_timer.stop()
+            self.state.daemon.status_timer = None
+        if self._status_bar is not None:
+            self._status_bar.set_state("idle")
+            self._status_bar.set_tool_count(0)
+            self._status_bar.set_elapsed(0.0)
+            self._status_bar.set_usage(None, cost_usd=None)
+            self._status_bar.set_context(
+                prompt_tokens_est=self.state.daemon.last_prompt_tokens_est,
+                budget_tokens=self.state.daemon.last_budget_tokens,
+            )
+        self._refresh_prompt_metrics()
 
     def _next_available_tier_name(self) -> str | None:
         current_tier = (self.state.daemon.tier or "").strip().lower()

@@ -18,25 +18,24 @@ _ERROR_CATEGORIES = {
 }
 
 _TOOL_USE_ID_RE = re.compile(r"(?:tool_use_id|tool-id|tool id)\s*[:=]\s*(?P<id>[A-Za-z0-9._-]+)", re.IGNORECASE)
+_HTTP_TRANSIENT_CODE_RE = re.compile(r"\b(?:429|500|502|503|504)\b")
 
 _TRANSIENT_MARKERS = (
-    # Bedrock / OpenAI / generic HTTP transient failures.
     "throttlingexception",
     "modelnotreadyexception",
     "rate limit",
     "rate_limit_error",
-    "429",
-    "timeout",
-    "timed out",
-    "temporarily unavailable",
-    "try again",
+    "internalserverexception",
     "service unavailable",
-    "503",
-    "502",
-    "500",
-    # Ollama availability/network shape.
-    "connection refused",
-    "econnrefused",
+    "temporarily unavailable",
+    "gateway timeout",
+    "connection reset by peer",
+    "connection aborted",
+    "broken pipe",
+    "read timeout",
+    "timed out",
+    "stream error",
+    "streaming error",
 )
 
 _ESCALATABLE_MARKERS = (
@@ -49,6 +48,18 @@ _ESCALATABLE_MARKERS = (
     "model capacity",
     "insufficient capacity",
     "max output token limit",
+)
+
+_NON_RETRYABLE_VALIDATION_MARKERS = (
+    "validationexception",
+    "paramvalidationerror",
+    "parameter validation failed",
+    "request validation failed",
+    "invalid type for parameter",
+    "unknown parameter in input",
+    "unknown parameter",
+    "invalid request",
+    "malformed input",
 )
 
 _AUTH_MARKERS = (
@@ -111,22 +122,21 @@ def classify_error_message(
             "tool" in lowered and any(token in lowered for token in (" failed", " error", " exception"))
         ):
             category = ERROR_CATEGORY_TOOL_ERROR
+        elif any(marker in lowered for marker in _NON_RETRYABLE_VALIDATION_MARKERS):
+            category = ERROR_CATEGORY_FATAL
         elif any(marker in lowered for marker in _AUTH_MARKERS) or (
             "permission denied" in lowered and "tool" not in lowered
         ):
             category = ERROR_CATEGORY_AUTH_ERROR
         elif any(marker in lowered for marker in _ESCALATABLE_MARKERS):
             category = ERROR_CATEGORY_ESCALATABLE
-            retryable = True
-        elif any(marker in lowered for marker in _TRANSIENT_MARKERS):
+        elif _HTTP_TRANSIENT_CODE_RE.search(lowered) or any(marker in lowered for marker in _TRANSIENT_MARKERS):
             category = ERROR_CATEGORY_TRANSIENT
             retryable = True
         else:
             category = ERROR_CATEGORY_FATAL
 
     if category == ERROR_CATEGORY_TRANSIENT:
-        retryable = True
-    elif category == ERROR_CATEGORY_ESCALATABLE:
         retryable = True
     else:
         retryable = False

@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import pytest
+
 from swarmee_river.models import bedrock as bedrock_model
 
 
@@ -93,3 +95,28 @@ def test_bedrock_instance_warns_once_per_process_for_missing_region(monkeypatch,
     assert isinstance(model_b, _FakeBedrockModel)
     matching = [record for record in caplog.records if "is prefixed but AWS region is not set" in record.getMessage()]
     assert len(matching) == 1
+
+
+def test_validate_converse_stream_request_accepts_valid_payload() -> None:
+    model = bedrock_model.instance(model_id="us.anthropic.claude-sonnet-4-20250514-v1:0", region_name="us-east-1")
+    request = {
+        "modelId": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "messages": [{"role": "user", "content": [{"text": "hello"}]}],
+        "system": [],
+        "inferenceConfig": {},
+    }
+
+    bedrock_model._validate_converse_stream_request(request, client=model.client)
+
+
+def test_validate_converse_stream_request_rejects_invalid_payload() -> None:
+    model = bedrock_model.instance(model_id="us.anthropic.claude-sonnet-4-20250514-v1:0", region_name="us-east-1")
+    request = {
+        "modelId": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "messages": "not-a-list",
+        "system": [],
+        "inferenceConfig": {},
+    }
+
+    with pytest.raises(bedrock_model.BedrockConverseStreamValidationError, match="request validation failed"):
+        bedrock_model._validate_converse_stream_request(request, client=model.client)

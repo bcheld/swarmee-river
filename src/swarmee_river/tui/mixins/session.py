@@ -622,6 +622,7 @@ class SessionMixin:
         self.state.daemon.available_restore_session_id = None
         self.state.daemon.available_restore_turn_count = 0
         self.state.daemon.last_restored_turn_count = 0
+        self._reset_run_local_ui_state(clear_prompt_context=True)
         self._on_active_session_changed(old_session_id, new_session_id)
         self._spawn_daemon(restart=True)
         self._write_transcript_line("[session] starting fresh.")

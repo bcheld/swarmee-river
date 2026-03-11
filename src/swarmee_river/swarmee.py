@@ -178,7 +178,7 @@ from swarmee_river.session.graph_index import (
 )
 from swarmee_river.session.store import SessionStore
 from swarmee_river.settings import SwarmeeSettings, apply_project_env_overrides, load_settings, save_settings
-from swarmee_river.tools import get_tools
+from swarmee_river.tools import _HIDDEN_RUNTIME_TOOL_NAMES, get_tools
 from swarmee_river.utils.agent_runtime_utils import (
     build_base_system_prompt,
     plan_json_for_execution,
@@ -404,6 +404,27 @@ def _is_context_window_overflow_error(exc: BaseException) -> bool:
         "token limit exceeded",
     )
     return any(marker in text for marker in markers)
+
+
+def _is_escalatable_retry_exception(exc: BaseException) -> bool:
+    if isinstance(exc, MaxTokensReachedException):
+        return True
+    category = str(classify_error_message(str(exc or "")).get("category", "")).strip().lower()
+    return category == ERROR_CATEGORY_ESCALATABLE
+
+
+def _remove_hidden_runtime_tools(agent: Any) -> None:
+    hidden = set(_HIDDEN_RUNTIME_TOOL_NAMES)
+    if not hidden:
+        return
+    registry = getattr(getattr(agent, "tool_registry", None), "registry", None)
+    if isinstance(registry, dict):
+        for name in hidden:
+            registry.pop(name, None)
+    dynamic_tools = getattr(getattr(agent, "tool_registry", None), "dynamic_tools", None)
+    if isinstance(dynamic_tools, dict):
+        for name in hidden:
+            dynamic_tools.pop(name, None)
 
 
 def _emit_tui_event(event: dict[str, Any]) -> None:
@@ -1247,13 +1268,15 @@ def _build_agent_runtime(
         if state is not None:
             kwargs["state"] = state
         try:
-            return Agent(**kwargs)
+            agent_instance = Agent(**kwargs)
         except TypeError:
             kwargs.pop("conversation_manager", None)
             kwargs.pop("hooks", None)
             kwargs.pop("messages", None)
             kwargs.pop("state", None)
-            return Agent(**kwargs)
+            agent_instance = Agent(**kwargs)
+        _remove_hidden_runtime_tools(agent_instance)
+        return agent_instance
 
     agent = create_agent()
 
@@ -1953,25 +1976,7 @@ def _build_agent_runtime(
                     print(f"\n{error_msg}")
                 agent = create_agent()
                 raise
-            except Exception as exc:
-                should_retry_without_reminder = bool(system_reminder) and _is_context_window_overflow_error(exc)
-                if should_retry_without_reminder:
-                    warning_text = (
-                        "Prompt overflow detected; retrying once without preflight reminder context for this turn."
-                    )
-                    _emit_tui_event({"event": "warning", "text": warning_text})
-                    if not _tui_events_enabled():
-                        print(f"\n[warn] {warning_text}")
-                    return invoke_agent(
-                        agent,
-                        query,
-                        callback_handler=callback_handler,
-                        interrupt_event=interrupt_event,
-                        invocation_state=invocation_state,
-                        system_reminder=None,
-                        structured_output_model=structured_output_model,
-                        structured_output_prompt=structured_output_prompt,
-                    )
+            except Exception:
                 raise
 
     def _escalation_attempts() -> int:
@@ -1991,6 +1996,7 @@ def _build_agent_runtime(
         run_once: Callable[[], Any],
         retryable_exceptions: tuple[type[Exception], ...],
         non_retryable_exceptions: tuple[type[BaseException], ...] = (),
+        retryable_filter: Callable[[Exception], bool] | None = None,
     ) -> Any:
         attempted: set[str] = set()
         max_attempts = _escalation_attempts()
@@ -2002,6 +2008,8 @@ def _build_agent_runtime(
             except non_retryable_exceptions:
                 raise
             except retryable_exceptions as exc:
+                if retryable_filter is not None and not retryable_filter(exc):
+                    raise
                 last_error = exc
 
             if not _maybe_escalate_tier(attempted=attempted):
@@ -2117,6 +2125,7 @@ def _build_agent_runtime(
                 run_once=_run_execute_once,
                 retryable_exceptions=(Exception,),
                 non_retryable_exceptions=(AgentInterruptedError,),
+                retryable_filter=lambda exc: _is_escalatable_retry_exception(exc),
             )
         finally:
             active_plan_prompt_section = None

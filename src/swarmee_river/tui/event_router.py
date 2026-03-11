@@ -490,6 +490,8 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         with contextlib.suppress(Exception):
             app._trace_turn_event("tool_start")
         app._dismiss_thinking(emit_summary=True)
+        with contextlib.suppress(Exception):
+            app._finalize_assistant_segment_before_intermediate_block()
         tid = str(event.get("tool_use_id", "")).strip() or f"tool-{app.state.daemon.run_tool_count + 1}"
         tool_name = str(event.get("tool", "unknown"))
         app._tool_blocks[tid] = {
@@ -517,6 +519,8 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         tid = str(event.get("tool_use_id", "")).strip()
         record = app._tool_blocks.get(tid)
         if record is None and tid:
+            with contextlib.suppress(Exception):
+                app._finalize_assistant_segment_before_intermediate_block()
             fallback_tool_name = str(event.get("tool", "unknown"))
             record = {
                 "tool_use_id": tid,
@@ -572,6 +576,9 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
             duration_s = 0.0
         record = app._tool_blocks.get(tid)
         tool_name = str(event.get("tool", "unknown"))
+        if record is None:
+            with contextlib.suppress(Exception):
+                app._finalize_assistant_segment_before_intermediate_block()
         if record is not None:
             record["status"] = status
             record["duration_s"] = duration_s

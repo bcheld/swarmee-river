@@ -273,3 +273,10 @@ class TestRichInterface:
             assert mock_console.return_value.print.call_count == 6
             # Check success status
             assert result["status"] == "success"
+
+    def test_rich_interface_ignores_extra_kwargs(self):
+        tool = {"toolUseId": "test_id", "input": {"interface_definition": {"components": []}}}
+
+        result = rich_interface(tool, invocation_state={"ignored": True})
+
+        assert result["status"] == "success"

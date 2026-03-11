@@ -4,6 +4,8 @@ import logging
 from typing import Any
 
 from botocore.config import Config as BotocoreConfig
+from botocore.exceptions import ParamValidationError
+from botocore.validate import validate_parameters
 from strands.models import BedrockModel, Model
 from typing_extensions import Unpack
 
@@ -18,6 +20,10 @@ _BEDROCK_MODEL_PREFIX_REGION = {
     "au": "ap-southeast-",
 }
 _MISSING_REGION_WARNING_KEYS: set[str] = set()
+
+
+class BedrockConverseStreamValidationError(ValueError):
+    """Raised when Swarmee builds an invalid Bedrock ConverseStream request."""
 
 
 def _resolve_region(config: dict[str, Any]) -> str:
@@ -70,6 +76,33 @@ def _warn_if_model_region_looks_mismatched(config: dict[str, Any]) -> None:
     )
 
 
+def _validate_converse_stream_request(request: dict[str, Any], *, client: Any) -> None:
+    service_model = getattr(getattr(client, "meta", None), "service_model", None)
+    if service_model is None:
+        return
+    operation_model = service_model.operation_model("ConverseStream")
+    input_shape = getattr(operation_model, "input_shape", None)
+    if input_shape is None:
+        return
+    try:
+        validate_parameters(request, input_shape)
+    except ParamValidationError as exc:
+        raise BedrockConverseStreamValidationError(
+            "Bedrock ConverseStream request validation failed before sending the request. "
+            f"{exc}"
+        ) from exc
+
+
+def _validating_bedrock_model_class(base_cls: type[BedrockModel]) -> type[BedrockModel]:
+    class _ValidatingBedrockModel(base_cls):  # type: ignore[misc,valid-type]
+        def _format_request(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            request = super()._format_request(*args, **kwargs)
+            _validate_converse_stream_request(request, client=self.client)
+            return request
+
+    return _ValidatingBedrockModel
+
+
 def instance(**model_config: Unpack[BedrockModel.BedrockConfig]) -> Model:
     """Create instance of SDK's Bedrock model provider.
 
@@ -87,4 +120,5 @@ def instance(**model_config: Unpack[BedrockModel.BedrockConfig]) -> Model:
 
     _warn_if_model_region_looks_mismatched(config_dict)
 
-    return BedrockModel(**config_dict)
+    model_cls = _validating_bedrock_model_class(BedrockModel)
+    return model_cls(**config_dict)

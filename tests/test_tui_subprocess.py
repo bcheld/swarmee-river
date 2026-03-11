@@ -462,12 +462,15 @@ def test_start_fresh_session_rotates_session_id_and_restarts_daemon():
                     available_restore_session_id="old-session-id",
                     available_restore_turn_count=12,
                     last_restored_turn_count=4,
+                    last_prompt_tokens_est=12345,
+                    last_budget_tokens=200000,
                 )
             )
             self.session_changes: list[tuple[str | None, str | None]] = []
             self.spawn_calls: list[bool] = []
             self.transcript: list[str] = []
             self.saved = False
+            self.reset_calls: list[bool] = []
 
         def _on_active_session_changed(self, old_session_id: str | None, new_session_id: str | None) -> None:
             self.session_changes.append((old_session_id, new_session_id))
@@ -482,6 +485,11 @@ def test_start_fresh_session_rotates_session_id_and_restarts_daemon():
         def _save_session(self) -> None:
             self.saved = True
 
+        def _reset_run_local_ui_state(self, *, clear_prompt_context: bool) -> None:
+            self.reset_calls.append(clear_prompt_context)
+            if clear_prompt_context:
+                self.state.daemon.last_prompt_tokens_est = 0
+
     harness = _Harness()
     harness._start_fresh_session()
 
@@ -495,9 +503,137 @@ def test_start_fresh_session_rotates_session_id_and_restarts_daemon():
     assert harness.state.daemon.available_restore_session_id is None
     assert harness.state.daemon.available_restore_turn_count == 0
     assert harness.state.daemon.last_restored_turn_count == 0
+    assert harness.state.daemon.last_prompt_tokens_est == 0
+    assert harness.state.daemon.last_budget_tokens == 200000
     assert harness.spawn_calls == [True]
+    assert harness.reset_calls == [True]
     assert harness.saved is True
     assert harness.transcript[-1] == "[session] starting fresh."
+
+
+def test_reset_run_local_ui_state_clears_prompt_context_and_error_actions():
+    class _StatusBar:
+        def __init__(self) -> None:
+            self.context_calls: list[tuple[int | None, int | None]] = []
+
+        def set_state(self, _state: str) -> None:
+            return None
+
+        def set_tool_count(self, _count: int) -> None:
+            return None
+
+        def set_elapsed(self, _elapsed: float) -> None:
+            return None
+
+        def set_usage(self, _usage, *, cost_usd=None) -> None:  # noqa: ANN001
+            del cost_usd
+            return None
+
+        def set_context(self, *, prompt_tokens_est, budget_tokens) -> None:  # noqa: ANN001
+            self.context_calls.append((prompt_tokens_est, budget_tokens))
+
+    class _Timer:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    class _Harness(OutputMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    run_tool_count=3,
+                    run_start_time=10.0,
+                    query_active=False,
+                    turn_output_chunks=["chunk"],
+                    last_usage={"inputTokens": 1},
+                    last_cost_usd=0.1,
+                    last_prompt_tokens_est=180000,
+                    last_budget_tokens=200000,
+                    status_timer=_Timer(),
+                )
+            )
+            self._pending_error_action = {"kind": "tool"}
+            self._error_action_prompt_widget = None
+            self._consent_prompt_widget = None
+            self._consent_hide_timer = None
+            self._consent_prompt_nonce = 0
+            self._consent_active = False
+            self._consent_buffer = []
+            self._consent_tool_name = "tool"
+            self._status_bar = _StatusBar()
+            self._prompt_input_tokens_est = 42
+            self._current_assistant_chunks = ["hello"]
+            self._streaming_buffer = [" world"]
+            self._current_assistant_model = "bedrock/deep"
+            self._current_assistant_timestamp = "10:00 AM"
+            self._assistant_completion_seen_turn = True
+            self._assistant_placeholder_written = True
+            self._stream_render_warning_emitted_turn = True
+            self._structured_assistant_seen_turn = True
+            self._raw_assistant_lines_suppressed_turn = 2
+            self._last_structured_assistant_text_turn = "hello world"
+            self._callback_event_trace_turn = ["text_delta"]
+            self._active_assistant_message = None
+            self._active_reasoning_block = object()
+            self._last_thinking_text = "plan"
+            self._thinking_seen_turn = True
+            self._thinking_unavailable_notice_emitted_turn = True
+            self._tool_blocks = {"tool-1": {"widget": object()}}
+            self._tool_progress_pending_ids = {"tool-1"}
+            self._refresh_count = 0
+            self.flushed = 0
+            self.finalized = 0
+            self.dismissed = 0
+            self.cleared_pending = 0
+            self.cancelled_tool_progress = 0
+
+        def _flush_all_streaming_buffers(self) -> None:
+            self.flushed += 1
+
+        def _finalize_assistant_message(self) -> None:
+            self.finalized += 1
+
+        def _dismiss_thinking(self, *, emit_summary: bool = False) -> None:
+            del emit_summary
+            self.dismissed += 1
+
+        def _clear_pending_tool_starts(self) -> None:
+            self.cleared_pending += 1
+
+        def _cancel_tool_progress_flush_timer(self) -> None:
+            self.cancelled_tool_progress += 1
+
+        def _refresh_prompt_metrics(self) -> None:
+            self._refresh_count += 1
+
+        def _reset_consent_panel(self) -> None:
+            return None
+
+        def _reset_error_action_prompt(self) -> None:
+            self._pending_error_action = None
+
+    harness = _Harness()
+    harness._reset_run_local_ui_state(clear_prompt_context=True)
+
+    assert harness._pending_error_action is None
+    assert harness.state.daemon.last_prompt_tokens_est == 0
+    assert harness.state.daemon.last_budget_tokens == 200000
+    assert harness._prompt_input_tokens_est == 0
+    assert harness.state.daemon.run_tool_count == 0
+    assert harness.state.daemon.turn_output_chunks == []
+    assert harness.state.daemon.last_usage is None
+    assert harness.state.daemon.last_cost_usd is None
+    assert harness._tool_blocks == {}
+    assert harness._tool_progress_pending_ids == set()
+    assert harness._status_bar.context_calls[-1] == (0, 200000)
+    assert harness.flushed == 1
+    assert harness.finalized == 1
+    assert harness.dismissed == 1
+    assert harness.cleared_pending == 1
+    assert harness.cancelled_tool_progress == 1
+    assert harness._refresh_count == 1
 
 
 def test_classify_tui_error_event_prefers_daemon_metadata() -> None:

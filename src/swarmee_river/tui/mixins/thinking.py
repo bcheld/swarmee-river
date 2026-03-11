@@ -161,6 +161,8 @@ class ThinkingMixin:
         from swarmee_river.tui.widgets import ReasoningBlock
 
         chunk = sanitize_output_text(str(thinking_text or ""))
+        if chunk and hasattr(self, "_finalize_assistant_segment_before_intermediate_block"):
+            self._finalize_assistant_segment_before_intermediate_block()
         if not self._current_thinking:
             self._ensure_thinking_state_active()
         else:

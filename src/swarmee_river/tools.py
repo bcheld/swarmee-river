@@ -33,6 +33,7 @@ from tools.http_request import http_request as http_request_fallback
 from tools.office import office
 from tools.python_repl import python_repl as python_repl_fallback
 from tools.retrieve import retrieve as retrieve_fallback
+from tools.rich_interface import rich_interface
 from tools.s3_browser import s3_browser
 from tools.session_s3 import session_s3
 from tools.shell import shell as shell_fallback
@@ -99,6 +100,7 @@ _CUSTOM_TOOLS: dict[str, Any] = {
     "store_in_kb": store_in_kb,
     "strand": strand,
     "welcome": welcome,
+    "rich_interface": rich_interface,
     "sop": sop,
     "artifact": artifact,
     "git": git,
@@ -112,6 +114,8 @@ _CUSTOM_TOOLS: dict[str, Any] = {
     # Override any `strands_tools.swarm` with a cancellable implementation.
     "swarm": swarm,
 }
+
+_HIDDEN_RUNTIME_TOOL_NAMES: frozenset[str] = frozenset({"rich_interface"})
 
 
 def _load_optional_strands_tools() -> dict[str, Any]:
@@ -138,5 +142,7 @@ def get_tools(settings: SwarmeeSettings | None = None) -> dict[str, Any]:
     if settings is not None and settings.runtime.enable_project_context_tool:
         custom_tools["project_context"] = project_context
     tools |= custom_tools
+    for tool_name in _HIDDEN_RUNTIME_TOOL_NAMES:
+        tools.pop(tool_name, None)
 
     return tools

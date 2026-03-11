@@ -188,6 +188,7 @@ _CUSTOM_TOOL_NAMES = frozenset(
         "store_in_kb",
         "strand",
         "welcome",
+        "rich_interface",
         "sop",
         "artifact",
         "git",

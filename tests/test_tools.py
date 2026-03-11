@@ -1,6 +1,7 @@
 import importlib
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from swarmee_river.settings import default_settings_template
 from swarmee_river.tools import get_tools
@@ -29,6 +30,7 @@ def test_tools_include_core_coding_primitives():
     assert "athena_query" in tools
     assert "todoread" in tools
     assert "todowrite" in tools
+    assert "rich_interface" not in tools
 
 
 def test_tools_expose_canonical_editing_surface_only():
@@ -52,6 +54,20 @@ def test_project_context_tool_can_be_enabled():
     settings = replace(settings, runtime=replace(settings.runtime, enable_project_context_tool=True))
     tools = get_tools(settings)
     assert "project_context" in tools
+
+
+def test_hidden_runtime_tools_are_removed_from_agent_registry():
+    from swarmee_river.swarmee import _remove_hidden_runtime_tools
+
+    registry = {"rich_interface": object(), "shell": object()}
+    dynamic_tools = {"rich_interface": object()}
+    agent = SimpleNamespace(tool_registry=SimpleNamespace(registry=registry, dynamic_tools=dynamic_tools))
+
+    _remove_hidden_runtime_tools(agent)
+
+    assert "rich_interface" not in registry
+    assert "rich_interface" not in dynamic_tools
+    assert "shell" in registry
 
 
 def _result_text(result: dict[str, object]) -> str:
