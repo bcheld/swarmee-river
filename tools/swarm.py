@@ -6,6 +6,11 @@ from strands import Agent, tool
 from strands.multiagent import Swarm
 
 from swarmee_river.tool_permissions import set_permissions
+from swarmee_river.utils.fork_utils import (
+    build_fork_invocation_state,
+    capture_shared_prefix_fork,
+    create_shared_prefix_child_agent,
+)
 
 
 def _create_custom_agents(
@@ -32,36 +37,48 @@ def _create_custom_agents(
                 counter += 1
         used_names.add(agent_name)
 
-        system_prompt = spec.get("system_prompt")
-        if not system_prompt:
-            if parent_agent and getattr(parent_agent, "system_prompt", None):
-                system_prompt = (
-                    "You are a helpful AI assistant specializing in collaborative problem solving.\n\n"
-                    f"Base Instructions:\n{parent_agent.system_prompt}"
-                )
-            else:
-                system_prompt = "You are a helpful AI assistant specializing in collaborative problem solving."
-        else:
-            if (
-                parent_agent
-                and getattr(parent_agent, "system_prompt", None)
-                and spec.get("inherit_parent_prompt", False)
-            ):
-                system_prompt = f"{system_prompt}\n\nBase Instructions:\n{parent_agent.system_prompt}"
-
         agent_tools: Any = spec.get("tools")
-        if agent_tools and parent_agent and hasattr(parent_agent, "tool_registry"):
-            available_tools = parent_agent.tool_registry.registry.keys()
-            filtered_tool_names = [t for t in agent_tools if t in available_tools]
-            agent_tools = [parent_agent.tool_registry.registry[name] for name in filtered_tool_names]
-
-        swarm_agent = Agent(
-            name=agent_name,
-            system_prompt=system_prompt,
-            tools=agent_tools,
-            callback_handler=getattr(parent_agent, "callback_handler", None) if parent_agent else None,
-            trace_attributes=getattr(parent_agent, "trace_attributes", None) if parent_agent else None,
+        filtered_tool_names = (
+            [str(t).strip() for t in agent_tools if str(t).strip()]
+            if isinstance(agent_tools, list)
+            else []
         )
+
+        if parent_agent is not None and getattr(parent_agent, "model", None) is not None:
+            instruction_lines = [
+                "You are participating in a shared-prefix swarm fork.",
+                "Collaborate on the upcoming swarm task and keep your contribution scoped to your role.",
+            ]
+            role = str(spec.get("role") or "").strip()
+            if role:
+                instruction_lines.append(f"Role: {role}")
+            system_prompt = str(spec.get("system_prompt") or "").strip()
+            if system_prompt:
+                instruction_lines.append(f"Additional swarm instructions:\n{system_prompt}")
+            if filtered_tool_names:
+                instruction_lines.append(
+                    f"If tools are required, only use these tools: {', '.join(filtered_tool_names)}."
+                )
+            swarm_agent, _snapshot = create_shared_prefix_child_agent(
+                parent_agent=parent_agent,
+                kind="swarm",
+                seed_instruction="\n\n".join(instruction_lines),
+                tool_allowlist=filtered_tool_names,
+                callback_handler=None,
+            )
+            swarm_agent.name = agent_name
+            swarm_agent.description = role or None
+        else:
+            system_prompt = spec.get("system_prompt")
+            if not system_prompt:
+                system_prompt = "You are a helpful AI assistant specializing in collaborative problem solving."
+            swarm_agent = Agent(
+                name=agent_name,
+                system_prompt=system_prompt,
+                tools=agent_tools,
+                callback_handler=getattr(parent_agent, "callback_handler", None) if parent_agent else None,
+                trace_attributes=getattr(parent_agent, "trace_attributes", None) if parent_agent else None,
+            )
         swarm_agent_any = cast(Any, swarm_agent)
 
         # Provider/settings-based configuration (used by Strands Tools).
@@ -105,6 +122,13 @@ async def swarm(
 
     try:
         swarm_agents = _create_custom_agents(agents, parent_agent=agent)
+        invocation_state = None
+        if agent is not None and getattr(agent, "model", None) is not None:
+            snapshot = capture_shared_prefix_fork(agent, kind="swarm")
+            invocation_state = build_fork_invocation_state(
+                snapshot,
+                extra_prompt_chars=len(str(task or "").strip()),
+            )
 
         sdk_swarm = Swarm(
             nodes=swarm_agents,
@@ -116,7 +140,7 @@ async def swarm(
             repetitive_handoff_min_unique_agents=repetitive_handoff_min_unique_agents,
         )
 
-        result = await sdk_swarm.invoke_async(task)
+        result = await sdk_swarm.invoke_async(task, invocation_state=invocation_state)
 
         response_parts: list[str] = []
         response_parts.append("🎯 **Swarm Execution Complete**")

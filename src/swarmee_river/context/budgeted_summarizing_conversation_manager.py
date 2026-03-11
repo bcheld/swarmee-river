@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from strands.agent.conversation_manager import SummarizingConversationManager
+from strands.types.exceptions import ContextWindowOverflowException
+
+from swarmee_river.utils.fork_utils import run_shared_prefix_text_fork
 
 _CACHE_COMPACTED_PREFIX = "[cache-compacted]"
 _COMPACTABLE_TOOLS = {"file_read", "file_search"}
@@ -14,11 +17,25 @@ _STRATEGY_RAW_RESULT_KEEP = {
     "cache_safe": 2,
     "long_running": 4,
 }
-SWARMEE_SUMMARIZATION_SYSTEM_PROMPT = """You are compressing prior conversation state for a future model turn.
-Return only a concise plain-text summary of durable facts, decisions, open questions,
-and exact file or path references that still matter.
-Do not emit chain-of-thought, reasoning narration, tool calls, tool transcripts, XML, JSON, or role labels.
-If tools were used, summarize only the durable outcome in plain language."""
+_COMPACTION_HEADROOM_MIN_TOKENS = 8192
+_COMPACTION_HEADROOM_MAX_TOKENS = 32768
+SWARMEE_SUMMARIZATION_SYSTEM_PROMPT = (
+    "Shared-prefix compaction uses the parent system prompt and appends a compaction request as a user message."
+)
+_COMPACTION_PROMPT_TEMPLATE = """Compact this conversation for continued work.
+
+You are looking at the full parent conversation.
+Return only a concise plain-text summary that can replace the oldest {summarize_count} messages while the newest
+{preserve_count} messages remain verbatim.
+
+Requirements:
+- Return only the summary text.
+- Do not call tools.
+- Do not emit chain-of-thought, reasoning narration, XML, JSON, markdown code fences, or role labels.
+- Preserve durable facts, decisions, active constraints, unresolved questions, current execution state, and exact
+  file/path references that still matter.
+- Summarize the older portion only. Do not restate the preserved recent messages unless it is required for continuity.
+"""
 
 
 @dataclass
@@ -277,72 +294,33 @@ def _summarize_tool_result_for_summary(
     return f"[tool result] {tool_name}; {descriptor}; status={status}; chars={original_chars}"
 
 
-def _sanitize_messages_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    tool_uses: dict[str, tuple[str, dict[str, Any]]] = {}
-    sanitized: list[dict[str, Any]] = []
-
-    for message in messages:
-        if not isinstance(message, dict):
+def _normalize_summary_text(text: str) -> str:
+    lines: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
             continue
-        role = str(message.get("role") or "user").strip() or "user"
-        content = message.get("content")
-        if not isinstance(content, list):
+        lowered = line.lower()
+        if lowered.startswith(("assistant:", "user:", "system:", "role=")):
             continue
-
-        parts: list[str] = []
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            text = item.get("text")
-            if isinstance(text, str) and text.strip():
-                parts.append(text.strip())
-
-            tool_use = item.get("toolUse")
-            if isinstance(tool_use, dict):
-                tool_use_id = str(tool_use.get("toolUseId") or tool_use.get("id") or "").strip()
-                tool_name = str(tool_use.get("name") or "unknown").strip() or "unknown"
-                tool_input = tool_use.get("input")
-                normalized_input = tool_input if isinstance(tool_input, dict) else {}
-                if tool_use_id:
-                    tool_uses[tool_use_id] = (tool_name, normalized_input)
-                parts.append(_summarize_tool_use(tool_name, normalized_input))
-
-            tool_result = item.get("toolResult")
-            if isinstance(tool_result, dict):
-                tool_use_id = str(tool_result.get("toolUseId") or "").strip()
-                tool_name, tool_input = tool_uses.get(tool_use_id, ("unknown", {}))
-                parts.append(
-                    _summarize_tool_result_for_summary(
-                        tool_name=tool_name,
-                        tool_input=tool_input,
-                        tool_result=tool_result,
-                    )
-                )
-
-        merged = "\n".join(part for part in parts if part).strip()
-        if not merged:
+        if lowered.startswith(("tooluse", "toolresult", "reasoning=", "[tool request]", "[tool result]")):
             continue
-        sanitized.append({"role": role, "content": [{"text": merged}]})
+        if line.startswith(("<", "{", "[")) and line.endswith((">", "}", "]")):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
 
-    return sanitized
+
+def _compaction_headroom_tokens(max_prompt_tokens: int) -> int:
+    proposed = int(math.ceil(max(1, int(max_prompt_tokens)) * 0.10))
+    return max(_COMPACTION_HEADROOM_MIN_TOKENS, min(_COMPACTION_HEADROOM_MAX_TOKENS, proposed))
 
 
-def _sanitize_summary_message(message: Any) -> dict[str, Any]:
-    parts: list[str] = []
-    if isinstance(message, dict):
-        content = message.get("content")
-        if isinstance(content, list):
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
-        elif isinstance(message.get("text"), str) and str(message.get("text")).strip():
-            parts.append(str(message.get("text")).strip())
-
-    summary_text = "\n\n".join(parts).strip() or "Conversation summary unavailable."
-    return {"role": "user", "content": [{"text": summary_text}]}
+def _compaction_prompt(*, summarize_count: int, preserve_count: int) -> str:
+    return _COMPACTION_PROMPT_TEMPLATE.format(
+        summarize_count=max(1, int(summarize_count)),
+        preserve_count=max(0, int(preserve_count)),
+    ).strip()
 
 
 class BudgetedSummarizingConversationManager(SummarizingConversationManager):
@@ -390,28 +368,46 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
             str(name).strip() for name in configured_compactable if str(name).strip()
         } or set(_COMPACTABLE_TOOLS)
         self._last_compacted_read_results = 0
+        self._last_compaction_fork_diagnostics: dict[str, Any] = {}
 
     def estimate_tokens_for_agent(self, agent: "Any") -> int:
         return estimate_tokens_for_agent(agent, chars_per_token=self.chars_per_token)
 
     def _generate_summary(self, messages: list[dict[str, Any]], agent: "Any") -> dict[str, Any]:
-        sanitized_messages = _sanitize_messages_for_summary(messages)
-        summary_message = super()._generate_summary(sanitized_messages, agent)
-        return _sanitize_summary_message(summary_message)
+        total_messages = getattr(agent, "messages", [])
+        total_count = len(total_messages) if isinstance(total_messages, list) else len(messages)
+        preserve_count = max(0, total_count - len(messages))
+        prompt = _compaction_prompt(
+            summarize_count=len(messages),
+            preserve_count=preserve_count,
+        )
+        result = run_shared_prefix_text_fork(
+            agent,
+            kind="compaction",
+            prompt_text=prompt,
+            extra_fields=getattr(agent, "_swarmee_compaction_extra_fields", None),
+        )
+        self._last_compaction_fork_diagnostics = dict(result.diagnostics)
+        if result.used_tool:
+            raise RuntimeError("Compaction fork attempted a tool call")
+        normalized = _normalize_summary_text(result.text)
+        if not normalized:
+            raise RuntimeError("Compaction fork returned no usable summary text")
+        return {"role": "user", "content": [{"text": normalized}]}
 
     def reduce_context(self, agent: "Any", e: Exception | None = None, **kwargs: Any) -> None:
         messages = getattr(agent, "messages", [])
         if not isinstance(messages, list) or len(messages) < 2:
             return
-        try:
-            super().reduce_context(agent, e=e, **kwargs)
-        except Exception as exc:
-            text = str(exc or "").strip().lower()
-            if "cannot summarize" in text and "insufficient messages" in text:
-                return
-            raise
+        super().reduce_context(agent, e=e, **kwargs)
 
-    def _trim_history_to_budget(self, agent: "Any") -> int:
+    def _compaction_trigger_tokens(self) -> int:
+        return max(1, int(self.max_prompt_tokens) - self.compaction_headroom_tokens())
+
+    def compaction_headroom_tokens(self) -> int:
+        return _compaction_headroom_tokens(self.max_prompt_tokens)
+
+    def _trim_history_to_limit(self, agent: "Any", *, target_tokens: int) -> int:
         messages = getattr(agent, "messages", [])
         if not isinstance(messages, list) or not messages:
             return 0
@@ -419,7 +415,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         trimmed = 0
         while len(messages) > minimum_keep:
             tokens = self.estimate_tokens_for_agent(agent)
-            if tokens <= self.max_prompt_tokens:
+            if tokens <= target_tokens:
                 break
             remove_count = min(max(1, len(messages) // 8), len(messages) - minimum_keep)
             if remove_count <= 0:
@@ -484,46 +480,71 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
             "uncached_tail_tokens_est": self.estimate_uncached_tail_tokens(agent),
             "recent_read_tool_results": raw_recent,
             "compacted_read_results": int(self._last_compacted_read_results),
+            "compaction_headroom_tokens": self.compaction_headroom_tokens(),
         }
 
     def compact_to_budget(self, agent: "Any", **kwargs: Any) -> dict[str, Any]:
         before_tokens = self.estimate_tokens_for_agent(agent)
         self._last_compacted_read_results = 0
+        self._last_compaction_fork_diagnostics = {}
+        compaction_headroom_tokens = self.compaction_headroom_tokens()
+        compaction_trigger_tokens = self._compaction_trigger_tokens()
         if not self.enabled or self.compaction_mode == "manual":
             return {
                 "before_tokens_est": before_tokens,
                 "after_tokens_est": before_tokens,
                 "within_budget": before_tokens <= self.max_prompt_tokens,
+                "within_compaction_target": before_tokens <= compaction_trigger_tokens,
                 "summary_passes": 0,
                 "trimmed_messages": 0,
                 "compacted_read_results": 0,
+                "compaction_headroom_tokens": compaction_headroom_tokens,
             }
 
         compacted_read_results = self._compact_tool_results_for_strategy(agent)
         self._last_compacted_read_results = compacted_read_results
         summary_passes = 0
-        for _ in range(max(1, self.max_reduce_passes)):
-            tokens = self.estimate_tokens_for_agent(agent)
-            if tokens <= self.max_prompt_tokens:
-                return {
-                    "before_tokens_est": before_tokens,
-                    "after_tokens_est": tokens,
-                    "within_budget": True,
-                    "summary_passes": summary_passes,
-                    "trimmed_messages": 0,
-                    "compacted_read_results": compacted_read_results,
-                }
-            self.reduce_context(agent, e=None, **kwargs)
-            summary_passes += 1
-        trimmed_messages = self._trim_history_to_budget(agent)
+        warning: str | None = None
+        agent._swarmee_compaction_extra_fields = {"compaction_headroom_tokens": compaction_headroom_tokens}
+        try:
+            for _ in range(max(1, self.max_reduce_passes)):
+                tokens = self.estimate_tokens_for_agent(agent)
+                if tokens <= compaction_trigger_tokens:
+                    return {
+                        "before_tokens_est": before_tokens,
+                        "after_tokens_est": tokens,
+                        "within_budget": True,
+                        "within_compaction_target": True,
+                        "summary_passes": summary_passes,
+                        "trimmed_messages": 0,
+                        "compacted_read_results": compacted_read_results,
+                        "compaction_headroom_tokens": compaction_headroom_tokens,
+                        **self._last_compaction_fork_diagnostics,
+                    }
+                try:
+                    self.reduce_context(agent, e=None, **kwargs)
+                except ContextWindowOverflowException as exc:
+                    warning = str(exc)
+                    break
+                except Exception as exc:
+                    warning = f"Compaction summary unavailable: {exc}"
+                    break
+                summary_passes += 1
+        finally:
+            agent._swarmee_compaction_extra_fields = None
+        trimmed_messages = self._trim_history_to_limit(agent, target_tokens=compaction_trigger_tokens)
         after_tokens = self.estimate_tokens_for_agent(agent)
         return {
             "before_tokens_est": before_tokens,
             "after_tokens_est": after_tokens,
             "within_budget": after_tokens <= self.max_prompt_tokens,
+            "within_compaction_target": after_tokens <= compaction_trigger_tokens,
             "summary_passes": summary_passes,
             "trimmed_messages": trimmed_messages,
             "compacted_read_results": compacted_read_results,
+            "compaction_headroom_tokens": compaction_headroom_tokens,
+            "warning": warning,
+            **self._last_compaction_fork_diagnostics,
         }
 
     def apply_management(self, agent: "Any", **kwargs: Any) -> None:

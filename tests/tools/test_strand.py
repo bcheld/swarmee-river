@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for the strand tool."""
 
+import asyncio
 import os
 from io import StringIO
+from types import SimpleNamespace
 from unittest import mock
 
 from tools.strand import strand
@@ -76,6 +78,55 @@ class TestStrandTool:
             # Check that the tools were passed
             called_args = mock_agent_class.call_args.kwargs
             assert "tools" in called_args
+
+
+def test_strand_uses_shared_prefix_child_agent_when_parent_present(monkeypatch):
+    import tools.strand as strand_module
+
+    created: dict[str, object] = {}
+    invoke_calls: list[dict[str, object]] = []
+
+    class _ChildAgent:
+        async def invoke_async(self, query, invocation_state=None):  # noqa: ANN001
+            invoke_calls.append({"query": query, "invocation_state": invocation_state})
+            return {"content": [{"text": "shared-prefix output"}]}
+
+    monkeypatch.setattr(
+        strand_module,
+        "create_shared_prefix_child_agent",
+        lambda **kwargs: (
+            created.update(kwargs) or _ChildAgent(),
+            SimpleNamespace(kind="strand", parent_message_count=3, prefix_hash="fork-hash", pending_reminder=""),
+        ),
+    )
+    monkeypatch.setattr(
+        strand_module,
+        "build_fork_invocation_state",
+        lambda snapshot, *, extra_prompt_chars: {
+            "swarmee": {
+                "fork_kind": snapshot.kind,
+                "fork_parent_message_count": snapshot.parent_message_count,
+                "fork_prefix_hash": snapshot.prefix_hash,
+                "fork_extra_prompt_chars": extra_prompt_chars,
+            }
+        },
+    )
+    monkeypatch.setattr(strand_module, "run_coroutine", lambda coro: asyncio.run(coro))
+
+    result = strand(
+        query="inspect this",
+        system_prompt="Focus on diffs",
+        tool_names=["shell", "file_read"],
+        agent=SimpleNamespace(model=object()),
+    )
+
+    assert result["status"] == "success"
+    assert "shared-prefix output" in result["content"][0]["text"]
+    assert created["kind"] == "strand"
+    assert "Focus on diffs" in str(created["seed_instruction"])
+    assert created["tool_allowlist"] == ["shell", "file_read"]
+    assert invoke_calls[0]["query"] == "inspect this"
+    assert invoke_calls[0]["invocation_state"]["swarmee"]["fork_kind"] == "strand"
             # Specific test frameworks may need to be updated for exact tool count
 
     def test_strand_resolved_system_prompt(self):

@@ -62,6 +62,18 @@ The tool-aware summarizing manager now accounts for:
 That matters because a cache-friendly summary still needs to let the agent continue an in-flight
 multi-tool workflow without losing the thread.
 
+The compaction request itself now follows the same shared-prefix rule as the parent conversation:
+
+- same model
+- same system prompt
+- same message prefix
+- same tool schema ordering
+- same pending prompt-cache reminder, if any
+- one appended compaction user message at the tail
+
+That is the critical difference between cache-safe compaction and the older sanitized-summary path. Rewriting the
+history or changing the system prompt may produce a cleaner summary request, but it breaks provider-side prefix reuse.
+
 For Bedrock Claude models, this also avoids a common failure mode: Bedrock reasoning is compatible with normal
 tool availability, but not with forced tool choice on the same request.
 
@@ -88,10 +100,22 @@ Swarmee already follows this pattern for:
 - active SOP context
 - approved plan context during execution
 
+The same rule now applies to internal forks:
+
+- compaction
+- `use_agent` / `use_llm`
+- `agent_graph`
+- `strand`
+- `swarm`
+
+Fork-specific guidance belongs in appended user messages. Provider-visible tool restrictions should be enforced by
+policy hooks, not by advertising a different tool list to the forked request.
+
 ## Operational checklist
 
 - Prefer one tier per session; changing models can invalidate cache reuse.
 - Prefer `context.strategy=cache_safe` for long OpenAI Responses sessions.
+- Prefer shared-prefix forks over fresh child prompts whenever you need internal summarization or delegation.
 - Keep `SWARMEE_FREEZE_TOOLS=true` when you want to avoid accidental tool-registry churn.
 - Keep large tool outputs in artifacts and references rather than raw prompt text.
 - Review JSONL logs if your provider exposes cache usage metrics:

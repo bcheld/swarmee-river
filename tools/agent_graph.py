@@ -9,15 +9,25 @@ from typing import Any
 from strands import tool
 
 from swarmee_river.tool_permissions import set_permissions
-from swarmee_river.utils.agent_utils import create_sub_agent, extract_text, run_coroutine
+from swarmee_river.utils.fork_utils import run_shared_prefix_text_fork
 
 
 def _invoke_llm_text(*, parent_agent: Any, system_prompt: str, prompt: str) -> str:
     if getattr(parent_agent, "model", None) is None:
         return ""
-    agent = create_sub_agent(parent_agent=parent_agent, system_prompt=system_prompt)
-    result = run_coroutine(agent.invoke_async(prompt))
-    return extract_text(result)
+    fork_prompt = (
+        "You are handling an agent_graph node task.\n"
+        f"Node instructions:\n{system_prompt.strip() or 'You are a helpful assistant.'}\n\n"
+        f"Node input:\n{prompt}"
+    )
+    result = run_shared_prefix_text_fork(
+        parent_agent,
+        kind="agent_graph",
+        prompt_text=fork_prompt,
+    )
+    if result.used_tool:
+        return ""
+    return str(result.text or "").strip()
 
 
 class _AgentNode:

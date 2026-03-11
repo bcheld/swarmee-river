@@ -1261,6 +1261,8 @@ def _build_agent_runtime(
     if hooks:
         agent_kwargs["hooks"] = hooks
 
+    prompt_cache: PromptCacheState | None = None
+
     def create_agent(*, messages: Any | None = None, state: Any | None = None) -> Agent:
         kwargs = dict(agent_kwargs)
         if messages is not None:
@@ -1276,6 +1278,8 @@ def _build_agent_runtime(
             kwargs.pop("state", None)
             agent_instance = Agent(**kwargs)
         _remove_hidden_runtime_tools(agent_instance)
+        agent_instance._swarmee_prompt_cache = prompt_cache
+        agent_instance._swarmee_current_invocation_state = None
         return agent_instance
 
     agent = create_agent()
@@ -1310,6 +1314,7 @@ def _build_agent_runtime(
     active_plan_prompt_section: str | None = None
     artifact_store = ArtifactStore()
     prompt_cache = PromptCacheState()
+    agent._swarmee_prompt_cache = prompt_cache
     active_knowledge_base_id: str | None = knowledge_base_id
     user_context_sources: list[dict[str, str]] = []
     active_profile_system_prompt_snippets: list[str] = []
@@ -1717,6 +1722,7 @@ def _build_agent_runtime(
         trimmed_messages = 0
         warning: str | None = None
         effective_budget = model_manager.resolve_effective_context_budget()
+        compact_result: dict[str, Any] | None = None
 
         with contextlib.suppress(Exception):
             before_tokens, _tool_schema_chars = _estimate_agent_prompt_tokens(agent, chars_per_token=4)
@@ -1729,10 +1735,10 @@ def _build_agent_runtime(
                 reduce_fn = getattr(manager, "reduce_context", None)
                 apply_fn = getattr(manager, "apply_management", None)
                 if callable(compact_fn):
-                    result = compact_fn(agent)
-                    compacted_read_results = int(result.get("compacted_read_results", 0) or 0)
-                    summary_passes = int(result.get("summary_passes", 0) or 0)
-                    trimmed_messages = int(result.get("trimmed_messages", 0) or 0)
+                    compact_result = compact_fn(agent)
+                    compacted_read_results = int(compact_result.get("compacted_read_results", 0) or 0)
+                    summary_passes = int(compact_result.get("summary_passes", 0) or 0)
+                    trimmed_messages = int(compact_result.get("trimmed_messages", 0) or 0)
                     compacted = bool(
                         summary_passes > 0
                         or trimmed_messages > 0
@@ -1770,7 +1776,21 @@ def _build_agent_runtime(
             "within_budget": bool(isinstance(after_tokens, int) and after_tokens <= effective_budget),
             "budget_tokens": effective_budget,
             "compacted_read_results": compacted_read_results,
+            "compaction_headroom_tokens": compact_result.get("compaction_headroom_tokens")
+            if isinstance(compact_result, dict)
+            else None,
             "warning": warning,
+            "fork_kind": compact_result.get("fork_kind") if isinstance(compact_result, dict) else None,
+            "fork_parent_message_count": compact_result.get("fork_parent_message_count")
+            if isinstance(compact_result, dict)
+            else None,
+            "fork_prefix_hash": compact_result.get("fork_prefix_hash") if isinstance(compact_result, dict) else None,
+            "fork_extra_prompt_chars": compact_result.get("fork_extra_prompt_chars")
+            if isinstance(compact_result, dict)
+            else None,
+            "fork_used_pending_reminder": compact_result.get("fork_used_pending_reminder")
+            if isinstance(compact_result, dict)
+            else None,
         }
 
     def refresh_system_prompt(welcome_text_local: str) -> None:
@@ -1903,6 +1923,7 @@ def _build_agent_runtime(
         set_interrupt_event(interrupt_event)
         with interrupt_watcher_from_env(interrupt_event):
             try:
+                agent._swarmee_current_invocation_state = invocation_state
                 budget_manager = conversation_manager
                 effective_budget = model_manager.resolve_effective_context_budget()
                 compact_result: dict[str, Any] | None = None
@@ -1930,7 +1951,13 @@ def _build_agent_runtime(
                                 "summary_passes": summary_passes,
                                 "trimmed_messages": trimmed_messages,
                                 "compacted_read_results": compacted_read_results,
+                                "compaction_headroom_tokens": compact_result.get("compaction_headroom_tokens"),
                                 "warning": compact_result.get("warning"),
+                                "fork_kind": compact_result.get("fork_kind"),
+                                "fork_parent_message_count": compact_result.get("fork_parent_message_count"),
+                                "fork_prefix_hash": compact_result.get("fork_prefix_hash"),
+                                "fork_extra_prompt_chars": compact_result.get("fork_extra_prompt_chars"),
+                                "fork_used_pending_reminder": compact_result.get("fork_used_pending_reminder"),
                             }
                         )
                     if not within_budget:
@@ -1946,6 +1973,7 @@ def _build_agent_runtime(
                             print(f"\n{error_msg}")
                         raise RuntimeError(error_msg)
                 system_reminder = prompt_cache.pop_reminder()
+                agent._swarmee_current_invocation_state = invocation_state
                 return invoke_agent(
                     agent,
                     query,
@@ -1978,6 +2006,8 @@ def _build_agent_runtime(
                 raise
             except Exception:
                 raise
+            finally:
+                agent._swarmee_current_invocation_state = None
 
     def _escalation_attempts() -> int:
         return max(1, model_manager.max_escalations_per_task + 1)
@@ -4210,7 +4240,13 @@ def main() -> None:
                         "summary_passes": compact_result.get("summary_passes", 0),
                         "trimmed_messages": compact_result.get("trimmed_messages", 0),
                         "compacted_read_results": compact_result.get("compacted_read_results", 0),
+                        "compaction_headroom_tokens": compact_result.get("compaction_headroom_tokens"),
                         "warning": compact_result.get("warning"),
+                        "fork_kind": compact_result.get("fork_kind"),
+                        "fork_parent_message_count": compact_result.get("fork_parent_message_count"),
+                        "fork_prefix_hash": compact_result.get("fork_prefix_hash"),
+                        "fork_extra_prompt_chars": compact_result.get("fork_extra_prompt_chars"),
+                        "fork_used_pending_reminder": compact_result.get("fork_used_pending_reminder"),
                     }
                 )
                 continue

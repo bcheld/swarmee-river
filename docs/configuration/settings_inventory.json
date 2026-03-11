@@ -71,7 +71,7 @@
       "surface": "runtime_internal",
       "usage_count": 2,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3435",
+        "src/swarmee_river/swarmee.py:3465",
         "src/swarmee_river/swarmee.py:888",
         "src/swarmee_river/swarmee.py:910",
         "src/swarmee_river/swarmee.py:911",
@@ -513,13 +513,13 @@
         "src/swarmee_river/hooks/session_s3.py:55",
         "src/swarmee_river/jupyter/magic.py:296",
         "src/swarmee_river/runtime_service/server.py:666",
-        "src/swarmee_river/swarmee.py:3416",
-        "src/swarmee_river/swarmee.py:3417",
-        "src/swarmee_river/swarmee.py:3513",
-        "src/swarmee_river/swarmee.py:3559",
-        "src/swarmee_river/swarmee.py:3639",
-        "src/swarmee_river/swarmee.py:3882",
-        "src/swarmee_river/swarmee.py:3922",
+        "src/swarmee_river/swarmee.py:3446",
+        "src/swarmee_river/swarmee.py:3447",
+        "src/swarmee_river/swarmee.py:3543",
+        "src/swarmee_river/swarmee.py:3589",
+        "src/swarmee_river/swarmee.py:3669",
+        "src/swarmee_river/swarmee.py:3912",
+        "src/swarmee_river/swarmee.py:3952",
         "src/swarmee_river/tui/event_types.py:91",
         "src/swarmee_river/tui/transport.py:279"
       ],
@@ -639,7 +639,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3351"
+        "src/swarmee_river/swarmee.py:3381"
       ],
       "where_set": [
         "CLI flag"
@@ -667,7 +667,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3344"
+        "src/swarmee_river/swarmee.py:3374"
       ],
       "where_set": [
         "CLI flag"
@@ -695,7 +695,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3338"
+        "src/swarmee_river/swarmee.py:3368"
       ],
       "where_set": [
         "CLI flag"
@@ -723,7 +723,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3357"
+        "src/swarmee_river/swarmee.py:3387"
       ],
       "where_set": [
         "CLI flag"
@@ -752,7 +752,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3308"
+        "src/swarmee_river/swarmee.py:3338"
       ],
       "where_set": [
         "CLI flag"
@@ -780,7 +780,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3326"
+        "src/swarmee_river/swarmee.py:3356"
       ],
       "where_set": [
         "CLI flag"
@@ -808,7 +808,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3320"
+        "src/swarmee_river/swarmee.py:3350"
       ],
       "where_set": [
         "CLI flag"
@@ -836,7 +836,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3314"
+        "src/swarmee_river/swarmee.py:3344"
       ],
       "where_set": [
         "CLI flag"
@@ -864,7 +864,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3372"
+        "src/swarmee_river/swarmee.py:3402"
       ],
       "where_set": [
         "CLI flag"
@@ -892,7 +892,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3378"
+        "src/swarmee_river/swarmee.py:3408"
       ],
       "where_set": [
         "CLI flag"
@@ -920,7 +920,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3367"
+        "src/swarmee_river/swarmee.py:3397"
       ],
       "where_set": [
         "CLI flag"
@@ -948,7 +948,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3332"
+        "src/swarmee_river/swarmee.py:3362"
       ],
       "where_set": [
         "CLI flag"
@@ -976,7 +976,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3362"
+        "src/swarmee_river/swarmee.py:3392"
       ],
       "where_set": [
         "CLI flag"
@@ -1004,7 +1004,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2414"
+        "src/swarmee_river/swarmee.py:2444"
       ],
       "where_set": [
         "CLI flag"
@@ -1032,7 +1032,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2413"
+        "src/swarmee_river/swarmee.py:2443"
       ],
       "where_set": [
         "CLI flag"
@@ -1060,7 +1060,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2416"
+        "src/swarmee_river/swarmee.py:2446"
       ],
       "where_set": [
         "CLI flag"
@@ -1088,7 +1088,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2415"
+        "src/swarmee_river/swarmee.py:2445"
       ],
       "where_set": [
         "CLI flag"
@@ -1116,7 +1116,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2441"
+        "src/swarmee_river/swarmee.py:2471"
       ],
       "where_set": [
         "CLI flag"
@@ -1144,7 +1144,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2442"
+        "src/swarmee_river/swarmee.py:2472"
       ],
       "where_set": [
         "CLI flag"
@@ -1229,7 +1229,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2393"
+        "src/swarmee_river/swarmee.py:2423"
       ],
       "where_set": [
         "CLI flag"
@@ -1257,7 +1257,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2399"
+        "src/swarmee_river/swarmee.py:2429"
       ],
       "where_set": [
         "CLI flag"
@@ -1285,7 +1285,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2386"
+        "src/swarmee_river/swarmee.py:2416"
       ],
       "where_set": [
         "CLI flag"
@@ -1313,7 +1313,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2387"
+        "src/swarmee_river/swarmee.py:2417"
       ],
       "where_set": [
         "CLI flag"
@@ -1341,7 +1341,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3041"
+        "src/swarmee_river/swarmee.py:3071"
       ],
       "where_set": [
         "CLI flag"
@@ -1369,7 +1369,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3043"
+        "src/swarmee_river/swarmee.py:3073"
       ],
       "where_set": [
         "CLI flag"
@@ -1397,7 +1397,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3042"
+        "src/swarmee_river/swarmee.py:3072"
       ],
       "where_set": [
         "CLI flag"
@@ -1425,7 +1425,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3032"
+        "src/swarmee_river/swarmee.py:3062"
       ],
       "where_set": [
         "CLI flag"
@@ -1453,7 +1453,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3038"
+        "src/swarmee_river/swarmee.py:3068"
       ],
       "where_set": [
         "CLI flag"
@@ -1481,7 +1481,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3031"
+        "src/swarmee_river/swarmee.py:3061"
       ],
       "where_set": [
         "CLI flag"
@@ -1509,7 +1509,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3028"
+        "src/swarmee_river/swarmee.py:3058"
       ],
       "where_set": [
         "CLI flag"
@@ -1537,7 +1537,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:3025"
+        "src/swarmee_river/swarmee.py:3055"
       ],
       "where_set": [
         "CLI flag"
@@ -1565,7 +1565,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2945"
+        "src/swarmee_river/swarmee.py:2975"
       ],
       "where_set": [
         "CLI flag"
@@ -1593,7 +1593,7 @@
       "surface": "cli",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/swarmee.py:2939"
+        "src/swarmee_river/swarmee.py:2969"
       ],
       "where_set": [
         "CLI flag"

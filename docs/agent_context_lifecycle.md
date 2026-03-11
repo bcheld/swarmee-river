@@ -354,8 +354,13 @@ Implementation notes:
   only plain message text.
 - Cache-sensitive strategies now proactively compact older read/search tool results even when the full prompt
   is still under the context budget, because cache misses can get expensive long before the provider hard limit.
+- Compaction now uses a shared-prefix fork: the compaction request reuses the parent model, system prompt,
+  message history, tool schema, and any pending prompt-cache reminder, then appends a single compaction user
+  instruction at the tail. That keeps the provider-visible prefix aligned with the parent conversation.
+- Compaction triggers before the hard cap using an internal headroom reserve so the fork request still has
+  room for the compaction instruction, summary output, and reinserted summary message.
 
-### Bedrock prompt caching
+### Bedrock prompt caching and shared-prefix forks
 
 For Bedrock Claude tiers using `cache_safe` or `long_running`, Swarmee enables:
 
@@ -364,6 +369,18 @@ For Bedrock Claude tiers using `cache_safe` or `long_running`, Swarmee enables:
 
 This matters because Bedrock only reuses prompt content that appears before a cache checkpoint. Without the
 message-level checkpoint, only the tool schema benefits and repeated tool loops still suffer large cache misses.
+
+Forked LLM work now follows the same cache-safety rule:
+
+- compaction
+- `use_agent` / `use_llm`
+- `agent_graph`
+- `strand`
+- `swarm`
+
+Each fork starts from the parent request envelope and adds only fork-specific user instructions at the end.
+Tool restrictions for nested forks are enforced through allowlist hooks, not by advertising a different
+provider-visible tool schema.
 
 The lower-level runtime knobs still exist for internal tuning:
 
@@ -465,18 +482,24 @@ The best way to "save context" is to push work into *sub-invocations that return
 
 Available delegation surfaces:
 
-1) `use_agent` / `use_llm` (summary-only, tool-less)
+1) `use_agent` / `use_llm` (text-only shared-prefix fork)
 - Fallback tool in `tools/use_agent.py`
-- Creates a tool-less sub-agent and returns only extracted text.
+- Reuses the parent prefix and appends a subtask instruction as the final user message.
+- Rejects any fork response that attempts tool use.
 - Use for: analysis, summarization, rewriting, diff review, "explain this" without repo mutation.
 
-2) `strand` (nested agent with a selectable tool set)
+2) `strand` (shared-prefix nested agent with policy-limited tools)
 - Tool in `tools/strand.py`
-- You can restrict `tool_names` to a minimal set to avoid tool sprawl.
+- Child agents inherit the parent prefix and full tool schema.
+- `tool_names` are enforced through a tool allowlist hook so cache-visible tool ordering stays stable.
 
-3) `swarm` (multi-agent collaboration)
+3) `swarm` (shared-prefix multi-agent collaboration)
 - Tool in `tools/swarm.py`
 - Useful when tasks split naturally (investigation vs implementation vs testing), but be mindful: it can increase total token usage if agents are not tightly scoped.
+
+4) `agent_graph` (shared-prefix node workers)
+- Tool in `tools/agent_graph.py`
+- Each node prompt is appended to the parent prefix instead of starting from an empty child conversation.
 
 ### More selective tool invocation (policy + ergonomics)
 

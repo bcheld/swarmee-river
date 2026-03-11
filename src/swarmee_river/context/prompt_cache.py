@@ -55,7 +55,10 @@ class PromptCacheState:
             return
         self.pending.append(normalized)
 
+    def peek_reminder(self) -> str:
+        return format_system_reminder(self.pending)
+
     def pop_reminder(self) -> str:
-        reminder = format_system_reminder(self.pending)
+        reminder = self.peek_reminder()
         self.pending.clear()
         return reminder

@@ -5,7 +5,8 @@ from typing import Any
 from strands import tool
 
 from swarmee_river.tool_permissions import set_permissions
-from swarmee_river.utils.agent_utils import create_sub_agent, extract_text, run_coroutine
+from swarmee_river.utils.agent_utils import extract_text
+from swarmee_river.utils.fork_utils import run_shared_prefix_text_fork
 
 
 @tool
@@ -29,17 +30,31 @@ def use_agent(
     if agent is None or getattr(agent, "model", None) is None:
         return {"status": "error", "content": [{"text": "use_agent requires an agent context with a configured model"}]}
 
-    sub = create_sub_agent(
-        parent_agent=agent,
-        system_prompt=str(system_prompt or "").strip() or "You are a helpful assistant.",
-    )
-
     try:
-        result = run_coroutine(sub.invoke_async(effective_prompt))
+        instruction = str(system_prompt or "").strip()
+        fork_prompt = effective_prompt
+        if instruction:
+            fork_prompt = (
+                "Follow these additional subtask instructions while answering.\n"
+                f"{instruction}\n\n"
+                f"Subtask:\n{effective_prompt}"
+            )
+        result = run_shared_prefix_text_fork(
+            agent,
+            kind="use_agent",
+            prompt_text=fork_prompt,
+        )
     except Exception as exc:
         return {"status": "error", "content": [{"text": f"use_agent failed: {exc}"}]}
 
-    return {"status": "success", "content": [{"text": extract_text(result)}]}
+    if result.used_tool:
+        return {"status": "error", "content": [{"text": "use_agent rejected a tool call from the text-only fork"}]}
+
+    text = str(result.text or "").strip()
+    if not text:
+        return {"status": "error", "content": [{"text": "use_agent produced no text output"}]}
+
+    return {"status": "success", "content": [{"text": extract_text({"content": [{"text": text}]})}]}
 
 
 @tool

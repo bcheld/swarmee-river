@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from swarmee_river.context.budgeted_summarizing_conversation_manager import (
@@ -7,6 +9,7 @@ from swarmee_river.context.budgeted_summarizing_conversation_manager import (
     estimate_tokens,
     estimate_tokens_for_agent,
 )
+from swarmee_river.utils.fork_utils import SharedPrefixTextForkResult
 
 
 def test_reduce_context_ignores_insufficient_messages(monkeypatch):
@@ -142,6 +145,7 @@ def test_compact_to_budget_trims_old_messages_when_summarization_insufficient(mo
             {"role": "assistant", "content": [{"text": "keep recent two"}]},
         ]
 
+    monkeypatch.setattr(manager, "_compaction_trigger_tokens", lambda: 5)
     monkeypatch.setattr(manager, "reduce_context", lambda *_args, **_kwargs: None)
 
     result = manager.compact_to_budget(agent=_Agent())
@@ -163,12 +167,69 @@ def test_compact_to_budget_reports_over_budget_when_recent_context_alone_is_too_
             {"role": "assistant", "content": [{"text": "also keep me"}]},
         ]
 
+    monkeypatch.setattr(manager, "_compaction_trigger_tokens", lambda: 1)
     monkeypatch.setattr(manager, "reduce_context", lambda *_args, **_kwargs: None)
 
     result = manager.compact_to_budget(agent=_Agent())
 
     assert result["within_budget"] is False
     assert result["trimmed_messages"] == 0
+
+
+def test_compact_to_budget_triggers_before_hard_limit(monkeypatch) -> None:
+    manager = BudgetedSummarizingConversationManager(max_prompt_tokens=100000, compaction_mode="auto")
+
+    class _Agent:
+        messages = [{"role": "user", "content": [{"text": "hello"}]}]
+
+    estimates = iter([95000, 95000, 85000])
+    reduce_calls: list[bool] = []
+    monkeypatch.setattr(manager, "estimate_tokens_for_agent", lambda _agent: next(estimates))
+    monkeypatch.setattr(manager, "reduce_context", lambda *_args, **_kwargs: reduce_calls.append(True))
+
+    result = manager.compact_to_budget(agent=_Agent())
+
+    assert reduce_calls == [True]
+    assert result["compaction_headroom_tokens"] == 10000
+    assert result["within_compaction_target"] is True
+
+
+def test_compact_to_budget_falls_back_to_trim_when_fork_summary_is_unusable(monkeypatch) -> None:
+    manager = BudgetedSummarizingConversationManager(
+        max_prompt_tokens=100000,
+        preserve_recent_messages=2,
+        compaction_mode="auto",
+    )
+
+    class _Agent:
+        messages = [
+            {"role": "user", "content": [{"text": "older one"}]},
+            {"role": "assistant", "content": [{"text": "older two"}]},
+            {"role": "user", "content": [{"text": "recent one"}]},
+            {"role": "assistant", "content": [{"text": "recent two"}]},
+        ]
+
+    monkeypatch.setattr(
+        "swarmee_river.context.budgeted_summarizing_conversation_manager.run_shared_prefix_text_fork",
+        lambda *_args, **_kwargs: SharedPrefixTextForkResult(
+            text="",
+            stop_reason="tool_use",
+            message={"role": "assistant", "content": [{"toolUse": {"name": "shell", "toolUseId": "x"}}]},
+            used_tool=True,
+            diagnostics={"fork_kind": "compaction"},
+        ),
+    )
+    monkeypatch.setattr(
+        manager,
+        "estimate_tokens_for_agent",
+        lambda agent: 95000 if len(agent.messages) > 2 else 50000,
+    )
+
+    result = manager.compact_to_budget(agent=_Agent())
+
+    assert result["trimmed_messages"] > 0
+    assert "Compaction summary unavailable" in str(result["warning"])
+    assert result["fork_kind"] == "compaction"
 
 
 def _tool_exchange(
@@ -333,72 +394,52 @@ def test_custom_compactable_tools_are_supported() -> None:
     assert texts[-1] == "C" * 200
 
 
-def test_generate_summary_sanitizes_reasoning_and_tool_artifacts(monkeypatch) -> None:
+def test_generate_summary_uses_shared_prefix_compaction_fork(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def _fake_generate(self, messages, agent):  # noqa: ANN001
-        del agent
-        captured["messages"] = messages
-        return {
-            "role": "assistant",
-            "content": [
-                {"reasoningContent": {"text": "hidden chain of thought"}},
-                {"text": "Durable summary"},
-                {"toolUse": {"toolUseId": "tool-2", "name": "shell", "input": {"command": "pwd"}}},
-            ],
-        }
-
     monkeypatch.setattr(
-        "swarmee_river.context.budgeted_summarizing_conversation_manager.SummarizingConversationManager._generate_summary",
-        _fake_generate,
+        "swarmee_river.context.budgeted_summarizing_conversation_manager.run_shared_prefix_text_fork",
+        lambda agent, *, kind, prompt_text, extra_fields=None: (
+            captured.update(
+                {
+                    "agent": agent,
+                    "kind": kind,
+                    "prompt_text": prompt_text,
+                    "extra_fields": extra_fields,
+                }
+            )
+            or SharedPrefixTextForkResult(
+                text="Assistant: skip\nDurable summary\n[tool result] shell",
+                stop_reason="end_turn",
+                message={"role": "assistant", "content": [{"text": "Durable summary"}]},
+                used_tool=False,
+                diagnostics={"fork_kind": "compaction", "fork_prefix_hash": "abc123"},
+            )
+        ),
     )
 
-    manager = BudgetedSummarizingConversationManager(summarization_system_prompt="summary prompt")
-    messages = [
-        {
-            "role": "assistant",
-            "content": [
-                {"reasoningContent": {"reasoningText": {"text": "private reasoning"}}},
-                {"toolUse": {"toolUseId": "tool-1", "name": "file_read", "input": {"path": "a.py", "start_line": 1}}},
-                {"text": "I will inspect the file."},
-            ],
-        },
-        {
-            "role": "user",
-            "content": [
-                {
-                    "toolResult": {
-                        "toolUseId": "tool-1",
-                        "status": "success",
-                        "content": [{"text": "def main():\n    pass\n"}],
-                    }
-                }
-            ],
-        },
-    ]
+    manager = BudgetedSummarizingConversationManager()
+    agent = SimpleNamespace(
+        messages=[
+            {"role": "user", "content": [{"text": "older one"}]},
+            {"role": "assistant", "content": [{"text": "older two"}]},
+            {"role": "user", "content": [{"text": "recent one"}]},
+        ],
+        _swarmee_compaction_extra_fields={"compaction_headroom_tokens": 8192},
+    )
+    messages = agent.messages[:2]
 
-    summary = manager._generate_summary(messages, agent=object())
+    summary = manager._generate_summary(messages, agent=agent)
 
-    sanitized_messages = captured["messages"]
-    assert sanitized_messages == [
-        {
-            "role": "assistant",
-            "content": [
-                {
-                    "text": "[tool request] file_read; path=a.py\nI will inspect the file."
-                }
-            ],
-        },
-        {
-            "role": "user",
-            "content": [
-                {
-                    "text": "[tool result] file_read; path=a.py; status=success; chars=20"
-                }
-            ],
-        },
-    ]
+    assert captured["agent"] is agent
+    assert captured["kind"] == "compaction"
+    assert "oldest 2 messages" in str(captured["prompt_text"]).lower()
+    assert captured["extra_fields"] == {"compaction_headroom_tokens": 8192}
     assert summary == {"role": "user", "content": [{"text": "Durable summary"}]}
+    assert manager._last_compaction_fork_diagnostics == {
+        "fork_kind": "compaction",
+        "fork_prefix_hash": "abc123",
+    }
 
 
 def test_balanced_strategy_leaves_read_results_uncompacted() -> None:

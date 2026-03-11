@@ -218,6 +218,18 @@ class JSONLLoggerHooks(HookProvider):
             "mode": sw_state.get("mode") if isinstance(sw_state, dict) else None,
             "tier": sw_state.get("tier") if isinstance(sw_state, dict) else None,
         }
+        if isinstance(sw_state, dict):
+            for key in (
+                "fork_kind",
+                "fork_parent_message_count",
+                "fork_prefix_hash",
+                "fork_extra_prompt_chars",
+                "fork_used_pending_reminder",
+                "compaction_headroom_tokens",
+            ):
+                value = sw_state.get(key)
+                if value is not None:
+                    input_summary[key] = value
         self._log("before_invocation", {"invocation_id": inv_id, **input_summary})
 
     def after_invocation(self, event: AfterInvocationEvent) -> None:
@@ -314,7 +326,18 @@ class JSONLLoggerHooks(HookProvider):
             "messages": msg_count,
         }
         # Propagate context metadata injected by swarmee.py run_agent().
-        for key in ("system_prompt_chars", "tool_count", "tool_schema_chars", "model_id"):
+        for key in (
+            "system_prompt_chars",
+            "tool_count",
+            "tool_schema_chars",
+            "model_id",
+            "fork_kind",
+            "fork_parent_message_count",
+            "fork_prefix_hash",
+            "fork_extra_prompt_chars",
+            "fork_used_pending_reminder",
+            "compaction_headroom_tokens",
+        ):
             value = sw.get(key)
             if value is not None:
                 payload[key] = value

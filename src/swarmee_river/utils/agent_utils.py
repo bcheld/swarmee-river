@@ -6,6 +6,8 @@ from typing import Any
 
 from strands import Agent
 
+from swarmee_river.utils.fork_utils import create_shared_prefix_child_agent
+
 
 def null_callback_handler(**_kwargs: Any) -> None:
     return None
@@ -55,16 +57,11 @@ def extract_text(result: Any) -> str:
 
 
 def create_sub_agent(*, parent_agent: Any, system_prompt: str) -> Agent:
-    kwargs: dict[str, Any] = {
-        "model": getattr(parent_agent, "model", None),
-        "tools": [],
-        "system_prompt": system_prompt,
-        "messages": [],
-        "callback_handler": null_callback_handler,
-        "load_tools_from_directory": False,
-    }
-    try:
-        return Agent(**kwargs)
-    except TypeError:
-        kwargs.pop("load_tools_from_directory", None)
-        return Agent(**kwargs)
+    agent, _snapshot = create_shared_prefix_child_agent(
+        parent_agent=parent_agent,
+        kind="subagent",
+        seed_instruction=str(system_prompt or "").strip() or None,
+        tool_allowlist=["__swarmee_text_only__"],
+        callback_handler=null_callback_handler,
+    )
+    return agent
