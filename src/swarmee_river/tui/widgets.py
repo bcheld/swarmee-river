@@ -485,6 +485,17 @@ class ConsentPrompt(Vertical):
         height: auto;
         color: $text;
     }
+    ConsentPrompt #consent_body {
+        height: auto;
+        max-height: 18;
+        margin: 0 0 1 0;
+        scrollbar-background: #2f2f2f;
+        scrollbar-background-hover: #3a3a3a;
+        scrollbar-background-active: #454545;
+        scrollbar-color: #7f7f7f;
+        scrollbar-color-hover: #999999;
+        scrollbar-color-active: #b3b3b3;
+    }
     ConsentPrompt #consent_separator {
         height: auto;
         color: $text-muted;
@@ -512,14 +523,19 @@ class ConsentPrompt(Vertical):
     _highlight_timer: Any = None
 
     def compose(self):  # type: ignore[override]
-        yield Static("", id="consent_context")
-        yield Static("", id="consent_separator")
-        yield Static("", id="consent_diff")
+        with VerticalScroll(id="consent_body"):
+            yield Static("", id="consent_context")
+            yield Static("", id="consent_separator")
+            yield Static("", id="consent_diff")
         with Horizontal(id="consent_actions"):
             yield Button("Yes (y)", id="consent_choice_y", variant="success", compact=True)
             yield Button("No (n)", id="consent_choice_n", variant="error", compact=True)
             yield Button("Always (a)", id="consent_choice_a", variant="primary", compact=True)
             yield Button("Never (v)", id="consent_choice_v", variant="warning", compact=True)
+
+    def on_mount(self) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one("#consent_body", VerticalScroll).can_focus = True
 
     def set_prompt(
         self,
@@ -552,6 +568,8 @@ class ConsentPrompt(Vertical):
             rich_context.append(", ".join(changed_paths), style="dim")
         self.query_one("#consent_context", Static).update(rich_context)
         self.query_one("#consent_separator", Static).update(RichText("─" * 28, style="dim"))
+        with contextlib.suppress(Exception):
+            self.query_one("#consent_body", VerticalScroll).scroll_home(animate=False)
         diff_widget = self.query_one("#consent_diff", Static)
         if isinstance(diff_preview, str) and diff_preview.strip():
             diff_widget.styles.display = "block"
@@ -659,7 +677,7 @@ class ConsentPrompt(Vertical):
 
     def on_key(self, event: Any) -> None:
         key = str(getattr(event, "key", "")).lower()
-        if key not in {"left", "right", "up", "down"}:
+        if key not in {"left", "right"}:
             return
         buttons: list[Button] = []
         for choice in self._CHOICE_IDS:
@@ -676,7 +694,7 @@ class ConsentPrompt(Vertical):
             event.prevent_default()
             return
         idx = buttons.index(current)
-        delta = -1 if key in {"left", "up"} else 1
+        delta = -1 if key == "left" else 1
         buttons[(idx + delta) % len(buttons)].focus()
         event.stop()
         event.prevent_default()
@@ -717,6 +735,7 @@ class ErrorActionPrompt(Vertical):
         "error_action_skip_tool",
         "error_action_escalate",
         "error_action_continue",
+        "error_action_dismiss",
     )
 
     def compose(self):  # type: ignore[override]
@@ -726,6 +745,7 @@ class ErrorActionPrompt(Vertical):
             yield Button("Skip", id="error_action_skip_tool", variant="warning")
             yield Button("Escalate", id="error_action_escalate", variant="success")
             yield Button("Continue", id="error_action_continue", variant="default")
+            yield Button("Dismiss", id="error_action_dismiss", variant="default")
 
     def show_tool_error(self, *, tool_name: str, tool_use_id: str) -> None:
         context = RichText()
@@ -733,7 +753,7 @@ class ErrorActionPrompt(Vertical):
         context.append(f"{tool_name} [{tool_use_id}]")
         context.append("\nRetry the tool call or skip it and continue.", style="dim")
         self.query_one("#error_action_context", Static).update(context)
-        self._show_buttons({"error_action_retry_tool", "error_action_skip_tool"})
+        self._show_buttons({"error_action_retry_tool", "error_action_skip_tool", "error_action_dismiss"})
         self.styles.display = "block"
         self.focus_first_choice()
 
@@ -743,10 +763,10 @@ class ErrorActionPrompt(Vertical):
         if isinstance(next_tier, str) and next_tier.strip():
             context.append(f"\nEscalate to {next_tier.strip().lower()} or continue as-is.", style="dim")
             self.query_one("#error_action_escalate", Button).label = f"Escalate ({next_tier.strip().lower()})"
-            self._show_buttons({"error_action_escalate", "error_action_continue"})
+            self._show_buttons({"error_action_escalate", "error_action_continue", "error_action_dismiss"})
         else:
             context.append("\nNo higher tier available. Continue on current tier.", style="dim")
-            self._show_buttons({"error_action_continue"})
+            self._show_buttons({"error_action_continue", "error_action_dismiss"})
         self.query_one("#error_action_context", Static).update(context)
         self.styles.display = "block"
         self.focus_first_choice()
@@ -771,6 +791,24 @@ class ErrorActionPrompt(Vertical):
                 show = button_id in visible
                 button.disabled = not show
                 button.styles.display = "block" if show else "none"
+
+    def on_key(self, event: Any) -> None:
+        key = str(getattr(event, "key", "")).lower()
+        if key != "escape":
+            return
+        app = getattr(self, "app", None)
+        if app is None:
+            self.hide_prompt()
+            return
+        reset_prompt = getattr(app, "_reset_error_action_prompt", None)
+        if callable(reset_prompt):
+            reset_prompt()
+        focus_prompt = getattr(app, "action_focus_prompt", None)
+        if callable(focus_prompt):
+            with contextlib.suppress(Exception):
+                focus_prompt()
+        event.stop()
+        event.prevent_default()
 
 
 class SidebarHeader(Horizontal):
@@ -2137,6 +2175,9 @@ class ContextBudgetBar(Static):
         self._prompt_tokens_est: int | None = None
         self._budget_tokens: int | None = None
         self._prompt_input_tokens_est: int | None = None
+        self._provider_input_tokens: int | None = None
+        self._provider_cached_input_tokens: int | None = None
+        self._provider_output_tokens: int | None = None
         self._display_ratio: float = 0.0
         self._target_ratio: float = 0.0
         self._anim_timer: Any = None
@@ -2161,6 +2202,20 @@ class ContextBudgetBar(Static):
 
     def set_prompt_input_estimate(self, tokens_est: int | None) -> None:
         self._prompt_input_tokens_est = tokens_est if isinstance(tokens_est, int) and tokens_est >= 0 else None
+        self._render_bar()
+
+    def set_provider_usage(
+        self,
+        *,
+        input_tokens: int | None,
+        cached_input_tokens: int | None,
+        output_tokens: int | None,
+    ) -> None:
+        self._provider_input_tokens = input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else None
+        self._provider_cached_input_tokens = (
+            cached_input_tokens if isinstance(cached_input_tokens, int) and cached_input_tokens >= 0 else None
+        )
+        self._provider_output_tokens = output_tokens if isinstance(output_tokens, int) and output_tokens >= 0 else None
         self._render_bar()
 
     def _ratio(self) -> float:
@@ -2239,15 +2294,30 @@ class ContextBudgetBar(Static):
 
         pct = int(round(ratio_actual * 100.0)) if budget_known and estimate_known else 0
         context_line = (
-            f"Context: {self._format_tokens(self._prompt_tokens_est)} / "
+            f"Est: {self._format_tokens(self._prompt_tokens_est)} / "
             f"{self._format_tokens(self._budget_tokens)} ({pct}%)"
         )
         rendered.append(
             context_line,
             style="default",
         )
+        if isinstance(self._provider_input_tokens, int):
+            rendered.append(
+                f"  Last req: {self._format_tokens(self._provider_input_tokens)}",
+                style="dim",
+            )
+            if isinstance(self._provider_cached_input_tokens, int) and self._provider_cached_input_tokens > 0:
+                rendered.append(
+                    f" ({self._format_tokens(self._provider_cached_input_tokens)} cached)",
+                    style="dim",
+                )
+            if isinstance(self._provider_output_tokens, int) and self._provider_output_tokens > 0:
+                rendered.append(
+                    f" out {self._format_tokens(self._provider_output_tokens)}",
+                    style="dim",
+                )
         if isinstance(self._prompt_input_tokens_est, int):
-            rendered.append(f"  ~{self._format_tokens(self._prompt_input_tokens_est)} tokens", style="dim")
+            rendered.append(f"  Draft: ~{self._format_tokens(self._prompt_input_tokens_est)}", style="dim")
 
         tooltip_text: str | None = None
         if budget_known and estimate_known and ratio_actual > 0.8:
@@ -2539,6 +2609,9 @@ class StatusBar(Static):
         self._budget_tokens: int | None = None
         self._usage: dict[str, Any] | None = None
         self._cost_usd: float | None = None
+        self._provider_input_tokens: int | None = None
+        self._provider_cached_input_tokens: int | None = None
+        self._provider_output_tokens: int | None = None
         self._step_current: int | None = None
         self._step_total: int | None = None
         self.refresh_display()
@@ -2572,6 +2645,34 @@ class StatusBar(Static):
     def set_usage(self, usage: dict[str, Any] | None, *, cost_usd: float | None = None) -> None:
         self._usage = usage
         self._cost_usd = cost_usd
+        in_tokens, out_tokens, cached = self._extract_usage_tokens()
+        total_input = in_tokens + cached if in_tokens is not None else None
+        self.set_provider_usage(
+            input_tokens=total_input,
+            cached_input_tokens=cached,
+            output_tokens=out_tokens,
+            cost_usd=cost_usd,
+        )
+
+    def set_provider_usage(
+        self,
+        *,
+        input_tokens: int | None,
+        cached_input_tokens: int | None,
+        output_tokens: int | None,
+        cost_usd: float | None = None,
+    ) -> None:
+        self._provider_input_tokens = input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else None
+        self._provider_cached_input_tokens = (
+            cached_input_tokens if isinstance(cached_input_tokens, int) and cached_input_tokens >= 0 else None
+        )
+        self._provider_output_tokens = output_tokens if isinstance(output_tokens, int) and output_tokens >= 0 else None
+        if cost_usd is not None or (
+            self._provider_input_tokens is None
+            and self._provider_cached_input_tokens is None
+            and self._provider_output_tokens is None
+        ):
+            self._cost_usd = cost_usd
         self.refresh_display()
 
     def set_plan_step(self, *, current: int | None, total: int | None) -> None:
@@ -2621,15 +2722,17 @@ class StatusBar(Static):
         if isinstance(self._prompt_tokens_est, int):
             if isinstance(self._budget_tokens, int) and self._budget_tokens > 0:
                 context_ratio = float(self._prompt_tokens_est) / float(self._budget_tokens)
-                parts.append(f"ctx {self._format_k(self._prompt_tokens_est)}/{self._format_k(self._budget_tokens)}")
+                parts.append(f"est {self._format_k(self._prompt_tokens_est)}/{self._format_k(self._budget_tokens)}")
             else:
-                parts.append(f"ctx {self._format_k(self._prompt_tokens_est)}")
+                parts.append(f"est {self._format_k(self._prompt_tokens_est)}")
 
-        in_tokens, out_tokens, cached = self._extract_usage_tokens()
+        in_tokens = self._provider_input_tokens
+        out_tokens = self._provider_output_tokens
+        cached = self._provider_cached_input_tokens
         if in_tokens is not None or out_tokens is not None:
             token_parts: list[str] = []
             if in_tokens is not None:
-                token_parts.append(f"in {self._format_k(in_tokens)}")
+                token_parts.append(f"last {self._format_k(in_tokens)} req")
             if out_tokens is not None:
                 token_parts.append(f"out {self._format_k(out_tokens)}")
             if cached is not None and cached > 0:

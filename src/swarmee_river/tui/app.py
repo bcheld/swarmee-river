@@ -1122,19 +1122,23 @@ def run_tui() -> int:
             scrollbar-color-active: #b3b3b3;
         }
 
-        #engage_plan_summary {
+        #engage_plan_summary_scroll {
             display: none;
             height: auto;
             max-height: 8;
-            overflow-y: auto;
-            color: $text;
-            padding: 0 0 1 0;
+            margin: 0 0 1 0;
             scrollbar-background: #2f2f2f;
             scrollbar-background-hover: #3a3a3a;
             scrollbar-background-active: #454545;
             scrollbar-color: #7f7f7f;
             scrollbar-color-hover: #999999;
             scrollbar-color-active: #b3b3b3;
+        }
+
+        #engage_plan_summary {
+            height: auto;
+            color: $text;
+            padding: 0 0 1 0;
         }
 
         #engage_plan_questions {
@@ -2183,6 +2187,7 @@ def run_tui() -> int:
         _engage_plan_view: Any = None
         _engage_session_view: Any = None
         _engage_orchestrator_status: Any = None  # Static | None
+        _engage_plan_summary_scroll: Any = None  # VerticalScroll | None
         _engage_plan_summary: Any = None  # Static | None
         _engage_plan_questions: Any = None  # VerticalScroll | None
         _engage_plan_items: Any = None  # VerticalScroll | None
@@ -2675,6 +2680,18 @@ def run_tui() -> int:
                 event.prevent_default()
                 self._submit_consent_choice(key)
                 return
+
+            if key == "escape" and self._error_action_prompt_widget is not None:
+                try:
+                    visible = str(self._error_action_prompt_widget.styles.display) != "none"
+                except Exception:
+                    visible = False
+                if visible:
+                    event.stop()
+                    event.prevent_default()
+                    self._reset_error_action_prompt()
+                    self.action_focus_prompt()
+                    return
 
             if key in {"ctrl+c", "meta+c", "super+c", "cmd+c", "command+c"}:
                 event.stop()
@@ -3591,6 +3608,10 @@ def run_tui() -> int:
                 return
             if button_id == "error_action_continue":
                 self._resume_after_error(escalate=False)
+                return
+            if button_id == "error_action_dismiss":
+                self._reset_error_action_prompt()
+                self.action_focus_prompt()
                 return
             if button_id == "plan_action_approve":
                 self._dispatch_plan_action("approve")

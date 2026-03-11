@@ -86,6 +86,13 @@ class PromptUIMixin:
         set_prompt_estimate = getattr(self._prompt_metrics, "set_prompt_input_estimate", None)
         if callable(set_prompt_estimate):
             set_prompt_estimate(self._prompt_input_tokens_est)
+        set_provider_usage = getattr(self._prompt_metrics, "set_provider_usage", None)
+        if callable(set_provider_usage):
+            set_provider_usage(
+                input_tokens=self.state.daemon.last_provider_input_tokens,
+                cached_input_tokens=self.state.daemon.last_provider_cached_input_tokens,
+                output_tokens=self.state.daemon.last_provider_output_tokens,
+            )
 
     def action_focus_prompt(self) -> None:
         from textual.widgets import TextArea

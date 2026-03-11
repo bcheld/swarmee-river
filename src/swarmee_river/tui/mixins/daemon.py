@@ -366,7 +366,12 @@ class DaemonMixin:
             self._status_bar.set_tool_count(0)
             self._status_bar.set_elapsed(0.0)
             self._status_bar.set_model(self._current_model_summary())
-            self._status_bar.set_usage(None, cost_usd=None)
+            self._status_bar.set_provider_usage(
+                input_tokens=self.state.daemon.last_provider_input_tokens,
+                cached_input_tokens=self.state.daemon.last_provider_cached_input_tokens,
+                output_tokens=self.state.daemon.last_provider_output_tokens,
+                cost_usd=self.state.daemon.last_cost_usd,
+            )
             self._status_bar.set_context(
                 prompt_tokens_est=self.state.daemon.last_prompt_tokens_est,
                 budget_tokens=self.state.daemon.last_budget_tokens,

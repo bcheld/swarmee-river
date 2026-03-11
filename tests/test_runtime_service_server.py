@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from swarmee_river.runtime_service.server import RuntimeServiceServer
+from swarmee_river.session.store import SessionStore
 
 
 async def _read_event(reader: asyncio.StreamReader) -> dict[str, Any]:
@@ -1248,6 +1249,192 @@ def test_runtime_service_query_stall_hard_fail_restarts_after_turn_complete(monk
                 assert restart_warning is not None
                 assert restart_warning.get("forced_restart_triggered") is True
                 assert len(fake_popen.instances) == 2
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_runtime_service_fork_surface_session_copies_snapshot_and_bootstraps_branch(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "fork-surface-token"
+    parent_session_id = "parent-session"
+    branch_session_id = "branch-session"
+    attach_cwd = tmp_path / "repo"
+    attach_cwd.mkdir(parents=True, exist_ok=True)
+
+    async def _hello(
+        *,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        surface: str,
+    ) -> None:
+        writer.write(
+            json.dumps({"cmd": "hello", "token": token, "client_name": f"test-{surface}", "surface": surface}).encode(
+                "utf-8"
+            )
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            parent_reader, parent_writer = await asyncio.open_connection("127.0.0.1", service.port)
+            branch_reader, branch_writer = await asyncio.open_connection("127.0.0.1", service.port)
+            try:
+                await _hello(reader=parent_reader, writer=parent_writer, surface="tui")
+                parent_writer.write(
+                    json.dumps(
+                        {"cmd": "attach", "session_id": parent_session_id, "cwd": str(attach_cwd)}
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await parent_writer.drain()
+                attached = await _read_event(parent_reader)
+                assert attached["event"] == "attached"
+
+                store = SessionStore(root_dir=state_root / "sessions")
+                store.create(
+                    meta={
+                        "id": parent_session_id,
+                        "cwd": str(attach_cwd),
+                        "provider": "bedrock",
+                        "tier": "deep",
+                    },
+                    session_id=parent_session_id,
+                )
+                parent_messages = [
+                    {"role": "user", "content": [{"text": "Investigate cache misses"}]},
+                    {"role": "assistant", "content": [{"text": "I'll inspect the runtime behavior."}]},
+                ]
+                store.save_messages(parent_session_id, parent_messages, max_messages=100)
+                service.sessions[parent_session_id].provider_hint = "bedrock"
+
+                await _hello(reader=branch_reader, writer=branch_writer, surface="jupyter")
+                branch_writer.write(
+                    json.dumps(
+                        {
+                            "cmd": "fork_surface_session",
+                            "cwd": str(attach_cwd),
+                            "surface": "jupyter",
+                            "session_id": branch_session_id,
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await branch_writer.drain()
+                forked = await _read_event(branch_reader)
+                assert forked == {
+                    "event": "surface_session_forked",
+                    "session_id": branch_session_id,
+                    "source_session_id": parent_session_id,
+                    "source_freshness": "live",
+                    "surface": "jupyter",
+                    "reused": False,
+                }
+
+                branch_meta = store.read_meta(branch_session_id)
+                assert branch_meta["surface_branch_parent_session_id"] == parent_session_id
+                assert branch_meta["surface_branch_surface"] == "jupyter"
+                assert branch_meta["provider"] == "bedrock"
+                assert branch_meta["tier"] == "deep"
+                assert store.load_messages(branch_session_id, max_messages=100) == parent_messages
+
+                branch_writer.write(
+                    json.dumps(
+                        {"cmd": "attach", "session_id": branch_session_id, "cwd": str(attach_cwd)}
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await branch_writer.drain()
+                branch_attached = await _read_event(branch_reader)
+                assert branch_attached["event"] == "attached"
+                assert branch_attached["source_session_id"] == parent_session_id
+                assert branch_attached["source_freshness"] == "live"
+                assert branch_attached["surface"] == "jupyter"
+
+                assert len(fake_popen.instances) == 2
+                branch_proc = fake_popen.instances[-1]
+                forwarded = [json.loads(line) for line in branch_proc.stdin.writes]
+                assert forwarded[:2] == [
+                    {"cmd": "set_model", "provider": "bedrock", "tier": "deep"},
+                    {"cmd": "restore_session", "session_id": branch_session_id},
+                ]
+            finally:
+                parent_writer.close()
+                branch_writer.close()
+                await parent_writer.wait_closed()
+                await branch_writer.wait_closed()
+        finally:
+            await service.stop()
+
+    asyncio.run(_scenario())
+
+
+def test_runtime_service_bedrock_query_stall_warning_is_not_broadcast(monkeypatch, tmp_path: Path) -> None:
+    state_root = tmp_path / ".swarmee"
+    token = "bedrock-stall-token"
+    session_id = "bedrock-session"
+
+    async def _connect_and_attach(port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            json.dumps({"cmd": "hello", "token": token, "client_name": "test", "surface": "tests"}).encode("utf-8")
+            + b"\n"
+        )
+        await writer.drain()
+        hello_event = await _read_event(reader)
+        assert hello_event["event"] == "hello_ack"
+        writer.write(
+            json.dumps({"cmd": "attach", "session_id": session_id, "cwd": str(tmp_path)}).encode("utf-8") + b"\n"
+        )
+        await writer.drain()
+        attached_event = await _read_event(reader)
+        assert attached_event["event"] == "attached"
+        return reader, writer
+
+    async def _scenario() -> None:
+        import swarmee_river.runtime_service.server as server_module
+
+        monkeypatch.setattr(server_module, "state_dir", lambda: state_root)
+        monkeypatch.setenv("SWARMEE_BEDROCK_STALL_WARN_SEC", "0.05")
+        monkeypatch.delenv("SWARMEE_BEDROCK_STALL_HARD_FAIL_SEC", raising=False)
+        fake_popen = _FakePopenFactory()
+        monkeypatch.setattr(server_module.subprocess, "Popen", fake_popen)
+
+        service = RuntimeServiceServer(port=0, token=token)
+        await _start_service_or_skip(service)
+        try:
+            reader, writer = await _connect_and_attach(port=service.port)
+            try:
+                assert len(fake_popen.instances) == 1
+                proc = fake_popen.instances[0]
+                service.sessions[session_id].provider_hint = "bedrock"
+                writer.write(json.dumps({"cmd": "query", "text": "long running"}).encode("utf-8") + b"\n")
+                await writer.drain()
+
+                await asyncio.sleep(0.15)
+                assert service.sessions[session_id].last_query_stall_warn_mono > 0.0
+
+                proc.stdout.feed(json.dumps({"event": "text_delta", "data": "ok"}))
+                event = await _read_event(reader)
+                assert event["event"] == "text_delta"
             finally:
                 writer.close()
                 await writer.wait_closed()

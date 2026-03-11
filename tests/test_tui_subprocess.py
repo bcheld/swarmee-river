@@ -515,6 +515,7 @@ def test_reset_run_local_ui_state_clears_prompt_context_and_error_actions():
     class _StatusBar:
         def __init__(self) -> None:
             self.context_calls: list[tuple[int | None, int | None]] = []
+            self.provider_usage_calls: list[tuple[int | None, int | None, int | None, float | None]] = []
 
         def set_state(self, _state: str) -> None:
             return None
@@ -525,9 +526,15 @@ def test_reset_run_local_ui_state_clears_prompt_context_and_error_actions():
         def set_elapsed(self, _elapsed: float) -> None:
             return None
 
-        def set_usage(self, _usage, *, cost_usd=None) -> None:  # noqa: ANN001
-            del cost_usd
-            return None
+        def set_provider_usage(
+            self,
+            *,
+            input_tokens=None,
+            cached_input_tokens=None,
+            output_tokens=None,
+            cost_usd=None,
+        ) -> None:  # noqa: ANN001
+            self.provider_usage_calls.append((input_tokens, cached_input_tokens, output_tokens, cost_usd))
 
         def set_context(self, *, prompt_tokens_est, budget_tokens) -> None:  # noqa: ANN001
             self.context_calls.append((prompt_tokens_est, budget_tokens))
@@ -551,6 +558,9 @@ def test_reset_run_local_ui_state_clears_prompt_context_and_error_actions():
                     last_cost_usd=0.1,
                     last_prompt_tokens_est=180000,
                     last_budget_tokens=200000,
+                    last_provider_input_tokens=50000,
+                    last_provider_cached_input_tokens=10300,
+                    last_provider_output_tokens=1200,
                     status_timer=_Timer(),
                 )
             )
@@ -625,9 +635,13 @@ def test_reset_run_local_ui_state_clears_prompt_context_and_error_actions():
     assert harness.state.daemon.turn_output_chunks == []
     assert harness.state.daemon.last_usage is None
     assert harness.state.daemon.last_cost_usd is None
+    assert harness.state.daemon.last_provider_input_tokens is None
+    assert harness.state.daemon.last_provider_cached_input_tokens is None
+    assert harness.state.daemon.last_provider_output_tokens is None
     assert harness._tool_blocks == {}
     assert harness._tool_progress_pending_ids == set()
     assert harness._status_bar.context_calls[-1] == (0, 200000)
+    assert harness._status_bar.provider_usage_calls[-1] == (None, None, None, None)
     assert harness.flushed == 1
     assert harness.finalized == 1
     assert harness.dismissed == 1
@@ -3416,6 +3430,7 @@ def test_set_planning_ui_mode_toggles_actions_row_visibility():
             self.state = AppState()
             self._widgets = {
                 "#plan": _Widget(),
+                "#engage_plan_summary_scroll": _Widget(),
                 "#engage_plan_summary": _Widget(),
                 "#engage_plan_items": _Widget(),
                 "#engage_plan_questions": _Widget(),
@@ -3438,10 +3453,52 @@ def test_set_planning_ui_mode_toggles_actions_row_visibility():
     app._set_planning_ui_mode(pre_plan=True)
     assert app._widgets["#engage_start_plan"].styles.display == "block"
     assert app._widgets["#engage_plan_actions_row"].styles.display == "none"
+    assert app._widgets["#engage_plan_summary_scroll"].styles.display == "none"
 
     app._set_planning_ui_mode(pre_plan=False)
     assert app._widgets["#engage_start_plan"].styles.display == "none"
     assert app._widgets["#engage_plan_actions_row"].styles.display == "block"
+    assert app._widgets["#engage_plan_summary_scroll"].styles.display == "block"
+
+
+def test_app_escape_dismisses_error_action_prompt() -> None:
+    from swarmee_river.tui.app import get_swarmee_tui_class
+
+    SwarmeeTUI = get_swarmee_tui_class()
+
+    class _Widget:
+        def __init__(self) -> None:
+            self.styles = SimpleNamespace(display="block")
+
+    class _Harness:
+        def __init__(self) -> None:
+            self._consent_active = False
+            self._error_action_prompt_widget = _Widget()
+            self.reset_calls = 0
+            self.focus_calls = 0
+
+        def _reset_error_action_prompt(self) -> None:
+            self.reset_calls += 1
+
+        def action_focus_prompt(self) -> None:
+            self.focus_calls += 1
+
+    stopped = {"value": False}
+    prevented = {"value": False}
+
+    event = SimpleNamespace(
+        key="escape",
+        stop=lambda: stopped.__setitem__("value", True),
+        prevent_default=lambda: prevented.__setitem__("value", True),
+    )
+
+    harness = _Harness()
+    SwarmeeTUI.on_key(harness, event)
+
+    assert stopped["value"] is True
+    assert prevented["value"] is True
+    assert harness.reset_calls == 1
+    assert harness.focus_calls == 1
 
 
 def test_artifact_entries_are_scoped_to_active_session(monkeypatch):
@@ -4028,15 +4085,30 @@ def test_status_bar_shows_context_high_warning_over_90_percent():
     assert "CTX HIGH" in text
 
 
+def test_status_bar_shows_estimated_and_last_provider_request_tokens() -> None:
+    from swarmee_river.tui.widgets import StatusBar
+
+    bar = StatusBar()
+    bar.set_context(prompt_tokens_est=16_300, budget_tokens=200_000)
+    bar.set_provider_usage(input_tokens=50_000, cached_input_tokens=10_300, output_tokens=1_200, cost_usd=0.0123)
+    text = bar._Static__content  # type: ignore[attr-defined]
+    assert "est 16.3k/200k" in text
+    assert "last 50.0k req" in text
+    assert "cache 10.3k" in text
+
+
 def test_context_budget_bar_renders_warning_and_prompt_estimate():
     from swarmee_river.tui.widgets import ContextBudgetBar
 
     bar = ContextBudgetBar()
     bar.set_context(prompt_tokens_est=45_000, budget_tokens=50_000, animate=False)
+    bar.set_provider_usage(input_tokens=50_000, cached_input_tokens=10_300, output_tokens=1_200)
     bar.set_prompt_input_estimate(250)
     plain = bar.plain_text
-    assert "Context: 45k / 50k (90%)" in plain
-    assert "~250 tokens" in plain
+    assert "Est: 45k / 50k (90%)" in plain
+    assert "Last req: 50k" in plain
+    assert "10.3k cached" in plain
+    assert "Draft: ~250" in plain
     assert "⚠" in plain
     assert getattr(bar, "tooltip", None) == "Context nearly full. Consider /compact or /new."
 
@@ -4813,16 +4885,23 @@ def test_usage_event_handler_computes_fallback_cost_when_event_omits_cost(
     # Pricing overrides are settings-driven (env knobs removed).
     (tmp_path / ".swarmee").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".swarmee" / "settings.json").write_text(
-        '{"pricing":{"providers":{"openai":{"input_per_1m":2,"output_per_1m":8}}}}\n',
+        '{"pricing":{"providers":{"openai":{"input_per_1m":2,"cached_input_per_1m":2,"output_per_1m":8}}}}\n',
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
 
-    status_calls: list[tuple[dict[str, object] | None, float | None]] = []
+    status_calls: list[tuple[int | None, int | None, int | None, float | None]] = []
 
     class _StatusBar:
-        def set_usage(self, usage, *, cost_usd=None) -> None:  # noqa: ANN001
-            status_calls.append((usage, cost_usd))
+        def set_provider_usage(
+            self,
+            *,
+            input_tokens=None,
+            cached_input_tokens=None,
+            output_tokens=None,
+            cost_usd=None,
+        ) -> None:  # noqa: ANN001
+            status_calls.append((input_tokens, cached_input_tokens, output_tokens, cost_usd))
 
     class FakeApp:
         def __init__(self) -> None:
@@ -4832,6 +4911,9 @@ def test_usage_event_handler_computes_fallback_cost_when_event_omits_cost(
                     last_cost_usd=None,
                     last_prompt_tokens_est=None,
                     last_budget_tokens=None,
+                    last_provider_input_tokens=None,
+                    last_provider_cached_input_tokens=None,
+                    last_provider_output_tokens=None,
                 )
             )
             self._status_bar = _StatusBar()
@@ -4841,12 +4923,19 @@ def test_usage_event_handler_computes_fallback_cost_when_event_omits_cost(
             self.refresh_calls += 1
 
     app = FakeApp()
-    event = {"usage": {"input_tokens": 1000, "output_tokens": 500}, "provider": "openai", "model_id": "gpt-5-mini"}
+    event = {
+        "usage": {"input_tokens": 1000, "output_tokens": 500, "cache_read_input_tokens": 250},
+        "provider": "openai",
+        "model_id": "custom-openai-model",
+    }
     handled = _handle_usage_and_compaction_events(app, "usage", event)
     assert handled is True
-    assert app.state.daemon.last_usage == {"input_tokens": 1000, "output_tokens": 500}
+    assert app.state.daemon.last_usage == {"input_tokens": 1000, "output_tokens": 500, "cache_read_input_tokens": 250}
     assert app.state.daemon.last_cost_usd == 0.006
-    assert status_calls == [({"input_tokens": 1000, "output_tokens": 500}, 0.006)]
+    assert app.state.daemon.last_provider_input_tokens == 1250
+    assert app.state.daemon.last_provider_cached_input_tokens == 250
+    assert app.state.daemon.last_provider_output_tokens == 500
+    assert status_calls == [(1250, 250, 500, 0.006)]
     assert app.refresh_calls == 1
 
 
@@ -4860,11 +4949,18 @@ def test_usage_event_handler_prefers_event_cost_over_fallback(monkeypatch, tmp_p
     )
     monkeypatch.chdir(tmp_path)
 
-    status_costs: list[float | None] = []
+    status_costs: list[tuple[int | None, int | None, int | None, float | None]] = []
 
     class _StatusBar:
-        def set_usage(self, _usage, *, cost_usd=None) -> None:
-            status_costs.append(cost_usd)
+        def set_provider_usage(
+            self,
+            *,
+            input_tokens=None,
+            cached_input_tokens=None,
+            output_tokens=None,
+            cost_usd=None,
+        ) -> None:
+            status_costs.append((input_tokens, cached_input_tokens, output_tokens, cost_usd))
 
     class FakeApp:
         def __init__(self) -> None:
@@ -4874,6 +4970,9 @@ def test_usage_event_handler_prefers_event_cost_over_fallback(monkeypatch, tmp_p
                     last_cost_usd=None,
                     last_prompt_tokens_est=None,
                     last_budget_tokens=None,
+                    last_provider_input_tokens=None,
+                    last_provider_cached_input_tokens=None,
+                    last_provider_output_tokens=None,
                 )
             )
             self._status_bar = _StatusBar()
@@ -4889,7 +4988,7 @@ def test_usage_event_handler_prefers_event_cost_over_fallback(monkeypatch, tmp_p
     )
     assert handled is True
     assert app.state.daemon.last_cost_usd == 0.1234
-    assert status_costs == [0.1234]
+    assert status_costs == [(1000, 0, 500, 0.1234)]
 
 
 def test_compact_complete_event_writes_transcript_and_updates_budget() -> None:

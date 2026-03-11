@@ -7,11 +7,18 @@ from swarmee_river.jupyter import magic
 
 
 class _FakeRuntimeClient:
-    def __init__(self, events: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        fork_event: dict[str, Any] | None = None,
+    ) -> None:
         self._events = list(events)
         self.sent_commands: list[dict[str, Any]] = []
         self.attached_session_id: str | None = None
         self.attached_cwd: str | None = None
+        self.fork_calls: list[dict[str, Any]] = []
+        self._fork_event = fork_event or {"event": "surface_session_forked", "session_id": "branch-session"}
 
     def connect(self) -> None:
         return None
@@ -28,6 +35,24 @@ class _FakeRuntimeClient:
         self.attached_session_id = session_id
         self.attached_cwd = cwd
         return {"event": "attached", "session_id": session_id}
+
+    def fork_surface_session(
+        self,
+        *,
+        cwd: str,
+        surface: str,
+        session_id: str | None = None,
+        source_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.fork_calls.append(
+            {
+                "cwd": cwd,
+                "surface": surface,
+                "session_id": session_id,
+                "source_session_id": source_session_id,
+            }
+        )
+        return dict(self._fork_event)
 
     def send_command(self, payload: dict[str, Any]) -> None:
         self.sent_commands.append(dict(payload))
@@ -69,6 +94,7 @@ def test_run_swarmee_uses_runtime_when_enabled(monkeypatch, tmp_path: Path):
     assert text == "hello world"
     assert fake_client.attached_session_id == "session-from-env"
     assert fake_client.attached_cwd == str(Path.cwd().resolve())
+    assert fake_client.fork_calls == []
     assert fake_client.sent_commands == [
         {
             "cmd": "query",
@@ -91,7 +117,8 @@ def test_run_swarmee_runtime_returns_plan_when_no_text(monkeypatch, tmp_path: Pa
         [
             {"event": "plan", "rendered": "Proposed plan:\n1. do work"},
             {"event": "turn_complete", "exit_status": "ok"},
-        ]
+        ],
+        fork_event={"event": "error", "code": "no_active_parent_session"},
     )
     monkeypatch.setattr(
         magic.RuntimeServiceClient,
@@ -109,6 +136,74 @@ def test_run_swarmee_runtime_returns_plan_when_no_text(monkeypatch, tmp_path: Pa
 
     assert text == "Proposed plan:\n1. do work"
     assert fake_client.attached_session_id == "cwd-derived-session"
+
+
+def test_run_swarmee_runtime_branches_and_applies_read_only_overrides(monkeypatch, tmp_path: Path) -> None:
+    discovery = tmp_path / "runtime.json"
+    discovery.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("SWARMEE_NOTEBOOK_USE_RUNTIME", "1")
+    monkeypatch.delenv("SWARMEE_SESSION_ID", raising=False)
+    monkeypatch.setattr(magic, "ensure_runtime_broker", lambda *, cwd=None: discovery)
+    monkeypatch.setattr(
+        magic,
+        "load_settings",
+        lambda *_args, **_kwargs: type(
+            "_Settings",
+            (),
+            {"runtime": type("_Runtime", (), {"enable_project_context_tool": True})()},
+        )(),
+    )
+
+    fake_client = _FakeRuntimeClient(
+        [
+            {"event": "text_delta", "text": "branched"},
+            {"event": "turn_complete", "exit_status": "ok"},
+        ],
+        fork_event={
+            "event": "surface_session_forked",
+            "session_id": "branch-123",
+            "source_session_id": "parent-1",
+            "source_freshness": "live",
+            "surface": "jupyter",
+        },
+    )
+    monkeypatch.setattr(
+        magic.RuntimeServiceClient,
+        "from_discovery_file",
+        staticmethod(lambda _path: fake_client),
+    )
+
+    text = magic._run_swarmee(
+        ipython=None,
+        user_prompt="inspect this repo",
+        include_context=False,
+        force_plan=False,
+        auto_approve=False,
+    )
+
+    assert text == "branched"
+    assert fake_client.fork_calls == [
+        {
+            "cwd": str(Path.cwd().resolve()),
+            "surface": "jupyter",
+            "session_id": None,
+            "source_session_id": None,
+        }
+    ]
+    assert fake_client.attached_session_id == "branch-123"
+    assert fake_client.sent_commands[0] == {
+        "cmd": "set_safety_overrides",
+        "overrides": {
+            "tool_consent": "deny",
+            "tool_allowlist": ["list", "glob", "file_list", "file_search", "file_read", "project_context"],
+            "tool_blocklist": [],
+        },
+    }
+    assert fake_client.sent_commands[1] == {
+        "cmd": "query",
+        "text": "inspect this repo",
+        "auto_approve": False,
+    }
 
 
 def test_run_swarmee_falls_back_to_local_runtime_when_runtime_not_configured(monkeypatch):

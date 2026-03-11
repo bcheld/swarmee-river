@@ -34,6 +34,7 @@ class PlanMixin:
 
         plan_panel = self.query_one("#plan", TextArea)
         summary = self.query_one("#engage_plan_summary", Static)
+        summary_scroll = self.query_one("#engage_plan_summary_scroll", VerticalScroll)
         steps = self.query_one("#engage_plan_items", VerticalScroll)
         questions = self.query_one("#engage_plan_questions", VerticalScroll)
         actions_row = self.query_one("#engage_plan_actions_row", Horizontal)
@@ -45,6 +46,7 @@ class PlanMixin:
             start_button.styles.display = "block"
             actions_row.styles.display = "none"
             summary.styles.display = "none"
+            summary_scroll.styles.display = "none"
             steps.styles.display = "none"
             questions.styles.display = "none"
             with contextlib.suppress(Exception):
@@ -57,6 +59,7 @@ class PlanMixin:
         actions_row.styles.display = "block"
         summary_text = str(getattr(self.state.plan, "current_summary", "") or "").strip()
         summary.styles.display = "block" if summary_text else "none"
+        summary_scroll.styles.display = "block" if summary_text else "none"
         steps.styles.display = "block" if list(steps.children) else "none"
         questions.styles.display = "block" if list(questions.children) else "none"
         self._set_planning_controls_enabled(enabled=not self.state.daemon.query_active)
@@ -136,6 +139,8 @@ class PlanMixin:
         # Render summary + assumptions
         summary_widget = self._engage_plan_summary
         if summary_widget is not None:
+            from textual.containers import VerticalScroll
+
             summary_lines: list[str] = []
             summary_text = str(plan_json.get("summary", "")).strip()
             if summary_text:
@@ -148,6 +153,10 @@ class PlanMixin:
                     summary_lines.append(f"  - {assumption}")
             summary_widget.update("\n".join(summary_lines) if summary_lines else "")
             summary_widget.styles.display = "block" if summary_lines else "none"
+            with _ctx.suppress(Exception):
+                summary_scroll = self.query_one("#engage_plan_summary_scroll", VerticalScroll)
+                summary_scroll.styles.display = "block" if summary_lines else "none"
+                summary_scroll.scroll_home(animate=False)
 
         # Clear existing plan step rows
         container = self._engage_plan_items
@@ -314,6 +323,11 @@ class PlanMixin:
         if self._engage_plan_summary is not None:
             with _ctx.suppress(Exception):
                 self._engage_plan_summary.update("")
+        with _ctx.suppress(Exception):
+            from textual.containers import VerticalScroll
+
+            summary_scroll = self.query_one("#engage_plan_summary_scroll", VerticalScroll)
+            summary_scroll.styles.display = "none"
         questions_container = self._engage_plan_questions
         if questions_container is not None:
             for child in list(questions_container.children):

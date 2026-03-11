@@ -244,6 +244,9 @@ class OutputMixin:
         self.state.daemon.turn_output_chunks = []
         self.state.daemon.last_usage = None
         self.state.daemon.last_cost_usd = None
+        self.state.daemon.last_provider_input_tokens = None
+        self.state.daemon.last_provider_cached_input_tokens = None
+        self.state.daemon.last_provider_output_tokens = None
         if clear_prompt_context:
             self.state.daemon.last_prompt_tokens_est = 0
             self._prompt_input_tokens_est = 0
@@ -254,7 +257,12 @@ class OutputMixin:
             self._status_bar.set_state("idle")
             self._status_bar.set_tool_count(0)
             self._status_bar.set_elapsed(0.0)
-            self._status_bar.set_usage(None, cost_usd=None)
+            self._status_bar.set_provider_usage(
+                input_tokens=None,
+                cached_input_tokens=None,
+                output_tokens=None,
+                cost_usd=None,
+            )
             self._status_bar.set_context(
                 prompt_tokens_est=self.state.daemon.last_prompt_tokens_est,
                 budget_tokens=self.state.daemon.last_budget_tokens,

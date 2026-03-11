@@ -10,10 +10,12 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.session.store import SessionStore
 from swarmee_river.settings import load_settings
 from swarmee_river.state_paths import state_dir
 
@@ -99,6 +101,14 @@ class SessionState:
     ready_received: bool = False
     startup_future: asyncio.Future[bool] | None = None
     startup_failure_summary: str | None = None
+    branch_parent_session_id: str | None = None
+    branch_surface: str | None = None
+    bootstrap_restore_session_id: str | None = None
+    bootstrap_source_session_id: str | None = None
+    bootstrap_source_freshness: str | None = None
+    bootstrap_provider: str | None = None
+    bootstrap_tier: str | None = None
+    restored_process_pid: int | None = None
 
 
 class RuntimeServiceServer:
@@ -257,6 +267,77 @@ class RuntimeServiceServer:
         digest = hashlib.sha1(normalized.encode("utf-8", errors="replace")).hexdigest()[:10]
         tail = Path(normalized).name or normalized[-12:]
         return f"{tail}:{digest}"
+
+    def _session_store(self) -> SessionStore:
+        return SessionStore(root_dir=state_dir() / "sessions")
+
+    def _session_surface_names(self, session: SessionState) -> set[str]:
+        names: set[str] = set()
+        for client_id in session.client_ids:
+            client = self._clients.get(client_id)
+            if client is None:
+                continue
+            surface = str(client.surface or "").strip().lower()
+            if surface:
+                names.add(surface)
+        return names
+
+    def _resolve_surface_branch_source_session(
+        self,
+        *,
+        cwd: str,
+        explicit_source_session_id: str | None,
+    ) -> tuple[SessionState | None, str | None, list[str]]:
+        if explicit_source_session_id:
+            source = self._sessions.get(explicit_source_session_id)
+            if source is None or source.cwd != cwd:
+                return None, "source_session_not_found", []
+            return source, None, []
+
+        candidates = [
+            session
+            for session in self._sessions.values()
+            if session.cwd == cwd and not session.branch_parent_session_id and session.client_ids
+        ]
+        if not candidates:
+            return None, "no_active_parent_session", []
+
+        tui_candidates = [session for session in candidates if "tui" in self._session_surface_names(session)]
+        if len(tui_candidates) == 1:
+            return tui_candidates[0], None, []
+        if not tui_candidates and len(candidates) == 1:
+            return candidates[0], None, []
+
+        ambiguous = sorted(session.session_id for session in (tui_candidates or candidates))
+        return None, "ambiguous_parent_session", ambiguous
+
+    def _build_surface_branch_meta(
+        self,
+        *,
+        source_meta: dict[str, Any],
+        target_session_id: str,
+        source_session_id: str,
+        source_freshness: str,
+        surface: str,
+        messages: list[Any],
+        cwd: str,
+    ) -> dict[str, Any]:
+        now = utc_now_iso()
+        next_meta = dict(source_meta)
+        next_meta["id"] = target_session_id
+        next_meta["cwd"] = cwd
+        next_meta["created_at"] = now
+        next_meta["updated_at"] = now
+        next_meta["surface_branch_parent_session_id"] = source_session_id
+        next_meta["surface_branch_source_freshness"] = source_freshness
+        next_meta["surface_branch_surface"] = surface
+        next_meta["turn_count"] = sum(
+            1
+            for item in messages
+            if isinstance(item, dict) and str(item.get("role", "")).strip().lower() == "user"
+        )
+        next_meta["message_count"] = len(messages)
+        return next_meta
 
     def _trace_session_transition(
         self,
@@ -456,24 +537,26 @@ class RuntimeServiceServer:
                 last_session_event = max(session.last_session_event_mono, session.last_query_start_mono)
                 stalled_for = max(0.0, now - last_session_event)
                 provider_hint = (session.provider_hint or "unknown").strip().lower() or "unknown"
+                emit_user_warning = provider_hint != "bedrock"
 
                 if stalled_for >= warn_sec and (now - session.last_query_stall_warn_mono) >= warn_sec:
                     session.last_query_stall_warn_mono = now
-                    await self._broadcast_session_event(
-                        session,
-                        {
-                            "event": "warning",
-                            "text": (
-                                f"No daemon events for {stalled_for:.1f}s while query is active "
-                                f"(provider={provider_hint})."
-                            ),
-                            "query_stall_elapsed_sec": round(stalled_for, 2),
-                            "query_stall_warn_sec": warn_sec,
-                            "provider": provider_hint,
-                            "force_restart": False,
-                            "forced_restart_triggered": False,
-                        },
-                    )
+                    if emit_user_warning:
+                        await self._broadcast_session_event(
+                            session,
+                            {
+                                "event": "warning",
+                                "text": (
+                                    f"No daemon events for {stalled_for:.1f}s while query is active "
+                                    f"(provider={provider_hint})."
+                                ),
+                                "query_stall_elapsed_sec": round(stalled_for, 2),
+                                "query_stall_warn_sec": warn_sec,
+                                "provider": provider_hint,
+                                "force_restart": False,
+                                "forced_restart_triggered": False,
+                            },
+                        )
 
                 if hard_fail_sec is None or stalled_for < hard_fail_sec:
                     continue
@@ -651,6 +734,7 @@ class RuntimeServiceServer:
         session.pending_stall_restart = False
         session.stdout_first_line_seen = False
         session.ready_received = False
+        session.restored_process_pid = None
         session.startup_failure_summary = None
         startup_future = session.startup_future
         session.startup_future = None
@@ -966,6 +1050,39 @@ class RuntimeServiceServer:
             await self._send_error(client, "session_start_failed", "Failed to start session daemon", detail=str(exc))
             return
 
+        process = session.process
+        if (
+            process is not None
+            and session.bootstrap_restore_session_id
+            and session.restored_process_pid != process.pid
+        ):
+            try:
+                if session.bootstrap_provider and session.bootstrap_tier:
+                    await self._forward_to_session(
+                        session,
+                        {
+                            "cmd": "set_model",
+                            "provider": session.bootstrap_provider,
+                            "tier": session.bootstrap_tier,
+                        },
+                    )
+                await self._forward_to_session(
+                    session,
+                    {
+                        "cmd": "restore_session",
+                        "session_id": session.bootstrap_restore_session_id,
+                    },
+                )
+                session.restored_process_pid = process.pid
+            except Exception as exc:
+                await self._send_error(
+                    client,
+                    "session_restore_failed",
+                    "Failed to restore forked session snapshot",
+                    detail=str(exc),
+                )
+                return
+
         self._cancel_session_idle_timer(session)
         session.client_ids.add(client.client_id)
         client.session_id = session_id
@@ -980,6 +1097,9 @@ class RuntimeServiceServer:
                 "clients": len(session.client_ids),
                 "startup_outcome": startup_outcome,
                 "session_pid": session.process.pid if session.process is not None else None,
+                "source_session_id": session.branch_parent_session_id,
+                "source_freshness": session.bootstrap_source_freshness,
+                "surface": session.branch_surface,
             },
         )
         if defer_env_refresh:
@@ -999,6 +1119,164 @@ class RuntimeServiceServer:
             await self._send_error(client, "unauthorized", "Send hello with a valid token first")
             return
         await self._send_event(client, {"event": "pong", "ts": utc_now_iso()})
+
+    async def _handle_fork_surface_session(self, client: ClientState, payload: dict[str, Any]) -> None:
+        if not client.authenticated:
+            await self._send_error(client, "unauthorized", "Send hello with a valid token first")
+            return
+
+        resolved_cwd = self._resolve_attach_cwd(payload.get("cwd"))
+        if resolved_cwd is None:
+            await self._send_error(
+                client,
+                "invalid_cwd",
+                "fork_surface_session.cwd must point to an existing directory",
+            )
+            return
+        cwd = str(resolved_cwd)
+        surface = str(payload.get("surface", client.surface or "")).strip().lower()
+        if not surface:
+            await self._send_error(client, "invalid_surface", "fork_surface_session.surface is required")
+            return
+
+        requested_session_id = str(payload.get("session_id", "") or "").strip()
+        explicit_source_session_id = str(payload.get("source_session_id", "") or "").strip() or None
+        store = self._session_store()
+
+        if requested_session_id:
+            existing = self._sessions.get(requested_session_id)
+            if existing is not None:
+                if existing.cwd != cwd:
+                    await self._send_error(
+                        client,
+                        "cwd_mismatch",
+                        "Requested fork session already exists with a different cwd",
+                        detail=f"existing={existing.cwd} requested={cwd}",
+                    )
+                    return
+                await self._send_event(
+                    client,
+                    {
+                        "event": "surface_session_forked",
+                        "session_id": existing.session_id,
+                        "source_session_id": existing.branch_parent_session_id,
+                        "source_freshness": existing.bootstrap_source_freshness or "live",
+                        "surface": existing.branch_surface or surface,
+                        "reused": True,
+                    },
+                )
+                return
+            with contextlib.suppress(Exception):
+                existing_meta = store.read_meta(requested_session_id)
+                stored_cwd = str(existing_meta.get("cwd", "")).strip()
+                stored_surface = str(existing_meta.get("surface_branch_surface", "")).strip().lower()
+                if stored_cwd == cwd and stored_surface == surface:
+                    restored = SessionState(
+                        session_id=requested_session_id,
+                        cwd=cwd,
+                        branch_parent_session_id=(
+                            str(existing_meta.get("surface_branch_parent_session_id", "")).strip() or None
+                        ),
+                        branch_surface=surface,
+                        bootstrap_restore_session_id=requested_session_id,
+                        bootstrap_source_session_id=(
+                            str(existing_meta.get("surface_branch_parent_session_id", "")).strip() or None
+                        ),
+                        bootstrap_source_freshness=(
+                            str(existing_meta.get("surface_branch_source_freshness", "")).strip()
+                            or "persisted_snapshot"
+                        ),
+                        bootstrap_provider=str(existing_meta.get("provider", "")).strip().lower() or None,
+                        bootstrap_tier=str(existing_meta.get("tier", "")).strip().lower() or None,
+                    )
+                    self._sessions[requested_session_id] = restored
+                    await self._send_event(
+                        client,
+                        {
+                            "event": "surface_session_forked",
+                            "session_id": restored.session_id,
+                            "source_session_id": restored.branch_parent_session_id,
+                            "source_freshness": restored.bootstrap_source_freshness or "persisted_snapshot",
+                            "surface": restored.branch_surface or surface,
+                            "reused": True,
+                        },
+                    )
+                    return
+
+        source_session, error_code, ambiguous_candidates = self._resolve_surface_branch_source_session(
+            cwd=cwd,
+            explicit_source_session_id=explicit_source_session_id,
+        )
+        if source_session is None:
+            await self._send_error(
+                client,
+                error_code or "surface_fork_failed",
+                "Unable to resolve a source session for surface fork",
+                detail=",".join(ambiguous_candidates) if ambiguous_candidates else None,
+            )
+            return
+
+        source_messages = store.load_messages(source_session.session_id, max_messages=1_000_000)
+        source_meta: dict[str, Any]
+        try:
+            source_meta = store.read_meta(source_session.session_id)
+        except Exception:
+            source_meta = {"cwd": cwd, "provider": source_session.provider_hint or None}
+
+        target_session_id = requested_session_id or uuid.uuid4().hex
+        source_freshness = "persisted_snapshot" if source_session.query_active else "live"
+        copied_meta = self._build_surface_branch_meta(
+            source_meta=source_meta,
+            target_session_id=target_session_id,
+            source_session_id=source_session.session_id,
+            source_freshness=source_freshness,
+            surface=surface,
+            messages=source_messages,
+            cwd=cwd,
+        )
+
+        try:
+            store.create(meta=copied_meta, session_id=target_session_id)
+        except FileExistsError:
+            await self._send_error(
+                client,
+                "target_session_exists",
+                "Requested fork session already exists",
+                detail=target_session_id,
+            )
+            return
+
+        if source_messages:
+            store.save_messages(
+                target_session_id,
+                source_messages,
+                max_messages=max(1, len(source_messages)),
+            )
+
+        self._sessions[target_session_id] = SessionState(
+            session_id=target_session_id,
+            cwd=cwd,
+            env_overrides=dict(source_session.env_overrides),
+            branch_parent_session_id=source_session.session_id,
+            branch_surface=surface,
+            bootstrap_restore_session_id=target_session_id,
+            bootstrap_source_session_id=source_session.session_id,
+            bootstrap_source_freshness=source_freshness,
+            bootstrap_provider=str(copied_meta.get("provider", "")).strip().lower() or None,
+            bootstrap_tier=str(copied_meta.get("tier", "")).strip().lower() or None,
+        )
+
+        await self._send_event(
+            client,
+            {
+                "event": "surface_session_forked",
+                "session_id": target_session_id,
+                "source_session_id": source_session.session_id,
+                "source_freshness": source_freshness,
+                "surface": surface,
+                "reused": False,
+            },
+        )
 
     async def _handle_shutdown_service(self, client: ClientState) -> None:
         if not client.authenticated:
@@ -1255,6 +1533,9 @@ class RuntimeServiceServer:
             return
         if cmd == "attach":
             await self._handle_attach(client, payload)
+            return
+        if cmd == "fork_surface_session":
+            await self._handle_fork_surface_session(client, payload)
             return
         if cmd == "ping":
             await self._handle_ping(client)

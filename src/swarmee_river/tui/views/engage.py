@@ -39,7 +39,8 @@ def compose_engage_tab() -> Iterator[Any]:
                     id="engage_planning_header",
                 )
                 yield Button("Start Plan", id="engage_start_plan", variant="success", compact=True)
-                yield Static("", id="engage_plan_summary")
+                with VerticalScroll(id="engage_plan_summary_scroll"):
+                    yield Static("", id="engage_plan_summary")
                 with VerticalScroll(id="engage_plan_items"):
                     pass
                 with VerticalScroll(id="engage_plan_questions"):
@@ -75,6 +76,7 @@ def wire_engage_widgets(app: Any) -> None:
     app._engage_plan_view = app.query_one("#engage_plan_view", Vertical)
     app._engage_session_view = app.query_one("#engage_session_view", Vertical)
     app._engage_orchestrator_status = app.query_one("#engage_orchestrator_status", Static)
+    app._engage_plan_summary_scroll = app.query_one("#engage_plan_summary_scroll", VerticalScroll)
     app._engage_plan_summary = app.query_one("#engage_plan_summary", Static)
     app._engage_plan_questions = app.query_one("#engage_plan_questions", VerticalScroll)
     app._engage_plan_items = app.query_one("#engage_plan_items", VerticalScroll)

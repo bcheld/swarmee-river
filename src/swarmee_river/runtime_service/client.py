@@ -412,6 +412,26 @@ class RuntimeServiceClient:
         self.send_command(payload)
         return self.read_event()
 
+    def fork_surface_session(
+        self,
+        *,
+        cwd: str,
+        surface: str,
+        session_id: str | None = None,
+        source_session_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        payload: dict[str, Any] = {
+            "cmd": "fork_surface_session",
+            "cwd": cwd,
+            "surface": surface,
+        }
+        if isinstance(session_id, str) and session_id.strip():
+            payload["session_id"] = session_id.strip()
+        if isinstance(source_session_id, str) and source_session_id.strip():
+            payload["source_session_id"] = source_session_id.strip()
+        self.send_command(payload)
+        return self.read_event()
+
     def shutdown_service(self) -> dict[str, Any] | None:
         self.send_command({"cmd": "shutdown_service"})
         return self.read_event()

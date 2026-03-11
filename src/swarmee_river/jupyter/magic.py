@@ -61,6 +61,8 @@ MaxTokensReachedException: type[Exception] = _MaxTokensReachedException
 
 _RUNTIME_SINGLETON: "_NotebookRuntime | None" = None
 _RUNTIME_FINGERPRINT: str | None = None
+_RUNTIME_BRANCH_SESSION_ID: str | None = None
+_RUNTIME_BRANCH_CWD: str | None = None
 
 _TOOL_USAGE_RULES = (
     "Tool usage rules:\n"
@@ -70,6 +72,7 @@ _TOOL_USAGE_RULES = (
 )
 _RUNTIME_TEXT_DELTA_EVENTS = {"text_delta", "message_delta", "output_text_delta", "delta"}
 _RUNTIME_TEXT_COMPLETE_EVENTS = {"text_complete", "message_complete", "output_text_complete", "complete"}
+_NOTEBOOK_READ_ONLY_TOOLS = ("list", "glob", "file_list", "file_search", "file_read")
 
 
 @dataclass(frozen=True)
@@ -282,6 +285,76 @@ def _should_use_runtime_broker() -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
 
 
+def _runtime_notebook_allowlist() -> list[str]:
+    settings = load_settings()
+    allow = list(_NOTEBOOK_READ_ONLY_TOOLS)
+    if bool(getattr(settings.runtime, "enable_project_context_tool", False)):
+        allow.append("project_context")
+    return allow
+
+
+def _attach_notebook_runtime_session(
+    client: RuntimeServiceClient,
+    *,
+    attach_cwd: Path,
+) -> tuple[str, dict[str, Any] | None]:
+    global _RUNTIME_BRANCH_CWD, _RUNTIME_BRANCH_SESSION_ID
+
+    from swarmee_river.config.env_policy import getenv_internal
+
+    explicit_session_id = str(getenv_internal("SWARMEE_SESSION_ID") or "").strip() or None
+    session_id = explicit_session_id
+    fork_event: dict[str, Any] | None = None
+
+    cwd_str = str(attach_cwd)
+    if explicit_session_id is None:
+        if _RUNTIME_BRANCH_CWD != cwd_str:
+            _RUNTIME_BRANCH_CWD = cwd_str
+            _RUNTIME_BRANCH_SESSION_ID = None
+        fork_event = client.fork_surface_session(
+            cwd=cwd_str,
+            surface="jupyter",
+            session_id=_RUNTIME_BRANCH_SESSION_ID,
+        )
+        if fork_event is None:
+            raise RuntimeError("runtime broker closed connection during surface fork")
+        if str(fork_event.get("event", "")).strip().lower() == "error":
+            code = str(fork_event.get("code", "")).strip().lower()
+            if code == "no_active_parent_session":
+                _RUNTIME_BRANCH_SESSION_ID = None
+                session_id = default_session_id_for_cwd(attach_cwd)
+            else:
+                raise RuntimeError(str(fork_event.get("message", fork_event)).strip() or "runtime surface fork failed")
+        else:
+            session_id = str(fork_event.get("session_id", "")).strip() or None
+            if not session_id:
+                raise RuntimeError("runtime broker surface fork did not return a session_id")
+            _RUNTIME_BRANCH_SESSION_ID = session_id
+
+    if not session_id:
+        session_id = default_session_id_for_cwd(attach_cwd)
+
+    attach = client.attach(session_id=session_id, cwd=cwd_str)
+    if attach is None:
+        raise RuntimeError("runtime broker closed connection during attach")
+    if str(attach.get("event", "")).strip().lower() == "error":
+        raise RuntimeError(str(attach.get("message", attach)).strip() or "runtime attach failed")
+
+    if explicit_session_id is None:
+        allowlist = _runtime_notebook_allowlist()
+        client.send_command(
+            {
+                "cmd": "set_safety_overrides",
+                "overrides": {
+                    "tool_consent": "deny",
+                    "tool_allowlist": allowlist,
+                    "tool_blocklist": [],
+                },
+            }
+        )
+    return session_id, fork_event
+
+
 def _run_swarmee_via_runtime(
     prompt: str,
     *,
@@ -290,10 +363,6 @@ def _run_swarmee_via_runtime(
 ) -> str:
     attach_cwd = Path.cwd().resolve()
     discovery = ensure_runtime_broker(cwd=attach_cwd)
-
-    from swarmee_river.config.env_policy import getenv_internal
-
-    session_id = getenv_internal("SWARMEE_SESSION_ID") or default_session_id_for_cwd(attach_cwd)
     client = RuntimeServiceClient.from_discovery_file(discovery)
     client.connect()
 
@@ -304,11 +373,10 @@ def _run_swarmee_via_runtime(
         if str(hello.get("event", "")).strip().lower() == "error":
             raise RuntimeError(str(hello.get("message", hello)).strip() or "runtime hello failed")
 
-        attach = client.attach(session_id=session_id, cwd=str(attach_cwd))
-        if attach is None:
-            raise RuntimeError("runtime broker closed connection during attach")
-        if str(attach.get("event", "")).strip().lower() == "error":
-            raise RuntimeError(str(attach.get("message", attach)).strip() or "runtime attach failed")
+        _session_id, _fork_event = _attach_notebook_runtime_session(
+            client,
+            attach_cwd=attach_cwd,
+        )
 
         query_payload: dict[str, Any] = {"cmd": "query", "text": prompt}
         if force_plan:
@@ -352,6 +420,13 @@ def _run_swarmee_via_runtime(
                 rendered = event.get("rendered")
                 if isinstance(rendered, str) and rendered.strip():
                     plan_rendered = rendered.strip()
+                continue
+
+            if etype == "consent_prompt":
+                errors.append(
+                    "Notebook broker sessions are read-only and cannot answer interactive consent prompts. "
+                    "Use the TUI/CLI for mutating tools, or rerun with a read-only approach."
+                )
                 continue
 
             if etype == "error":
@@ -637,22 +712,23 @@ def _run_swarmee(
     return str(result)
 
 
-def _parse_magic_line(line: str) -> tuple[bool, bool, bool, bool, str]:
+def _parse_magic_line(line: str) -> tuple[bool, bool, bool | None, bool, str]:
     """
     Parse a `%%swarmee` magic line.
 
     Supported flags:
     - --yes: auto-approve plan + tool consent for this invocation
     - --plan: force plan mode even for "info" prompts
+    - --with-context: inject notebook context even when using the runtime broker
     - --no-context: do not inject notebook context
     - --daemon-stop: stop the shared runtime daemon for this scope
 
-    Returns: (auto_approve, force_plan, no_context, daemon_stop, extra_text)
+    Returns: (auto_approve, force_plan, include_context_override, daemon_stop, extra_text)
     """
     tokens = shlex.split(line or "")
     auto_approve = False
     force_plan = False
-    no_context = False
+    include_context_override: bool | None = None
     daemon_stop = False
     extra: list[str] = []
 
@@ -663,15 +739,18 @@ def _parse_magic_line(line: str) -> tuple[bool, bool, bool, bool, str]:
         if tok == "--plan":
             force_plan = True
             continue
+        if tok == "--with-context":
+            include_context_override = True
+            continue
         if tok == "--no-context":
-            no_context = True
+            include_context_override = False
             continue
         if tok == "--daemon-stop":
             daemon_stop = True
             continue
         extra.append(tok)
 
-    return auto_approve, force_plan, no_context, daemon_stop, " ".join(extra).strip()
+    return auto_approve, force_plan, include_context_override, daemon_stop, " ".join(extra).strip()
 
 
 def load_ipython_extension(ipython: Any) -> None:
@@ -684,13 +763,16 @@ def load_ipython_extension(ipython: Any) -> None:
     class SwarmeeMagics(Magics):
         @cell_magic  # type: ignore[untyped-decorator]
         def swarmee(self, line: str, cell: str) -> str:
-            # Allow disabling notebook context for quick one-offs.
-            auto_approve, force_plan, no_context, daemon_stop, extra = _parse_magic_line(line)
+            auto_approve, force_plan, include_context_override, daemon_stop, extra = _parse_magic_line(line)
             if daemon_stop:
                 text = _shutdown_runtime_from_notebook()
                 print(text)
                 return text
-            include_context = not no_context
+            include_context = (
+                include_context_override
+                if include_context_override is not None
+                else (not _should_use_runtime_broker())
+            )
 
             prompt = cell
             if extra:

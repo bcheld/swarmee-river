@@ -32,6 +32,9 @@ class DaemonState:
     last_cost_usd: float | None = None
     last_prompt_tokens_est: int | None = None
     last_budget_tokens: int | None = None
+    last_provider_input_tokens: int | None = None
+    last_provider_cached_input_tokens: int | None = None
+    last_provider_output_tokens: int | None = None
     proc: Any = None
     runner_thread: Any = None
     is_shutting_down: bool = False

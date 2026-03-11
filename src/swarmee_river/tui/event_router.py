@@ -375,13 +375,29 @@ def _handle_usage_and_compaction_events(app: Any, etype: str, event: dict[str, A
     if etype == "usage":
         usage = event.get("usage")
         app.state.daemon.last_usage = usage if isinstance(usage, dict) else None
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+        cached_tokens: int | None = None
+        if isinstance(app.state.daemon.last_usage, dict):
+            raw_input_tokens, raw_output_tokens, raw_cached_tokens = _extract_usage_counts(app.state.daemon.last_usage)
+            input_tokens = raw_input_tokens + raw_cached_tokens
+            output_tokens = raw_output_tokens
+            cached_tokens = raw_cached_tokens
+        app.state.daemon.last_provider_input_tokens = input_tokens
+        app.state.daemon.last_provider_cached_input_tokens = cached_tokens
+        app.state.daemon.last_provider_output_tokens = output_tokens
         cost = event.get("cost_usd")
         if isinstance(cost, (int, float)):
             app.state.daemon.last_cost_usd = float(cost)
         else:
             app.state.daemon.last_cost_usd = _compute_usage_cost_fallback(event)
         if app._status_bar is not None:
-            app._status_bar.set_usage(app.state.daemon.last_usage, cost_usd=app.state.daemon.last_cost_usd)
+            app._status_bar.set_provider_usage(
+                input_tokens=app.state.daemon.last_provider_input_tokens,
+                cached_input_tokens=app.state.daemon.last_provider_cached_input_tokens,
+                output_tokens=app.state.daemon.last_provider_output_tokens,
+                cost_usd=app.state.daemon.last_cost_usd,
+            )
         app._refresh_prompt_metrics()
         return True
 

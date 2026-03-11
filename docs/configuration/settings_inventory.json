@@ -76,7 +76,7 @@
         "src/swarmee_river/swarmee.py:910",
         "src/swarmee_river/swarmee.py:911",
         "src/swarmee_river/swarmee.py:924",
-        "src/swarmee_river/tui/app.py:2390",
+        "src/swarmee_river/tui/app.py:2395",
         "src/swarmee_river/tui/mixins/settings.py:1535",
         "src/swarmee_river/utils/provider_utils.py:100",
         "src/swarmee_river/utils/provider_utils.py:109",
@@ -462,7 +462,7 @@
     },
     {
       "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
-      "controls": "Controls runtime behavior at src/swarmee_river/jupyter/magic.py:279 and related callsites.",
+      "controls": "Controls runtime behavior at src/swarmee_river/jupyter/magic.py:282 and related callsites.",
       "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
       "documented": false,
       "dup_group": null,
@@ -480,7 +480,7 @@
       "surface": "runtime_internal",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/jupyter/magic.py:279"
+        "src/swarmee_river/jupyter/magic.py:282"
       ],
       "where_set": [
         "code-only/runtime wiring"
@@ -502,17 +502,17 @@
         "process environment",
         "built-in defaults"
       ],
-      "read_count": 10,
+      "read_count": 11,
       "status": "internal_only",
       "surface": "runtime_internal",
-      "usage_count": 10,
+      "usage_count": 11,
       "where_read": [
         "src/swarmee_river/cli/diagnostics.py:89",
         "src/swarmee_river/hooks/file_diff_review.py:135",
         "src/swarmee_river/hooks/jsonl_logger.py:155",
         "src/swarmee_river/hooks/session_s3.py:55",
-        "src/swarmee_river/jupyter/magic.py:296",
-        "src/swarmee_river/runtime_service/server.py:666",
+        "src/swarmee_river/jupyter/magic.py:305",
+        "src/swarmee_river/runtime_service/server.py:750",
         "src/swarmee_river/swarmee.py:3446",
         "src/swarmee_river/swarmee.py:3447",
         "src/swarmee_river/swarmee.py:3543",
@@ -520,13 +520,15 @@
         "src/swarmee_river/swarmee.py:3669",
         "src/swarmee_river/swarmee.py:3912",
         "src/swarmee_river/swarmee.py:3952",
+        "src/swarmee_river/swarmee.py:4757",
+        "src/swarmee_river/swarmee.py:4808",
         "src/swarmee_river/tui/event_types.py:91",
         "src/swarmee_river/tui/transport.py:279"
       ],
       "where_set": [
         "code-only/runtime wiring"
       ],
-      "write_count": 5
+      "write_count": 6
     },
     {
       "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
@@ -581,7 +583,7 @@
         "src/swarmee_river/handlers/callback_handler.py:353",
         "src/swarmee_river/hooks/file_diff_review.py:156",
         "src/swarmee_river/hooks/tui_metrics.py:159",
-        "src/swarmee_river/runtime_service/server.py:665",
+        "src/swarmee_river/runtime_service/server.py:749",
         "src/swarmee_river/swarmee.py:392",
         "src/swarmee_river/tui/transport.py:257"
       ],
@@ -1616,7 +1618,7 @@
       "surface": "notebook",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/jupyter/magic.py:669"
+        "src/swarmee_river/jupyter/magic.py:748"
       ],
       "where_set": [
         "Notebook magic flag"
@@ -1639,7 +1641,7 @@
       "surface": "notebook",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/jupyter/magic.py:666"
+        "src/swarmee_river/jupyter/magic.py:745"
       ],
       "where_set": [
         "Notebook magic flag"
@@ -1662,7 +1664,7 @@
       "surface": "notebook",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/jupyter/magic.py:663"
+        "src/swarmee_river/jupyter/magic.py:739"
       ],
       "where_set": [
         "Notebook magic flag"
@@ -1685,7 +1687,7 @@
       "surface": "notebook",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/jupyter/magic.py:660"
+        "src/swarmee_river/jupyter/magic.py:736"
       ],
       "where_set": [
         "Notebook magic flag"
@@ -4445,7 +4447,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3434"
+        "src/swarmee_river/tui/app.py:3451"
       ],
       "where_set": [
         "TUI Advanced settings",
@@ -4470,7 +4472,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3456"
+        "src/swarmee_river/tui/app.py:3473"
       ],
       "where_set": [
         "TUI Advanced settings",
@@ -4495,7 +4497,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3472"
+        "src/swarmee_river/tui/app.py:3489"
       ],
       "where_set": [
         "TUI Advanced settings",
@@ -4520,7 +4522,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:2729"
+        "src/swarmee_river/tui/app.py:2746"
       ],
       "where_set": [
         "TUI Settings select control",
@@ -4544,7 +4546,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:2735"
+        "src/swarmee_river/tui/app.py:2752"
       ],
       "where_set": [
         "TUI Settings select control",
@@ -4568,7 +4570,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:2741"
+        "src/swarmee_river/tui/app.py:2758"
       ],
       "where_set": [
         "TUI Settings select control",
@@ -4592,7 +4594,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3490"
+        "src/swarmee_river/tui/app.py:3507"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4616,7 +4618,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3300"
+        "src/swarmee_river/tui/app.py:3317"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4640,7 +4642,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3311"
+        "src/swarmee_river/tui/app.py:3328"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4664,7 +4666,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3324"
+        "src/swarmee_river/tui/app.py:3341"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4688,7 +4690,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3407"
+        "src/swarmee_river/tui/app.py:3424"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4712,7 +4714,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3375"
+        "src/swarmee_river/tui/app.py:3392"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4736,7 +4738,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3357"
+        "src/swarmee_river/tui/app.py:3374"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4760,7 +4762,7 @@
       "surface": "tui",
       "usage_count": 2,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3393"
+        "src/swarmee_river/tui/app.py:3410"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4784,7 +4786,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3366"
+        "src/swarmee_river/tui/app.py:3383"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4808,7 +4810,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3348"
+        "src/swarmee_river/tui/app.py:3365"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4832,7 +4834,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3384"
+        "src/swarmee_river/tui/app.py:3401"
       ],
       "where_set": [
         "TUI Settings control",

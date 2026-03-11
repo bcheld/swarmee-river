@@ -4742,11 +4742,78 @@ def main() -> None:
         if active_worker is not None and active_worker.is_alive():
             active_worker.join(timeout=2.0)
 
+    def _seed_local_surface_branch_from_runtime(*, surface: str) -> None:
+        nonlocal selected_provider, selection_is_auto
+        if args.tui_daemon:
+            return
+        store = ctx.session_store
+        if store is None:
+            return
+
+        discovery_path = runtime_discovery_path(cwd=Path.cwd())
+        if not discovery_path.exists():
+            return
+
+        source_session_id = (os.getenv("SWARMEE_SESSION_ID") or "").strip() or None
+        client: RuntimeServiceClient | None = None
+        try:
+            client = RuntimeServiceClient.from_discovery_file(discovery_path, timeout_s=1.0)
+            client.connect()
+            hello = client.hello(client_name=f"swarmee-{surface}", surface="cli")
+            if not isinstance(hello, dict) or str(hello.get("event", "")).strip().lower() == "error":
+                return
+            fork_event = client.fork_surface_session(
+                cwd=str(Path.cwd().resolve()),
+                surface=surface,
+                source_session_id=source_session_id,
+            )
+        except Exception:
+            return
+        finally:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    client.close()
+
+        if not isinstance(fork_event, dict):
+            return
+        if str(fork_event.get("event", "")).strip().lower() == "error":
+            return
+
+        branch_session_id = str(fork_event.get("session_id", "")).strip()
+        if not branch_session_id:
+            return
+
+        try:
+            branch_meta = store.read_meta(branch_session_id)
+            branch_messages = store.load_messages(branch_session_id, max_messages=_SESSION_MESSAGE_MAX_COUNT)
+        except Exception:
+            return
+
+        provider = str(branch_meta.get("provider", "")).strip().lower() or None
+        tier = str(branch_meta.get("tier", "")).strip().lower() or None
+        if provider and tier:
+            with contextlib.suppress(Exception):
+                model_manager.set_selection(ctx.agent, provider_name=provider, tier_name=tier)
+                selected_provider = provider
+                selection_is_auto = False
+                agent_kwargs["model"] = ctx.agent.model
+                if callable(ctx.refresh_conversation_manager):
+                    ctx.refresh_conversation_manager()
+
+        state = getattr(ctx.agent, "state", None)
+        with contextlib.suppress(Exception):
+            ctx.swap_agent(branch_messages, state)
+            agent_kwargs["model"] = ctx.agent.model
+        ctx.current_session_id = branch_session_id
+        os.environ["SWARMEE_SESSION_ID"] = branch_session_id
+
     if args.tui_daemon:
         _run_tui_daemon()
         return
 
     # Query mode (one-shot) or interactive REPL mode.
+    _seed_local_surface_branch_from_runtime(surface="cli")
+
     if args.query:
         query = " ".join(args.query)
         # Retrieval is best-effort and should never block query execution.
