@@ -190,7 +190,18 @@ def file_read(
     base = safe_cwd(cwd)
     target = (base / rel_path).resolve()
     if base not in target.parents and target != base:
-        return {"status": "error", "content": [{"text": "Refusing to read outside cwd"}]}
+        return {
+            "status": "error",
+            "content": [
+                {
+                    "text": (
+                        f"Refusing to read outside the current scope: {target}. "
+                        "Cross-scope reads are blocked; change cwd/scope to a parent directory "
+                        "if you want to inspect this file."
+                    )
+                }
+            ],
+        }
     if not target.exists() or not target.is_file():
         return {"status": "error", "content": [{"text": f"File not found: {rel_path}"}]}
 

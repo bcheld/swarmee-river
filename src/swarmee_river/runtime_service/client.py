@@ -30,6 +30,29 @@ class RuntimeDiscovery:
     session_events_path: str | None = None
 
 
+def runtime_hello_capabilities(payload: dict[str, Any] | None) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        return {}
+    raw_capabilities = payload.get("capabilities")
+    if not isinstance(raw_capabilities, dict):
+        return {}
+    capabilities: dict[str, bool] = {}
+    for raw_name, raw_value in raw_capabilities.items():
+        name = str(raw_name or "").strip().lower()
+        if not name:
+            continue
+        capabilities[name] = bool(raw_value)
+    return capabilities
+
+
+def runtime_hello_supports_capability(payload: dict[str, Any] | None, capability: str) -> bool:
+    name = str(capability or "").strip().lower()
+    if not name:
+        return False
+    capabilities = runtime_hello_capabilities(payload)
+    return bool(capabilities.get(name))
+
+
 def default_session_id_for_cwd(cwd: Path) -> str:
     resolved = scope_root(cwd=cwd)
     digest = hashlib.sha1(str(resolved).encode("utf-8", errors="replace")).hexdigest()[:16]

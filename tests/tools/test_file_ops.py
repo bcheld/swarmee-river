@@ -59,6 +59,21 @@ def test_file_read_suggests_office_tool_for_office_extensions(tmp_path: Path) ->
     assert "office(action='read', path='sample.docx')" in text
 
 
+def test_file_read_outside_scope_includes_guidance(tmp_path: Path) -> None:
+    outside_dir = tmp_path.parent / "outside-scope"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    outside_path = outside_dir / "secret.txt"
+    outside_path.write_text("secret\n", encoding="utf-8")
+
+    result = file_read(str(outside_path), cwd=str(tmp_path))
+
+    assert result.get("status") == "error"
+    text = (result.get("content") or [{"text": ""}])[0].get("text", "")
+    assert "outside the current scope" in text
+    assert "change cwd/scope" in text
+    assert str(outside_path) in text
+
+
 def test_file_search_falls_back_without_rg(tmp_path: Path, monkeypatch) -> None:
     import tools.file_ops as file_ops
 

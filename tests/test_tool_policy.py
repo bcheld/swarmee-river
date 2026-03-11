@@ -16,7 +16,7 @@ def test_plan_mode_blocks_non_allowlisted_tools() -> None:
     hook.before_tool_call(event)
 
     assert event.cancel_tool
-    assert "blocked in plan mode" in str(event.cancel_tool)
+    assert "only allowed in plan mode for conservative read-only commands" in str(event.cancel_tool)
 
 
 def test_plan_mode_allows_structured_output_tool_from_invocation_state() -> None:
@@ -64,7 +64,10 @@ def test_plan_mode_blocks_risky_opencode_aliases() -> None:
         )
         hook.before_tool_call(event)
         assert event.cancel_tool
-        assert "blocked in plan mode" in str(event.cancel_tool)
+        if name == "bash":
+            assert "conservative read-only commands" in str(event.cancel_tool)
+        else:
+            assert "blocked in plan mode" in str(event.cancel_tool)
 
 
 def test_plan_mode_blocks_todowrite() -> None:
@@ -203,6 +206,73 @@ def test_execute_mode_blocks_workplan_tool() -> None:
 
     assert event.cancel_tool
     assert "only allowed in plan mode" in str(event.cancel_tool)
+
+
+def test_plan_mode_allows_athena_query() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "athena_query", "input": {"action": "list_databases"}},
+        invocation_state={"swarmee": {"mode": "plan"}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool is False
+
+
+def test_plan_mode_allows_read_only_shell_commands() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "shell", "input": {"command": "git status"}},
+        invocation_state={"swarmee": {"mode": "plan"}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool is False
+
+
+def test_plan_mode_blocks_operator_heavy_shell_commands() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "shell", "input": {"command": "git status && pytest -q"}},
+        invocation_state={"swarmee": {"mode": "plan"}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool
+    assert "conservative read-only commands" in str(event.cancel_tool)
+
+
+def test_plan_mode_allows_single_expression_python_repl_queries() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "python_repl", "input": {"code": "len([1, 2, 3])"}},
+        invocation_state={"swarmee": {"mode": "plan"}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool is False
+
+
+def test_plan_mode_blocks_python_repl_statements() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "python_repl", "input": {"code": "import os\nos.listdir('.')"}},
+        invocation_state={"swarmee": {"mode": "plan"}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool
+    assert "single-expression read-only queries" in str(event.cancel_tool)
 
 
 def test_execute_mode_allows_plan_progress_even_when_enforce_plan_is_enabled() -> None:

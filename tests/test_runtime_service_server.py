@@ -162,6 +162,8 @@ def test_runtime_service_startup_and_basic_commands(monkeypatch, tmp_path: Path)
                 event = await _read_event(reader)
                 assert event["event"] == "hello_ack"
                 assert event["status"] == "ok"
+                assert event["schema_version"] == "2"
+                assert event["capabilities"]["fork_surface_session"] is True
 
                 writer.write(
                     json.dumps({"cmd": "attach", "session_id": "s-1", "cwd": str(tmp_path)}).encode("utf-8") + b"\n"

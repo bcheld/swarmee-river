@@ -452,6 +452,27 @@ def test_plan_prompt_command_still_starts_plan_mode():
     assert harness.run_calls == [("draft ping check", False, "plan")]
 
 
+def test_plan_approve_dispatch_starts_execute_mode() -> None:
+    class _Harness:
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(plan=SimpleNamespace(pending_prompt="ship it"))
+            self.run_calls: list[tuple[str, bool, str | None]] = []
+            self.transcript: list[str] = []
+
+        def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
+            self.run_calls.append((prompt, auto_approve, mode))
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.transcript.append(text)
+
+    harness = _Harness()
+
+    PlanMixin._dispatch_plan_action(harness, "approve")
+
+    assert harness.run_calls == [("ship it", True, "execute")]
+    assert harness.transcript == []
+
+
 def test_start_fresh_session_rotates_session_id_and_restarts_daemon():
     class _Harness(SessionMixin):
         def __init__(self) -> None:
@@ -4093,8 +4114,10 @@ def test_status_bar_shows_estimated_and_last_provider_request_tokens() -> None:
     bar.set_provider_usage(input_tokens=50_000, cached_input_tokens=10_300, output_tokens=1_200, cost_usd=0.0123)
     text = bar._Static__content  # type: ignore[attr-defined]
     assert "est 16.3k/200k" in text
-    assert "last 50.0k req" in text
+    assert "cost $0.0123" in text
+    assert "req 50.0k" in text
     assert "cache 10.3k" in text
+    assert "out 1.20k" in text
 
 
 def test_context_budget_bar_renders_warning_and_prompt_estimate():
@@ -4102,15 +4125,51 @@ def test_context_budget_bar_renders_warning_and_prompt_estimate():
 
     bar = ContextBudgetBar()
     bar.set_context(prompt_tokens_est=45_000, budget_tokens=50_000, animate=False)
-    bar.set_provider_usage(input_tokens=50_000, cached_input_tokens=10_300, output_tokens=1_200)
+    bar.set_provider_usage(input_tokens=50_000, cached_input_tokens=10_300, output_tokens=1_200, cost_usd=0.0123)
     bar.set_prompt_input_estimate(250)
     plain = bar.plain_text
     assert "Est: 45k / 50k (90%)" in plain
-    assert "Last req: 50k" in plain
-    assert "10.3k cached" in plain
+    assert "Req: 50k" in plain
+    assert "Cache: 10.3k" in plain
+    assert "Cost: $0.0123" in plain
     assert "Draft: ~250" in plain
     assert "⚠" in plain
     assert getattr(bar, "tooltip", None) == "Context nearly full. Consider /compact or /new."
+
+
+def test_prompt_history_helpers_restore_cached_draft() -> None:
+    from swarmee_river.tui.app import prompt_history_next, prompt_history_previous
+
+    history = ["first", "second", "third"]
+    index, draft, entry = prompt_history_previous(
+        history,
+        current_index=-1,
+        draft_text=None,
+        current_text="draft prompt",
+    )
+    assert (index, draft, entry) == (2, "draft prompt", "third")
+
+    index, draft, entry = prompt_history_previous(
+        history,
+        current_index=index,
+        draft_text=draft,
+        current_text="ignored",
+    )
+    assert (index, draft, entry) == (1, "draft prompt", "second")
+
+    index, draft, entry = prompt_history_next(
+        history,
+        current_index=index,
+        draft_text=draft,
+    )
+    assert (index, draft, entry) == (2, "draft prompt", "third")
+
+    index, draft, entry = prompt_history_next(
+        history,
+        current_index=index,
+        draft_text=draft,
+    )
+    assert (index, draft, entry) == (-1, None, "draft prompt")
 
 
 def test_command_palette_includes_copy_last():

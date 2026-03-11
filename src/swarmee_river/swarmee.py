@@ -166,6 +166,7 @@ from swarmee_river.runtime_service.client import (
     RuntimeServiceClient,
     default_session_id_for_cwd,
     ensure_runtime_broker,
+    runtime_hello_supports_capability,
     runtime_discovery_path,
     shutdown_runtime_broker,
 )
@@ -4755,6 +4756,7 @@ def main() -> None:
             return
 
         source_session_id = (os.getenv("SWARMEE_SESSION_ID") or "").strip() or None
+        branch_session_id: str | None = None
         client: RuntimeServiceClient | None = None
         try:
             client = RuntimeServiceClient.from_discovery_file(discovery_path, timeout_s=1.0)
@@ -4762,11 +4764,20 @@ def main() -> None:
             hello = client.hello(client_name=f"swarmee-{surface}", surface="cli")
             if not isinstance(hello, dict) or str(hello.get("event", "")).strip().lower() == "error":
                 return
-            fork_event = client.fork_surface_session(
-                cwd=str(Path.cwd().resolve()),
-                surface=surface,
-                source_session_id=source_session_id,
-            )
+            if runtime_hello_supports_capability(hello, "fork_surface_session"):
+                fork_event = client.fork_surface_session(
+                    cwd=str(Path.cwd().resolve()),
+                    surface=surface,
+                    source_session_id=source_session_id,
+                )
+                if isinstance(fork_event, dict) and str(fork_event.get("event", "")).strip().lower() != "error":
+                    branch_session_id = str(fork_event.get("session_id", "")).strip() or None
+                elif isinstance(fork_event, dict):
+                    code = str(fork_event.get("code", "")).strip().lower()
+                    if code not in {"unknown_cmd", "no_active_parent_session"}:
+                        return
+            if not branch_session_id:
+                branch_session_id = source_session_id or default_session_id_for_cwd(Path.cwd())
         except Exception:
             return
         finally:
@@ -4774,12 +4785,6 @@ def main() -> None:
                 with contextlib.suppress(Exception):
                     client.close()
 
-        if not isinstance(fork_event, dict):
-            return
-        if str(fork_event.get("event", "")).strip().lower() == "error":
-            return
-
-        branch_session_id = str(fork_event.get("session_id", "")).strip()
         if not branch_session_id:
             return
 

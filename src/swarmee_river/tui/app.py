@@ -260,6 +260,39 @@ def _default_profile_id(now: datetime | None = None) -> str:
     return f"profile-{ts.strftime('%Y%m%d-%H%M%S')}"
 
 
+def prompt_history_previous(
+    history: list[str],
+    *,
+    current_index: int,
+    draft_text: str | None,
+    current_text: str,
+) -> tuple[int, str | None, str | None]:
+    if not history:
+        return current_index, draft_text, None
+    if current_index < 0:
+        next_draft = current_text
+        next_index = len(history) - 1
+        return next_index, next_draft, history[next_index]
+    if current_index > 0:
+        next_index = current_index - 1
+        return next_index, draft_text, history[next_index]
+    return current_index, draft_text, history[0]
+
+
+def prompt_history_next(
+    history: list[str],
+    *,
+    current_index: int,
+    draft_text: str | None,
+) -> tuple[int, str | None, str | None]:
+    if current_index < 0 or not history:
+        return current_index, draft_text, None
+    if current_index < len(history) - 1:
+        next_index = current_index + 1
+        return next_index, draft_text, history[next_index]
+    return -1, None, draft_text or ""
+
+
 def _default_profile_name(now: datetime | None = None) -> str:
     ts = now or datetime.now()
     return f"Profile {ts.strftime('%Y-%m-%d %H:%M')}"
@@ -738,6 +771,15 @@ def run_tui() -> int:
                     method(*args)
                     return
 
+        def _replace_text(self, text: str) -> None:
+            self.clear()
+            for method_name in ("insert", "insert_text_at_cursor"):
+                method = getattr(self, method_name, None)
+                if callable(method):
+                    with contextlib.suppress(Exception):
+                        method(text)
+                        return
+
         def _adjust_height(self) -> None:
             line_count = self.text.count("\n") + 1
             # Height controls the input area only. The prompt container provides the
@@ -817,39 +859,31 @@ def run_tui() -> int:
 
             # ── Arrow keys: prompt history (when palette hidden) ──
             if key == "up" and app is not None and hasattr(app, "_prompt_history"):
-                history = app._prompt_history
-                if history and app._history_index < len(history) - 1:
+                next_index, next_draft, entry = prompt_history_previous(
+                    app._prompt_history,
+                    current_index=app._history_index,
+                    draft_text=getattr(app, "_history_draft_text", None),
+                    current_text=self.text,
+                )
+                if entry is not None:
                     event.stop()
                     event.prevent_default()
-                    app._history_index += 1
-                    self.clear()
-                    entry = history[-(app._history_index + 1)]
-                    for method_name in ("insert", "insert_text_at_cursor"):
-                        method = getattr(self, method_name, None)
-                        if callable(method):
-                            with contextlib.suppress(Exception):
-                                method(entry)
-                                break
+                    app._history_index = next_index
+                    app._history_draft_text = next_draft
+                    self._replace_text(entry)
                     return
             if key == "down" and app is not None and hasattr(app, "_prompt_history"):
-                if app._history_index > 0:
+                next_index, next_draft, entry = prompt_history_next(
+                    app._prompt_history,
+                    current_index=app._history_index,
+                    draft_text=getattr(app, "_history_draft_text", None),
+                )
+                if entry is not None:
                     event.stop()
                     event.prevent_default()
-                    app._history_index -= 1
-                    self.clear()
-                    entry = app._prompt_history[-(app._history_index + 1)]
-                    for method_name in ("insert", "insert_text_at_cursor"):
-                        method = getattr(self, method_name, None)
-                        if callable(method):
-                            with contextlib.suppress(Exception):
-                                method(entry)
-                                break
-                    return
-                elif app._history_index == 0:
-                    event.stop()
-                    event.prevent_default()
-                    app._history_index = -1
-                    self.clear()
+                    app._history_index = next_index
+                    app._history_draft_text = next_draft
+                    self._replace_text(entry)
                     return
 
             # ── Enter with palette visible → submit ──
@@ -2112,6 +2146,7 @@ def run_tui() -> int:
         _last_transcript_dedup_count: int = 0
         _prompt_history: list[str] = []
         _history_index: int = -1
+        _history_draft_text: str | None = None
         _MAX_PROMPT_HISTORY: int = 50
         _TRANSCRIPT_MAX_LINES: int = 5000
         _split_ratio: int = 2

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any
 
 from swarmee_river.jupyter import magic
+from swarmee_river.planning import WorkPlan
 
 
 class _FakeRuntimeClient:
@@ -12,6 +14,7 @@ class _FakeRuntimeClient:
         events: list[dict[str, Any]],
         *,
         fork_event: dict[str, Any] | None = None,
+        hello_event: dict[str, Any] | None = None,
     ) -> None:
         self._events = list(events)
         self.sent_commands: list[dict[str, Any]] = []
@@ -19,6 +22,11 @@ class _FakeRuntimeClient:
         self.attached_cwd: str | None = None
         self.fork_calls: list[dict[str, Any]] = []
         self._fork_event = fork_event or {"event": "surface_session_forked", "session_id": "branch-session"}
+        self._hello_event = hello_event or {
+            "event": "hello_ack",
+            "schema_version": "2",
+            "capabilities": {"fork_surface_session": True},
+        }
 
     def connect(self) -> None:
         return None
@@ -29,7 +37,7 @@ class _FakeRuntimeClient:
     def hello(self, *, client_name: str, surface: str) -> dict[str, Any]:
         assert client_name == "swarmee-notebook"
         assert surface == "jupyter"
-        return {"event": "hello_ack"}
+        return dict(self._hello_event)
 
     def attach(self, *, session_id: str, cwd: str) -> dict[str, Any]:
         self.attached_session_id = session_id
@@ -204,6 +212,79 @@ def test_run_swarmee_runtime_branches_and_applies_read_only_overrides(monkeypatc
         "text": "inspect this repo",
         "auto_approve": False,
     }
+
+
+def test_run_swarmee_runtime_legacy_broker_falls_back_and_warns(monkeypatch, tmp_path: Path) -> None:
+    discovery = tmp_path / "runtime.json"
+    discovery.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("SWARMEE_NOTEBOOK_USE_RUNTIME", "1")
+    monkeypatch.delenv("SWARMEE_SESSION_ID", raising=False)
+    monkeypatch.setattr(magic, "ensure_runtime_broker", lambda *, cwd=None: discovery)
+    monkeypatch.setattr(magic, "default_session_id_for_cwd", lambda _cwd: "legacy-cwd-session")
+
+    fake_client = _FakeRuntimeClient(
+        [
+            {"event": "text_delta", "text": "legacy"},
+            {"event": "turn_complete", "exit_status": "ok"},
+        ],
+        hello_event={"event": "hello_ack"},
+    )
+    monkeypatch.setattr(
+        magic.RuntimeServiceClient,
+        "from_discovery_file",
+        staticmethod(lambda _path: fake_client),
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        text = magic._run_swarmee(
+            ipython=None,
+            user_prompt="inspect this repo",
+            include_context=False,
+            force_plan=False,
+            auto_approve=False,
+        )
+
+    assert text == "legacy"
+    assert fake_client.fork_calls == []
+    assert fake_client.attached_session_id == "legacy-cwd-session"
+    assert any("does not support cache-aware surface branching" in str(item.message) for item in caught)
+
+
+def test_install_notebook_warning_filters_suppresses_http_request_tool_warning() -> None:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        magic._install_notebook_warning_filters()
+        warnings.warn_explicit(
+            magic._HTTP_REQUEST_TOOL_WARNING,
+            category=UserWarning,
+            filename="test_warning.py",
+            lineno=1,
+            module="pydantic.main",
+        )
+
+    assert caught == []
+
+
+def test_execute_with_plan_uses_execute_mode() -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_invoke(_runtime: Any, _query: str, *, invocation_state: dict[str, Any]) -> str:
+        captured["invocation_state"] = invocation_state
+        return "ok"
+
+    runtime = object()
+    plan = WorkPlan(summary="Inspect the issue", steps=[])
+    original_invoke = magic._invoke_agent
+    try:
+        magic._invoke_agent = _fake_invoke  # type: ignore[assignment]
+        result = magic._execute_with_plan(runtime, "investigate", plan, auto_approve=True)
+    finally:
+        magic._invoke_agent = original_invoke  # type: ignore[assignment]
+
+    assert result == "ok"
+    assert captured["invocation_state"]["swarmee"]["mode"] == "execute"
+    assert captured["invocation_state"]["swarmee"]["enforce_plan"] is True
 
 
 def test_run_swarmee_falls_back_to_local_runtime_when_runtime_not_configured(monkeypatch):

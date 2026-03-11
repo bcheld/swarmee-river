@@ -36,6 +36,7 @@ class ClientState:
 _SESSION_IDLE_TIMEOUT_S: float = 3600.0
 _BROKER_IDLE_TIMEOUT_S: float = 3600.0
 _SESSION_STARTUP_OBSERVE_TIMEOUT_S: float = 1.0
+_HELLO_CAPABILITIES: dict[str, bool] = {"fork_surface_session": True}
 
 
 def _interrupt_timeout_seconds(*, session_cwd: str) -> float:
@@ -536,7 +537,9 @@ class RuntimeServiceServer:
                 now = time.monotonic()
                 last_session_event = max(session.last_session_event_mono, session.last_query_start_mono)
                 stalled_for = max(0.0, now - last_session_event)
-                provider_hint = (session.provider_hint or "unknown").strip().lower() or "unknown"
+                provider_hint = (session.provider_hint or session.bootstrap_provider or "unknown").strip().lower()
+                if not provider_hint:
+                    provider_hint = "unknown"
                 emit_user_warning = provider_hint != "bedrock"
 
                 if stalled_for >= warn_sec and (now - session.last_query_stall_warn_mono) >= warn_sec:
@@ -984,6 +987,8 @@ class RuntimeServiceServer:
             {
                 "event": "hello_ack",
                 "status": "ok",
+                "schema_version": "2",
+                "capabilities": dict(_HELLO_CAPABILITIES),
                 "client_id": client.client_id,
                 "pid": self.pid,
                 "host": self.host,
@@ -1174,6 +1179,7 @@ class RuntimeServiceServer:
                     restored = SessionState(
                         session_id=requested_session_id,
                         cwd=cwd,
+                        provider_hint=str(existing_meta.get("provider", "")).strip().lower(),
                         branch_parent_session_id=(
                             str(existing_meta.get("surface_branch_parent_session_id", "")).strip() or None
                         ),
@@ -1257,6 +1263,7 @@ class RuntimeServiceServer:
             session_id=target_session_id,
             cwd=cwd,
             env_overrides=dict(source_session.env_overrides),
+            provider_hint=str(copied_meta.get("provider", "")).strip().lower(),
             branch_parent_session_id=source_session.session_id,
             branch_surface=surface,
             bootstrap_restore_session_id=target_session_id,
@@ -1310,6 +1317,8 @@ class RuntimeServiceServer:
             if isinstance(provider, str) and provider.strip():
                 forwarded["provider"] = provider.strip()
                 session.provider_hint = provider.strip().lower()
+            elif session.bootstrap_provider and not session.provider_hint:
+                session.provider_hint = session.bootstrap_provider
             mode = payload.get("mode")
             if isinstance(mode, str) and mode.strip():
                 forwarded["mode"] = mode.strip()

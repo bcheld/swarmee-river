@@ -92,6 +92,7 @@ class PromptUIMixin:
                 input_tokens=self.state.daemon.last_provider_input_tokens,
                 cached_input_tokens=self.state.daemon.last_provider_cached_input_tokens,
                 output_tokens=self.state.daemon.last_provider_output_tokens,
+                cost_usd=self.state.daemon.last_cost_usd,
             )
 
     def action_focus_prompt(self) -> None:
@@ -110,6 +111,7 @@ class PromptUIMixin:
             if len(self._prompt_history) > self._MAX_PROMPT_HISTORY:
                 self._prompt_history = self._prompt_history[-self._MAX_PROMPT_HISTORY :]
             self._history_index = -1
+            self._history_draft_text = None
             self._handle_user_input(text)
 
     def action_interrupt_run(self) -> None:

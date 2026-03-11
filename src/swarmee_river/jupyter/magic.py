@@ -5,6 +5,7 @@ import json
 import re
 import shlex
 import threading
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from swarmee_river.runtime_service.client import (
     RuntimeServiceClient,
     default_session_id_for_cwd,
     ensure_runtime_broker,
+    runtime_hello_supports_capability,
     shutdown_runtime_broker,
 )
 from swarmee_river.session.models import SessionModelManager
@@ -63,6 +65,22 @@ _RUNTIME_SINGLETON: "_NotebookRuntime | None" = None
 _RUNTIME_FINGERPRINT: str | None = None
 _RUNTIME_BRANCH_SESSION_ID: str | None = None
 _RUNTIME_BRANCH_CWD: str | None = None
+_LEGACY_BRANCH_WARNING_CWDS: set[str] = set()
+_HTTP_REQUEST_TOOL_WARNING = (
+    'Field name "json" in "Http_requestTool" shadows an attribute in parent "BaseModel"'
+)
+
+
+def _install_notebook_warning_filters() -> None:
+    warnings.filterwarnings(
+        "ignore",
+        message=_HTTP_REQUEST_TOOL_WARNING,
+        category=UserWarning,
+        module=r"pydantic\.main",
+    )
+
+
+_install_notebook_warning_filters()
 
 _TOOL_USAGE_RULES = (
     "Tool usage rules:\n"
@@ -293,10 +311,24 @@ def _runtime_notebook_allowlist() -> list[str]:
     return allow
 
 
+def _warn_legacy_branching_once(*, attach_cwd: Path) -> None:
+    cwd_text = str(attach_cwd.resolve())
+    if cwd_text in _LEGACY_BRANCH_WARNING_CWDS:
+        return
+    _LEGACY_BRANCH_WARNING_CWDS.add(cwd_text)
+    warnings.warn(
+        "Connected runtime broker does not support cache-aware surface branching; "
+        "using legacy session attach. Restart the broker to enable shared-prefix reuse.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
+
 def _attach_notebook_runtime_session(
     client: RuntimeServiceClient,
     *,
     attach_cwd: Path,
+    hello_event: dict[str, Any] | None,
 ) -> tuple[str, dict[str, Any] | None]:
     global _RUNTIME_BRANCH_CWD, _RUNTIME_BRANCH_SESSION_ID
 
@@ -305,31 +337,44 @@ def _attach_notebook_runtime_session(
     explicit_session_id = str(getenv_internal("SWARMEE_SESSION_ID") or "").strip() or None
     session_id = explicit_session_id
     fork_event: dict[str, Any] | None = None
+    supports_surface_fork = runtime_hello_supports_capability(hello_event, "fork_surface_session")
 
     cwd_str = str(attach_cwd)
     if explicit_session_id is None:
         if _RUNTIME_BRANCH_CWD != cwd_str:
             _RUNTIME_BRANCH_CWD = cwd_str
             _RUNTIME_BRANCH_SESSION_ID = None
-        fork_event = client.fork_surface_session(
-            cwd=cwd_str,
-            surface="jupyter",
-            session_id=_RUNTIME_BRANCH_SESSION_ID,
-        )
-        if fork_event is None:
-            raise RuntimeError("runtime broker closed connection during surface fork")
-        if str(fork_event.get("event", "")).strip().lower() == "error":
-            code = str(fork_event.get("code", "")).strip().lower()
-            if code == "no_active_parent_session":
+        if supports_surface_fork:
+            fork_event = client.fork_surface_session(
+                cwd=cwd_str,
+                surface="jupyter",
+                session_id=_RUNTIME_BRANCH_SESSION_ID,
+            )
+            if fork_event is None:
+                raise RuntimeError("runtime broker closed connection during surface fork")
+            if str(fork_event.get("event", "")).strip().lower() == "error":
+                code = str(fork_event.get("code", "")).strip().lower()
+                if code == "no_active_parent_session":
+                    _RUNTIME_BRANCH_SESSION_ID = None
+                    session_id = default_session_id_for_cwd(attach_cwd)
+                elif code == "unknown_cmd":
+                    _RUNTIME_BRANCH_SESSION_ID = None
+                    session_id = default_session_id_for_cwd(attach_cwd)
+                    _warn_legacy_branching_once(attach_cwd=attach_cwd)
+                else:
+                    raise RuntimeError(
+                        str(fork_event.get("message", fork_event)).strip() or "runtime surface fork failed"
+                    )
+            else:
+                session_id = str(fork_event.get("session_id", "")).strip() or None
+                if not session_id:
+                    raise RuntimeError("runtime broker surface fork did not return a session_id")
+                _RUNTIME_BRANCH_SESSION_ID = session_id
+        else:
+            if explicit_session_id is None:
                 _RUNTIME_BRANCH_SESSION_ID = None
                 session_id = default_session_id_for_cwd(attach_cwd)
-            else:
-                raise RuntimeError(str(fork_event.get("message", fork_event)).strip() or "runtime surface fork failed")
-        else:
-            session_id = str(fork_event.get("session_id", "")).strip() or None
-            if not session_id:
-                raise RuntimeError("runtime broker surface fork did not return a session_id")
-            _RUNTIME_BRANCH_SESSION_ID = session_id
+                _warn_legacy_branching_once(attach_cwd=attach_cwd)
 
     if not session_id:
         session_id = default_session_id_for_cwd(attach_cwd)
@@ -376,6 +421,7 @@ def _run_swarmee_via_runtime(
         _session_id, _fork_event = _attach_notebook_runtime_session(
             client,
             attach_cwd=attach_cwd,
+            hello_event=hello,
         )
 
         query_payload: dict[str, Any] = {"cmd": "query", "text": prompt}

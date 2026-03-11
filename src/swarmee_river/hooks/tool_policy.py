@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import shlex
 from typing import Any
 
@@ -33,6 +34,51 @@ _SHELL_FILE_INSPECTION_TOKENS = {
     "grep",
     "rg",
     "tree",
+}
+
+_PLAN_MODE_READ_ONLY_SHELL_TOKENS = {
+    "cat",
+    "dir",
+    "find",
+    "grep",
+    "head",
+    "ls",
+    "pwd",
+    "rg",
+    "sed",
+    "tail",
+    "tree",
+    "type",
+    "where",
+    "which",
+}
+_PLAN_MODE_READ_ONLY_GIT_SUBCOMMANDS = {
+    "branch",
+    "diff",
+    "log",
+    "rev-parse",
+    "show",
+    "status",
+}
+_PLAN_MODE_SHELL_FORBIDDEN_SNIPPETS = ("&&", "||", ";", "|", ">", "<", "$(", "`")
+_PLAN_MODE_SAFE_PYTHON_BUILTINS = {
+    "abs",
+    "all",
+    "any",
+    "bool",
+    "dict",
+    "float",
+    "int",
+    "len",
+    "list",
+    "max",
+    "min",
+    "round",
+    "set",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
 }
 
 
@@ -86,6 +132,46 @@ def _looks_file_inspection_shell_command(command: str) -> bool:
     if "sed -n" in lower or "cat " in lower or "find " in lower:
         return True
     return False
+
+
+def _looks_safe_plan_mode_shell_command(command: str) -> bool:
+    text = (command or "").strip()
+    if not text:
+        return False
+    if any(snippet in text for snippet in _PLAN_MODE_SHELL_FORBIDDEN_SNIPPETS):
+        return False
+    try:
+        parts = shlex.split(text, posix=True)
+    except ValueError:
+        parts = text.split()
+    if not parts:
+        return False
+    token = str(parts[0]).strip().lower()
+    lowered_parts = [str(part).strip().lower() for part in parts[1:]]
+    if token == "git":
+        return bool(lowered_parts) and lowered_parts[0] in _PLAN_MODE_READ_ONLY_GIT_SUBCOMMANDS
+    if token == "sed" and "-i" in lowered_parts:
+        return False
+    return token in _PLAN_MODE_READ_ONLY_SHELL_TOKENS
+
+
+def _looks_safe_plan_mode_python_query(code: str) -> bool:
+    text = (code or "").strip()
+    if not text:
+        return False
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Await, ast.Lambda, ast.NamedExpr, ast.Yield, ast.YieldFrom)):
+            return False
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                return False
+            if node.func.id not in _PLAN_MODE_SAFE_PYTHON_BUILTINS:
+                return False
+    return True
 
 
 def _matches_tool_set(tool_name: str, configured_tools: set[str]) -> bool:
@@ -234,9 +320,29 @@ class ToolPolicyHooks(HookProvider):
                 )
                 return
 
+        plan_mode_special_allowed = False
         if mode == "plan":
+            tool_input = tool_use.get("input")
+            if canonical_name == "athena_query":
+                plan_mode_special_allowed = True
+            elif canonical_name == "shell":
+                command = tool_input.get("command") if isinstance(tool_input, dict) else None
+                if not isinstance(command, str) or not _looks_safe_plan_mode_shell_command(command):
+                    event.cancel_tool = (
+                        "Tool 'shell' is only allowed in plan mode for conservative read-only commands."
+                    )
+                    return
+                plan_mode_special_allowed = True
+            elif canonical_name == "python_repl":
+                code = tool_input.get("code") if isinstance(tool_input, dict) else None
+                if not isinstance(code, str) or not _looks_safe_plan_mode_python_query(code):
+                    event.cancel_tool = (
+                        "Tool 'python_repl' is only allowed in plan mode for single-expression read-only queries."
+                    )
+                    return
+                plan_mode_special_allowed = True
             plan_allowed_tools = self._plan_mode_allowlist(sw if isinstance(sw, dict) else {})
-            if not _matches_tool_set(name, plan_allowed_tools):
+            if not plan_mode_special_allowed and not _matches_tool_set(name, plan_allowed_tools):
                 event.cancel_tool = f"Tool '{name}' blocked in plan mode."
                 return
         if mode == "plan" and name == "project_context":

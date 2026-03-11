@@ -2178,6 +2178,7 @@ class ContextBudgetBar(Static):
         self._provider_input_tokens: int | None = None
         self._provider_cached_input_tokens: int | None = None
         self._provider_output_tokens: int | None = None
+        self._provider_cost_usd: float | None = None
         self._display_ratio: float = 0.0
         self._target_ratio: float = 0.0
         self._anim_timer: Any = None
@@ -2210,12 +2211,14 @@ class ContextBudgetBar(Static):
         input_tokens: int | None,
         cached_input_tokens: int | None,
         output_tokens: int | None,
+        cost_usd: float | None = None,
     ) -> None:
         self._provider_input_tokens = input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else None
         self._provider_cached_input_tokens = (
             cached_input_tokens if isinstance(cached_input_tokens, int) and cached_input_tokens >= 0 else None
         )
         self._provider_output_tokens = output_tokens if isinstance(output_tokens, int) and output_tokens >= 0 else None
+        self._provider_cost_usd = cost_usd if isinstance(cost_usd, (int, float)) else None
         self._render_bar()
 
     def _ratio(self) -> float:
@@ -2302,20 +2305,11 @@ class ContextBudgetBar(Static):
             style="default",
         )
         if isinstance(self._provider_input_tokens, int):
-            rendered.append(
-                f"  Last req: {self._format_tokens(self._provider_input_tokens)}",
-                style="dim",
-            )
+            rendered.append(f"  Req: {self._format_tokens(self._provider_input_tokens)}", style="dim")
             if isinstance(self._provider_cached_input_tokens, int) and self._provider_cached_input_tokens > 0:
-                rendered.append(
-                    f" ({self._format_tokens(self._provider_cached_input_tokens)} cached)",
-                    style="dim",
-                )
-            if isinstance(self._provider_output_tokens, int) and self._provider_output_tokens > 0:
-                rendered.append(
-                    f" out {self._format_tokens(self._provider_output_tokens)}",
-                    style="dim",
-                )
+                rendered.append(f"  Cache: {self._format_tokens(self._provider_cached_input_tokens)}", style="dim")
+            if isinstance(self._provider_cost_usd, (int, float)):
+                rendered.append(f"  Cost: ${float(self._provider_cost_usd):.4f}", style="dim")
         if isinstance(self._prompt_input_tokens_est, int):
             rendered.append(f"  Draft: ~{self._format_tokens(self._prompt_input_tokens_est)}", style="dim")
 
@@ -2729,17 +2723,14 @@ class StatusBar(Static):
         in_tokens = self._provider_input_tokens
         out_tokens = self._provider_output_tokens
         cached = self._provider_cached_input_tokens
-        if in_tokens is not None or out_tokens is not None:
-            token_parts: list[str] = []
-            if in_tokens is not None:
-                token_parts.append(f"last {self._format_k(in_tokens)} req")
-            if out_tokens is not None:
-                token_parts.append(f"out {self._format_k(out_tokens)}")
-            if cached is not None and cached > 0:
-                token_parts.append(f"cache {self._format_k(cached)}")
-            parts.append(" ".join(token_parts))
         if isinstance(self._cost_usd, (int, float)):
-            parts.append(f"${self._cost_usd:.4f}")
+            parts.append(f"cost ${self._cost_usd:.4f}")
+        if in_tokens is not None:
+            parts.append(f"req {self._format_k(in_tokens)}")
+        if cached is not None and cached > 0:
+            parts.append(f"cache {self._format_k(cached)}")
+        if out_tokens is not None:
+            parts.append(f"out {self._format_k(out_tokens)}")
         if isinstance(self._step_total, int) and self._step_total > 0:
             if isinstance(self._step_current, int) and self._step_current > 0:
                 parts.append(f"step {self._step_current}/{self._step_total}")
@@ -2762,10 +2753,14 @@ class StatusBar(Static):
             drop_prefixes = (
                 "warn=",
                 "err=",
+                "out ",
+                "cache ",
+                "tools ",
+                "step ",
             )
             prunable: list[int] = []
             for i, part in enumerate(parts):
-                if part.startswith(drop_prefixes) or part.endswith("s") or part.startswith("tools "):
+                if part.startswith(drop_prefixes) or part.endswith("s") or part == "CTX HIGH":
                     prunable.append(i)
             for idx in reversed(prunable):
                 candidate = parts[:idx] + parts[idx + 1 :]
