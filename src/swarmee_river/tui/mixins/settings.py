@@ -197,6 +197,98 @@ class SettingsMixin:
                 )
                 input_widget.styles.display = "block" if mode_value == "custom" else "none"
 
+    def _refresh_shortcut_controls(self, settings: Any) -> None:
+        toggle_widget = getattr(self, "_settings_general_shortcut_toggle_transcript_input", None)
+        copy_widget = getattr(self, "_settings_general_shortcut_copy_selection_input", None)
+        shortcuts = getattr(getattr(settings, "tui", None), "shortcuts", None)
+        toggle_keys = list(getattr(shortcuts, "toggle_transcript_mode", ["f8"]))
+        copy_keys = list(getattr(shortcuts, "copy_selection", ["ctrl+shift+c", "ctrl+c", "meta+c", "super+c"]))
+        if toggle_widget is not None:
+            with contextlib.suppress(Exception):
+                toggle_widget.value = ", ".join(toggle_keys)
+        if copy_widget is not None:
+            with contextlib.suppress(Exception):
+                copy_widget.value = ", ".join(copy_keys)
+
+    def _parse_shortcut_tokens(self, raw: str, *, label: str) -> list[str] | None:
+        parts = [str(item).strip().lower() for item in str(raw or "").replace("\n", ",").split(",")]
+        tokens: list[str] = []
+        seen: set[str] = set()
+        for token in parts:
+            if not token:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+        if not tokens:
+            self._write_transcript_line(f"[settings] {label} requires at least one shortcut.")
+            return None
+        return tokens
+
+    def _persist_project_tui_shortcuts(
+        self,
+        *,
+        toggle_transcript_mode: list[str] | None = None,
+        copy_selection: list[str] | None = None,
+        reset: bool = False,
+    ) -> None:
+        from swarmee_river.settings import load_settings
+
+        payload, path = self._load_project_settings_payload()
+        next_payload = dict(payload)
+        if reset:
+            tui_payload = dict(next_payload.get("tui") or {}) if isinstance(next_payload.get("tui"), dict) else {}
+            shortcuts_payload = (
+                dict(tui_payload.get("shortcuts") or {})
+                if isinstance(tui_payload.get("shortcuts"), dict)
+                else {}
+            )
+            shortcuts_payload.pop("toggle_transcript_mode", None)
+            shortcuts_payload.pop("copy_selection", None)
+            if shortcuts_payload:
+                tui_payload["shortcuts"] = shortcuts_payload
+            else:
+                tui_payload.pop("shortcuts", None)
+            if tui_payload:
+                next_payload["tui"] = tui_payload
+            else:
+                next_payload.pop("tui", None)
+        else:
+            tui_payload = dict(next_payload.get("tui") or {}) if isinstance(next_payload.get("tui"), dict) else {}
+            shortcuts_payload = (
+                dict(tui_payload.get("shortcuts") or {})
+                if isinstance(tui_payload.get("shortcuts"), dict)
+                else {}
+            )
+            if toggle_transcript_mode is not None:
+                shortcuts_payload["toggle_transcript_mode"] = list(toggle_transcript_mode)
+            if copy_selection is not None:
+                shortcuts_payload["copy_selection"] = list(copy_selection)
+            tui_payload["shortcuts"] = shortcuts_payload
+            next_payload["tui"] = tui_payload
+        self._save_project_settings_payload(next_payload, path)
+        settings = load_settings()
+        refresh_shortcuts = getattr(self, "_refresh_shortcut_map", None)
+        if callable(refresh_shortcuts):
+            refresh_shortcuts(settings)
+        self._refresh_settings_general()
+
+    def _apply_shortcut_settings(self) -> None:
+        toggle_raw = str(getattr(self._settings_general_shortcut_toggle_transcript_input, "value", "")).strip()
+        copy_raw = str(getattr(self._settings_general_shortcut_copy_selection_input, "value", "")).strip()
+        toggle_tokens = self._parse_shortcut_tokens(toggle_raw, label="toggle transcript shortcut")
+        if toggle_tokens is None:
+            return
+        copy_tokens = self._parse_shortcut_tokens(copy_raw, label="copy shortcut")
+        if copy_tokens is None:
+            return
+        self._persist_project_tui_shortcuts(
+            toggle_transcript_mode=toggle_tokens,
+            copy_selection=copy_tokens,
+        )
+        self._write_transcript_line("[settings] TUI shortcuts updated.")
+
     def _persist_project_context_budget_tokens(self, value: int | None) -> None:
         payload, path = self._load_project_settings_payload()
         next_payload = dict(payload)
@@ -1025,6 +1117,9 @@ class SettingsMixin:
         from swarmee_river.settings import load_settings
 
         settings = load_settings()
+        refresh_shortcuts = getattr(self, "_refresh_shortcut_map", None)
+        if callable(refresh_shortcuts):
+            refresh_shortcuts(settings)
         summary_widget = self._settings_general_summary
         if summary_widget is not None:
             with contextlib.suppress(Exception):
@@ -1075,6 +1170,7 @@ class SettingsMixin:
             with contextlib.suppress(Exception):
                 sel.value = val
         self._refresh_context_budget_controls(settings)
+        self._refresh_shortcut_controls(settings)
 
         # -- Preflight select --
         sel = self._settings_general_preflight_select

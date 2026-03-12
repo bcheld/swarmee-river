@@ -381,6 +381,30 @@ def compose_settings_tab() -> Iterator[Any]:
                         variant="default",
                     )
 
+                yield Static("Shortcuts", classes="settings-section-label")
+                with Horizontal(id="settings_general_shortcuts_row"):
+                    yield Input(
+                        placeholder="Toggle transcript keys (comma-separated)",
+                        id="settings_general_shortcut_toggle_transcript",
+                    )
+                    yield Input(
+                        placeholder="Copy keys (comma-separated)",
+                        id="settings_general_shortcut_copy_selection",
+                    )
+                with Horizontal(id="settings_general_shortcuts_actions"):
+                    yield Button(
+                        "Apply Shortcuts",
+                        id="settings_general_shortcuts_apply",
+                        compact=True,
+                        variant="success",
+                    )
+                    yield Button(
+                        "Reset Shortcuts",
+                        id="settings_general_shortcuts_reset",
+                        compact=True,
+                        variant="default",
+                    )
+
                 yield Static("Features", classes="settings-section-label")
                 with Horizontal(id="settings_general_features_row"):
                     yield Button("Swarm: On", id="settings_toggle_swarm", compact=True, variant="default")
@@ -521,6 +545,14 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_general_preflight_level_select = app.query_one("#settings_general_preflight_level", Select)
     app._settings_general_context_budget_mode_select = app.query_one("#settings_general_context_budget_mode", Select)
     app._settings_general_context_budget_input = app.query_one("#settings_general_context_budget_input", Input)
+    app._settings_general_shortcut_toggle_transcript_input = app.query_one(
+        "#settings_general_shortcut_toggle_transcript",
+        Input,
+    )
+    app._settings_general_shortcut_copy_selection_input = app.query_one(
+        "#settings_general_shortcut_copy_selection",
+        Input,
+    )
     app._settings_toggle_swarm_button = app.query_one("#settings_toggle_swarm", Button)
     app._settings_toggle_log_events_button = app.query_one("#settings_toggle_log_events", Button)
     app._settings_toggle_project_map_button = app.query_one("#settings_toggle_project_map", Button)

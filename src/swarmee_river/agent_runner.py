@@ -34,6 +34,12 @@ def _resolve_windows_event_loop_policy() -> str:
 
 
 def _resolve_agent_invoke_mode(invocation_state: dict[str, Any] | None = None) -> str:
+    if isinstance(invocation_state, dict):
+        sw = invocation_state.get("swarmee")
+        if isinstance(sw, dict):
+            override = str(sw.get("invoke_mode", "")).strip().lower()
+            if override in {"sync", "isolated", "direct"}:
+                return override
     if _is_bedrock_invocation(invocation_state):
         return "sync"
     return "isolated"

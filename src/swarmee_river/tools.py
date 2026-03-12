@@ -24,6 +24,9 @@ from tools import (
     todo,
     welcome,
 )
+from tools import (
+    notebook_read as notebook_read_tool,
+)
 from tools.athena_query import athena_query
 from tools.calculator import calculator as calculator_fallback
 from tools.current_time import current_time as current_time_fallback
@@ -95,6 +98,7 @@ _CUSTOM_TOOLS: dict[str, Any] = {
     "session_s3": session_s3,
     "snowflake_query": snowflake_query,
     "athena_query": athena_query,
+    "notebook_read": notebook_read_tool.notebook_read,
     "glob": path_ops.glob,
     "list": path_ops.list,
     "store_in_kb": store_in_kb,

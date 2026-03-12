@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import os
 import queue
-import signal
 import subprocess
 import threading
 import time
@@ -14,23 +13,42 @@ from strands import tool
 
 from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
+from swarmee_river.utils.tool_interrupts import (
+    current_interrupt_event,
+    interrupt_requested,
+    run_subprocess_capture_interruptible,
+)
+from swarmee_river.utils.tool_interrupts import (
+    terminate_process_tree as _terminate_process_tree_common,
+)
 
 
 def _run(cmd: list[str], *, cwd: Path, timeout_s: int) -> tuple[int, str, str]:
     try:
-        p = subprocess.run(
+        if current_interrupt_event() is None:
+            result = subprocess.run(
+                cmd,
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_s,
+                check=False,
+            )
+            return int(result.returncode or 0), result.stdout or "", result.stderr or ""
+        result = run_subprocess_capture_interruptible(
             cmd,
             cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_s,
-            check=False,
+            timeout_s=timeout_s,
         )
     except Exception as e:
         return 1, "", str(e)
-    return p.returncode, p.stdout or "", p.stderr or ""
+    return result.returncode, result.stdout or "", result.stderr or ""
+
+
+def _interrupt_requested() -> bool:
+    return interrupt_requested()
 
 
 def _run_streaming(
@@ -123,42 +141,8 @@ def _run_streaming(
     return int(proc.returncode or 0), "".join(output_lines), ""
 
 
-def _interrupt_requested() -> bool:
-    try:
-        from swarmee_river.handlers.callback_handler import callback_handler_instance
-
-        event = callback_handler_instance.interrupt_event
-        return bool(event is not None and event.is_set())
-    except Exception:
-        return False
-
-
 def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is not None:
-        return
-
-    if os.name == "nt":
-        with contextlib.suppress(Exception):
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
-    else:
-        with contextlib.suppress(Exception):
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        with contextlib.suppress(Exception):
-            proc.wait(timeout=2)
-        if proc.poll() is None:
-            with contextlib.suppress(Exception):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-
-    with contextlib.suppress(Exception):
-        if proc.poll() is None:
-            proc.kill()
+    _terminate_process_tree_common(proc)
 
 
 @tool

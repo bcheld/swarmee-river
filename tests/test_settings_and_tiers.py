@@ -24,6 +24,30 @@ def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path) -> None:
     assert settings.models.providers["openai"].tiers["fast"].model_id == "gpt-5-nano"
     assert settings.models.providers["openai"].tiers["fast"].display_name
     assert settings.models.default_selection.tier == settings.models.default_tier
+    assert settings.tui.shortcuts.toggle_transcript_mode == ["f8"]
+    assert settings.tui.shortcuts.copy_selection == ["ctrl+shift+c", "ctrl+c", "meta+c", "super+c"]
+
+
+def test_load_settings_parses_tui_shortcuts(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "tui": {
+                    "shortcuts": {
+                        "toggle_transcript_mode": ["f9", "f9"],
+                        "copy_selection": ["ctrl+shift+c", "meta+c", ""],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.tui.shortcuts.toggle_transcript_mode == ["f9"]
+    assert settings.tui.shortcuts.copy_selection == ["ctrl+shift+c", "meta+c"]
 
 
 def test_load_project_env_overrides_parses_env_section(tmp_path: Path) -> None:

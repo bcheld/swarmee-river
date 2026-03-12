@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import time
@@ -9,6 +10,7 @@ from strands import tool
 
 from swarmee_river.tool_permissions import set_permissions
 from swarmee_river.utils.text_utils import truncate
+from swarmee_river.utils.tool_interrupts import interrupt_requested, sleep_with_interrupt
 
 _BLOCKED_SQL_KEYWORDS = {
     "CREATE",
@@ -190,6 +192,10 @@ def _query(
     execution: dict[str, Any] | None = None
 
     while time.monotonic() < deadline:
+        if interrupt_requested():
+            with contextlib.suppress(Exception):
+                athena.stop_query_execution(QueryExecutionId=query_id)
+            return _error(f"Athena query {query_id} interrupted.", max_chars=max_chars)
         try:
             exec_resp = athena.get_query_execution(QueryExecutionId=query_id)
         except Exception as exc:
@@ -202,7 +208,10 @@ def _query(
         state = str((execution.get("Status") or {}).get("State") or "UNKNOWN").upper()
         if state in {"SUCCEEDED", "FAILED", "CANCELLED"}:
             break
-        time.sleep(1)
+        if sleep_with_interrupt(1.0):
+            with contextlib.suppress(Exception):
+                athena.stop_query_execution(QueryExecutionId=query_id)
+            return _error(f"Athena query {query_id} interrupted.", max_chars=max_chars)
 
     if not isinstance(execution, dict):
         return _error(f"Timed out waiting for Athena query {query_id}", max_chars=max_chars)

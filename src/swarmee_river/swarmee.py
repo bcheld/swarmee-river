@@ -206,6 +206,7 @@ from swarmee_river.utils.provider_utils import (
     resolve_model_provider,
 )
 from swarmee_river.utils.stdio_utils import configure_stdio_for_utf8, write_stdout_jsonl
+from swarmee_river.utils.tool_interrupts import set_active_interrupt_event
 from swarmee_river.utils.welcome_utils import render_goodbye_message, render_welcome_message
 from tools.sop import run_sop
 from tools.welcome import read_welcome_text
@@ -660,6 +661,8 @@ def _build_resolved_invocation_state(
         sw_state.setdefault("runtime_environment", dict(runtime_environment))
         sw_state["tier"] = model_manager.current_tier
         sw_state["provider"] = current_provider
+        if current_provider == "bedrock":
+            sw_state.setdefault("invoke_mode", "isolated")
         profile = settings.harness.tier_profiles.get(model_manager.current_tier)
         if profile is not None:
             sw_state["tool_profile"] = profile.to_dict()
@@ -1930,93 +1933,101 @@ def _build_agent_runtime(
 
         interrupt_event.clear()
         set_interrupt_event(interrupt_event)
-        with interrupt_watcher_from_env(interrupt_event):
-            try:
-                agent._swarmee_current_invocation_state = invocation_state
-                budget_manager = conversation_manager
-                effective_budget = model_manager.resolve_effective_context_budget()
-                compact_result: dict[str, Any] | None = None
-                compact_fn = getattr(budget_manager, "compact_to_budget", None)
-                if callable(compact_fn):
-                    compact_result = compact_fn(agent)
-                if isinstance(compact_result, dict):
-                    before_tokens = compact_result.get("before_tokens_est")
-                    after_tokens = compact_result.get("after_tokens_est")
-                    summary_passes = int(compact_result.get("summary_passes", 0) or 0)
-                    trimmed_messages = int(compact_result.get("trimmed_messages", 0) or 0)
-                    compacted_read_results = int(compact_result.get("compacted_read_results", 0) or 0)
-                    within_budget = bool(compact_result.get("within_budget", False))
-                    compacted = bool(summary_passes > 0 or trimmed_messages > 0 or compacted_read_results > 0)
-                    _emit_tui_context_event_if_enabled(agent, settings=settings, model_manager=model_manager)
-                    if compacted or not within_budget:
-                        _emit_tui_event(
-                            {
-                                "event": "compact_complete",
-                                "automatic": True,
-                                "compacted": compacted,
-                                "before_tokens_est": before_tokens,
-                                "after_tokens_est": after_tokens,
-                                "budget_tokens": effective_budget,
-                                "summary_passes": summary_passes,
-                                "trimmed_messages": trimmed_messages,
-                                "compacted_read_results": compacted_read_results,
-                                "compaction_headroom_tokens": compact_result.get("compaction_headroom_tokens"),
-                                "warning": compact_result.get("warning"),
-                                "fork_kind": compact_result.get("fork_kind"),
-                                "fork_parent_message_count": compact_result.get("fork_parent_message_count"),
-                                "fork_prefix_hash": compact_result.get("fork_prefix_hash"),
-                                "fork_extra_prompt_chars": compact_result.get("fork_extra_prompt_chars"),
-                                "fork_used_pending_reminder": compact_result.get("fork_used_pending_reminder"),
-                            }
-                        )
-                    if not within_budget:
-                        after_label = f"{int(after_tokens):,}" if isinstance(after_tokens, int) else "unknown"
-                        error_msg = (
-                            "Prompt still exceeds the configured context budget after compaction.\n"
-                            f"- Current budget: {effective_budget:,} tokens\n"
-                            f"- Current estimate after compaction: {after_label} tokens\n"
-                            "- Fix: open Settings > General and increase Context Budget, or shorten the conversation."
-                        )
-                        _emit_classified_tui_error(error_msg, category_hint=ERROR_CATEGORY_ESCALATABLE)
-                        if not _tui_events_enabled():
-                            print(f"\n{error_msg}")
-                        raise RuntimeError(error_msg)
-                system_reminder = prompt_cache.pop_reminder()
-                agent._swarmee_current_invocation_state = invocation_state
-                return invoke_agent(
-                    agent,
-                    query,
-                    callback_handler=callback_handler,
-                    interrupt_event=interrupt_event,
-                    invocation_state=invocation_state,
-                    system_reminder=system_reminder or None,
-                    structured_output_model=structured_output_model,
-                    structured_output_prompt=structured_output_prompt,
-                )
-            except MaxTokensReachedException:
-                callback_handler(force_stop=True)
-                configured = (
-                    args.max_output_tokens
-                    if isinstance(getattr(args, "max_output_tokens", None), int)
-                    else settings.models.max_output_tokens
-                )
-                configured_label = str(configured) if isinstance(configured, int) and configured > 0 else "(default)"
-                error_msg = (
-                    "Error: Response hit the max output token limit.\n"
-                    f"- Current max: {configured_label}\n"
-                    "- Fix: increase `models.max_output_tokens` in `.swarmee/settings.json` "
-                    "(or pass --max-output-tokens), or ask for a shorter response.\n"
-                    "- Resetting agent loop so you can continue."
-                )
-                _emit_classified_tui_error(error_msg, category_hint=ERROR_CATEGORY_ESCALATABLE)
-                if not _tui_events_enabled():
-                    print(f"\n{error_msg}")
-                agent = create_agent()
-                raise
-            except Exception:
-                raise
-            finally:
-                agent._swarmee_current_invocation_state = None
+        set_active_interrupt_event(interrupt_event)
+        try:
+            with interrupt_watcher_from_env(interrupt_event):
+                try:
+                    agent._swarmee_current_invocation_state = invocation_state
+                    budget_manager = conversation_manager
+                    effective_budget = model_manager.resolve_effective_context_budget()
+                    compact_result: dict[str, Any] | None = None
+                    compact_fn = getattr(budget_manager, "compact_to_budget", None)
+                    if callable(compact_fn):
+                        compact_result = compact_fn(agent)
+                    if isinstance(compact_result, dict):
+                        before_tokens = compact_result.get("before_tokens_est")
+                        after_tokens = compact_result.get("after_tokens_est")
+                        summary_passes = int(compact_result.get("summary_passes", 0) or 0)
+                        trimmed_messages = int(compact_result.get("trimmed_messages", 0) or 0)
+                        compacted_read_results = int(compact_result.get("compacted_read_results", 0) or 0)
+                        within_budget = bool(compact_result.get("within_budget", False))
+                        compacted = bool(summary_passes > 0 or trimmed_messages > 0 or compacted_read_results > 0)
+                        _emit_tui_context_event_if_enabled(agent, settings=settings, model_manager=model_manager)
+                        if compacted or not within_budget:
+                            _emit_tui_event(
+                                {
+                                    "event": "compact_complete",
+                                    "automatic": True,
+                                    "compacted": compacted,
+                                    "before_tokens_est": before_tokens,
+                                    "after_tokens_est": after_tokens,
+                                    "budget_tokens": effective_budget,
+                                    "summary_passes": summary_passes,
+                                    "trimmed_messages": trimmed_messages,
+                                    "compacted_read_results": compacted_read_results,
+                                    "compaction_headroom_tokens": compact_result.get("compaction_headroom_tokens"),
+                                    "warning": compact_result.get("warning"),
+                                    "fork_kind": compact_result.get("fork_kind"),
+                                    "fork_parent_message_count": compact_result.get("fork_parent_message_count"),
+                                    "fork_prefix_hash": compact_result.get("fork_prefix_hash"),
+                                    "fork_extra_prompt_chars": compact_result.get("fork_extra_prompt_chars"),
+                                    "fork_used_pending_reminder": compact_result.get("fork_used_pending_reminder"),
+                                }
+                            )
+                        if not within_budget:
+                            after_label = f"{int(after_tokens):,}" if isinstance(after_tokens, int) else "unknown"
+                            error_msg = (
+                                "Prompt still exceeds the configured context budget after compaction.\n"
+                                f"- Current budget: {effective_budget:,} tokens\n"
+                                f"- Current estimate after compaction: {after_label} tokens\n"
+                                "- Fix: open Settings > General and increase Context Budget, "
+                                "or shorten the conversation."
+                            )
+                            _emit_classified_tui_error(error_msg, category_hint=ERROR_CATEGORY_ESCALATABLE)
+                            if not _tui_events_enabled():
+                                print(f"\n{error_msg}")
+                            raise RuntimeError(error_msg)
+                    system_reminder = prompt_cache.pop_reminder()
+                    agent._swarmee_current_invocation_state = invocation_state
+                    return invoke_agent(
+                        agent,
+                        query,
+                        callback_handler=callback_handler,
+                        interrupt_event=interrupt_event,
+                        invocation_state=invocation_state,
+                        system_reminder=system_reminder or None,
+                        structured_output_model=structured_output_model,
+                        structured_output_prompt=structured_output_prompt,
+                    )
+                except MaxTokensReachedException:
+                    callback_handler(force_stop=True)
+                    configured = (
+                        args.max_output_tokens
+                        if isinstance(getattr(args, "max_output_tokens", None), int)
+                        else settings.models.max_output_tokens
+                    )
+                    configured_label = (
+                        str(configured)
+                        if isinstance(configured, int) and configured > 0
+                        else "(default)"
+                    )
+                    error_msg = (
+                        "Error: Response hit the max output token limit.\n"
+                        f"- Current max: {configured_label}\n"
+                        "- Fix: increase `models.max_output_tokens` in `.swarmee/settings.json` "
+                        "(or pass --max-output-tokens), or ask for a shorter response.\n"
+                        "- Resetting agent loop so you can continue."
+                    )
+                    _emit_classified_tui_error(error_msg, category_hint=ERROR_CATEGORY_ESCALATABLE)
+                    if not _tui_events_enabled():
+                        print(f"\n{error_msg}")
+                    agent = create_agent()
+                    raise
+                finally:
+                    agent._swarmee_current_invocation_state = None
+        finally:
+            set_active_interrupt_event(None)
+            set_interrupt_event(None)
 
     def _escalation_attempts() -> int:
         return max(1, model_manager.max_escalations_per_task + 1)
@@ -2112,21 +2123,26 @@ def _build_agent_runtime(
 
         interrupt_event.clear()
         set_interrupt_event(interrupt_event)
-        with interrupt_watcher_from_env(interrupt_event):
-            child_agent._swarmee_current_invocation_state = invocation_state
-            try:
-                result = invoke_agent(
-                    child_agent,
-                    user_request,
-                    callback_handler=callback_handler,
-                    interrupt_event=interrupt_event,
-                    invocation_state=invocation_state,
-                    system_reminder=snapshot.pending_reminder or None,
-                    structured_output_model=WorkPlan,
-                    structured_output_prompt=structured_plan_prompt(),
-                )
-            finally:
-                child_agent._swarmee_current_invocation_state = None
+        set_active_interrupt_event(interrupt_event)
+        try:
+            with interrupt_watcher_from_env(interrupt_event):
+                child_agent._swarmee_current_invocation_state = invocation_state
+                try:
+                    result = invoke_agent(
+                        child_agent,
+                        user_request,
+                        callback_handler=callback_handler,
+                        interrupt_event=interrupt_event,
+                        invocation_state=invocation_state,
+                        system_reminder=snapshot.pending_reminder or None,
+                        structured_output_model=WorkPlan,
+                        structured_output_prompt=structured_plan_prompt(),
+                    )
+                finally:
+                    child_agent._swarmee_current_invocation_state = None
+        finally:
+            set_active_interrupt_event(None)
+            set_interrupt_event(None)
 
         plan = getattr(result, "structured_output", None)
         if not isinstance(plan, WorkPlan):

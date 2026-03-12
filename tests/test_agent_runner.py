@@ -186,6 +186,15 @@ def test_resolve_agent_invoke_mode_defaults_to_sync_for_bedrock(monkeypatch) -> 
     assert agent_runner._resolve_agent_invoke_mode({"swarmee": {"provider": "bedrock"}}) == "sync"
 
 
+def test_resolve_agent_invoke_mode_honors_explicit_override() -> None:
+    assert (
+        agent_runner._resolve_agent_invoke_mode(
+            {"swarmee": {"provider": "bedrock", "invoke_mode": "isolated"}}
+        )
+        == "isolated"
+    )
+
+
 def test_resolve_agent_invoke_mode_openai_is_isolated(monkeypatch) -> None:
     assert agent_runner._resolve_agent_invoke_mode({"swarmee": {"provider": "openai"}}) == "isolated"
 

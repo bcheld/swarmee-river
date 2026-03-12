@@ -180,7 +180,7 @@ def structured_plan_prompt() -> str:
     return (
         "You are Swarmee River in PLAN mode.\n"
         "- You may use safe read-only tools to gather context before planning: "
-        "file_read, file_search, file_list, glob, grep, retrieve, project_context, "
+        "file_read, notebook_read, file_search, file_list, glob, grep, retrieve, project_context, "
         "athena_query, conservative read-only shell commands, and single-expression "
         "read-only python_repl queries.\n"
         "- Stop exploring as soon as you have enough context to emit a concrete WorkPlan.\n"

@@ -1552,7 +1552,7 @@ def _format_tool_input_oneliner(tool_name: str, tool_input: dict | None) -> str:
         if command:
             return _truncate_single_line(f"$ {command[:80]}", max_len=100)
 
-    if canonical in {"file_read", "read"}:
+    if canonical in {"file_read", "read", "notebook_read"}:
         path = str(tool_input.get("path", "")).strip()
         if path:
             return _truncate_single_line(f"← {path}", max_len=100)
@@ -2304,12 +2304,12 @@ class ContextBudgetBar(Static):
             context_line,
             style="default",
         )
+        if isinstance(self._provider_cost_usd, (int, float)):
+            rendered.append(f"  Cost: ${float(self._provider_cost_usd):.4f}", style="dim")
         if isinstance(self._provider_input_tokens, int):
-            rendered.append(f"  Req: {self._format_tokens(self._provider_input_tokens)}", style="dim")
+            rendered.append(f"  Last: {self._format_tokens(self._provider_input_tokens)}", style="dim")
             if isinstance(self._provider_cached_input_tokens, int) and self._provider_cached_input_tokens > 0:
                 rendered.append(f"  Cache: {self._format_tokens(self._provider_cached_input_tokens)}", style="dim")
-            if isinstance(self._provider_cost_usd, (int, float)):
-                rendered.append(f"  Cost: ${float(self._provider_cost_usd):.4f}", style="dim")
         if isinstance(self._prompt_input_tokens_est, int):
             rendered.append(f"  Draft: ~{self._format_tokens(self._prompt_input_tokens_est)}", style="dim")
 
@@ -2710,6 +2710,8 @@ class StatusBar(Static):
 
     def refresh_display(self) -> None:
         icon = "\u25b6" if self._state == "running" else "\u23f8"  # ▶ / ⏸
+        if self._state == "cancelling":
+            icon = "◼"
         parts: list[str] = [f"{icon} {self._state}", self._model or "Model: ?"]
         context_ratio: float | None = None
 
@@ -2726,9 +2728,9 @@ class StatusBar(Static):
         if isinstance(self._cost_usd, (int, float)):
             parts.append(f"cost ${self._cost_usd:.4f}")
         if in_tokens is not None:
-            parts.append(f"req {self._format_k(in_tokens)}")
+            parts.append(f"last {self._format_k(in_tokens)}")
         if cached is not None and cached > 0:
-            parts.append(f"cache {self._format_k(cached)}")
+            parts.append(f"cached {self._format_k(cached)}")
         if out_tokens is not None:
             parts.append(f"out {self._format_k(out_tokens)}")
         if isinstance(self._step_total, int) and self._step_total > 0:
@@ -2754,7 +2756,8 @@ class StatusBar(Static):
                 "warn=",
                 "err=",
                 "out ",
-                "cache ",
+                "cached ",
+                "last ",
                 "tools ",
                 "step ",
             )

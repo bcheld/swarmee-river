@@ -837,11 +837,28 @@ def run_tui() -> int:
                 app.action_open_action_sheet()
                 return
 
-            # ── Ctrl+T: transcript mode toggle ──
-            if key == "ctrl+t" and app is not None and hasattr(app, "action_toggle_transcript_mode"):
+            # ── Transcript toggle shortcut ──
+            if (
+                app is not None
+                and hasattr(app, "_shortcut_matches")
+                and app._shortcut_matches("toggle_transcript_mode", key)
+                and hasattr(app, "action_toggle_transcript_mode")
+            ):
                 event.stop()
                 event.prevent_default()
                 app.action_toggle_transcript_mode()
+                return
+
+            # ── Copy shortcut ──
+            if (
+                app is not None
+                and hasattr(app, "_shortcut_matches")
+                and app._shortcut_matches("copy_selection", key)
+                and hasattr(app, "action_copy_selection")
+            ):
+                event.stop()
+                event.prevent_default()
+                app.action_copy_selection()
                 return
 
             # ── Sidebar resize shortcuts should win over TextArea cursor-nav ──
@@ -2033,10 +2050,11 @@ def run_tui() -> int:
         BINDINGS = [
             Binding("f5", "submit_prompt", "Send prompt", show=False),
             ("escape", "interrupt_run", "Interrupt run"),
-            ("ctrl+t", "toggle_transcript_mode", "Toggle transcript mode"),
+            ("f8", "toggle_transcript_mode", "Toggle transcript mode"),
             Binding("ctrl+k", "open_action_sheet", "Actions", priority=True, show=False),
             Binding("ctrl+p", "open_action_sheet", "Actions", priority=True),
             Binding("ctrl+space", "open_action_sheet", "Actions", priority=True, show=False),
+            ("ctrl+shift+c", "copy_selection", "Copy selection"),
             ("ctrl+c", "copy_selection", "Copy selection"),
             ("meta+c", "copy_selection", "Copy selection"),
             ("super+c", "copy_selection", "Copy selection"),
@@ -2283,6 +2301,8 @@ def run_tui() -> int:
         _settings_general_preflight_level_select: Any = None  # Select | None
         _settings_general_context_budget_mode_select: Any = None  # Select | None
         _settings_general_context_budget_input: Any = None  # Input | None
+        _settings_general_shortcut_toggle_transcript_input: Any = None  # Input | None
+        _settings_general_shortcut_copy_selection_input: Any = None  # Input | None
         _settings_toggle_swarm_button: Any = None  # Button | None
         _settings_toggle_log_events_button: Any = None  # Button | None
         _settings_toggle_project_map_button: Any = None  # Button | None
@@ -2296,6 +2316,7 @@ def run_tui() -> int:
         _settings_env_table: Any = None  # DataTable | None
         _settings_scope_current: Any = None  # Static | None
         _settings_directory_tree: Any = None  # DirectoryTree | None
+        _shortcut_map: dict[str, tuple[str, ...]] = {}
         _settings_env_selected_key: str | None = None
         _settings_models_selected_id: str | None = None
         _pre_settings_split_ratio: int | None = None
@@ -2419,6 +2440,7 @@ def run_tui() -> int:
             self._apply_project_settings_env_overrides()
             settings = load_settings()
             self._default_auto_approve = bool(settings.runtime.auto_approve)
+            self._refresh_shortcut_map(settings)
             set_state_dir_override(settings.runtime.state_dir, cwd=Path.cwd())
             # Internal bridging: allow Bedrock profile selection without treating AWS_PROFILE
             # as supported end-user configuration.
@@ -2728,10 +2750,16 @@ def run_tui() -> int:
                     self.action_focus_prompt()
                     return
 
-            if key in {"ctrl+c", "meta+c", "super+c", "cmd+c", "command+c"}:
+            if self._shortcut_matches("copy_selection", key):
                 event.stop()
                 event.prevent_default()
                 self.action_copy_selection()
+                return
+
+            if self._shortcut_matches("toggle_transcript_mode", key):
+                event.stop()
+                event.prevent_default()
+                self.action_toggle_transcript_mode()
                 return
 
             if is_widen_side_key(event):
@@ -3396,6 +3424,13 @@ def run_tui() -> int:
             if button_id == "settings_general_context_budget_reset":
                 self._persist_project_context_budget_tokens(None)
                 self._write_transcript_line("[settings] context budget reset to auto.")
+                return
+            if button_id == "settings_general_shortcuts_apply":
+                self._apply_shortcut_settings()
+                return
+            if button_id == "settings_general_shortcuts_reset":
+                self._persist_project_tui_shortcuts(reset=True)
+                self._write_transcript_line("[settings] TUI shortcuts reset to defaults.")
                 return
             if button_id == "settings_toggle_swarm":
                 from swarmee_river.settings import load_settings

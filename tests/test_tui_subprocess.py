@@ -19,6 +19,7 @@ from swarmee_river.tui.mixins.context_sources import ContextSourcesMixin
 from swarmee_river.tui.mixins.daemon import DaemonMixin
 from swarmee_river.tui.mixins.output import OutputMixin
 from swarmee_river.tui.mixins.plan import PlanMixin
+from swarmee_river.tui.mixins.prompt_ui import PromptUIMixin
 from swarmee_river.tui.mixins.session import SessionMixin
 from swarmee_river.tui.mixins.settings import SettingsMixin
 from swarmee_river.tui.mixins.thinking import ThinkingMixin
@@ -4218,8 +4219,8 @@ def test_status_bar_shows_estimated_and_last_provider_request_tokens() -> None:
     text = bar._Static__content  # type: ignore[attr-defined]
     assert "est 16.3k/200k" in text
     assert "cost $0.0123" in text
-    assert "req 50.0k" in text
-    assert "cache 10.3k" in text
+    assert "last 50.0k" in text
+    assert "cached 10.3k" in text
     assert "out 1.20k" in text
 
 
@@ -4232,7 +4233,7 @@ def test_context_budget_bar_renders_warning_and_prompt_estimate():
     bar.set_prompt_input_estimate(250)
     plain = bar.plain_text
     assert "Est: 45k / 50k (90%)" in plain
-    assert "Req: 50k" in plain
+    assert "Last: 50k" in plain
     assert "Cache: 10.3k" in plain
     assert "Cost: $0.0123" in plain
     assert "Draft: ~250" in plain
@@ -4273,6 +4274,101 @@ def test_prompt_history_helpers_restore_cached_draft() -> None:
         draft_text=draft,
     )
     assert (index, draft, entry) == (-1, None, "draft prompt")
+
+
+def test_prompt_ui_shortcut_map_uses_settings_payload() -> None:
+    class _Harness(PromptUIMixin):
+        def __init__(self) -> None:
+            self._shortcut_map = {}
+
+    settings = SimpleNamespace(
+        tui=SimpleNamespace(
+            shortcuts=SimpleNamespace(
+                toggle_transcript_mode=["f9"],
+                copy_selection=["ctrl+shift+c", "meta+c"],
+            )
+        )
+    )
+
+    harness = _Harness()
+    harness._refresh_shortcut_map(settings)
+
+    assert harness._shortcut_matches("toggle_transcript_mode", "f9") is True
+    assert harness._shortcut_matches("toggle_transcript_mode", "f8") is False
+    assert harness._shortcut_matches("copy_selection", "cmd+c") is True
+
+
+def test_action_copy_selection_copies_full_non_prompt_text_area() -> None:
+    from textual.widgets import TextArea
+
+    class _Harness(PromptUIMixin):
+        def __init__(self) -> None:
+            self.focused = TextArea("Question answer text", id="plan_question_answer_0")
+            self.copied: list[tuple[str, str]] = []
+            self._transcript_mode = "rich"
+
+        def _copy_text(self, text: str, *, label: str) -> None:
+            self.copied.append((text, label))
+
+        def _notify(self, *_args, **_kwargs) -> None:
+            raise AssertionError("copy path should not warn")
+
+    harness = _Harness()
+    harness.action_copy_selection()
+
+    assert harness.copied == [("Question answer text\n", "plan_question_answer_0 pane")]
+
+
+def test_action_interrupt_run_sets_cancelling_state(monkeypatch) -> None:
+    sent: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "swarmee_river.tui.transport.send_daemon_command",
+        lambda _proc, payload: sent.append(dict(payload)) or True,
+    )
+
+    class _Proc:
+        def poll(self) -> None:
+            return None
+
+    class _StatusBar:
+        def __init__(self) -> None:
+            self.states: list[str] = []
+
+        def set_state(self, state: str) -> None:
+            self.states.append(state)
+
+    class _Harness(PromptUIMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(daemon=SimpleNamespace(proc=_Proc(), query_active=True))
+            self._status_bar = _StatusBar()
+            self.lines: list[str] = []
+
+        def _flush_all_streaming_buffers(self) -> None:
+            return None
+
+        def _clear_pending_tool_starts(self) -> None:
+            return None
+
+        def _dismiss_thinking(self, *, emit_summary: bool = False) -> None:
+            _ = emit_summary
+            return None
+
+        def _reset_consent_panel(self) -> None:
+            return None
+
+        def _reset_error_action_prompt(self) -> None:
+            return None
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.lines.append(text)
+
+    harness = _Harness()
+    harness.action_interrupt_run()
+
+    assert sent == [{"cmd": "interrupt"}]
+    assert harness._status_bar.states == ["cancelling"]
+    assert harness.lines == ["[run] cancelling..."]
 
 
 def test_command_palette_includes_copy_last():

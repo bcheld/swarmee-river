@@ -9,6 +9,34 @@ from typing import Any
 
 
 class PromptUIMixin:
+    def _refresh_shortcut_map(self, settings: Any | None = None) -> None:
+        from swarmee_river.settings import load_settings
+
+        loaded = settings or load_settings()
+        shortcuts = getattr(getattr(loaded, "tui", None), "shortcuts", None)
+        self._shortcut_map = {
+            "toggle_transcript_mode": tuple(getattr(shortcuts, "toggle_transcript_mode", ["f8"])),
+            "copy_selection": tuple(
+                getattr(shortcuts, "copy_selection", ["ctrl+shift+c", "ctrl+c", "meta+c", "super+c"])
+            ),
+        }
+
+    def _shortcut_matches(self, action: str, key: str) -> bool:
+        normalized_action = str(action or "").strip()
+        normalized_key = str(key or "").strip().lower()
+        if not normalized_action or not normalized_key:
+            return False
+        alias_map = {
+            "cmd+c": "meta+c",
+            "command+c": "meta+c",
+        }
+        normalized_key = alias_map.get(normalized_key, normalized_key)
+        mapping = getattr(self, "_shortcut_map", {}) or {}
+        tokens = mapping.get(normalized_action)
+        if not isinstance(tokens, tuple):
+            return False
+        return normalized_key in tokens
+
     def _update_prompt_placeholder(self) -> None:
         from textual.widgets import TextArea
 
@@ -126,7 +154,9 @@ class PromptUIMixin:
         self._clear_pending_tool_starts()
         self._dismiss_thinking(emit_summary=True)
         send_daemon_command(proc, {"cmd": "interrupt"})
-        self._write_transcript_line("[run] interrupted.")
+        if self._status_bar is not None:
+            self._status_bar.set_state("cancelling")
+        self._write_transcript_line("[run] cancelling...")
         self._reset_consent_panel()
         self._reset_error_action_prompt()
 
@@ -148,8 +178,9 @@ class PromptUIMixin:
                 self._notify("transcript: nothing to copy.", severity="warning")
                 return
             focused_text = (getattr(focused, "text", "") or "").strip()
-            if focused.id in {"issues", "plan", "artifacts", "agent_summary"} and focused_text:
-                self._copy_text(focused_text + "\n", label=f"{focused.id} pane")
+            if focused.id != "prompt" and focused_text:
+                label = f"{focused.id} pane" if getattr(focused, "id", None) else "text area"
+                self._copy_text(focused_text + "\n", label=label)
                 return
             self._notify("Select text first.", severity="warning")
             return

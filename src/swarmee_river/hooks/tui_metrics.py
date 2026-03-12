@@ -39,20 +39,70 @@ def _as_int(value: Any) -> int | None:
 
 def _extract_usage_payload(event: Any) -> dict[str, Any] | None:
     usage = getattr(event, "usage", None)
-    if isinstance(usage, dict):
-        return usage
+    normalized_usage = _normalize_usage_payload(usage)
+    if normalized_usage is not None:
+        return normalized_usage
 
     response = getattr(event, "response", None)
-    if isinstance(response, dict) and isinstance(response.get("usage"), dict):
-        return response.get("usage")
+    if isinstance(response, dict):
+        normalized_usage = _normalize_usage_payload(response.get("usage"))
+        if normalized_usage is not None:
+            return normalized_usage
 
     stop_response = getattr(event, "stop_response", None)
     if stop_response is not None:
-        stop_usage = getattr(stop_response, "usage", None)
-        if isinstance(stop_usage, dict):
-            return stop_usage
+        normalized_usage = _normalize_usage_payload(getattr(stop_response, "usage", None))
+        if normalized_usage is not None:
+            return normalized_usage
 
     return None
+
+
+def _usage_lookup(raw: Any, *keys: str) -> Any:
+    if isinstance(raw, dict):
+        for key in keys:
+            if key in raw:
+                return raw.get(key)
+        return None
+    for key in keys:
+        with contextlib.suppress(Exception):
+            value = getattr(raw, key)
+            if value is not None:
+                return value
+    return None
+
+
+def _normalize_usage_payload(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        usage = dict(raw)
+    else:
+        usage = {}
+        for source_keys, target_key in (
+            (("input_tokens", "inputTokens", "prompt_tokens", "promptTokens"), "input_tokens"),
+            (("output_tokens", "outputTokens", "completion_tokens", "completionTokens"), "output_tokens"),
+            (("total_tokens", "totalTokens"), "total_tokens"),
+            (("cache_read_input_tokens", "cacheReadInputTokens"), "cache_read_input_tokens"),
+            (("cache_write_input_tokens", "cacheWriteInputTokens"), "cache_write_input_tokens"),
+            (("prompt_tokens_details", "promptTokensDetails"), "prompt_tokens_details"),
+        ):
+            value = _usage_lookup(raw, *source_keys)
+            if value is not None:
+                usage[target_key] = value
+    if not usage:
+        return None
+    details = usage.get("prompt_tokens_details")
+    normalized_details = None
+    if isinstance(details, dict):
+        normalized_details = dict(details)
+    elif details is not None:
+        cached_tokens = _usage_lookup(details, "cached_tokens", "cachedTokens")
+        if cached_tokens is not None:
+            normalized_details = {"cached_tokens": cached_tokens}
+    if normalized_details is not None:
+        usage["prompt_tokens_details"] = normalized_details
+    return usage
 
 
 def _extract_token_counts(usage: dict[str, Any]) -> tuple[int, int, int]:
@@ -174,7 +224,8 @@ class TuiMetricsHooks(HookProvider):
         metrics = getattr(result, "metrics", None) if result is not None else None
         latest_invocation = getattr(metrics, "latest_agent_invocation", None) if metrics is not None else None
         usage_obj = getattr(latest_invocation, "usage", None) if latest_invocation is not None else None
-        if not isinstance(usage_obj, dict):
+        normalized_usage = _normalize_usage_payload(usage_obj)
+        if not isinstance(normalized_usage, dict):
             return
 
         provider: str | None = None
@@ -187,12 +238,12 @@ class TuiMetricsHooks(HookProvider):
             model_id = str(raw_model).strip() if isinstance(raw_model, str) else None
 
         normalized: dict[str, Any] = {
-            "input_tokens": _as_int(usage_obj.get("inputTokens")) or 0,
-            "output_tokens": _as_int(usage_obj.get("outputTokens")) or 0,
-            "total_tokens": _as_int(usage_obj.get("totalTokens")) or 0,
+            "input_tokens": _as_int(_usage_lookup(normalized_usage, "input_tokens", "inputTokens")) or 0,
+            "output_tokens": _as_int(_usage_lookup(normalized_usage, "output_tokens", "outputTokens")) or 0,
+            "total_tokens": _as_int(_usage_lookup(normalized_usage, "total_tokens", "totalTokens")) or 0,
         }
-        cache_read = _as_int(usage_obj.get("cacheReadInputTokens"))
-        cache_write = _as_int(usage_obj.get("cacheWriteInputTokens"))
+        cache_read = _as_int(_usage_lookup(normalized_usage, "cache_read_input_tokens", "cacheReadInputTokens"))
+        cache_write = _as_int(_usage_lookup(normalized_usage, "cache_write_input_tokens", "cacheWriteInputTokens"))
         if cache_read is not None:
             normalized["cache_read_input_tokens"] = cache_read
         if cache_write is not None:

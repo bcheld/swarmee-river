@@ -7,6 +7,12 @@ from typing import Any, Optional
 from strands import tool
 
 from swarmee_river.tool_permissions import set_permissions
+from swarmee_river.utils.tool_interrupts import (
+    current_interrupt_event,
+    run_subprocess_capture_interruptible,
+)
+
+_ORIGINAL_INTERRUPTIBLE_RUN = run_subprocess_capture_interruptible
 
 
 @tool
@@ -34,32 +40,41 @@ def shell(
         run_env.update(env)
 
     try:
-        completed = subprocess.run(
-            command,
-            shell=True,
-            cwd=cwd,
-            env=run_env,
-            stdin=subprocess.DEVNULL if non_interactive_mode else None,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_s,
-        )
-    except subprocess.TimeoutExpired as e:
-        return {
-            "status": "error",
-            "content": [
-                {"text": f"Command timed out after {timeout_s}s."},
-                {"text": str(e)},
-            ],
-        }
+        helper_overridden = run_subprocess_capture_interruptible is not _ORIGINAL_INTERRUPTIBLE_RUN
+        if current_interrupt_event() is not None or helper_overridden:
+            completed = run_subprocess_capture_interruptible(
+                command,
+                shell=True,
+                cwd=cwd,
+                env=run_env,
+                stdin=subprocess.DEVNULL if non_interactive_mode else None,
+                timeout_s=timeout_s,
+            )
+        else:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                cwd=cwd,
+                env=run_env,
+                stdin=subprocess.DEVNULL if non_interactive_mode else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_s,
+                check=False,
+            )
     except Exception as e:
         return {"status": "error", "content": [{"text": f"Shell execution error: {str(e)}"}]}
 
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
     exit_code = completed.returncode
+    if getattr(completed, "interrupted", False):
+        stderr = stderr or "Command interrupted."
+    elif getattr(completed, "timed_out", False):
+        stderr = stderr or f"Command timed out after {timeout_s}s."
 
     # Print for interactive `!` usage where the caller ignores the return value.
     if non_interactive_mode:
@@ -68,7 +83,13 @@ def shell(
         if stderr:
             print(stderr, end="" if stderr.endswith("\n") else "\n")
 
-    status = "success" if exit_code == 0 else "error"
+    status = (
+        "success"
+        if exit_code == 0
+        and not getattr(completed, "interrupted", False)
+        and not getattr(completed, "timed_out", False)
+        else "error"
+    )
     combined = ""
     if stdout:
         combined += f"STDOUT:\n{stdout}\n"

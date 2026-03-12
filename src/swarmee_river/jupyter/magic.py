@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import shlex
 import threading
 import uuid
@@ -39,6 +38,12 @@ from swarmee_river.utils.agent_runtime_utils import ensure_work_plan, plan_json_
 from swarmee_river.utils.env_utils import load_env_file
 from swarmee_river.utils.fork_utils import create_shared_prefix_child_agent
 from swarmee_river.utils.kb_utils import load_system_prompt
+from swarmee_river.utils.notebook_utils import (
+    NotebookContext as _NotebookContext,
+)
+from swarmee_river.utils.notebook_utils import (
+    load_notebook_context as _load_notebook_context,
+)
 from swarmee_river.utils.provider_utils import resolve_model_provider
 
 try:
@@ -92,19 +97,14 @@ _install_notebook_warning_filters()
 
 _TOOL_USAGE_RULES = (
     "Tool usage rules:\n"
-    "- Use list/glob/file_list/file_search/file_read for repository exploration and file reading.\n"
+    "- Use list/glob/file_list/file_search/file_read/notebook_read for repository exploration and file reading.\n"
+    "- Prefer notebook_read for .ipynb inspection instead of python_repl.\n"
     "- Do not use shell for ls/find/sed/cat/grep/rg when file tools can do it.\n"
     "- Reserve shell for real command execution tasks."
 )
 _RUNTIME_TEXT_DELTA_EVENTS = {"text_delta", "message_delta", "output_text_delta", "delta"}
 _RUNTIME_TEXT_COMPLETE_EVENTS = {"text_complete", "message_complete", "output_text_complete", "complete"}
-_NOTEBOOK_READ_ONLY_TOOLS = ("list", "glob", "file_list", "file_search", "file_read")
-
-
-@dataclass(frozen=True)
-class _NotebookContext:
-    source: str
-    text: str
+_NOTEBOOK_READ_ONLY_TOOLS = ("list", "glob", "file_list", "file_search", "file_read", "notebook_read")
 
 
 @dataclass
@@ -117,17 +117,6 @@ class _NotebookRuntime:
     base_system_prompt: str
     artifact_store: ArtifactStore
     knowledge_base_id: str | None
-
-
-def _strip_markdown_images(markdown: str) -> str:
-    # Markdown image syntax: ![alt](url) or ![alt][ref]
-    text = re.sub(r"!\[[^\]]*\]\([^)]+\)", "[image omitted]", markdown)
-    text = re.sub(r"!\[[^\]]*\]\[[^\]]+\]", "[image omitted]", text)
-    # HTML images
-    text = re.sub(r"<img[^>]*>", "[image omitted]", text, flags=re.IGNORECASE)
-    # Inline data URIs (common in markdown/html)
-    text = re.sub(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+", "[image omitted]", text)
-    return text
 
 
 def _truncate_text(text: str, limit: int) -> str:
@@ -164,33 +153,7 @@ def _guess_notebook_path(ipython: Any) -> Path | None:
 
 
 def _load_ipynb_context(path: Path) -> _NotebookContext | None:
-    try:
-        import nbformat
-    except Exception:
-        return None
-
-    try:
-        nb = nbformat.read(path, as_version=4)
-    except Exception:
-        return None
-
-    parts: list[str] = []
-    for idx, cell in enumerate(getattr(nb, "cells", []) or []):
-        cell_type = getattr(cell, "cell_type", "unknown")
-        source = getattr(cell, "source", "") or ""
-        if not source.strip():
-            continue
-
-        if cell_type == "markdown":
-            source = _strip_markdown_images(source)
-            parts.append(f"### [markdown:{idx}]\n{source}".rstrip())
-        elif cell_type == "code":
-            # Notebook context should exclude images; outputs are ignored entirely.
-            parts.append(f"### [code:{idx}]\n```python\n{source.rstrip()}\n```")
-        else:
-            parts.append(f"### [{cell_type}:{idx}]\n{source}".rstrip())
-
-    return _NotebookContext(source=str(path), text="\n\n".join(parts).strip())
+    return _load_notebook_context(path)
 
 
 def _load_ipython_history_context(ipython: Any) -> _NotebookContext:
@@ -540,6 +503,8 @@ def _invoke_agent(
     if isinstance(sw_state, dict):
         sw_state.setdefault("runtime_environment", dict(runtime.runtime_environment))
         sw_state["tier"] = runtime.model_manager.current_tier
+        if str(getattr(runtime.model_manager, "current_provider", "")).strip().lower() == "bedrock":
+            sw_state.setdefault("invoke_mode", "isolated")
         profile = runtime.settings.harness.tier_profiles.get(runtime.model_manager.current_tier)
         if profile is not None:
             sw_state["tool_profile"] = profile.to_dict()

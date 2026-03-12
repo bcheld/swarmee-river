@@ -73,3 +73,29 @@ def test_athena_query_reports_scan_warning(monkeypatch) -> None:
     assert "Data scanned:" in text
     assert "Large scan:" in text
     assert "| id | name |" in text
+
+
+def test_athena_query_interrupts_running_query(monkeypatch) -> None:
+    class FakeAthena:
+        def __init__(self) -> None:
+            self.stopped: list[str] = []
+
+        def start_query_execution(self, **_kwargs):
+            return {"QueryExecutionId": "q-123"}
+
+        def get_query_execution(self, **_kwargs):
+            return {"QueryExecution": {"Status": {"State": "RUNNING"}}}
+
+        def stop_query_execution(self, *, QueryExecutionId: str):
+            self.stopped.append(QueryExecutionId)
+            return {}
+
+    fake = FakeAthena()
+    monkeypatch.setattr("tools.athena_query._aws_client", lambda service_name: fake)
+    monkeypatch.setattr("tools.athena_query.interrupt_requested", lambda: True)
+
+    result = athena_query(action="query", query="SELECT * FROM demo")
+
+    assert result.get("status") == "error"
+    assert "interrupted" in _text(result).lower()
+    assert fake.stopped == ["q-123"]

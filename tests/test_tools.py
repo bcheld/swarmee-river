@@ -12,6 +12,7 @@ def test_tools_includes_shell_and_python_repl():
 
     assert "python_repl" in tools
     assert "shell" in tools
+    assert "notebook_read" in tools
 
 
 def test_tools_include_core_coding_primitives():
@@ -23,6 +24,7 @@ def test_tools_include_core_coding_primitives():
     assert "file_list" in tools
     assert "file_search" in tools
     assert "file_read" in tools
+    assert "notebook_read" in tools
     assert "office" in tools
     assert "s3_browser" in tools
     assert "session_s3" in tools

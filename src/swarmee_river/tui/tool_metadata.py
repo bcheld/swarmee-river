@@ -178,6 +178,7 @@ _CUSTOM_TOOL_NAMES = frozenset(
         "file_list",
         "file_search",
         "file_read",
+        "notebook_read",
         "office",
         "s3_browser",
         "session_s3",

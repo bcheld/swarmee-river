@@ -367,6 +367,9 @@ class DaemonMixin:
         self.state.daemon.turn_output_chunks = []
         self.state.daemon.last_usage = None
         self.state.daemon.last_cost_usd = None
+        self.state.daemon.last_provider_input_tokens = None
+        self.state.daemon.last_provider_cached_input_tokens = None
+        self.state.daemon.last_provider_output_tokens = None
         if self._status_bar is not None:
             self._status_bar.set_state("running")
             self._status_bar.set_tool_count(0)

@@ -204,7 +204,15 @@ def test_run_swarmee_runtime_branches_and_applies_read_only_overrides(monkeypatc
         "cmd": "set_safety_overrides",
         "overrides": {
             "tool_consent": "deny",
-            "tool_allowlist": ["list", "glob", "file_list", "file_search", "file_read", "project_context"],
+            "tool_allowlist": [
+                "list",
+                "glob",
+                "file_list",
+                "file_search",
+                "file_read",
+                "notebook_read",
+                "project_context",
+            ],
             "tool_blocklist": [],
         },
     }

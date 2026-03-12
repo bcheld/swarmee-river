@@ -221,6 +221,19 @@ def test_plan_mode_allows_athena_query() -> None:
     assert event.cancel_tool is False
 
 
+def test_plan_mode_allows_notebook_read() -> None:
+    hook = ToolPolicyHooks()
+    event = SimpleNamespace(
+        tool_use={"name": "notebook_read", "input": {"path": "analysis/demo.ipynb"}},
+        invocation_state={"swarmee": {"mode": "plan"}},
+        cancel_tool=False,
+    )
+
+    hook.before_tool_call(event)
+
+    assert event.cancel_tool is False
+
+
 def test_plan_mode_allows_read_only_shell_commands() -> None:
     hook = ToolPolicyHooks()
     event = SimpleNamespace(

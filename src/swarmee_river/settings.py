@@ -107,6 +107,19 @@ def _normalized_choice(value: Any, *, allowed: set[str], default: str) -> str:
     return token if token in allowed else default
 
 
+def _normalize_shortcut_list(value: Any, *, default: list[str]) -> list[str]:
+    raw_items = value if isinstance(value, list) else default
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        token = str(item or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized or list(default)
+
+
 @dataclass(frozen=True)
 class ModelReasoningConfig:
     effort: str = "medium"  # low|medium|high
@@ -340,6 +353,50 @@ class RuntimeConfig:
         if self.state_dir:
             out["state_dir"] = self.state_dir
         return out
+
+
+@dataclass(frozen=True)
+class TuiShortcutsConfig:
+    toggle_transcript_mode: list[str] = field(default_factory=lambda: ["f8"])
+    copy_selection: list[str] = field(default_factory=lambda: ["ctrl+shift+c", "ctrl+c", "meta+c", "super+c"])
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "TuiShortcutsConfig":
+        return cls(
+            toggle_transcript_mode=_normalize_shortcut_list(
+                raw.get("toggle_transcript_mode"),
+                default=["f8"],
+            ),
+            copy_selection=_normalize_shortcut_list(
+                raw.get("copy_selection"),
+                default=["ctrl+shift+c", "ctrl+c", "meta+c", "super+c"],
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "toggle_transcript_mode": list(self.toggle_transcript_mode),
+            "copy_selection": list(self.copy_selection),
+        }
+
+
+@dataclass(frozen=True)
+class TuiConfig:
+    shortcuts: TuiShortcutsConfig = field(default_factory=TuiShortcutsConfig)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "TuiConfig":
+        shortcuts_raw = raw.get("shortcuts")
+        return cls(
+            shortcuts=(
+                TuiShortcutsConfig.from_dict(shortcuts_raw)
+                if isinstance(shortcuts_raw, dict)
+                else TuiShortcutsConfig()
+            )
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"shortcuts": self.shortcuts.to_dict()}
 
 
 @dataclass(frozen=True)
@@ -1472,6 +1529,7 @@ class SwarmeeSettings:
     models: ModelsConfig = field(default_factory=ModelsConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    tui: TuiConfig = field(default_factory=TuiConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
@@ -1484,6 +1542,7 @@ class SwarmeeSettings:
         models_raw = raw.get("models")
         context_raw = raw.get("context")
         runtime_raw = raw.get("runtime")
+        tui_raw = raw.get("tui")
         diagnostics_raw = raw.get("diagnostics")
         pricing_raw = raw.get("pricing")
         safety_raw = raw.get("safety")
@@ -1493,6 +1552,7 @@ class SwarmeeSettings:
             models=ModelsConfig.from_dict(models_raw) if isinstance(models_raw, dict) else ModelsConfig(),
             context=ContextConfig.from_dict(context_raw) if isinstance(context_raw, dict) else ContextConfig(),
             runtime=RuntimeConfig.from_dict(runtime_raw) if isinstance(runtime_raw, dict) else RuntimeConfig(),
+            tui=TuiConfig.from_dict(tui_raw) if isinstance(tui_raw, dict) else TuiConfig(),
             diagnostics=DiagnosticsConfig.from_dict(diagnostics_raw)
             if isinstance(diagnostics_raw, dict)
             else DiagnosticsConfig(),
@@ -1510,6 +1570,7 @@ class SwarmeeSettings:
                 "models": self.models.to_dict(),
                 "context": self.context.to_dict(),
                 "runtime": self.runtime.to_dict(),
+                "tui": self.tui.to_dict(),
                 "diagnostics": self.diagnostics.to_dict(),
                 "pricing": self.pricing.to_dict(),
                 "safety": self.safety.to_dict(),
