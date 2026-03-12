@@ -529,6 +529,48 @@ class SettingsMixin:
             detail_widget.update(detail_text)
         self._set_settings_env_value_controls(key=spec.key, current_value=current, default_value=spec.default)
 
+    @staticmethod
+    def _settings_model_provider_options() -> list[tuple[str, str]]:
+        return [
+            ("Provider: auto", "__auto__"),
+            ("bedrock", "bedrock"),
+            ("openai", "openai"),
+            ("ollama", "ollama"),
+            ("github_copilot", "github_copilot"),
+        ]
+
+    @staticmethod
+    def _settings_model_tier_options(
+        settings: Any,
+        *,
+        provider_value: str,
+        fallback_tier: str | None = None,
+    ) -> list[tuple[str, str]]:
+        normalized_provider = str(provider_value or "__auto__").strip().lower() or "__auto__"
+        tier_names: set[str] = set()
+        if normalized_provider == "__auto__":
+            for provider_cfg in settings.models.providers.values():
+                for tier_name in getattr(provider_cfg, "tiers", {}).keys():
+                    normalized_tier = str(tier_name or "").strip().lower()
+                    if normalized_tier:
+                        tier_names.add(normalized_tier)
+        else:
+            provider_cfg = settings.models.providers.get(normalized_provider)
+            for tier_name in getattr(provider_cfg, "tiers", {}).keys() if provider_cfg is not None else ():
+                normalized_tier = str(tier_name or "").strip().lower()
+                if normalized_tier:
+                    tier_names.add(normalized_tier)
+        for tier_name in settings.models.tiers.keys():
+            normalized_tier = str(tier_name or "").strip().lower()
+            if normalized_tier:
+                tier_names.add(normalized_tier)
+        normalized_fallback = str(fallback_tier or "").strip().lower()
+        if normalized_fallback:
+            tier_names.add(normalized_fallback)
+        if not tier_names:
+            return [("Tier: (none configured)", "__none__")]
+        return [(f"Tier: {tier_name}", tier_name) for tier_name in sorted(tier_names)]
+
     def _refresh_settings_models(self) -> None:
         from textual.widgets import Select
 
@@ -538,37 +580,60 @@ class SettingsMixin:
         settings = load_settings()
         provider_default = (settings.models.provider or "__auto__").strip().lower() or "__auto__"
         tier_default = (settings.models.default_tier or "balanced").strip().lower() or "balanced"
+        notebook_provider_default = (
+            getattr(settings.notebook.default_selection, "provider", None) or "__auto__"
+        ).strip().lower() or "__auto__"
+        notebook_tier_default = (
+            getattr(settings.notebook.default_selection, "tier", None) or "fast"
+        ).strip().lower() or "fast"
 
         self.state.daemon.model_select_syncing = True
         try:
             provider_select = self.query_one("#settings_models_provider_select", Select)
             tier_select = self.query_one("#settings_models_default_tier_select", Select)
-            provider_options: list[tuple[str, str]] = [
-                ("Provider: auto", "__auto__"),
-                ("bedrock", "bedrock"),
-                ("openai", "openai"),
-                ("ollama", "ollama"),
-                ("github_copilot", "github_copilot"),
-            ]
+            notebook_provider_select = self.query_one("#settings_notebook_models_provider_select", Select)
+            notebook_tier_select = self.query_one("#settings_notebook_models_default_tier_select", Select)
+            provider_options = self._settings_model_provider_options()
             provider_select.set_options(provider_options)
+            notebook_provider_select.set_options(provider_options)
             with contextlib.suppress(Exception):
                 provider_select.value = provider_default if provider_default else "__auto__"
+            with contextlib.suppress(Exception):
+                notebook_provider_select.value = (
+                    notebook_provider_default if notebook_provider_default else "__auto__"
+                )
             selected_provider = (
                 provider_default
                 if provider_default != "__auto__"
                 else str(getattr(provider_select, "value", "__auto__")).strip().lower()
             )
-            tier_options: list[tuple[str, str]] = []
-            if selected_provider and selected_provider != "__auto__":
-                provider_cfg = settings.models.providers.get(selected_provider)
-                tier_names = sorted(provider_cfg.tiers.keys()) if provider_cfg and provider_cfg.tiers else []
-                tier_options = [(f"Tier: {tier_name}", tier_name) for tier_name in tier_names]
-            if not tier_options:
-                tier_options = [("Tier: (none configured)", "__none__")]
+            notebook_selected_provider = (
+                notebook_provider_default
+                if notebook_provider_default != "__auto__"
+                else str(getattr(notebook_provider_select, "value", "__auto__")).strip().lower()
+            )
+            tier_options = self._settings_model_tier_options(
+                settings,
+                provider_value=selected_provider,
+                fallback_tier=tier_default,
+            )
+            notebook_tier_options = self._settings_model_tier_options(
+                settings,
+                provider_value=notebook_selected_provider,
+                fallback_tier=notebook_tier_default,
+            )
             tier_select.set_options(tier_options)
+            notebook_tier_select.set_options(notebook_tier_options)
             with contextlib.suppress(Exception):
                 tier_values = {value for _label, value in tier_options}
                 tier_select.value = tier_default if tier_default in tier_values else tier_options[0][1]
+            with contextlib.suppress(Exception):
+                notebook_tier_values = {value for _label, value in notebook_tier_options}
+                notebook_tier_select.value = (
+                    notebook_tier_default
+                    if notebook_tier_default in notebook_tier_values
+                    else notebook_tier_options[0][1]
+                )
         finally:
             self.state.daemon.model_select_syncing = False
 
@@ -603,12 +668,16 @@ class SettingsMixin:
         summary_widget = self._settings_models_summary
         if summary_widget is not None:
             provider_label = provider_default if provider_default != "__auto__" else "auto"
+            notebook_provider_label = (
+                notebook_provider_default if notebook_provider_default != "__auto__" else "auto"
+            )
             provider_count = len(settings.models.providers)
             tier_count = sum(len(provider.tiers) for provider in settings.models.providers.values())
             with contextlib.suppress(Exception):
                 summary_widget.update(
-                    "Default provider: "
-                    f"{provider_label} | Default tier: {tier_default} | "
+                    "Runtime default: "
+                    f"{provider_label}/{tier_default} | "
+                    f"Notebook fallback: {notebook_provider_label}/{notebook_tier_default} | "
                     f"Providers: {provider_count} | Tiers: {tier_count}"
                 )
 
@@ -908,6 +977,29 @@ class SettingsMixin:
             models["provider"] = provider_value
             models["default_selection"] = {"provider": provider_value, "tier": tier_value}
         models["default_tier"] = tier_value or "balanced"
+        self._save_project_settings_payload(payload, path)
+
+    def _save_notebook_models_default_selection(self) -> None:
+        from textual.widgets import Select
+
+        payload, path = self._load_project_settings_payload()
+        notebook = payload.setdefault("notebook", {})
+        selection = notebook.setdefault("default_selection", {})
+        models = payload.setdefault("models", {})
+        provider_widget = self.query_one("#settings_notebook_models_provider_select", Select)
+        tier_widget = self.query_one("#settings_notebook_models_default_tier_select", Select)
+        provider_value = str(getattr(provider_widget, "value", "__auto__")).strip().lower()
+        tier_value = str(getattr(tier_widget, "value", "fast")).strip().lower() or "fast"
+        if tier_value == "__none__":
+            existing_selection = notebook.get("default_selection", {})
+            tier_value = (
+                str(existing_selection.get("tier") or "").strip().lower()
+                or str(models.get("default_tier") or "").strip().lower()
+                or "fast"
+            )
+        selection["provider"] = None if provider_value in {"", "__auto__"} else provider_value
+        selection["tier"] = tier_value
+        notebook["default_selection"] = selection
         self._save_project_settings_payload(payload, path)
 
     def _persist_quick_model_selection(self, *, provider: str | None, tier: str | None) -> None:

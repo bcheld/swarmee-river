@@ -44,10 +44,14 @@ class _Widget:
         self.label = value
         self.variant = "default"
         self.text = ""
+        self.options: list[tuple[str, str]] = []
         self.styles = SimpleNamespace(display="block")
 
     def update(self, text: str) -> None:
         self.text = text
+
+    def set_options(self, options: list[tuple[str, str]]) -> None:
+        self.options = list(options)
 
 
 class _SettingsHarness(SettingsMixin):
@@ -76,6 +80,10 @@ class _SettingsHarness(SettingsMixin):
             "#settings_interrupt_timeout_input": _Widget("2.0"),
             "#settings_general_context_budget_mode": _Widget("auto"),
             "#settings_general_context_budget_input": _Widget(""),
+            "#settings_models_provider_select": _Widget("__auto__"),
+            "#settings_models_default_tier_select": _Widget("balanced"),
+            "#settings_notebook_models_provider_select": _Widget("__auto__"),
+            "#settings_notebook_models_default_tier_select": _Widget("fast"),
         }
         self._settings_bedrock_read_timeout_input = self._widgets["#settings_bedrock_read_timeout_input"]
         self._settings_bedrock_connect_timeout_input = self._widgets["#settings_bedrock_connect_timeout_input"]
@@ -347,3 +355,31 @@ def test_apply_context_budget_setting_can_reset_to_auto() -> None:
     assert harness.saved_payload is not None
     assert "max_prompt_tokens" not in harness.saved_payload.get("context", {})
     assert any("reset to auto" in message for message in harness.messages)
+
+
+def test_save_notebook_models_default_selection_persists_values() -> None:
+    harness = _SettingsHarness({"models": {}, "notebook": {}, "env": {}}, selected_id=None)
+    harness.query_one("#settings_notebook_models_provider_select").value = "openai"
+    harness.query_one("#settings_notebook_models_default_tier_select").value = "fast"
+
+    harness._save_notebook_models_default_selection()
+
+    assert harness.saved_payload is not None
+    assert harness.saved_payload["notebook"]["default_selection"] == {
+        "provider": "openai",
+        "tier": "fast",
+    }
+
+
+def test_save_notebook_models_default_selection_persists_auto_provider() -> None:
+    harness = _SettingsHarness({"models": {}, "notebook": {}, "env": {}}, selected_id=None)
+    harness.query_one("#settings_notebook_models_provider_select").value = "__auto__"
+    harness.query_one("#settings_notebook_models_default_tier_select").value = "fast"
+
+    harness._save_notebook_models_default_selection()
+
+    assert harness.saved_payload is not None
+    assert harness.saved_payload["notebook"]["default_selection"] == {
+        "provider": None,
+        "tier": "fast",
+    }

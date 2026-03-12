@@ -2845,6 +2845,20 @@ def run_tui() -> int:
                 self._refresh_agent_summary()
                 self._write_transcript_line("[settings] saved model defaults.")
                 return
+            if select_id in {
+                "settings_notebook_models_provider_select",
+                "settings_notebook_models_default_tier_select",
+            }:
+                if self.state.daemon.model_select_syncing:
+                    return
+                has_focus = bool(getattr(select_widget, "has_focus", False))
+                if not has_focus:
+                    return
+                self._save_notebook_models_default_selection()
+                self._refresh_settings_models()
+                self._refresh_agent_summary()
+                self._write_transcript_line("[settings] saved notebook model defaults.")
+                return
             if select_id in {"agent_builder_agent_provider", "agent_builder_agent_tier"}:
                 if self.state.agent_studio.builder_form_syncing:
                     return

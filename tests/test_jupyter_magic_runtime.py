@@ -7,6 +7,7 @@ from typing import Any
 
 from swarmee_river.jupyter import magic
 from swarmee_river.planning import PendingWorkPlan, WorkPlan
+from swarmee_river.settings import SwarmeeSettings, default_settings_template
 
 
 class _FakeRuntimeClient:
@@ -112,6 +113,39 @@ def test_run_swarmee_uses_runtime_when_enabled(monkeypatch, tmp_path: Path):
             "auto_approve": False,
         }
     ]
+
+
+def test_run_swarmee_runtime_deduplicates_complete_and_replay_text(monkeypatch, tmp_path: Path) -> None:
+    discovery = tmp_path / "runtime.json"
+    discovery.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("SWARMEE_NOTEBOOK_USE_RUNTIME", "1")
+    monkeypatch.setenv("SWARMEE_SESSION_ID", "session-from-env")
+    monkeypatch.setattr(magic, "ensure_runtime_broker", lambda *, cwd=None: discovery)
+
+    fake_client = _FakeRuntimeClient(
+        [
+            {"event": "text_delta", "text": "hello "},
+            {"event": "text_delta", "text": "world"},
+            {"event": "text_complete", "text": "hello world"},
+            {"event": "replay_turn", "role": "assistant", "text": "hello world"},
+            {"event": "turn_complete", "exit_status": "ok"},
+        ]
+    )
+    monkeypatch.setattr(
+        magic.RuntimeServiceClient,
+        "from_discovery_file",
+        staticmethod(lambda _path: fake_client),
+    )
+
+    text = magic._run_swarmee(
+        ipython=None,
+        user_prompt="test prompt",
+        include_context=False,
+        force_plan=False,
+        auto_approve=False,
+    )
+
+    assert text == "hello world"
 
 
 def test_run_swarmee_runtime_returns_plan_when_no_text(monkeypatch, tmp_path: Path):
@@ -349,3 +383,63 @@ def test_run_swarmee_falls_back_to_local_runtime_when_runtime_not_configured(mon
     )
 
     assert text == "local-result"
+
+
+def test_notebook_runtime_settings_use_notebook_default_selection() -> None:
+    payload = default_settings_template().to_dict()
+    payload["models"]["provider"] = "openai"
+    payload["models"]["default_tier"] = "deep"
+    payload["models"]["default_selection"] = {"provider": "openai", "tier": "deep"}
+    payload["notebook"] = {"default_selection": {"provider": "openai", "tier": "fast"}}
+
+    settings = SwarmeeSettings.from_dict(payload)
+
+    notebook_settings, warning = magic._notebook_runtime_settings(settings)
+
+    assert warning is None
+    assert notebook_settings.models.provider == "openai"
+    assert notebook_settings.models.default_tier == "fast"
+    assert notebook_settings.models.default_selection.provider == "openai"
+    assert notebook_settings.models.default_selection.tier == "fast"
+
+
+def test_notebook_runtime_settings_falls_back_when_tier_is_unavailable() -> None:
+    payload = default_settings_template().to_dict()
+    payload["models"]["provider"] = "bedrock"
+    payload["models"]["default_tier"] = "balanced"
+    payload["models"]["default_selection"] = {"provider": "bedrock", "tier": "balanced"}
+    payload["notebook"] = {"default_selection": {"provider": "bedrock", "tier": "coding"}}
+
+    settings = SwarmeeSettings.from_dict(payload)
+
+    notebook_settings, warning = magic._notebook_runtime_settings(settings)
+
+    assert notebook_settings.models.provider == "bedrock"
+    assert notebook_settings.models.default_tier == "balanced"
+    assert notebook_settings.models.default_selection.provider == "bedrock"
+    assert notebook_settings.models.default_selection.tier == "balanced"
+    assert warning is not None
+    assert "configured fallback tier 'coding'" in warning
+    assert "using 'balanced'" in warning
+
+
+def test_load_ipython_extension_prints_once_and_returns_none(monkeypatch) -> None:
+    captured_magics: list[type[Any]] = []
+    printed: list[str] = []
+
+    class _FakeIPython:
+        def register_magics(self, magics_cls: type[Any]) -> None:
+            captured_magics.append(magics_cls)
+
+    monkeypatch.setattr(magic, "_run_swarmee", lambda *_args, **_kwargs: "notebook output")
+    monkeypatch.setattr("builtins.print", lambda text: printed.append(str(text)))
+
+    fake_ipython = _FakeIPython()
+    magic.load_ipython_extension(fake_ipython)
+
+    assert captured_magics
+    magics = captured_magics[0](fake_ipython)
+    result = magics.swarmee("", "hello")
+
+    assert result is None
+    assert printed == ["notebook output"]

@@ -452,6 +452,25 @@ def compose_settings_tab() -> Iterator[Any]:
                         id="settings_models_default_tier_select",
                         compact=True,
                     )
+                with Horizontal(id="settings_notebook_models_defaults_row"):
+                    yield Select(
+                        options=[
+                            ("Notebook provider: auto", "__auto__"),
+                            ("bedrock", "bedrock"),
+                            ("openai", "openai"),
+                            ("ollama", "ollama"),
+                            ("github_copilot", "github_copilot"),
+                        ],
+                        allow_blank=False,
+                        id="settings_notebook_models_provider_select",
+                        compact=True,
+                    )
+                    yield Select(
+                        options=[("Notebook tier: (none configured)", "__none__")],
+                        allow_blank=False,
+                        id="settings_notebook_models_default_tier_select",
+                        compact=True,
+                    )
                 yield DataTable(id="settings_models_table", cursor_type="row")
                 with Horizontal(id="settings_auth_row"):
                     yield Button("Connect Copilot", id="settings_auth_connect_copilot", compact=True, variant="success")
@@ -520,6 +539,11 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_general_summary = app.query_one("#settings_general_summary", Static)
     app._settings_models_summary = app.query_one("#settings_models_summary", Static)
     app._settings_models_detail = app.query_one("#settings_models_detail", Static)
+    app._settings_notebook_models_provider_select = app.query_one("#settings_notebook_models_provider_select", Select)
+    app._settings_notebook_models_default_tier_select = app.query_one(
+        "#settings_notebook_models_default_tier_select",
+        Select,
+    )
     app._settings_auth_status = app.query_one("#settings_auth_status", Static)
     app._settings_aws_profile_input = app.query_one("#settings_aws_profile_input", Input)
     app._settings_env_category_select = app.query_one("#settings_env_category", Select)

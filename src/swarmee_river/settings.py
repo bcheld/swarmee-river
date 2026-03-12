@@ -1194,6 +1194,28 @@ class DefaultModelSelection:
 
 
 @dataclass(frozen=True)
+class NotebookConfig:
+    default_selection: DefaultModelSelection = field(
+        default_factory=lambda: DefaultModelSelection(provider=None, tier="fast")
+    )
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "NotebookConfig":
+        default_selection_raw = raw.get("default_selection")
+        default_selection = (
+            DefaultModelSelection.from_dict(default_selection_raw)
+            if isinstance(default_selection_raw, dict)
+            else DefaultModelSelection(provider=None, tier="fast")
+        )
+        if not str(default_selection.tier or "").strip():
+            default_selection = DefaultModelSelection(provider=default_selection.provider, tier="fast")
+        return cls(default_selection=default_selection)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"default_selection": self.default_selection.to_dict()}
+
+
+@dataclass(frozen=True)
 class ModelsConfig:
     provider: str | None = None
     default_tier: str = "balanced"
@@ -1529,6 +1551,7 @@ class SwarmeeSettings:
     models: ModelsConfig = field(default_factory=ModelsConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    notebook: NotebookConfig = field(default_factory=NotebookConfig)
     tui: TuiConfig = field(default_factory=TuiConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
@@ -1542,6 +1565,7 @@ class SwarmeeSettings:
         models_raw = raw.get("models")
         context_raw = raw.get("context")
         runtime_raw = raw.get("runtime")
+        notebook_raw = raw.get("notebook")
         tui_raw = raw.get("tui")
         diagnostics_raw = raw.get("diagnostics")
         pricing_raw = raw.get("pricing")
@@ -1552,6 +1576,7 @@ class SwarmeeSettings:
             models=ModelsConfig.from_dict(models_raw) if isinstance(models_raw, dict) else ModelsConfig(),
             context=ContextConfig.from_dict(context_raw) if isinstance(context_raw, dict) else ContextConfig(),
             runtime=RuntimeConfig.from_dict(runtime_raw) if isinstance(runtime_raw, dict) else RuntimeConfig(),
+            notebook=NotebookConfig.from_dict(notebook_raw) if isinstance(notebook_raw, dict) else NotebookConfig(),
             tui=TuiConfig.from_dict(tui_raw) if isinstance(tui_raw, dict) else TuiConfig(),
             diagnostics=DiagnosticsConfig.from_dict(diagnostics_raw)
             if isinstance(diagnostics_raw, dict)
@@ -1570,6 +1595,7 @@ class SwarmeeSettings:
                 "models": self.models.to_dict(),
                 "context": self.context.to_dict(),
                 "runtime": self.runtime.to_dict(),
+                "notebook": self.notebook.to_dict(),
                 "tui": self.tui.to_dict(),
                 "diagnostics": self.diagnostics.to_dict(),
                 "pricing": self.pricing.to_dict(),
@@ -1886,6 +1912,9 @@ def default_settings_template() -> SwarmeeSettings:
                 order=["fast", "balanced", "deep", "long"],
             ),
             availability={},
+        ),
+        notebook=NotebookConfig(
+            default_selection=DefaultModelSelection(provider=None, tier="fast"),
         ),
         safety=SafetyConfig(
             tool_consent="ask",

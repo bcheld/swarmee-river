@@ -24,6 +24,8 @@ def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path) -> None:
     assert settings.models.providers["openai"].tiers["fast"].model_id == "gpt-5-nano"
     assert settings.models.providers["openai"].tiers["fast"].display_name
     assert settings.models.default_selection.tier == settings.models.default_tier
+    assert settings.notebook.default_selection.provider is None
+    assert settings.notebook.default_selection.tier == "fast"
     assert settings.tui.shortcuts.toggle_transcript_mode == ["f8"]
     assert settings.tui.shortcuts.copy_selection == ["ctrl+shift+c", "ctrl+c", "meta+c", "super+c"]
 
@@ -121,6 +123,28 @@ def test_load_settings_prefers_default_selection_over_legacy_keys(tmp_path: Path
     assert settings.models.default_tier == "coding"
     assert settings.models.default_selection.provider == "openai"
     assert settings.models.default_selection.tier == "coding"
+
+
+def test_load_settings_parses_notebook_default_selection(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "notebook": {
+                    "default_selection": {
+                        "provider": "openai",
+                        "tier": "fast",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.notebook.default_selection.provider == "openai"
+    assert settings.notebook.default_selection.tier == "fast"
 
 
 def test_auto_escalation_uses_explicit_order_only(tmp_path: Path) -> None:

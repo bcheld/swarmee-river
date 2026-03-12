@@ -117,6 +117,8 @@ class _NotebookRuntime:
     base_system_prompt: str
     artifact_store: ArtifactStore
     knowledge_base_id: str | None
+    startup_notice: str | None = None
+    startup_notice_pending: bool = False
 
 
 def _truncate_text(text: str, limit: int) -> str:
@@ -125,6 +127,29 @@ def _truncate_text(text: str, limit: int) -> str:
     head = text[: limit // 2]
     tail = text[-(limit // 2) :]
     return f"{head}\n\n… (truncated, {len(text)} chars total) …\n\n{tail}"
+
+
+def _unseen_suffix(existing: str, incoming: str) -> str:
+    if not incoming:
+        return ""
+    if not existing:
+        return incoming
+    if incoming in existing:
+        return ""
+    if existing in incoming:
+        return incoming[len(existing) :]
+    max_overlap = min(len(existing), len(incoming))
+    for size in range(max_overlap, 0, -1):
+        if existing.endswith(incoming[:size]):
+            return incoming[size:]
+    return incoming
+
+
+def _append_unique_text(existing: str, incoming: str) -> str:
+    suffix = _unseen_suffix(existing, incoming)
+    if not suffix:
+        return existing
+    return f"{existing}{suffix}"
 
 
 def _guess_notebook_path(ipython: Any) -> Path | None:
@@ -282,6 +307,85 @@ def _runtime_notebook_allowlist() -> list[str]:
     return allow
 
 
+def _available_notebook_tiers(settings: Any, *, provider: str) -> list[str]:
+    tier_names: list[str] = []
+    seen: set[str] = set()
+    provider_cfg = getattr(settings.models, "providers", {}).get(provider)
+    provider_tiers = getattr(provider_cfg, "tiers", {}) if provider_cfg is not None else {}
+    for tier_name in provider_tiers.keys():
+        normalized = str(tier_name or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        tier_names.append(normalized)
+    for tier_name in getattr(settings.models, "tiers", {}).keys():
+        normalized = str(tier_name or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        tier_names.append(normalized)
+    return tier_names
+
+
+def _notebook_runtime_settings(settings: Any) -> tuple[Any, str | None]:
+    notebook_selection = getattr(settings.notebook, "default_selection", None)
+    requested_provider = getattr(notebook_selection, "provider", None)
+    requested_tier = str(getattr(notebook_selection, "tier", "fast") or "fast").strip().lower() or "fast"
+
+    resolved_provider, _notice = resolve_model_provider(
+        cli_provider=requested_provider,
+        env_provider=None,
+        settings_provider=requested_provider,
+    )
+    resolved_provider = str(resolved_provider or "").strip().lower()
+
+    available_tiers = _available_notebook_tiers(settings, provider=resolved_provider)
+    resolved_tier = requested_tier
+    warning: str | None = None
+    if available_tiers and requested_tier not in set(available_tiers):
+        fallback_candidates = [
+            str(getattr(settings.models.default_selection, "tier", "") or "").strip().lower(),
+            str(getattr(settings.models, "default_tier", "") or "").strip().lower(),
+            "fast",
+            "balanced",
+        ]
+        resolved_tier = next(
+            (tier for tier in fallback_candidates if tier and tier in available_tiers),
+            available_tiers[0],
+        )
+        warning = (
+            f"[notebook] configured fallback tier '{requested_tier}' is unavailable for {resolved_provider}; "
+            f"using '{resolved_tier}'."
+        )
+
+    payload = settings.to_dict()
+    models_payload = payload.setdefault("models", {})
+    models_payload["provider"] = resolved_provider or None
+    models_payload["default_tier"] = resolved_tier
+    models_payload["default_selection"] = {
+        "provider": resolved_provider or None,
+        "tier": resolved_tier,
+    }
+
+    notebook_settings = settings.__class__.from_dict(payload)
+    return notebook_settings, warning
+
+
+def _consume_runtime_notice(runtime: _NotebookRuntime) -> str | None:
+    notice = str(getattr(runtime, "startup_notice", "") or "").strip()
+    if not notice or not bool(getattr(runtime, "startup_notice_pending", False)):
+        return None
+    runtime.startup_notice_pending = False
+    return notice
+
+
+def _with_runtime_notice(runtime: _NotebookRuntime, text: str) -> str:
+    notice = _consume_runtime_notice(runtime)
+    if notice and text:
+        return f"{notice}\n\n{text}"
+    return notice or text
+
+
 def _warn_legacy_branching_once(*, attach_cwd: Path) -> None:
     cwd_text = str(attach_cwd.resolve())
     if cwd_text in _LEGACY_BRANCH_WARNING_CWDS:
@@ -401,8 +505,7 @@ def _run_swarmee_via_runtime(
         query_payload["auto_approve"] = bool(auto_approve)
         client.send_command(query_payload)
 
-        delta_chunks: list[str] = []
-        final_chunks: list[str] = []
+        assistant_text = ""
         plan_rendered = ""
         errors: list[str] = []
         turn_complete_seen = False
@@ -416,13 +519,13 @@ def _run_swarmee_via_runtime(
             if etype in _RUNTIME_TEXT_DELTA_EVENTS:
                 chunk = _extract_runtime_text_chunk(event)
                 if chunk:
-                    delta_chunks.append(chunk)
+                    assistant_text = _append_unique_text(assistant_text, chunk)
                 continue
 
             if etype in _RUNTIME_TEXT_COMPLETE_EVENTS:
                 chunk = _extract_runtime_text_chunk(event)
                 if chunk:
-                    final_chunks.append(chunk)
+                    assistant_text = _append_unique_text(assistant_text, chunk)
                 continue
 
             if etype == "replay_turn":
@@ -430,7 +533,7 @@ def _run_swarmee_via_runtime(
                 if role == "assistant":
                     replay_text = str(event.get("text", "")).strip()
                     if replay_text:
-                        final_chunks.append(replay_text)
+                        assistant_text = _append_unique_text(assistant_text, replay_text)
                 continue
 
             if etype == "plan":
@@ -459,16 +562,10 @@ def _run_swarmee_via_runtime(
                     errors.append(f"runtime turn finished with status={status}")
                 break
 
-        delta_text = "".join(delta_chunks).strip()
-        final_text = "\n".join(
-            chunk.strip() for chunk in final_chunks if isinstance(chunk, str) and chunk.strip()
-        ).strip()
-
         output_parts: list[str] = []
-        if delta_text:
-            output_parts.append(delta_text)
-        if final_text and (not delta_text or final_text not in delta_text):
-            output_parts.append(final_text)
+        assistant_text = assistant_text.strip()
+        if assistant_text:
+            output_parts.append(assistant_text)
         if plan_rendered and not output_parts:
             output_parts.append(plan_rendered)
         if errors and not output_parts:
@@ -554,19 +651,15 @@ def _get_or_create_runtime() -> _NotebookRuntime:
     load_env_file()
 
     settings = load_settings()
-    knowledge_base_id = settings.runtime.knowledge_base_id
+    notebook_settings, notebook_warning = _notebook_runtime_settings(settings)
+    knowledge_base_id = notebook_settings.runtime.knowledge_base_id
 
-    selected_provider, _notice = resolve_model_provider(
-        cli_provider=None,
-        env_provider=None,
-        settings_provider=settings.models.provider,
-    )
-
-    model_manager = SessionModelManager(settings, fallback_provider=selected_provider)
+    selected_provider = str(notebook_settings.models.provider or "").strip().lower()
+    model_manager = SessionModelManager(notebook_settings, fallback_provider=selected_provider)
     model = model_manager.build_model()
 
     tools_dict = get_tools()
-    for name, tool_obj in load_enabled_pack_tools(settings).items():
+    for name, tool_obj in load_enabled_pack_tools(notebook_settings).items():
         tools_dict.setdefault(name, tool_obj)
     tools = [tools_dict[name] for name in sorted(tools_dict)]
 
@@ -575,12 +668,12 @@ def _get_or_create_runtime() -> _NotebookRuntime:
     runtime_environment = detect_runtime_environment(cwd=Path.cwd())
     runtime_environment_prompt_section = render_runtime_environment_section(runtime_environment)
 
-    pack_prompt_sections = enabled_system_prompts(settings)
-    profile = settings.harness.tier_profiles.get(model_manager.current_tier)
+    pack_prompt_sections = enabled_system_prompts(notebook_settings)
+    profile = notebook_settings.harness.tier_profiles.get(model_manager.current_tier)
     snapshot = build_context_snapshot(
         artifact_store=artifact_store,
         interactive=False,
-        runtime=settings.runtime,
+        runtime=notebook_settings.runtime,
         default_preflight_level=profile.preflight_level if profile else None,
     )
 
@@ -594,18 +687,20 @@ def _get_or_create_runtime() -> _NotebookRuntime:
         parts.append(snapshot.preflight_prompt_section)
     base_system_prompt = "\n\n".join([p for p in parts if p]).strip()
 
-    hooks = _build_hooks(settings)
+    hooks = _build_hooks(notebook_settings)
     agent = _create_agent(model=model, tools=tools, system_prompt=base_system_prompt, hooks=hooks)
 
     runtime = _NotebookRuntime(
         agent=agent,
         tools_dict=tools_dict,
-        settings=settings,
+        settings=notebook_settings,
         model_manager=model_manager,
         runtime_environment=runtime_environment,
         base_system_prompt=base_system_prompt,
         artifact_store=artifact_store,
         knowledge_base_id=knowledge_base_id,
+        startup_notice=notebook_warning,
+        startup_notice_pending=bool(notebook_warning),
     )
     _RUNTIME_SINGLETON = runtime
     _RUNTIME_FINGERPRINT = fingerprint
@@ -734,23 +829,32 @@ def _run_swarmee(
         try:
             plan = _generate_plan(runtime, prompt, auto_approve=auto_approve)
         except MaxTokensReachedException:
-            return (
+            return _with_runtime_notice(
+                runtime,
+                (
                 "Error: Plan generation hit the max output token limit.\n"
                 "Fix: increase `models.max_output_tokens` in `.swarmee/settings.json`, or ask for a shorter plan."
+                ),
             )
 
         rendered = render_plan_text(plan)
         if not auto_approve:
-            return rendered + "\n\nPlan generated. Re-run with `%%swarmee --yes` to execute."
+            return _with_runtime_notice(
+                runtime,
+                rendered + "\n\nPlan generated. Re-run with `%%swarmee --yes` to execute.",
+            )
 
         try:
             result = _execute_with_plan(runtime, prompt, plan, auto_approve=True)
         except MaxTokensReachedException:
-            return (
+            return _with_runtime_notice(
+                runtime,
+                (
                 "Error: Execution hit the max output token limit.\n"
                 "Fix: increase `models.max_output_tokens` in `.swarmee/settings.json`, or ask for a shorter response."
+                ),
             )
-        return str(result)
+        return _with_runtime_notice(runtime, str(result))
 
     try:
         result = _invoke_agent(
@@ -759,11 +863,14 @@ def _run_swarmee(
             invocation_state={"swarmee": {"mode": "execute", "auto_approve": auto_approve}},
         )
     except MaxTokensReachedException:
-        return (
+        return _with_runtime_notice(
+            runtime,
+            (
             "Error: Response hit the max output token limit.\n"
             "Fix: increase `models.max_output_tokens` in `.swarmee/settings.json`, or ask for a shorter response."
+            ),
         )
-    return str(result)
+    return _with_runtime_notice(runtime, str(result))
 
 
 def _parse_magic_line(line: str) -> tuple[bool, bool, bool | None, bool, str]:
@@ -816,12 +923,12 @@ def load_ipython_extension(ipython: Any) -> None:
     @magics_class
     class SwarmeeMagics(Magics):
         @cell_magic  # type: ignore[untyped-decorator]
-        def swarmee(self, line: str, cell: str) -> str:
+        def swarmee(self, line: str, cell: str) -> None:
             auto_approve, force_plan, include_context_override, daemon_stop, extra = _parse_magic_line(line)
             if daemon_stop:
                 text = _shutdown_runtime_from_notebook()
                 print(text)
-                return text
+                return None
             include_context = (
                 include_context_override
                 if include_context_override is not None
@@ -840,9 +947,8 @@ def load_ipython_extension(ipython: Any) -> None:
                 auto_approve=auto_approve,
             )
 
-            # Print and also return (so users can assign it).
             print(text)
-            return text
+            return None
 
     ipython.register_magics(SwarmeeMagics)
 
