@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -39,6 +41,112 @@ class WorkPlan(BaseModel):
     )
 
 
+class PendingWorkPlan(BaseModel):
+    kind: Literal["pending_work_plan"] = "pending_work_plan"
+    plan_run_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    original_request: str = Field(..., description="Original request that the plan is answering.")
+    current_plan: WorkPlan = Field(..., description="Current canonical WorkPlan under review.")
+    revision_count: int = Field(default=0, ge=0, description="How many plan revisions have been generated.")
+    feedback_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Structured step/question feedback applied while revising the plan.",
+    )
+
+    @property
+    def summary(self) -> str:
+        return self.current_plan.summary
+
+    @property
+    def assumptions(self) -> list[str]:
+        return list(self.current_plan.assumptions)
+
+    @property
+    def questions(self) -> list[str]:
+        return list(self.current_plan.questions)
+
+    @property
+    def steps(self) -> list[PlanStep]:
+        return list(self.current_plan.steps)
+
+    @property
+    def confirmation_prompt(self) -> str:
+        return self.current_plan.confirmation_prompt
+
+
+def ensure_work_plan(plan: Any) -> WorkPlan:
+    if isinstance(plan, WorkPlan):
+        return plan
+    if isinstance(plan, PendingWorkPlan):
+        return plan.current_plan
+    if isinstance(plan, dict):
+        if "current_plan" in plan:
+            pending = pending_work_plan_from_payload(plan)
+            if pending is not None:
+                return pending.current_plan
+        return WorkPlan.model_validate(plan)
+    raise TypeError("Expected WorkPlan-compatible payload")
+
+
+def pending_work_plan_from_payload(payload: Any) -> PendingWorkPlan | None:
+    if isinstance(payload, PendingWorkPlan):
+        return payload
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return PendingWorkPlan.model_validate(payload)
+    except Exception:
+        return None
+
+
+def new_pending_work_plan(
+    *,
+    original_request: str,
+    plan: WorkPlan,
+    revision_count: int = 0,
+    feedback_history: list[dict[str, Any]] | None = None,
+    plan_run_id: str | None = None,
+) -> PendingWorkPlan:
+    return PendingWorkPlan(
+        plan_run_id=str(plan_run_id or "").strip() or uuid.uuid4().hex,
+        original_request=str(original_request or "").strip(),
+        current_plan=ensure_work_plan(plan),
+        revision_count=max(0, int(revision_count or 0)),
+        feedback_history=[dict(item) for item in (feedback_history or []) if isinstance(item, dict)],
+    )
+
+
+def build_plan_revision_prompt(
+    pending: PendingWorkPlan,
+    *,
+    step_feedback: list[str],
+    question_feedback: list[str],
+) -> str:
+    lines = [
+        "Revise the WorkPlan for the original request below.",
+        "",
+        "Original request:",
+        pending.original_request.strip(),
+        "",
+        "Current WorkPlan JSON:",
+        json.dumps(pending.current_plan.model_dump(), indent=2, ensure_ascii=False),
+    ]
+    if step_feedback:
+        lines.extend(["", "Step feedback:"])
+        lines.extend(step_feedback)
+    if question_feedback:
+        lines.extend(["", "Question responses:"])
+        lines.extend(question_feedback)
+    lines.extend(
+        [
+            "",
+            "Return a complete replacement WorkPlan.",
+            "Stop exploring once you have enough context to produce the revised plan.",
+            "Do not restate the old plan outside the WorkPlan response.",
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
 _WORK_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\b(implement|fix|refactor|rewrite|add|remove|delete|rename|update|upgrade)\b", re.IGNORECASE),
     re.compile(r"\b(create|generate|scaffold|bootstrap)\b", re.IGNORECASE),
@@ -71,8 +179,11 @@ def classify_intent(prompt: str) -> str:
 def structured_plan_prompt() -> str:
     return (
         "You are Swarmee River in PLAN mode.\n"
-        "- You may use read-only tools (file_read, file_search, file_list, glob, grep, "
-        "project_context, retrieve) to gather context before planning.\n"
+        "- You may use safe read-only tools to gather context before planning: "
+        "file_read, file_search, file_list, glob, grep, retrieve, project_context, "
+        "athena_query, conservative read-only shell commands, and single-expression "
+        "read-only python_repl queries.\n"
+        "- Stop exploring as soon as you have enough context to emit a concrete WorkPlan.\n"
         "- Do NOT produce any text output. Your final response MUST be a single "
         "WorkPlan tool call with no preceding text.\n"
         "- Put all analysis, reasoning, and recommendations into the WorkPlan fields "

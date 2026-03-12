@@ -5,6 +5,7 @@ import json
 import re
 import shlex
 import threading
+import uuid
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,13 @@ from strands import Agent
 from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
 from swarmee_river.context.prompt_cache import format_system_reminder, inject_system_reminder
 from swarmee_river.packs import enabled_system_prompts, load_enabled_pack_tools
-from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
+from swarmee_river.planning import (
+    PendingWorkPlan,
+    WorkPlan,
+    classify_intent,
+    new_pending_work_plan,
+    structured_plan_prompt,
+)
 from swarmee_river.project_map import build_context_snapshot
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
 from swarmee_river.runtime_service.client import (
@@ -28,8 +35,9 @@ from swarmee_river.runtime_service.client import (
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
 from swarmee_river.tools import get_tools
-from swarmee_river.utils.agent_runtime_utils import plan_json_for_execution, render_plan_text
+from swarmee_river.utils.agent_runtime_utils import ensure_work_plan, plan_json_for_execution, render_plan_text
 from swarmee_river.utils.env_utils import load_env_file
+from swarmee_river.utils.fork_utils import create_shared_prefix_child_agent
 from swarmee_river.utils.kb_utils import load_system_prompt
 from swarmee_river.utils.provider_utils import resolve_model_provider
 
@@ -654,11 +662,36 @@ def _format_prompt(*, notebook_context: _NotebookContext, user_prompt: str) -> s
     ).strip()
 
 
-def _generate_plan(runtime: _NotebookRuntime, prompt: str, *, auto_approve: bool) -> WorkPlan:
+def _generate_plan(runtime: _NotebookRuntime, prompt: str, *, auto_approve: bool) -> PendingWorkPlan:
+    plan_run_id = uuid.uuid4().hex
+    child_agent, _snapshot = create_shared_prefix_child_agent(
+        parent_agent=runtime.agent,
+        kind="notebook_plan",
+        seed_instruction=None,
+        callback_handler=None,
+    )
+    child_runtime = _NotebookRuntime(
+        agent=child_agent,
+        tools_dict=runtime.tools_dict,
+        settings=runtime.settings,
+        model_manager=runtime.model_manager,
+        runtime_environment=runtime.runtime_environment,
+        base_system_prompt=runtime.base_system_prompt,
+        artifact_store=runtime.artifact_store,
+        knowledge_base_id=runtime.knowledge_base_id,
+    )
     result = _invoke_agent(
-        runtime,
+        child_runtime,
         prompt,
-        invocation_state={"swarmee": {"mode": "plan", "auto_approve": auto_approve}},
+        invocation_state={
+            "swarmee": {
+                "mode": "plan",
+                "auto_approve": auto_approve,
+                "plan_run_id": plan_run_id,
+                "suppress_reasoning_ui": True,
+                "suppress_user_stall_warnings": True,
+            }
+        },
         structured_output_model=WorkPlan,
         structured_output_prompt=structured_plan_prompt(),
     )
@@ -671,13 +704,21 @@ def _generate_plan(runtime: _NotebookRuntime, prompt: str, *, auto_approve: bool
         kind="plan",
         text=plan.model_dump_json(indent=2),
         suffix="json",
-        metadata={"request": prompt},
+        metadata={"request": prompt, "plan_run_id": plan_run_id},
     )
-    return plan
+    return new_pending_work_plan(original_request=prompt, plan=plan, plan_run_id=plan_run_id)
 
 
-def _execute_with_plan(runtime: _NotebookRuntime, prompt: str, plan: WorkPlan, *, auto_approve: bool) -> Any:
-    allowed_tools = sorted(tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan")
+def _execute_with_plan(
+    runtime: _NotebookRuntime,
+    prompt: str,
+    plan: PendingWorkPlan | WorkPlan,
+    *,
+    auto_approve: bool,
+) -> Any:
+    work_plan = ensure_work_plan(plan)
+    plan_run_id = plan.plan_run_id if isinstance(plan, PendingWorkPlan) else None
+    allowed_tools = sorted(tool_name for tool_name in tools_expected_from_plan(work_plan) if tool_name != "WorkPlan")
     invocation_state = {
         "swarmee": {
             "mode": "execute",
@@ -686,8 +727,10 @@ def _execute_with_plan(runtime: _NotebookRuntime, prompt: str, plan: WorkPlan, *
             "auto_approve": auto_approve,
         }
     }
+    if plan_run_id:
+        invocation_state["swarmee"]["plan_run_id"] = plan_run_id
 
-    plan_json_payload = plan_json_for_execution(plan)
+    plan_json_payload = plan_json_for_execution(work_plan)
     approved_plan_section = (
         "Approved Plan (execute ONLY this plan; if you need changes, regenerate the plan):\n" + plan_json_payload
     )

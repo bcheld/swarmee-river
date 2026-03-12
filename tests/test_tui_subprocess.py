@@ -412,8 +412,15 @@ def test_plain_prompt_submit_forces_execute_mode():
         def _handle_post_run_command(self, _text: str) -> bool:
             return False
 
-        def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
-            self.run_calls.append((prompt, auto_approve, mode))
+        def _start_run(
+            self,
+            prompt: str,
+            *,
+            auto_approve: bool,
+            mode: str | None = None,
+            plan_context: dict[str, object] | None = None,
+        ) -> None:
+            self.run_calls.append((prompt, auto_approve, mode, plan_context))
 
         def _write_transcript_line(self, text: str) -> None:
             self.transcript.append(text)
@@ -423,7 +430,7 @@ def test_plain_prompt_submit_forces_execute_mode():
     SwarmeeTUI._handle_user_input(harness, "ping")
 
     assert harness.user_inputs == ["ping"]
-    assert harness.run_calls == [("ping", True, "execute")]
+    assert harness.run_calls == [("ping", True, "execute", None)]
     assert harness.transcript == []
 
 
@@ -442,25 +449,70 @@ def test_plan_prompt_command_still_starts_plan_mode():
         def _write_transcript_line(self, _text: str) -> None:
             return None
 
-        def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
-            self.run_calls.append((prompt, auto_approve, mode))
+        def _start_run(
+            self,
+            prompt: str,
+            *,
+            auto_approve: bool,
+            mode: str | None = None,
+            plan_context: dict[str, object] | None = None,
+        ) -> None:
+            self.run_calls.append((prompt, auto_approve, mode, plan_context))
 
     harness = _Harness()
     handled = DaemonMixin._handle_post_run_command(harness, "/plan draft ping check")
 
     assert handled is True
-    assert harness.run_calls == [("draft ping check", False, "plan")]
+    assert harness.run_calls == [("draft ping check", False, "plan", None)]
 
 
 def test_plan_approve_dispatch_starts_execute_mode() -> None:
+    from swarmee_river.planning import WorkPlan, new_pending_work_plan
+
     class _Harness:
         def __init__(self) -> None:
-            self.state = SimpleNamespace(plan=SimpleNamespace(pending_prompt="ship it"))
-            self.run_calls: list[tuple[str, bool, str | None]] = []
+            pending = new_pending_work_plan(
+                original_request="ship it",
+                plan=WorkPlan(summary="Ship it", steps=[]),
+                plan_run_id="plan-123",
+            )
+            self.state = SimpleNamespace(
+                plan=SimpleNamespace(
+                    pending_prompt="ship it",
+                    pending_record=pending.model_dump(),
+                    plan_run_id="plan-123",
+                )
+            )
+            self.run_calls: list[tuple[str, bool, str | None, dict[str, object] | None]] = []
             self.transcript: list[str] = []
+            self.saved = False
 
-        def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
-            self.run_calls.append((prompt, auto_approve, mode))
+        def _pending_plan_record(self):
+            return new_pending_work_plan(
+                original_request="ship it",
+                plan=WorkPlan(summary="Ship it", steps=[]),
+                plan_run_id="plan-123",
+            )
+
+        def _clear_pending_plan_record(self) -> None:
+            self.state.plan.pending_record = None
+            self.state.plan.pending_prompt = None
+
+        def _refresh_plan_actions_visibility(self) -> None:
+            return None
+
+        def _save_session(self) -> None:
+            self.saved = True
+
+        def _start_run(
+            self,
+            prompt: str,
+            *,
+            auto_approve: bool,
+            mode: str | None = None,
+            plan_context: dict[str, object] | None = None,
+        ) -> None:
+            self.run_calls.append((prompt, auto_approve, mode, plan_context))
 
         def _write_transcript_line(self, text: str) -> None:
             self.transcript.append(text)
@@ -469,8 +521,59 @@ def test_plan_approve_dispatch_starts_execute_mode() -> None:
 
     PlanMixin._dispatch_plan_action(harness, "approve")
 
-    assert harness.run_calls == [("ship it", True, "execute")]
+    assert len(harness.run_calls) == 1
+    prompt, auto_approve, mode, plan_context = harness.run_calls[0]
+    assert (prompt, auto_approve, mode) == ("ship it", True, "execute")
+    assert isinstance(plan_context, dict)
+    approved_plan = plan_context.get("approved_plan")
+    assert isinstance(approved_plan, dict)
+    assert approved_plan.get("plan_run_id") == "plan-123"
+    assert approved_plan.get("original_request") == "ship it"
+    current_plan = approved_plan.get("current_plan")
+    assert isinstance(current_plan, dict)
+    assert current_plan.get("summary") == "Ship it"
+    assert current_plan.get("steps") == []
     assert harness.transcript == []
+    assert harness.state.plan.pending_record is None
+    assert harness.saved is True
+
+
+def test_plan_step_update_ignores_stale_plan_run_id() -> None:
+    from swarmee_river.tui.event_router import _handle_plan_events
+
+    class _Harness:
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                plan=SimpleNamespace(
+                    plan_run_id="current-plan",
+                    current_step_statuses=["pending"],
+                    current_steps_total=1,
+                    current_active_step=None,
+                    step_counter=0,
+                    updates_seen=False,
+                    completion_announced=False,
+                )
+            )
+            self.rendered = False
+            self.transcript: list[str] = []
+
+        def _render_plan_panel_from_status(self) -> None:
+            self.rendered = True
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.transcript.append(text)
+
+    harness = _Harness()
+
+    handled = _handle_plan_events(
+        harness,
+        "plan_step_update",
+        {"event": "plan_step_update", "plan_run_id": "stale-plan", "step_index": 0, "status": "completed"},
+    )
+
+    assert handled is True
+    assert harness.state.plan.current_step_statuses == ["pending"]
+    assert harness.rendered is False
 
 
 def test_start_fresh_session_rotates_session_id_and_restarts_daemon():

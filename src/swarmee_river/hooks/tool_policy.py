@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import shlex
 from typing import Any
 
@@ -80,6 +81,21 @@ _PLAN_MODE_SAFE_PYTHON_BUILTINS = {
     "sum",
     "tuple",
 }
+_PLAN_MODE_LOOP_GUARD_TOOLS = {
+    "athena_query",
+    "file_list",
+    "file_read",
+    "file_search",
+    "glob",
+    "grep",
+    "list",
+    "project_context",
+    "python_repl",
+    "retrieve",
+    "shell",
+}
+_PLAN_MODE_BLOCKED_ATTEMPT_LIMIT = 3
+_PLAN_MODE_REPEAT_ATTEMPT_LIMIT = 4
 
 
 def _project_context_signature(tool_use: Any) -> str:
@@ -90,6 +106,18 @@ def _project_context_signature(tool_use: Any) -> str:
     query = str(tool_input.get("query") or "").strip()
     path = str(tool_input.get("path") or "").strip()
     return f"{action}|{query}|{path}"
+
+
+def _stable_tool_signature(tool_use: Any) -> str:
+    if not isinstance(tool_use, dict):
+        return ""
+    name = normalize_tool_name(tool_use.get("name"))
+    payload = tool_use.get("input")
+    try:
+        rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        rendered = str(payload)
+    return f"{name}|{rendered}"
 
 
 def _first_command_token(command: str) -> str:
@@ -328,6 +356,14 @@ class ToolPolicyHooks(HookProvider):
             elif canonical_name == "shell":
                 command = tool_input.get("command") if isinstance(tool_input, dict) else None
                 if not isinstance(command, str) or not _looks_safe_plan_mode_shell_command(command):
+                    if isinstance(sw, dict):
+                        blocked_attempts = int(sw.get("_plan_mode_blocked_attempts", 0) or 0) + 1
+                        sw["_plan_mode_blocked_attempts"] = blocked_attempts
+                        if blocked_attempts >= _PLAN_MODE_BLOCKED_ATTEMPT_LIMIT:
+                            raise RuntimeError(
+                                "Plan mode loop detected after repeated blocked tool attempts. "
+                                "Stop exploring and emit a WorkPlan or ask focused questions."
+                            )
                     event.cancel_tool = (
                         "Tool 'shell' is only allowed in plan mode for conservative read-only commands."
                     )
@@ -336,6 +372,14 @@ class ToolPolicyHooks(HookProvider):
             elif canonical_name == "python_repl":
                 code = tool_input.get("code") if isinstance(tool_input, dict) else None
                 if not isinstance(code, str) or not _looks_safe_plan_mode_python_query(code):
+                    if isinstance(sw, dict):
+                        blocked_attempts = int(sw.get("_plan_mode_blocked_attempts", 0) or 0) + 1
+                        sw["_plan_mode_blocked_attempts"] = blocked_attempts
+                        if blocked_attempts >= _PLAN_MODE_BLOCKED_ATTEMPT_LIMIT:
+                            raise RuntimeError(
+                                "Plan mode loop detected after repeated blocked tool attempts. "
+                                "Stop exploring and emit a WorkPlan or ask focused questions."
+                            )
                     event.cancel_tool = (
                         "Tool 'python_repl' is only allowed in plan mode for single-expression read-only queries."
                     )
@@ -343,14 +387,47 @@ class ToolPolicyHooks(HookProvider):
                 plan_mode_special_allowed = True
             plan_allowed_tools = self._plan_mode_allowlist(sw if isinstance(sw, dict) else {})
             if not plan_mode_special_allowed and not _matches_tool_set(name, plan_allowed_tools):
+                if isinstance(sw, dict):
+                    blocked_attempts = int(sw.get("_plan_mode_blocked_attempts", 0) or 0) + 1
+                    sw["_plan_mode_blocked_attempts"] = blocked_attempts
+                    if blocked_attempts >= _PLAN_MODE_BLOCKED_ATTEMPT_LIMIT:
+                        raise RuntimeError(
+                            "Plan mode loop detected after repeated blocked tool attempts. "
+                            "Stop exploring and emit a WorkPlan or ask focused questions."
+                        )
                 event.cancel_tool = f"Tool '{name}' blocked in plan mode."
                 return
         if mode == "plan" and name == "project_context":
             tool_input = tool_use.get("input")
             action = tool_input.get("action") if isinstance(tool_input, dict) else None
             if isinstance(action, str) and action.strip().lower() not in self.plan_mode_project_context_actions:
+                if isinstance(sw, dict):
+                    blocked_attempts = int(sw.get("_plan_mode_blocked_attempts", 0) or 0) + 1
+                    sw["_plan_mode_blocked_attempts"] = blocked_attempts
+                    if blocked_attempts >= _PLAN_MODE_BLOCKED_ATTEMPT_LIMIT:
+                        raise RuntimeError(
+                            "Plan mode loop detected after repeated blocked tool attempts. "
+                            "Stop exploring and emit a WorkPlan or ask focused questions."
+                        )
                 event.cancel_tool = f"Tool 'project_context' action '{action}' blocked in plan mode."
                 return
+        if mode == "plan" and isinstance(sw, dict):
+            sw["_plan_mode_blocked_attempts"] = 0
+            if canonical_name in _PLAN_MODE_LOOP_GUARD_TOOLS:
+                signature = _stable_tool_signature(tool_use)
+                last_signature = str(sw.get("_plan_mode_last_signature") or "")
+                streak = int(sw.get("_plan_mode_repeat_streak", 0) or 0)
+                streak = streak + 1 if signature and signature == last_signature else 1
+                sw["_plan_mode_last_signature"] = signature
+                sw["_plan_mode_repeat_streak"] = streak
+                if signature and streak >= _PLAN_MODE_REPEAT_ATTEMPT_LIMIT:
+                    raise RuntimeError(
+                        "Plan mode loop detected after repeated identical read/query calls. "
+                        "Stop exploring and emit a WorkPlan or ask focused questions."
+                    )
+            else:
+                sw["_plan_mode_last_signature"] = ""
+                sw["_plan_mode_repeat_streak"] = 0
 
         if mode == "execute" and name == "project_context" and isinstance(sw, dict):
             total_raw = sw.get("_project_context_total")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from swarmee_river.planning import build_plan_revision_prompt
+
 
 class PlanMixin:
     def _set_plan_input_mode(self, *, editable: bool) -> None:
@@ -276,7 +278,7 @@ class PlanMixin:
             # All steps approved — approve and execute
             self._restore_planning_sidebar_width()
             self._set_engage_view_mode("plan")
-            if self.state.plan.pending_prompt:
+            if self._pending_plan_request():
                 self._write_transcript_line("[plan] continuing with current WorkPlan...")
                 self._dispatch_plan_action("approve")
             else:
@@ -284,23 +286,37 @@ class PlanMixin:
             return
 
         # Build annotated feedback prompt for refinement
-        plan_json = self.state.plan.plan_json
-        original_summary = str((plan_json or {}).get("summary", "")).strip() if plan_json else ""
-        feedback_prompt = (
-            "Revise the previous plan"
-            + (f" ({original_summary})" if original_summary else "")
-            + " based on user feedback:\n"
-            + "\n".join(feedback_parts)
+        pending = self._pending_plan_record()
+        if pending is None:
+            self._write_transcript_line("[plan] no canonical WorkPlan is available to revise.")
+            return
+        feedback_prompt = build_plan_revision_prompt(
+            pending,
+            step_feedback=feedback_parts,
+            question_feedback=question_feedback,
         )
-        if question_feedback:
-            feedback_prompt += "\n\nQuestion responses:\n" + "\n".join(question_feedback)
         self._write_transcript_line("[plan] refining WorkPlan...")
         if feedback_parts or question_feedback:
             self._write_transcript_line(
                 f"[plan] feedback: {len(feedback_parts)} step edits, {len(question_feedback)} answers."
             )
         self._set_planning_controls_enabled(enabled=False)
-        self._start_run(feedback_prompt, auto_approve=False, mode="plan")
+        self._start_run(
+            feedback_prompt,
+            auto_approve=False,
+            mode="plan",
+            plan_context={
+                "original_request": pending.original_request,
+                "revision_count": pending.revision_count + 1,
+                "feedback_history": [
+                    *[dict(item) for item in pending.feedback_history],
+                    {
+                        "step_feedback": list(feedback_parts),
+                        "question_feedback": list(question_feedback),
+                    },
+                ],
+            },
+        )
         if not self.state.daemon.query_active:
             self._set_planning_controls_enabled(enabled=True)
 
@@ -341,21 +357,10 @@ class PlanMixin:
         self._set_planning_ui_mode(pre_plan=True)
 
     def _cancel_plan_and_reset(self) -> None:
-        self.state.plan.pending_prompt = None
-        self.state.plan.plan_json = None
-        self.state.plan.current_steps_total = 0
-        self.state.plan.current_summary = ""
-        self.state.plan.current_steps = []
-        self.state.plan.current_step_statuses = []
-        self.state.plan.current_active_step = None
-        self.state.plan.updates_seen = False
-        self.state.plan.step_counter = 0
-        self.state.plan.completion_announced = False
+        self._reset_plan_panel()
         self.state.plan.received_structured_plan = False
-        self._clear_planning_view()
-        self._refresh_plan_status_bar()
-        self._refresh_plan_actions_visibility()
         self._write_transcript_line("[plan] canceled and cleared.")
+        self._save_session()
 
     def action_copy_plan(self) -> None:
         self._copy_text((self.state.plan.text or "").rstrip() + "\n", label="plan")
@@ -363,19 +368,37 @@ class PlanMixin:
     def _dispatch_plan_action(self, action: str) -> None:
         normalized = action.strip().lower()
         if normalized == "approve":
-            if not self.state.plan.pending_prompt:
+            pending = self._pending_plan_record()
+            if pending is None:
                 self._write_transcript_line("[run] no pending plan.")
                 return
-            self._start_run(self.state.plan.pending_prompt, auto_approve=True, mode="execute")
+            self._clear_pending_plan_record()
+            self._refresh_plan_actions_visibility()
+            self._start_run(
+                pending.original_request,
+                auto_approve=True,
+                mode="execute",
+                plan_context={"approved_plan": pending.model_dump()},
+            )
+            self._save_session()
             return
         if normalized == "replan":
-            if not self._last_prompt:
+            pending = self._pending_plan_record()
+            prompt = pending.original_request if pending is not None else self._last_prompt
+            if not prompt:
                 self._write_transcript_line("[run] no previous prompt to replan.")
                 return
-            self._start_run(self._last_prompt, auto_approve=False, mode="plan")
+            plan_context = None
+            if pending is not None:
+                plan_context = {
+                    "original_request": pending.original_request,
+                    "revision_count": pending.revision_count + 1,
+                    "feedback_history": [dict(item) for item in pending.feedback_history],
+                }
+            self._start_run(prompt, auto_approve=False, mode="plan", plan_context=plan_context)
             return
         if normalized == "clearplan":
-            self.state.plan.pending_prompt = None
             self._reset_plan_panel()
             self._write_transcript_line("[run] plan cleared.")
+            self._save_session()
             return

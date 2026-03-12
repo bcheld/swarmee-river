@@ -2544,7 +2544,7 @@ def run_tui() -> int:
                     ],
                 )
 
-            if self.state.plan.pending_prompt:
+            if self.state.plan.pending_record:
                 return (
                     "Plan Review",
                     [

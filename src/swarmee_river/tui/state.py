@@ -44,6 +44,8 @@ class DaemonState:
 class PlanState:
     text: str = ""
     pending_prompt: str | None = None
+    pending_record: dict[str, Any] | None = None
+    plan_run_id: str | None = None
     current_steps_total: int = 0
     current_summary: str = ""
     current_steps: list[str] = field(default_factory=list)

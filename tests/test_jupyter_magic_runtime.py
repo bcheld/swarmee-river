@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from swarmee_river.jupyter import magic
-from swarmee_river.planning import WorkPlan
+from swarmee_river.planning import PendingWorkPlan, WorkPlan
 
 
 class _FakeRuntimeClient:
@@ -285,6 +286,40 @@ def test_execute_with_plan_uses_execute_mode() -> None:
     assert result == "ok"
     assert captured["invocation_state"]["swarmee"]["mode"] == "execute"
     assert captured["invocation_state"]["swarmee"]["enforce_plan"] is True
+
+
+def test_generate_plan_uses_child_agent_without_mutating_parent_messages(monkeypatch) -> None:
+    parent_agent = SimpleNamespace(messages=[{"role": "user", "content": [{"text": "old"}]}])
+    runtime = magic._NotebookRuntime(
+        agent=parent_agent,
+        tools_dict={},
+        settings=SimpleNamespace(),
+        model_manager=SimpleNamespace(current_tier="deep"),
+        runtime_environment={},
+        base_system_prompt="system",
+        artifact_store=SimpleNamespace(write_text=lambda **_kwargs: None),
+        knowledge_base_id=None,
+    )
+
+    child_messages: list[dict[str, Any]] = []
+
+    def _fake_create_shared_prefix_child_agent(*, parent_agent: Any, **_kwargs: Any):
+        child = SimpleNamespace(messages=[dict(item) for item in parent_agent.messages])
+        return child, SimpleNamespace()
+
+    def _fake_invoke(runtime_obj: Any, _query: str, **_kwargs: Any):
+        runtime_obj.agent.messages.append({"role": "assistant", "content": [{"text": "planning"}]})
+        child_messages.extend(runtime_obj.agent.messages)
+        return SimpleNamespace(structured_output=WorkPlan(summary="Inspect", steps=[]))
+
+    monkeypatch.setattr(magic, "create_shared_prefix_child_agent", _fake_create_shared_prefix_child_agent)
+    monkeypatch.setattr(magic, "_invoke_agent", _fake_invoke)
+
+    pending = magic._generate_plan(runtime, "investigate", auto_approve=False)
+
+    assert isinstance(pending, PendingWorkPlan)
+    assert parent_agent.messages == [{"role": "user", "content": [{"text": "old"}]}]
+    assert child_messages[-1] == {"role": "assistant", "content": [{"text": "planning"}]}
 
 
 def test_run_swarmee_falls_back_to_local_runtime_when_runtime_not_configured(monkeypatch):

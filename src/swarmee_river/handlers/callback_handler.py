@@ -127,6 +127,7 @@ def _mark_invoke_diag(
     saw_progress: bool = False,
     saw_text_delta: bool = False,
     saw_complete: bool = False,
+    saw_tool_activity: bool = False,
 ) -> None:
     diag = _ensure_invoke_diag(invocation_state)
     if not diag:
@@ -150,6 +151,8 @@ def _mark_invoke_diag(
         diag["first_text_delta_mono"] = now
     if saw_complete:
         diag["complete_mono"] = now
+    if saw_tool_activity:
+        diag["saw_tool_activity"] = True
 
 
 def format_message(message: str, color: str | None = None, max_length: int = 50) -> str:
@@ -346,8 +349,15 @@ class CallbackHandler:
                 self.thinking_spinner.start()
                 _mark_invoke_diag(invocation_state, stage="init_event_loop")
 
-            if reasoningText:
+            suppress_reasoning_ui = False
+            if isinstance(invocation_state, dict):
+                sw = invocation_state.get("swarmee")
+                if isinstance(sw, dict):
+                    suppress_reasoning_ui = bool(sw.get("suppress_reasoning_ui"))
+
+            if reasoningText and not suppress_reasoning_ui:
                 _safe_print(reasoningText, end="")
+            if reasoningText:
                 _mark_invoke_diag(invocation_state, stage="reasoning", saw_progress=True)
 
             if start_event_loop and self.thinking_spinner is not None and not truthy_env("SWARMEE_TUI_EVENTS", False):
@@ -403,14 +413,24 @@ class CallbackHandler:
                         "start_time": time.time(),
                         "input_size": 0,
                     }
-                    _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
+                    _mark_invoke_diag(
+                        invocation_state,
+                        stage="tool_start",
+                        saw_progress=True,
+                        saw_tool_activity=True,
+                    )
 
                 # Update tool progress
                 if tool_id in self.tool_histories:
                     current_size = len(tool_input)
                     if current_size > self.tool_histories[tool_id]["input_size"]:
                         self.tool_histories[tool_id]["input_size"] = current_size
-                        _mark_invoke_diag(invocation_state, stage="tool_progress", saw_progress=True)
+                        _mark_invoke_diag(
+                            invocation_state,
+                            stage="tool_progress",
+                            saw_progress=True,
+                            saw_tool_activity=True,
+                        )
                         if self.current_spinner:
                             self.current_spinner.update(f"🛠️  {tool_name}: {current_size} chars")
 
@@ -420,7 +440,12 @@ class CallbackHandler:
                 tool_use = content.get("toolUse")
                 if tool_use:
                     tool_name = tool_use.get("name")
-                    _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
+                    _mark_invoke_diag(
+                        invocation_state,
+                        stage="tool_start",
+                        saw_progress=True,
+                        saw_tool_activity=True,
+                    )
                     if self.current_spinner:
                         self.current_spinner.info(f"🔧 Starting {tool_name}...")
 
@@ -430,7 +455,12 @@ class CallbackHandler:
                 if tool_result:
                     tool_id = tool_result.get("toolUseId")
                     status = tool_result.get("status")
-                    _mark_invoke_diag(invocation_state, stage="tool_result", saw_progress=True)
+                    _mark_invoke_diag(
+                        invocation_state,
+                        stage="tool_result",
+                        saw_progress=True,
+                        saw_tool_activity=True,
+                    )
 
                     if isinstance(tool_id, str) and tool_id in self.tool_histories:
                         tool_info = self.tool_histories[tool_id]
@@ -478,6 +508,8 @@ class TuiCallbackHandler:
         self._plan_marker_buffer: str = ""
         self._plan_total_steps: int = 0
         self._plan_complete_emitted: bool = False
+        self._plan_run_id: str | None = None
+        self._suppress_reasoning_ui: bool = False
         self._llm_start_emitted: bool = False
         self._saw_bedrock_stream_chunk: bool = False
         self._bedrock_stream_markers_seen: set[str] = set()
@@ -500,6 +532,8 @@ class TuiCallbackHandler:
         self._plan_marker_buffer = ""
         self._plan_total_steps = 0
         self._plan_complete_emitted = False
+        self._plan_run_id = None
+        self._suppress_reasoning_ui = False
         self._llm_start_emitted = False
         self._emitted_reasoning_texts_turn.clear()
         self._reset_bedrock_stream_state()
@@ -526,6 +560,9 @@ class TuiCallbackHandler:
             self._plan_total_steps = total
             if total == 0:
                 self._plan_complete_emitted = False
+        plan_run_id = str(sw.get("plan_run_id", "") or "").strip()
+        self._plan_run_id = plan_run_id or None
+        self._suppress_reasoning_ui = bool(sw.get("suppress_reasoning_ui"))
 
     def _normalize_plan_step_index(self, *, step: Any, step_index: Any) -> int | None:
         if isinstance(step_index, int):
@@ -562,6 +599,8 @@ class TuiCallbackHandler:
             "step_index": step_index,
             "status": normalized_status,
         }
+        if self._plan_run_id:
+            payload["plan_run_id"] = self._plan_run_id
         if isinstance(note, str) and note.strip():
             payload["note"] = note.strip()
         self._emit(payload)
@@ -577,7 +616,10 @@ class TuiCallbackHandler:
         if completed < total:
             return
         self._plan_complete_emitted = True
-        self._emit({"event": "plan_complete", "completed_steps": completed, "total_steps": total})
+        payload: dict[str, Any] = {"event": "plan_complete", "completed_steps": completed, "total_steps": total}
+        if self._plan_run_id:
+            payload["plan_run_id"] = self._plan_run_id
+        self._emit(payload)
 
     def _consume_text_for_plan_markers(self, text: str) -> None:
         chunk = str(text or "")
@@ -914,6 +956,8 @@ class TuiCallbackHandler:
         if not chunk or chunk in self._emitted_reasoning_texts_turn:
             return
         self._emitted_reasoning_texts_turn.add(chunk)
+        if self._suppress_reasoning_ui:
+            return
         self._emit({"event": "thinking", "text": chunk})
 
     def _extract_text_from_result(self, result: Any, *, exclude_reasoning_wrappers: bool = False) -> str | None:
@@ -1471,7 +1515,12 @@ class TuiCallbackHandler:
                     tool_input=tool_input,
                     emit_start=(tool_id not in self.tool_histories),
                 )
-                _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
+                _mark_invoke_diag(
+                    invocation_state,
+                    stage="tool_start",
+                    saw_progress=True,
+                    saw_tool_activity=True,
+                )
 
                 if tool_input is not None and tool_id in self.tool_histories:
                     current_size = len(str(tool_input))
@@ -1489,7 +1538,12 @@ class TuiCallbackHandler:
                                 }
                             )
                             info["last_progress_emit_mono"] = now
-                            _mark_invoke_diag(invocation_state, stage="tool_progress", saw_progress=True)
+                            _mark_invoke_diag(
+                                invocation_state,
+                                stage="tool_progress",
+                                saw_progress=True,
+                                saw_tool_activity=True,
+                            )
                 self._emit_plan_progress_from_tool(tool_name=tool_name, tool_input=tool_input)
 
         extra_tool_start = self._extract_tool_start_from_extra_fields(extra_event_fields)
@@ -1501,7 +1555,12 @@ class TuiCallbackHandler:
                 tool_input=tool_input,
                 emit_start=(tool_use_id not in self.tool_histories),
             )
-            _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
+            _mark_invoke_diag(
+                invocation_state,
+                stage="tool_start",
+                saw_progress=True,
+                saw_tool_activity=True,
+            )
             self._emit_plan_progress_from_tool(tool_name=tool_name, tool_input=tool_input)
 
         for tool_use_id, stream, content in self._extract_tool_progress_chunks(
@@ -1510,13 +1569,23 @@ class TuiCallbackHandler:
             extra_event_fields=extra_event_fields,
         ):
             self._append_tool_progress(tool_use_id, content, stream=stream)
-            _mark_invoke_diag(invocation_state, stage="tool_progress", saw_progress=True)
+            _mark_invoke_diag(
+                invocation_state,
+                stage="tool_progress",
+                saw_progress=True,
+                saw_tool_activity=True,
+            )
 
         extra_tool_result = self._extract_tool_result_from_extra_fields(extra_event_fields)
         if extra_tool_result is not None:
             tool_use_id, status, tool_name = extra_tool_result
             self._emit_tool_result(tool_use_id, status, tool_name=tool_name)
-            _mark_invoke_diag(invocation_state, stage="tool_result", saw_progress=True)
+            _mark_invoke_diag(
+                invocation_state,
+                stage="tool_result",
+                saw_progress=True,
+                saw_tool_activity=True,
+            )
 
         if message.get("role") == "assistant":
             for content in _message_content_blocks(message):
@@ -1535,7 +1604,12 @@ class TuiCallbackHandler:
                             tool_input=tool_input,
                             emit_start=(tid not in self.tool_histories),
                         )
-                        _mark_invoke_diag(invocation_state, stage="tool_start", saw_progress=True)
+                        _mark_invoke_diag(
+                            invocation_state,
+                            stage="tool_start",
+                            saw_progress=True,
+                            saw_tool_activity=True,
+                        )
                         if isinstance(tool_input, dict):
                             self._emit(
                                 {
@@ -1558,7 +1632,12 @@ class TuiCallbackHandler:
                             str(status),
                             tool_name=str(tool_label) if tool_label else None,
                         )
-                        _mark_invoke_diag(invocation_state, stage="tool_result", saw_progress=True)
+                        _mark_invoke_diag(
+                            invocation_state,
+                            stage="tool_result",
+                            saw_progress=True,
+                            saw_tool_activity=True,
+                        )
 
         result_tool_emitted = False
         if isinstance(result, dict):
@@ -1568,7 +1647,12 @@ class TuiCallbackHandler:
                 tool_label = result.get("name")
                 self._emit_tool_result(tid, str(status), tool_name=str(tool_label) if tool_label else None)
                 result_tool_emitted = True
-                _mark_invoke_diag(invocation_state, stage="tool_result", saw_progress=True)
+                _mark_invoke_diag(
+                    invocation_state,
+                    stage="tool_result",
+                    saw_progress=True,
+                    saw_tool_activity=True,
+                )
 
         if event_loop_throttled_delay:
             self._emit(
@@ -1621,7 +1705,12 @@ class TuiCallbackHandler:
             self._flush_plan_marker_buffer()
 
         if self._emit_tool_heartbeats():
-            _mark_invoke_diag(invocation_state, stage="tool_progress", saw_progress=True)
+            _mark_invoke_diag(
+                invocation_state,
+                stage="tool_progress",
+                saw_progress=True,
+                saw_tool_activity=True,
+            )
 
         if (
             should_emit_complete

@@ -291,7 +291,14 @@ class DaemonMixin:
         if self.state.daemon.run_start_time is not None and self._status_bar is not None:
             self._status_bar.set_elapsed(time.time() - self.state.daemon.run_start_time)
 
-    def _start_run(self, prompt: str, *, auto_approve: bool, mode: str | None = None) -> None:
+    def _start_run(
+        self,
+        prompt: str,
+        *,
+        auto_approve: bool,
+        mode: str | None = None,
+        plan_context: dict[str, Any] | None = None,
+    ) -> None:
         from textual.widgets import Select
 
         from swarmee_river.tui.transport import send_daemon_command
@@ -310,7 +317,6 @@ class DaemonMixin:
         self._dismiss_action_sheet(restore_focus=False)
         self._sync_selected_model_before_run()
 
-        self.state.plan.pending_prompt = None
         self._refresh_plan_actions_visibility()
         self._reset_artifacts_panel()
         self._reset_consent_panel()
@@ -418,6 +424,18 @@ class DaemonMixin:
             "text": prompt,
             "auto_approve": bool(auto_approve),
         }
+        normalized_plan_context = dict(plan_context) if isinstance(plan_context, dict) else None
+        if normalized_plan_context:
+            approved_plan_payload = normalized_plan_context.get("approved_plan")
+            if isinstance(approved_plan_payload, dict):
+                command["approved_plan"] = dict(approved_plan_payload)
+                normalized_plan_context = {
+                    key: value
+                    for key, value in normalized_plan_context.items()
+                    if key != "approved_plan"
+                }
+            if normalized_plan_context:
+                command["plan_context"] = normalized_plan_context
         if desired_provider:
             command["provider"] = desired_provider
         if desired_tier:

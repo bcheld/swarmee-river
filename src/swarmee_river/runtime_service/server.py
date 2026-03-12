@@ -1328,6 +1328,12 @@ class RuntimeServiceServer:
             tier = payload.get("tier")
             if isinstance(tier, str) and tier.strip():
                 forwarded["tier"] = tier.strip()
+            plan_context = payload.get("plan_context")
+            if isinstance(plan_context, dict):
+                forwarded["plan_context"] = plan_context
+            approved_plan = payload.get("approved_plan")
+            if isinstance(approved_plan, dict):
+                forwarded["approved_plan"] = approved_plan
             session.controller_client_id = client.client_id
             session.query_active = True
             session.consent_pending = False

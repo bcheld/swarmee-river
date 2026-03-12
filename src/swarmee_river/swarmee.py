@@ -151,7 +151,14 @@ from swarmee_river.packs import (
     with_deleted_agent_bundle,
     with_upserted_agent_bundle,
 )
-from swarmee_river.planning import WorkPlan, classify_intent, structured_plan_prompt
+from swarmee_river.planning import (
+    PendingWorkPlan,
+    WorkPlan,
+    classify_intent,
+    new_pending_work_plan,
+    pending_work_plan_from_payload,
+    structured_plan_prompt,
+)
 from swarmee_river.prompt_assets import (
     PromptAsset,
     ensure_prompt_assets_bootstrapped,
@@ -186,6 +193,7 @@ from swarmee_river.utils.agent_runtime_utils import (
     render_plan_text,
     resolve_effective_sop_paths,
 )
+from swarmee_river.utils.fork_utils import create_shared_prefix_child_agent
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
@@ -2050,29 +2058,130 @@ def _build_agent_runtime(
             raise last_error
         raise RuntimeError("Execution failed")
 
-    def _generate_plan(user_request: str) -> WorkPlan:
-        def _run_plan_once() -> WorkPlan:
-            result = run_agent(
-                user_request,
-                invocation_state={"swarmee": {"mode": "plan"}},
-                structured_output_model=WorkPlan,
-                structured_output_prompt=structured_plan_prompt(),
-            )
-            plan = getattr(result, "structured_output", None)
-            if not isinstance(plan, WorkPlan):
-                raise ValueError("Structured plan parse failed")
-            artifact_store.write_text(
-                kind="plan",
-                text=plan.model_dump_json(indent=2),
-                suffix="json",
-                metadata={"request": user_request},
-            )
-            return plan
+    def _build_plan_invocation_state(
+        *,
+        plan_run_id: str,
+        revision_count: int,
+    ) -> dict[str, Any]:
+        return {
+            "swarmee": {
+                "mode": "plan",
+                "plan_run_id": plan_run_id,
+                "plan_revision_count": max(0, int(revision_count or 0)),
+                "suppress_reasoning_ui": True,
+                "suppress_user_stall_warnings": True,
+            }
+        }
 
-        return _retry_with_escalation(
-            run_once=_run_plan_once,
-            retryable_exceptions=(MaxTokensReachedException, ValueError),
+    def _invoke_planning_branch(
+        user_request: str,
+        *,
+        plan_run_id: str,
+        revision_count: int = 0,
+    ) -> PendingWorkPlan:
+        child_agent, snapshot = create_shared_prefix_child_agent(
+            parent_agent=agent,
+            kind="plan_revision" if revision_count > 0 else "plan",
+            seed_instruction=None,
+            callback_handler=callback_handler,
         )
+        invocation_state = _build_resolved_invocation_state(
+            invocation_state=_build_plan_invocation_state(
+                plan_run_id=plan_run_id,
+                revision_count=revision_count,
+            ),
+            runtime_environment=runtime_environment,
+            model_manager=model_manager,
+            selected_provider=selected_provider,
+            settings=settings,
+            structured_output_model=WorkPlan,
+            session_safety_overrides=session_safety_overrides,
+        )
+        sw = invocation_state.get("swarmee")
+        if isinstance(sw, dict):
+            sys_prompt = getattr(child_agent, "system_prompt", None) or ""
+            sw["system_prompt_chars"] = len(sys_prompt)
+            agent_tools = getattr(child_agent, "tools", None) or []
+            sw["tool_count"] = len(agent_tools)
+            try:
+                from swarmee_river.context.budgeted_summarizing_conversation_manager import estimate_tool_schema_chars
+
+                sw["tool_schema_chars"] = estimate_tool_schema_chars(agent_tools)
+            except Exception:
+                sw["tool_schema_chars"] = 0
+
+        interrupt_event.clear()
+        set_interrupt_event(interrupt_event)
+        with interrupt_watcher_from_env(interrupt_event):
+            child_agent._swarmee_current_invocation_state = invocation_state
+            try:
+                result = invoke_agent(
+                    child_agent,
+                    user_request,
+                    callback_handler=callback_handler,
+                    interrupt_event=interrupt_event,
+                    invocation_state=invocation_state,
+                    system_reminder=snapshot.pending_reminder or None,
+                    structured_output_model=WorkPlan,
+                    structured_output_prompt=structured_plan_prompt(),
+                )
+            finally:
+                child_agent._swarmee_current_invocation_state = None
+
+        plan = getattr(result, "structured_output", None)
+        if not isinstance(plan, WorkPlan):
+            raise RuntimeError(
+                "Plan generation failed to produce a valid WorkPlan. "
+                "Try :replan, shorten the request, or change tier."
+            )
+
+        artifact_store.write_text(
+            kind="plan",
+            text=plan.model_dump_json(indent=2),
+            suffix="json",
+            metadata={"request": user_request, "plan_run_id": plan_run_id},
+        )
+        return new_pending_work_plan(
+            original_request=user_request,
+            plan=plan,
+            revision_count=revision_count,
+            plan_run_id=plan_run_id,
+        )
+
+    def _generate_plan(user_request: str, *, plan_context: dict[str, Any] | None = None) -> PendingWorkPlan:
+        context = plan_context if isinstance(plan_context, dict) else {}
+        original_request = str(context.get("original_request") or user_request).strip() or user_request
+        revision_count_raw = context.get("revision_count", 0)
+        try:
+            revision_count = max(0, int(revision_count_raw or 0))
+        except (TypeError, ValueError):
+            revision_count = 0
+        feedback_history_raw = context.get("feedback_history")
+        feedback_history = (
+            [dict(item) for item in feedback_history_raw if isinstance(item, dict)]
+            if isinstance(feedback_history_raw, list)
+            else []
+        )
+        try:
+            pending = _invoke_planning_branch(
+                user_request,
+                plan_run_id=uuid.uuid4().hex,
+                revision_count=revision_count,
+            )
+        except MaxTokensReachedException as exc:
+            raise RuntimeError(
+                "Plan generation hit the max output token limit. "
+                "Increase models.max_output_tokens, ask for a shorter plan, or change tier."
+            ) from exc
+        if original_request != pending.original_request or feedback_history:
+            pending = new_pending_work_plan(
+                original_request=original_request,
+                plan=pending.current_plan,
+                revision_count=revision_count,
+                feedback_history=feedback_history,
+                plan_run_id=pending.plan_run_id,
+            )
+        return pending
 
     def _swap_agent(messages: Any | None, state: Any | None) -> None:
         nonlocal agent
@@ -2087,8 +2196,9 @@ def _build_agent_runtime(
             active_sop_names=_list_active_sop_names(),
         )
 
-    def _execute_with_plan(user_request: str, plan: WorkPlan, *, welcome_text_local: str) -> Any:
+    def _execute_with_plan(user_request: str, pending_plan: PendingWorkPlan, *, welcome_text_local: str) -> Any:
         nonlocal active_plan_prompt_section
+        plan = pending_plan.current_plan
         allowed = {tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan"}
         allowed.add("plan_progress")
         allowed_tools = sorted(allowed)
@@ -2101,6 +2211,7 @@ def _build_agent_runtime(
                 "allowed_tools": allowed_tools,
                 "plan_step_count": len(step_descriptions),
                 "plan_step_descriptions": step_descriptions,
+                "plan_run_id": pending_plan.plan_run_id,
             }
         }
         plan_json_payload = plan_json_for_execution(plan)
@@ -2156,7 +2267,12 @@ def _build_agent_runtime(
                 run_once=_run_execute_once,
                 retryable_exceptions=(Exception,),
                 non_retryable_exceptions=(AgentInterruptedError,),
-                retryable_filter=lambda exc: _is_escalatable_retry_exception(exc),
+                retryable_filter=lambda exc: _is_escalatable_retry_exception(exc)
+                and not bool(
+                    isinstance(invocation_state.get("swarmee"), dict)
+                    and isinstance(invocation_state["swarmee"].get("invoke_diag"), dict)
+                    and invocation_state["swarmee"]["invoke_diag"].get("saw_tool_activity")
+                ),
             )
         finally:
             active_plan_prompt_section = None
@@ -2390,21 +2506,25 @@ def _run_query_with_optional_plan(
     forced_mode: str | None,
     auto_approve: bool,
     welcome_text: str,
-    generate_plan: Callable[[str], WorkPlan],
-    execute_with_plan: Callable[[str, WorkPlan, str], Any],
+    generate_plan: Callable[[str, dict[str, Any] | None], PendingWorkPlan],
+    execute_with_plan: Callable[[str, PendingWorkPlan, str], Any],
     run_agent: Callable[[str], Any],
     classify_intent_fn: Callable[[str], str],
-    on_plan: Callable[[WorkPlan], None],
-) -> tuple[WorkPlan | None, Any | None, bool]:
+    on_plan: Callable[[PendingWorkPlan], None],
+    approved_plan: PendingWorkPlan | None = None,
+    plan_context: dict[str, Any] | None = None,
+) -> tuple[PendingWorkPlan | None, Any | None, bool]:
     mode = (forced_mode or "").strip().lower()
     if mode == "execute":
+        if approved_plan is not None:
+            return approved_plan, execute_with_plan(query_text, approved_plan, welcome_text), True
         return None, run_agent(query_text), True
 
     should_plan = mode == "plan" or classify_intent_fn(query_text) == "work"
     if not should_plan:
         return None, run_agent(query_text), True
 
-    plan = generate_plan(query_text)
+    plan = generate_plan(query_text, plan_context=plan_context)
     on_plan(plan)
     if not auto_approve:
         return plan, None, False
@@ -3655,9 +3775,17 @@ def main() -> None:
             if warn_on_error and not _tui_events_enabled():
                 print(f"[warn] retrieve failed: {e}")
 
-    def _emit_plan_event(plan: WorkPlan, *, write_jsonl: bool, echo_console: bool) -> str:
+    def _emit_plan_event(plan: PendingWorkPlan, *, write_jsonl: bool, echo_console: bool) -> str:
         rendered = _render_plan(plan)
-        event = {"event": "plan", "plan_json": plan.model_dump(), "rendered": rendered}
+        event = {
+            "event": "plan",
+            "plan_json": plan.current_plan.model_dump(),
+            "pending_plan": plan.model_dump(),
+            "plan_run_id": plan.plan_run_id,
+            "original_request": plan.original_request,
+            "revision_count": plan.revision_count,
+            "rendered": rendered,
+        }
         if write_jsonl:
             _write_stdout_jsonl(event)
         else:
@@ -3894,6 +4022,12 @@ def main() -> None:
             messages = session_store.load_messages(sid, max_messages=_SESSION_MESSAGE_MAX_COUNT)
             if not isinstance(messages, list):
                 messages = []
+            with contextlib.suppress(Exception):
+                session_store.save_messages(
+                    sid,
+                    messages,
+                    max_messages=_SESSION_MESSAGE_MAX_COUNT,
+                )
 
             try:
                 ctx.agent.messages = messages
@@ -4008,7 +4142,14 @@ def main() -> None:
             else:
                 daemon_consent_event.set()
 
-        def _start_query_worker_thread(*, query_text: str, turn_auto_approve: bool, mode: str | None = None) -> None:
+        def _start_query_worker_thread(
+            *,
+            query_text: str,
+            turn_auto_approve: bool,
+            mode: str | None = None,
+            approved_plan: PendingWorkPlan | None = None,
+            plan_context: dict[str, Any] | None = None,
+        ) -> None:
             nonlocal worker_thread
             interrupt_event.clear()
             _set_daemon_consent_waiting(True)
@@ -4019,12 +4160,21 @@ def main() -> None:
                         "query_text": query_text,
                         "turn_auto_approve": turn_auto_approve,
                         "mode": mode,
+                        "approved_plan": approved_plan,
+                        "plan_context": dict(plan_context) if isinstance(plan_context, dict) else None,
                     },
                     daemon=True,
                 )
                 worker_thread.start()
 
-        def _run_query_worker(query_text: str, *, turn_auto_approve: bool, mode: str | None = None) -> None:
+        def _run_query_worker(
+            query_text: str,
+            *,
+            turn_auto_approve: bool,
+            mode: str | None = None,
+            approved_plan: PendingWorkPlan | None = None,
+            plan_context: dict[str, Any] | None = None,
+        ) -> None:
             exit_status = "ok"
             response: Any | None = None
             executed = False
@@ -4073,9 +4223,11 @@ def main() -> None:
                             run_agent=lambda req: run_agent(req, invocation_state={"swarmee": {"mode": "execute"}}),
                             classify_intent_fn=classify_intent,
                             on_plan=lambda plan: (
-                                setattr(ctx, "last_plan", plan),
+                                setattr(ctx, "last_plan", plan.current_plan),
                                 _emit_plan_event(plan, write_jsonl=True, echo_console=False),
                             ),
+                            approved_plan=approved_plan,
+                            plan_context=plan_context,
                         )
 
                         kb_for_turn = _current_knowledge_base_id()
@@ -4195,12 +4347,18 @@ def main() -> None:
                 mode = requested_mode.strip().lower() if isinstance(requested_mode, str) else None
                 raw_auto_approve = payload.get("auto_approve")
                 turn_auto_approve = raw_auto_approve if isinstance(raw_auto_approve, bool) else auto_approve
+                plan_context_payload = payload.get("plan_context")
+                plan_context = dict(plan_context_payload) if isinstance(plan_context_payload, dict) else None
+                approved_plan_payload = payload.get("approved_plan")
+                approved_plan = pending_work_plan_from_payload(approved_plan_payload)
                 last_query_text = query_text.strip()
                 last_query_auto_approve = turn_auto_approve
                 _start_query_worker_thread(
                     query_text=last_query_text,
                     turn_auto_approve=turn_auto_approve,
                     mode=mode,
+                    approved_plan=approved_plan,
+                    plan_context=plan_context,
                 )
                 continue
 
@@ -4837,7 +4995,7 @@ def main() -> None:
                 run_agent=lambda req: run_agent(req, invocation_state={"swarmee": {"mode": "execute"}}),
                 classify_intent_fn=classify_intent,
                 on_plan=lambda p: (
-                    setattr(ctx, "last_plan", p),
+                    setattr(ctx, "last_plan", p.current_plan),
                     _emit_plan_event(p, write_jsonl=False, echo_console=True),
                 ),
             )

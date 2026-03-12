@@ -1807,20 +1807,48 @@ class TestToolConsentPrompt:
 
         assert asyncio.run(_run()) == "y"
 
-    def test_plan_json_for_execution_excludes_confirmation_prompt(self):
-        from swarmee_river.planning import PlanStep, WorkPlan
-        from swarmee_river.utils.agent_runtime_utils import plan_json_for_execution
 
-        plan = WorkPlan(
-            summary="Refactor hooks",
-            steps=[PlanStep(description="Update tests")],
-            confirmation_prompt="Approve with :y",
-        )
+def test_plan_json_for_execution_excludes_confirmation_prompt() -> None:
+    from swarmee_river.planning import PlanStep, WorkPlan
+    from swarmee_river.utils.agent_runtime_utils import plan_json_for_execution
 
-        rendered = plan_json_for_execution(plan)
+    plan = WorkPlan(
+        summary="Refactor hooks",
+        steps=[PlanStep(description="Update tests")],
+        confirmation_prompt="Approve with :y",
+    )
 
-        assert "confirmation_prompt" not in rendered
-        assert '"summary": "Refactor hooks"' in rendered
+    rendered = plan_json_for_execution(plan)
+
+    assert "confirmation_prompt" not in rendered
+    assert '"summary": "Refactor hooks"' in rendered
+
+
+def test_run_query_with_optional_plan_executes_approved_pending_plan() -> None:
+    from swarmee_river.planning import WorkPlan, new_pending_work_plan
+
+    approved = new_pending_work_plan(
+        original_request="ship it",
+        plan=WorkPlan(summary="Ship it", steps=[]),
+        plan_run_id="plan-123",
+    )
+
+    plan, response, executed = swarmee._run_query_with_optional_plan(
+        query_text="ship it",
+        forced_mode="execute",
+        auto_approve=True,
+        welcome_text="welcome",
+        generate_plan=lambda _text, _ctx: (_ for _ in ()).throw(AssertionError("should not plan")),
+        execute_with_plan=lambda req, pending, welcome: f"{req}|{pending.plan_run_id}|{welcome}",
+        run_agent=lambda _text: (_ for _ in ()).throw(AssertionError("should not run bare agent")),
+        classify_intent_fn=lambda _text: "work",
+        on_plan=lambda _plan: (_ for _ in ()).throw(AssertionError("should not emit plan")),
+        approved_plan=approved,
+    )
+
+    assert plan == approved
+    assert response == "ship it|plan-123|welcome"
+    assert executed is True
 
 
 class TestOverflowErrorClassification:

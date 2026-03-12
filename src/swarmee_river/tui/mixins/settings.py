@@ -299,7 +299,7 @@ class SettingsMixin:
 
         with _ctx.suppress(Exception):
             pa = self.query_one("#plan_actions")
-            if self.state.plan.pending_prompt:
+            if self.state.plan.pending_record and not self.state.daemon.query_active:
                 pa.styles.display = "block"
             else:
                 pa.styles.display = "none"

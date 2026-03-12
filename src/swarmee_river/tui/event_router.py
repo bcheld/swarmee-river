@@ -18,6 +18,7 @@ from swarmee_river.error_classification import (
     classify_error_message,
     normalize_error_category,
 )
+from swarmee_river.planning import pending_work_plan_from_payload
 from swarmee_river.pricing import resolve_pricing
 from swarmee_river.profiles import AgentProfile
 from swarmee_river.settings import load_settings
@@ -678,6 +679,8 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype == "plan":
         rendered = event.get("rendered", "")
         plan_json = event.get("plan_json")
+        pending_plan = pending_work_plan_from_payload(event.get("pending_plan"))
+        plan_run_id = str(event.get("plan_run_id", "")).strip() or None
         if plan_json and not rendered:
             rendered = _json.dumps(plan_json, indent=2)
         app.state.plan.text = str(rendered or "")
@@ -690,8 +693,11 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         app.state.plan.current_step_statuses = []
         app.state.plan.current_active_step = None
         app.state.plan.updates_seen = False
-        if not app._last_run_auto_approve and app._last_prompt:
-            app.state.plan.pending_prompt = app._last_prompt
+        if pending_plan is not None and not app._last_run_auto_approve:
+            app._set_pending_plan_record(pending_plan)
+        else:
+            app._clear_pending_plan_record()
+            app.state.plan.plan_run_id = plan_run_id
         if plan_json and isinstance(plan_json, dict):
             app.state.plan.current_summary = str(plan_json.get("summary", plan_json.get("title", ""))).strip()
             app.state.plan.current_steps = app._extract_plan_step_descriptions(plan_json)
@@ -713,9 +719,15 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
                 app._switch_side_tab("tab_engage")
         else:
             app._refresh_plan_status_bar()
+        app._refresh_plan_actions_visibility()
+        app._save_session()
         return True
 
     if etype == "plan_step_update":
+        event_plan_run_id = str(event.get("plan_run_id", "")).strip() or None
+        current_plan_run_id = str(app.state.plan.plan_run_id or "").strip() or None
+        if event_plan_run_id is not None and event_plan_run_id != current_plan_run_id:
+            return True
         step_index_raw = event.get("step_index")
         status = str(event.get("status", "")).strip().lower()
         if not isinstance(step_index_raw, int):
@@ -754,6 +766,10 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         return True
 
     if etype == "plan_complete":
+        event_plan_run_id = str(event.get("plan_run_id", "")).strip() or None
+        current_plan_run_id = str(app.state.plan.plan_run_id or "").strip() or None
+        if event_plan_run_id is not None and event_plan_run_id != current_plan_run_id:
+            return True
         app.state.plan.step_counter = app.state.plan.current_steps_total
         if app.state.plan.current_step_statuses:
             app.state.plan.current_step_statuses = ["completed"] * len(app.state.plan.current_step_statuses)

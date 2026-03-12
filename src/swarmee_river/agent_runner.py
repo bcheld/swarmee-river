@@ -173,6 +173,8 @@ def _start_stall_monitor(
     pre_progress_warn_sec = max(float(_BEDROCK_PRE_PROGRESS_WARN_SEC), post_progress_warn_sec)
     if not _is_bedrock_invocation(invocation_state):
         return None, None
+    sw = invocation_state.get("swarmee") if isinstance(invocation_state, dict) else None
+    suppress_user_warnings = bool(sw.get("suppress_user_stall_warnings")) if isinstance(sw, dict) else False
 
     dump_enabled = False
     stop_event = threading.Event()
@@ -185,6 +187,8 @@ def _start_stall_monitor(
             "invoke_stage": stage,
             "invoke_phase": phase,
         }
+        if suppress_user_warnings:
+            return
         with contextlib.suppress(Exception):
             callback_handler(warning_text=text, warning_metadata=metadata)
 

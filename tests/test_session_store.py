@@ -77,3 +77,39 @@ def test_session_store_load_messages_handles_version_mismatch(tmp_path: Path) ->
 
     loaded = store.load_messages(sid)
     assert loaded == []
+
+
+def test_session_store_strips_reasoning_fields_on_save_and_load(tmp_path: Path) -> None:
+    store = SessionStore(root_dir=tmp_path / "sessions")
+    sid = store.create(meta={"cwd": str(tmp_path)})
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"reasoningContent": {"reasoningText": {"text": "internal reasoning"}}},
+                {"text": "final answer"},
+            ],
+        }
+    ]
+
+    store.save(sid, messages=messages)
+    _meta, loaded_messages, _state, _last_plan = store.load(sid)
+
+    assert loaded_messages == [{"role": "assistant", "content": [{"text": "final answer"}]}]
+
+
+def test_session_store_save_messages_drops_reasoning_only_messages(tmp_path: Path) -> None:
+    store = SessionStore(root_dir=tmp_path / "sessions")
+    sid = store.create(meta={"cwd": str(tmp_path)})
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"reasoningContent": {"reasoningText": {"text": "internal reasoning"}}}],
+        },
+        {"role": "user", "content": [{"text": "hello"}]},
+    ]
+
+    store.save_messages(sid, messages)
+    loaded = store.load_messages(sid)
+
+    assert loaded == [{"role": "user", "content": [{"text": "hello"}]}]

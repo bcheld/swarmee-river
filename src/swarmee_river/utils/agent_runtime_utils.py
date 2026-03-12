@@ -5,23 +5,27 @@ import os
 from pathlib import Path
 from typing import Any
 
+from swarmee_river.planning import ensure_work_plan
+
 
 def plan_json_for_execution(plan: Any) -> str:
-    payload = plan.model_dump(exclude={"confirmation_prompt"})
+    resolved = ensure_work_plan(plan)
+    payload = resolved.model_dump(exclude={"confirmation_prompt"})
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
 def render_plan_text(plan: Any) -> str:
-    lines: list[str] = ["\nProposed plan:", f"- Summary: {plan.summary}"]
-    if plan.assumptions:
+    resolved = ensure_work_plan(plan)
+    lines: list[str] = ["\nProposed plan:", f"- Summary: {resolved.summary}"]
+    if resolved.assumptions:
         lines.append("- Assumptions:")
-        lines.extend([f"  - {a}" for a in plan.assumptions])
-    if plan.questions:
+        lines.extend([f"  - {a}" for a in resolved.assumptions])
+    if resolved.questions:
         lines.append("- Questions:")
-        lines.extend([f"  - {q}" for q in plan.questions])
-    if plan.steps:
+        lines.extend([f"  - {q}" for q in resolved.questions])
+    if resolved.steps:
         lines.append("- Steps:")
-        for i, step in enumerate(plan.steps, start=1):
+        for i, step in enumerate(resolved.steps, start=1):
             lines.append(f"  {i}. {step.description}")
             if step.files_to_read:
                 lines.append(f"     - read: {', '.join(step.files_to_read)}")

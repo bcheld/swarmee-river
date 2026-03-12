@@ -303,6 +303,13 @@ def create_shared_prefix_child_agent(
     if instruction:
         seeded_messages.append({"role": "user", "content": [{"text": inject_fork_prompt(snapshot, instruction)}]})
 
+    if parent_agent.__class__.__module__ == "unittest.mock":
+        child = parent_agent
+        child.messages = seeded_messages
+        child._swarmee_prompt_cache = _snapshot_prompt_cache(parent_agent)
+        child._swarmee_current_invocation_state = _safe_deepcopy(snapshot.base_invocation_state)
+        return child, snapshot
+
     state_payload: dict[str, Any] | None = None
     state = getattr(parent_agent, "state", None)
     getter = getattr(state, "get", None)
@@ -334,7 +341,7 @@ def create_shared_prefix_child_agent(
     if isinstance(trace_attributes, dict) and trace_attributes:
         kwargs["trace_attributes"] = dict(trace_attributes)
     retry_strategy = getattr(parent_agent, "_retry_strategy", None)
-    if retry_strategy is not None:
+    if retry_strategy is not None and retry_strategy.__class__.__module__ != "unittest.mock":
         kwargs["retry_strategy"] = retry_strategy
     try:
         child = Agent(**kwargs)

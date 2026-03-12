@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from swarmee_river.diagnostics import append_session_issue
+from swarmee_river.planning import PendingWorkPlan, new_pending_work_plan, pending_work_plan_from_payload
 from swarmee_river.session.graph_index import (
     build_session_graph_index,
     load_session_graph_index,
@@ -46,8 +47,36 @@ def _load_session_id(raw: Any) -> str | None:
 
 
 class SessionMixin:
+    def _pending_plan_record(self) -> PendingWorkPlan | None:
+        return pending_work_plan_from_payload(self.state.plan.pending_record)
+
+    def _pending_plan_request(self) -> str | None:
+        record = self._pending_plan_record()
+        if record is not None:
+            return record.original_request
+        value = str(self.state.plan.pending_prompt or "").strip()
+        return value or None
+
+    def _set_pending_plan_record(self, record: PendingWorkPlan | dict[str, Any] | None) -> None:
+        pending = pending_work_plan_from_payload(record)
+        if pending is None:
+            self.state.plan.pending_record = None
+            self.state.plan.pending_prompt = None
+            self.state.plan.plan_run_id = None
+            return
+        self.state.plan.pending_record = pending.model_dump()
+        self.state.plan.pending_prompt = pending.original_request
+        self.state.plan.plan_run_id = pending.plan_run_id
+        self.state.plan.plan_json = pending.current_plan.model_dump()
+
+    def _clear_pending_plan_record(self) -> None:
+        self.state.plan.pending_record = None
+        self.state.plan.pending_prompt = None
+
     def _reset_plan_panel(self) -> None:
         self._set_plan_panel("")
+        self._clear_pending_plan_record()
+        self.state.plan.plan_run_id = None
         self.state.plan.current_steps_total = 0
         self.state.plan.current_summary = ""
         self.state.plan.current_steps = []
@@ -493,6 +522,8 @@ class SessionMixin:
                 "prompt_history": self._prompt_history[-self._MAX_PROMPT_HISTORY :],
                 "last_prompt": self._last_prompt,
                 "plan_text": self.state.plan.text,
+                "plan_pending_record": self.state.plan.pending_record,
+                "plan_run_id": self.state.plan.plan_run_id,
                 "plan_json": self.state.plan.plan_json,
                 "plan_pending_prompt": self.state.plan.pending_prompt,
                 "plan_current_steps": self.state.plan.current_steps,
@@ -528,24 +559,41 @@ class SessionMixin:
             data = _json.loads(session_path.read_text(encoding="utf-8", errors="replace"))
             self._prompt_history = data.get("prompt_history", [])[-self._MAX_PROMPT_HISTORY :]
             self._last_prompt = data.get("last_prompt")
-            plan_text = data.get("plan_text", "")
-            if plan_text and plan_text != "(no plan)":
-                self._set_plan_panel(plan_text)
-            plan_json = data.get("plan_json")
-            if plan_json and isinstance(plan_json, dict):
-                self.state.plan.plan_json = plan_json
-                self.state.plan.pending_prompt = data.get("plan_pending_prompt") or None
-                self.state.plan.current_summary = str(data.get("plan_current_summary", "")).strip()
-                self.state.plan.current_steps = data.get("plan_current_steps") or []
-                self.state.plan.current_steps_total = int(data.get("plan_current_steps_total", 0) or 0)
+            pending_record = pending_work_plan_from_payload(data.get("plan_pending_record"))
+            if pending_record is None:
+                legacy_plan_json = data.get("plan_json")
+                legacy_prompt = str(data.get("plan_pending_prompt") or "").strip()
+                if isinstance(legacy_plan_json, dict) and legacy_prompt:
+                    with contextlib.suppress(Exception):
+                        pending_record = new_pending_work_plan(
+                            original_request=legacy_prompt,
+                            plan=legacy_plan_json,
+                            revision_count=0,
+                            plan_run_id=str(data.get("plan_run_id") or "").strip() or None,
+                        )
+            if pending_record is not None:
+                self._set_pending_plan_record(pending_record)
+                self.state.plan.current_summary = (
+                    str(data.get("plan_current_summary", "")).strip() or pending_record.summary
+                )
+                self.state.plan.current_steps = data.get("plan_current_steps") or [
+                    str(step.description).strip() for step in pending_record.steps
+                ]
+                self.state.plan.current_steps_total = int(
+                    data.get("plan_current_steps_total", len(self.state.plan.current_steps)) or 0
+                )
                 self.state.plan.step_counter = int(data.get("plan_step_counter", 0) or 0)
                 raw_statuses = data.get("plan_current_step_statuses") or []
                 self.state.plan.current_step_statuses = raw_statuses if isinstance(raw_statuses, list) else []
                 self.state.plan.received_structured_plan = True
+                plan_text = data.get("plan_text", "")
+                if plan_text and plan_text != "(no plan)":
+                    self._set_plan_panel(plan_text)
                 self._render_plan_panel_from_status()
                 self._refresh_plan_actions_visibility()
-                self._populate_planning_view(plan_json)
+                self._populate_planning_view(pending_record.current_plan.model_dump())
             else:
+                self._reset_plan_panel()
                 self._set_plan_input_mode(editable=True)
             self._context_sources = _normalize_context_sources(data.get("context_sources", []))
             self._render_context_sources_panel()
@@ -634,6 +682,7 @@ class SessionMixin:
         if previous == current:
             return
         self.state.daemon.session_id = current
+        self._reset_plan_panel()
         self._reset_issues_panel()
         self._reset_session_timeline_panel()
         self._reset_artifacts_panel()

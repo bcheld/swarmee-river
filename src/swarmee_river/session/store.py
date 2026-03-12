@@ -13,6 +13,7 @@ from swarmee_river.state_paths import sessions_dir as _default_sessions_dir
 
 _MESSAGE_LOG_VERSION = 1
 _DEFAULT_MAX_MESSAGES = 200
+_REASONING_KEYS = {"reasoningContent", "reasoningText", "reasoning_content", "reasoning_text"}
 
 
 def _iso_ts() -> str:
@@ -29,6 +30,53 @@ def _safe_jsonl_dump(value: Any) -> str:
 
 def _estimate_turn_count(messages: list[Any]) -> int:
     return sum(1 for item in messages if isinstance(item, dict) and str(item.get("role", "")).strip().lower() == "user")
+
+
+def _sanitize_reasoning_payload(value: Any) -> Any | None:
+    if isinstance(value, list):
+        cleaned_items: list[Any] = []
+        for item in value:
+            cleaned = _sanitize_reasoning_payload(item)
+            if cleaned is None:
+                continue
+            if cleaned == {}:
+                continue
+            if cleaned == []:
+                continue
+            cleaned_items.append(cleaned)
+        return cleaned_items
+    if isinstance(value, dict):
+        cleaned_dict: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in _REASONING_KEYS:
+                continue
+            cleaned = _sanitize_reasoning_payload(item)
+            if cleaned is None:
+                continue
+            if cleaned == {}:
+                continue
+            if cleaned == [] and key != "content":
+                continue
+            cleaned_dict[key] = cleaned
+        return cleaned_dict
+    return value
+
+
+def _sanitize_messages_payload(messages: Any) -> list[Any]:
+    raw_messages = messages if isinstance(messages, list) else []
+    cleaned_messages: list[Any] = []
+    for item in raw_messages:
+        cleaned = _sanitize_reasoning_payload(item)
+        if not isinstance(cleaned, dict):
+            if cleaned is not None:
+                cleaned_messages.append(cleaned)
+            continue
+        role = str(cleaned.get("role", "")).strip().lower()
+        content = cleaned.get("content")
+        if role and isinstance(content, list) and not content:
+            continue
+        cleaned_messages.append(cleaned)
+    return cleaned_messages
 
 
 @dataclass(frozen=True)
@@ -129,7 +177,7 @@ class SessionStore:
 
         if paths.messages.exists():
             try:
-                messages = json.loads(paths.messages.read_text(encoding="utf-8"))
+                messages = _sanitize_messages_payload(json.loads(paths.messages.read_text(encoding="utf-8")))
             except Exception:
                 messages = None
         if paths.state.exists():
@@ -173,7 +221,7 @@ class SessionStore:
         paths.meta.write_text(_safe_json_dump(next_meta), encoding="utf-8")
 
         if messages is not None:
-            paths.messages.write_text(_safe_json_dump(messages), encoding="utf-8")
+            paths.messages.write_text(_safe_json_dump(_sanitize_messages_payload(messages)), encoding="utf-8")
         if state is not None:
             paths.state.write_text(_safe_json_dump(state), encoding="utf-8")
         if last_plan is not None:
@@ -193,12 +241,9 @@ class SessionStore:
         paths = self._paths(session_id)
         paths.dir.mkdir(parents=True, exist_ok=True)
 
-        if isinstance(messages, list):
-            normalized = list(messages)
-        elif isinstance(messages, tuple):
-            normalized = list(messages)
-        else:
-            normalized = []
+        if isinstance(messages, tuple):
+            messages = list(messages)
+        normalized = _sanitize_messages_payload(messages)
 
         limit = max(1, int(max_messages))
         trimmed = normalized[-limit:]
@@ -249,7 +294,7 @@ class SessionStore:
 
         def _from_payload(payload: Any) -> list[Any] | None:
             if isinstance(payload, list):
-                return payload[-limit:]
+                return _sanitize_messages_payload(payload)[-limit:]
             if not isinstance(payload, dict):
                 return None
             raw_version = payload.get("version")
@@ -257,7 +302,7 @@ class SessionStore:
                 return None
             messages_value = payload.get("messages")
             if isinstance(messages_value, list):
-                return messages_value[-limit:]
+                return _sanitize_messages_payload(messages_value)[-limit:]
             return None
 
         latest: list[Any] | None = None

@@ -275,6 +275,58 @@ def test_plan_mode_blocks_python_repl_statements() -> None:
     assert "single-expression read-only queries" in str(event.cancel_tool)
 
 
+def test_plan_mode_raises_after_repeated_blocked_tool_attempts() -> None:
+    hook = ToolPolicyHooks()
+    invocation_state = {"swarmee": {"mode": "plan"}}
+
+    for _ in range(2):
+        event = SimpleNamespace(
+            tool_use={"name": "edit"},
+            invocation_state=invocation_state,
+            cancel_tool=False,
+        )
+        hook.before_tool_call(event)
+        assert event.cancel_tool
+
+    event = SimpleNamespace(
+        tool_use={"name": "edit"},
+        invocation_state=invocation_state,
+        cancel_tool=False,
+    )
+    try:
+        hook.before_tool_call(event)
+    except RuntimeError as exc:
+        assert "Plan mode loop detected after repeated blocked tool attempts" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for repeated blocked plan-mode tool attempts")
+
+
+def test_plan_mode_raises_after_repeated_identical_safe_reads() -> None:
+    hook = ToolPolicyHooks()
+    invocation_state = {"swarmee": {"mode": "plan"}}
+
+    for _ in range(3):
+        event = SimpleNamespace(
+            tool_use={"name": "file_read", "input": {"path": "README.md", "max_lines": 20}},
+            invocation_state=invocation_state,
+            cancel_tool=False,
+        )
+        hook.before_tool_call(event)
+        assert event.cancel_tool is False
+
+    event = SimpleNamespace(
+        tool_use={"name": "file_read", "input": {"path": "README.md", "max_lines": 20}},
+        invocation_state=invocation_state,
+        cancel_tool=False,
+    )
+    try:
+        hook.before_tool_call(event)
+    except RuntimeError as exc:
+        assert "Plan mode loop detected after repeated identical read/query calls" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for repeated identical plan-mode reads")
+
+
 def test_execute_mode_allows_plan_progress_even_when_enforce_plan_is_enabled() -> None:
     hook = ToolPolicyHooks()
     event = SimpleNamespace(

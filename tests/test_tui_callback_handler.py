@@ -281,6 +281,18 @@ def test_bedrock_completion_does_not_reemit_reasoning_as_final_output():
     ]
 
 
+def test_plan_mode_suppresses_reasoning_events() -> None:
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(
+            reasoningText="planner trace",
+            invocation_state={"swarmee": {"mode": "plan", "suppress_reasoning_ui": True}},
+        ),
+    )
+    assert events == []
+
+
 def test_bedrock_completion_normalizes_reasoning_and_keeps_final_answer_last():
     h = TuiCallbackHandler()
 
@@ -676,6 +688,38 @@ def test_plan_step_updates_emitted_from_text_markers():
         {"event": "plan_step_update", "step_index": 1, "status": "in_progress", "note": "Apply fix"},
         {"event": "plan_step_update", "step_index": 1, "status": "completed"},
         {"event": "plan_complete", "completed_steps": 2, "total_steps": 2},
+    ]
+
+
+def test_plan_step_updates_include_plan_run_id() -> None:
+    h = TuiCallbackHandler()
+
+    def run():
+        invocation_state = {"swarmee": {"plan_step_count": 1, "plan_run_id": "plan-123"}}
+        h.callback_handler(data="Starting step 1: Inspect logs\nCompleted step 1.\n", invocation_state=invocation_state)
+
+    events = _capture_events(h, run)
+    plan_events = [event for event in events if event.get("event") in {"plan_step_update", "plan_complete"}]
+    assert plan_events == [
+        {
+            "event": "plan_step_update",
+            "step_index": 0,
+            "status": "in_progress",
+            "note": "Inspect logs",
+            "plan_run_id": "plan-123",
+        },
+        {
+            "event": "plan_step_update",
+            "step_index": 0,
+            "status": "completed",
+            "plan_run_id": "plan-123",
+        },
+        {
+            "event": "plan_complete",
+            "completed_steps": 1,
+            "total_steps": 1,
+            "plan_run_id": "plan-123",
+        },
     ]
 
 
