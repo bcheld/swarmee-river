@@ -40,6 +40,12 @@ def test_classify_http_503_as_transient() -> None:
     assert result["retryable"] is True
 
 
+def test_classify_read_timeout_as_fatal() -> None:
+    result = classify_error_message("urllib3.exceptions.ReadTimeoutError: Read timed out.")
+    assert result["category"] == ERROR_CATEGORY_FATAL
+    assert result["retryable"] is False
+
+
 def test_classify_tool_error_extracts_tool_use_id() -> None:
     result = classify_error_message("tool execution failed; tool_use_id=t-123")
     assert result["category"] == ERROR_CATEGORY_TOOL_ERROR

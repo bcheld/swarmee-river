@@ -243,7 +243,7 @@ def _default_bedrock_model_config(settings: SwarmeeSettings) -> dict[str, Any]:
     max_tokens = settings.models.max_output_tokens if settings.models.max_output_tokens is not None else 32768
     max_tokens = _as_int(max_tokens, 32768, min_value=1)
     # Treat <= 0 as invalid; callers should use positive seconds.
-    read_timeout = _as_float(extra.get("read_timeout_sec"), 45.0, min_value=0.01)
+    read_timeout = _as_float(extra.get("read_timeout_sec"), 300.0, min_value=0.01)
     connect_timeout = _as_float(extra.get("connect_timeout_sec"), 5.0, min_value=0.01)
     max_retries = _as_int(extra.get("max_retries"), 2, min_value=0)
     config: dict[str, Any] = {

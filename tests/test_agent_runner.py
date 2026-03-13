@@ -130,6 +130,38 @@ def test_bedrock_stall_monitor_waits_for_higher_pre_progress_threshold(monkeypat
     assert callback_calls == []
 
 
+def test_bedrock_stall_monitor_uses_recent_callbacks_before_first_progress(monkeypatch) -> None:
+    monkeypatch.setattr(agent_runner, "_BEDROCK_STALL_WARN_SEC", 0.05)
+    monkeypatch.setattr(agent_runner, "_BEDROCK_PRE_PROGRESS_WARN_SEC", 0.1)
+
+    callback_calls: list[dict[str, Any]] = []
+    now = time.monotonic()
+    invocation_state = {
+        "swarmee": {
+            "provider": "bedrock",
+            "invoke_diag": {
+                "invoke_start_mono": now - 1.0,
+                "last_callback_mono": now,
+                "stage": "reasoning",
+            },
+        }
+    }
+    stop_event, thread = agent_runner._start_stall_monitor(
+        callback_handler=lambda **kwargs: callback_calls.append(dict(kwargs)),
+        invocation_state=invocation_state,
+    )
+
+    try:
+        time.sleep(0.07)
+    finally:
+        assert stop_event is not None
+        stop_event.set()
+        assert thread is not None
+        thread.join(timeout=0.3)
+
+    assert callback_calls == []
+
+
 def test_bedrock_stall_monitor_emits_post_progress_warning(monkeypatch) -> None:
     monkeypatch.setattr(agent_runner, "_BEDROCK_STALL_WARN_SEC", 0.04)
     monkeypatch.setattr(agent_runner, "_BEDROCK_PRE_PROGRESS_WARN_SEC", 0.2)

@@ -83,7 +83,7 @@ class _SettingsHarness(SettingsMixin):
             "#settings_models_form_price_input": _Widget(""),
             "#settings_models_form_price_output": _Widget(""),
             "#settings_models_form_price_cached": _Widget(""),
-            "#settings_bedrock_read_timeout_input": _Widget("60"),
+            "#settings_bedrock_read_timeout_input": _Widget("300"),
             "#settings_bedrock_connect_timeout_input": _Widget("10"),
             "#settings_bedrock_max_retries_input": _Widget("1"),
             "#settings_interrupt_timeout_input": _Widget("2.0"),
@@ -339,7 +339,7 @@ def test_apply_settings_model_manager_result_persists_models_and_env() -> None:
                 },
             },
             "env": {
-                "SWARMEE_BEDROCK_READ_TIMEOUT_SEC": "60",
+                "SWARMEE_BEDROCK_READ_TIMEOUT_SEC": "300",
             },
         }
     )
@@ -348,7 +348,7 @@ def test_apply_settings_model_manager_result_persists_models_and_env() -> None:
     assert harness.saved_payload["models"]["default_selection"]["tier"] == "coding"
     assert harness.saved_payload["models"]["providers"]["openai"]["tiers"]["coding"]["model_id"] == "gpt-5.3-codex"
     bedrock = harness.saved_payload["models"]["providers"]["bedrock"]
-    assert bedrock["read_timeout_sec"] == 60.0
+    assert bedrock["read_timeout_sec"] == 300.0
     assert "env" not in harness.saved_payload or (
         "SWARMEE_BEDROCK_READ_TIMEOUT_SEC" not in harness.saved_payload.get("env", {})
     )

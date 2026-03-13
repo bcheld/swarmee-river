@@ -803,6 +803,32 @@ class TestTuiDaemonMode:
         assert not any(event.get("event") == "error" for event in events)
         assert any(event.get("event") == "turn_complete" and event.get("exit_status") == "ok" for event in events)
 
+    def test_tui_daemon_query_bedrock_read_timeout_does_not_retry(
+        self,
+        mock_agent,
+        mock_bedrock,
+        mock_load_prompt,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(swarmee, "resolve_model_provider", lambda **_kwargs: ("bedrock", None))
+        monkeypatch.setattr(swarmee, "has_aws_credentials", lambda: True)
+        run_query_spy = mock.Mock(side_effect=Exception("urllib3.exceptions.ReadTimeoutError: Read timed out."))
+        monkeypatch.setattr(swarmee, "_run_query_with_optional_plan", run_query_spy)
+        monkeypatch.setattr(sys, "argv", ["swarmee", "--tui-daemon"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO('{"cmd":"query","text":"hello"}\n{"cmd":"shutdown"}\n'))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            swarmee.main()
+
+        assert run_query_spy.call_count == 1
+        events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        error_events = [event for event in events if event.get("event") == "error"]
+        assert error_events
+        assert error_events[0].get("category") == "fatal"
+        assert error_events[0].get("retryable") is False
+        assert any(event.get("event") == "turn_complete" and event.get("exit_status") == "error" for event in events)
+
     def test_tui_daemon_query_explicit_bedrock_selection_switches_provider_before_invocation(
         self,
         mock_agent,

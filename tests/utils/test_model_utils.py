@@ -97,7 +97,7 @@ def test_default_model_config_bedrock_uses_responsive_defaults(monkeypatch):
     config = swarmee_river.utils.model_utils.default_model_config("bedrock", default_settings_template())
     boto_config = config["boto_client_config"]
 
-    assert boto_config.read_timeout == 45.0
+    assert boto_config.read_timeout == 300.0
     assert boto_config.connect_timeout == 5.0
     assert boto_config.retries["max_attempts"] == 2
 
@@ -141,7 +141,7 @@ def test_default_model_config_bedrock_invalid_settings_falls_back():
     config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
     boto_config = config["boto_client_config"]
 
-    assert boto_config.read_timeout == 45.0
+    assert boto_config.read_timeout == 300.0
     assert boto_config.connect_timeout == 5.0
     assert boto_config.retries["max_attempts"] == 2
 

@@ -193,6 +193,10 @@ from swarmee_river.utils.agent_runtime_utils import (
     render_plan_text,
     resolve_effective_sop_paths,
 )
+from swarmee_river.utils.agent_utils import (
+    capture_agent_turn_state,
+    restore_prompt_cache_turn_state,
+)
 from swarmee_river.utils.fork_utils import create_shared_prefix_child_agent
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.env_utils import load_env_file, truthy
@@ -238,6 +242,7 @@ _SOP_FILE_SUFFIX = ".sop.md"
 _SESSION_MESSAGE_VERSION = 1
 _SESSION_MESSAGE_MAX_COUNT = 200
 _TRANSIENT_RETRY_MAX_ATTEMPTS = 3
+_DEFAULT_BEDROCK_READ_TIMEOUT_SEC = 300.0
 
 
 _consent_prompt_session: Any | None = None
@@ -536,6 +541,71 @@ def _event_loop_running() -> bool:
     with contextlib.suppress(RuntimeError):
         return asyncio.get_running_loop().is_running()
     return False
+
+
+def _iter_exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        next_exc = current.__cause__ or current.__context__
+        current = next_exc if isinstance(next_exc, BaseException) else None
+    return chain
+
+
+def _is_transport_timeout_exception(exc: BaseException) -> bool:
+    for item in _iter_exception_chain(exc):
+        if isinstance(item, TimeoutError):
+            return True
+        type_name = item.__class__.__name__.strip().lower()
+        if type_name in {"readtimeouterror", "connecttimeouterror"}:
+            return True
+        text = str(item or "").strip().lower()
+        if "read timed out" in text or "read timeout" in text:
+            return True
+    return False
+
+
+def _bedrock_read_timeout_seconds(settings: SwarmeeSettings) -> float:
+    extra = model_utils._provider_extra(settings, "bedrock")
+    raw_value = extra.get("read_timeout_sec")
+    try:
+        parsed = float(raw_value)
+    except (TypeError, ValueError):
+        return _DEFAULT_BEDROCK_READ_TIMEOUT_SEC
+    if parsed <= 0:
+        return _DEFAULT_BEDROCK_READ_TIMEOUT_SEC
+    return parsed
+
+
+def _format_bedrock_transport_timeout_error(
+    *,
+    exc: BaseException,
+    invocation_state: dict[str, Any] | None,
+    settings: SwarmeeSettings,
+) -> str:
+    sw = invocation_state.get("swarmee") if isinstance(invocation_state, dict) else None
+    diag = sw.get("invoke_diag") if isinstance(sw, dict) else None
+    provider = str(sw.get("provider", "bedrock")).strip().lower() if isinstance(sw, dict) else "bedrock"
+    tier = str(sw.get("tier", "")).strip().lower() if isinstance(sw, dict) else ""
+    stage = str(diag.get("stage", "unknown")).strip() if isinstance(diag, dict) else "unknown"
+    timeout_s = _bedrock_read_timeout_seconds(settings)
+    timeout_label = f"{int(timeout_s)}s" if float(timeout_s).is_integer() else f"{timeout_s:.1f}s"
+    lines = [
+        "Bedrock transport read timed out while waiting for more stream data.",
+        f"- Provider: {provider or 'bedrock'}",
+        f"- Tier: {tier or 'unknown'}",
+        f"- Last stage: {stage or 'unknown'}",
+        f"- Configured read timeout: {timeout_label}",
+        "- This request was not retried automatically to avoid restarting the turn.",
+        "- Fix: retry the prompt, or increase Bedrock read timeout in Settings > Models.",
+    ]
+    detail = str(exc or "").strip()
+    if detail:
+        lines.append(f"- Transport error: {detail}")
+    return "\n".join(lines)
 
 
 def _prompt_input_with_prompt_toolkit(
@@ -1931,6 +2001,14 @@ def _build_agent_runtime(
             except Exception:
                 sw["tool_schema_chars"] = 0
 
+        turn_snapshot = capture_agent_turn_state(agent, prompt_cache=prompt_cache)
+
+        def _restore_turn_snapshot() -> None:
+            nonlocal agent
+            restore_prompt_cache_turn_state(prompt_cache, turn_snapshot)
+            agent = create_agent(messages=turn_snapshot.messages, state=turn_snapshot.state)
+            ctx.agent = agent
+
         interrupt_event.clear()
         set_interrupt_event(interrupt_event)
         set_active_interrupt_event(interrupt_event)
@@ -2000,6 +2078,7 @@ def _build_agent_runtime(
                         structured_output_prompt=structured_output_prompt,
                     )
                 except MaxTokensReachedException:
+                    _restore_turn_snapshot()
                     callback_handler(force_stop=True)
                     configured = (
                         args.max_output_tokens
@@ -2016,12 +2095,27 @@ def _build_agent_runtime(
                         f"- Current max: {configured_label}\n"
                         "- Fix: increase `models.max_output_tokens` in `.swarmee/settings.json` "
                         "(or pass --max-output-tokens), or ask for a shorter response.\n"
-                        "- Resetting agent loop so you can continue."
+                        "- Restoring the pre-turn state so you can continue."
                     )
                     _emit_classified_tui_error(error_msg, category_hint=ERROR_CATEGORY_ESCALATABLE)
                     if not _tui_events_enabled():
                         print(f"\n{error_msg}")
-                    agent = create_agent()
+                    raise
+                except AgentInterruptedError:
+                    _restore_turn_snapshot()
+                    raise
+                except Exception as exc:
+                    _restore_turn_snapshot()
+                    sw_state = invocation_state.get("swarmee") if isinstance(invocation_state, dict) else None
+                    provider = str(sw_state.get("provider", "")).strip().lower() if isinstance(sw_state, dict) else ""
+                    if provider == "bedrock" and _is_transport_timeout_exception(exc):
+                        raise RuntimeError(
+                            _format_bedrock_transport_timeout_error(
+                                exc=exc,
+                                invocation_state=invocation_state,
+                                settings=settings,
+                            )
+                        ) from exc
                     raise
                 finally:
                     agent._swarmee_current_invocation_state = None

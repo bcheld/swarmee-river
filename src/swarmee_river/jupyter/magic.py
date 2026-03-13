@@ -35,6 +35,7 @@ from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
 from swarmee_river.tools import get_tools
 from swarmee_river.utils.agent_runtime_utils import ensure_work_plan, plan_json_for_execution, render_plan_text
+from swarmee_river.utils.agent_utils import capture_agent_turn_state, restore_prompt_cache_turn_state
 from swarmee_river.utils.env_utils import load_env_file
 from swarmee_river.utils.fork_utils import create_shared_prefix_child_agent
 from swarmee_river.utils.kb_utils import load_system_prompt
@@ -240,21 +241,32 @@ def _build_hooks(settings: Any) -> list[Any]:
     return hooks
 
 
-def _create_agent(*, model: Any, tools: list[Any], system_prompt: str, hooks: list[Any]) -> Agent:
+def _create_agent(
+    *,
+    model: Any,
+    tools: list[Any],
+    system_prompt: str,
+    hooks: list[Any],
+    messages: Any | None = None,
+    state: Any | None = None,
+) -> Agent:
     kwargs: dict[str, Any] = {
         "model": model,
         "tools": tools,
         "system_prompt": system_prompt,
-        "messages": [],
+        "messages": [] if messages is None else messages,
         "callback_handler": None,  # notebook-friendly: no spinners/streaming callbacks by default
         "load_tools_from_directory": True,
         "hooks": hooks,
     }
+    if state is not None:
+        kwargs["state"] = state
 
     try:
         return Agent(**kwargs)
     except TypeError:
         kwargs.pop("hooks", None)
+        kwargs.pop("state", None)
         return Agent(**kwargs)
 
 
@@ -596,6 +608,10 @@ def _invoke_agent(
     structured_output_model: type[Any] | None = None,
     structured_output_prompt: str | None = None,
 ) -> Any:
+    turn_snapshot = capture_agent_turn_state(
+        runtime.agent,
+        prompt_cache=getattr(runtime.agent, "_swarmee_prompt_cache", None),
+    )
     resolved_state: dict[str, Any] = dict(invocation_state) if isinstance(invocation_state, dict) else {}
     sw_state = resolved_state.setdefault("swarmee", {})
     if isinstance(sw_state, dict):
@@ -639,7 +655,23 @@ def _invoke_agent(
         if prompt_text:
             invoke_query = f"{prompt_text}\n\nUser request:\n{query}"
 
-    return _run_coroutine(runtime.agent.invoke_async(invoke_query, **invoke_kwargs))
+    try:
+        return _run_coroutine(runtime.agent.invoke_async(invoke_query, **invoke_kwargs))
+    except Exception:
+        prompt_cache = getattr(runtime.agent, "_swarmee_prompt_cache", None)
+        restore_prompt_cache_turn_state(prompt_cache, turn_snapshot)
+        next_agent = _create_agent(
+            model=runtime.agent.model,
+            messages=turn_snapshot.messages,
+            tools=list(getattr(runtime.agent, "tools", []) or []),
+            system_prompt=getattr(runtime.agent, "system_prompt", ""),
+            hooks=list(runtime.hooks),
+            state=turn_snapshot.state,
+        )
+        if prompt_cache is not None:
+            next_agent._swarmee_prompt_cache = prompt_cache
+        runtime.agent = next_agent
+        raise
 
 
 def _get_or_create_runtime() -> _NotebookRuntime:

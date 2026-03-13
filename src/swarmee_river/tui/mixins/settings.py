@@ -49,7 +49,7 @@ def _should_ignore_stale_model_info_update(
 
 class SettingsMixin:
     _BEDROCK_RUNTIME_DEFAULTS: dict[str, str] = {
-        "SWARMEE_BEDROCK_READ_TIMEOUT_SEC": "60",
+        "SWARMEE_BEDROCK_READ_TIMEOUT_SEC": "300",
         "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC": "10",
         "SWARMEE_BEDROCK_MAX_RETRIES": "1",
     }

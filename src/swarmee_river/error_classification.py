@@ -32,8 +32,6 @@ _TRANSIENT_MARKERS = (
     "connection reset by peer",
     "connection aborted",
     "broken pipe",
-    "read timeout",
-    "timed out",
     "stream error",
     "streaming error",
 )

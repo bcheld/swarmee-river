@@ -208,7 +208,7 @@ def _start_stall_monitor(
             if "first_progress_mono" in diag:
                 raw_last = diag.get("last_progress_mono", diag.get("first_progress_mono", now))
             else:
-                raw_last = diag.get("invoke_start_mono", now)
+                raw_last = diag.get("last_callback_mono", diag.get("invoke_start_mono", now))
             try:
                 last_progress_mono = float(raw_last)
             except (TypeError, ValueError):
