@@ -544,7 +544,6 @@ class SettingsMixin:
         settings: Any,
         *,
         provider_value: str,
-        fallback_tier: str | None = None,
     ) -> list[tuple[str, str]]:
         normalized_provider = str(provider_value or "__auto__").strip().lower() or "__auto__"
         tier_names: set[str] = set()
@@ -564,20 +563,14 @@ class SettingsMixin:
             normalized_tier = str(tier_name or "").strip().lower()
             if normalized_tier:
                 tier_names.add(normalized_tier)
-        normalized_fallback = str(fallback_tier or "").strip().lower()
-        if normalized_fallback:
-            tier_names.add(normalized_fallback)
         if not tier_names:
             return [("Tier: (none configured)", "__none__")]
         return [(f"Tier: {tier_name}", tier_name) for tier_name in sorted(tier_names)]
 
-    def _refresh_settings_models(self) -> None:
-        from textual.widgets import Select
-
-        from swarmee_river.settings import load_settings
-
-        table = self._settings_models_table
-        settings = load_settings()
+    def _refresh_settings_models_summary(self, settings: Any) -> None:
+        summary_widget = self._settings_models_summary
+        if summary_widget is None:
+            return
         provider_default = (settings.models.provider or "__auto__").strip().lower() or "__auto__"
         tier_default = (settings.models.default_tier or "balanced").strip().lower() or "balanced"
         notebook_provider_default = (
@@ -586,56 +579,64 @@ class SettingsMixin:
         notebook_tier_default = (
             getattr(settings.notebook.default_selection, "tier", None) or "fast"
         ).strip().lower() or "fast"
+        provider_label = provider_default if provider_default != "__auto__" else "auto"
+        notebook_provider_label = notebook_provider_default if notebook_provider_default != "__auto__" else "auto"
+        provider_count = len(settings.models.providers)
+        tier_count = sum(len(provider.tiers) for provider in settings.models.providers.values())
+        with contextlib.suppress(Exception):
+            summary_widget.update(
+                "Runtime default: "
+                f"{provider_label}/{tier_default} | "
+                f"Notebook fallback: {notebook_provider_label}/{notebook_tier_default} | "
+                f"Providers: {provider_count} | Tiers: {tier_count}"
+            )
 
-        self.state.daemon.model_select_syncing = True
-        try:
+    def _refresh_settings_model_selector_pair(self, *, settings: Any, target: str) -> None:
+        from textual.widgets import Select
+
+        normalized_target = str(target or "").strip().lower()
+        if normalized_target == "notebook":
+            provider_default = (
+                getattr(settings.notebook.default_selection, "provider", None) or "__auto__"
+            ).strip().lower() or "__auto__"
+            tier_default = (
+                getattr(settings.notebook.default_selection, "tier", None) or "fast"
+            ).strip().lower() or "fast"
+            provider_select = self.query_one("#settings_notebook_models_provider_select", Select)
+            tier_select = self.query_one("#settings_notebook_models_default_tier_select", Select)
+        else:
+            provider_default = (settings.models.provider or "__auto__").strip().lower() or "__auto__"
+            tier_default = (settings.models.default_tier or "balanced").strip().lower() or "balanced"
             provider_select = self.query_one("#settings_models_provider_select", Select)
             tier_select = self.query_one("#settings_models_default_tier_select", Select)
-            notebook_provider_select = self.query_one("#settings_notebook_models_provider_select", Select)
-            notebook_tier_select = self.query_one("#settings_notebook_models_default_tier_select", Select)
-            provider_options = self._settings_model_provider_options()
+
+        provider_options = self._settings_model_provider_options()
+        previous_syncing = bool(getattr(self.state, "settings_model_select_syncing", False))
+        self.state.settings_model_select_syncing = True
+        try:
             provider_select.set_options(provider_options)
-            notebook_provider_select.set_options(provider_options)
             with contextlib.suppress(Exception):
                 provider_select.value = provider_default if provider_default else "__auto__"
-            with contextlib.suppress(Exception):
-                notebook_provider_select.value = (
-                    notebook_provider_default if notebook_provider_default else "__auto__"
-                )
             selected_provider = (
                 provider_default
                 if provider_default != "__auto__"
                 else str(getattr(provider_select, "value", "__auto__")).strip().lower()
             )
-            notebook_selected_provider = (
-                notebook_provider_default
-                if notebook_provider_default != "__auto__"
-                else str(getattr(notebook_provider_select, "value", "__auto__")).strip().lower()
-            )
-            tier_options = self._settings_model_tier_options(
-                settings,
-                provider_value=selected_provider,
-                fallback_tier=tier_default,
-            )
-            notebook_tier_options = self._settings_model_tier_options(
-                settings,
-                provider_value=notebook_selected_provider,
-                fallback_tier=notebook_tier_default,
-            )
+            tier_options = self._settings_model_tier_options(settings, provider_value=selected_provider)
             tier_select.set_options(tier_options)
-            notebook_tier_select.set_options(notebook_tier_options)
             with contextlib.suppress(Exception):
                 tier_values = {value for _label, value in tier_options}
                 tier_select.value = tier_default if tier_default in tier_values else tier_options[0][1]
-            with contextlib.suppress(Exception):
-                notebook_tier_values = {value for _label, value in notebook_tier_options}
-                notebook_tier_select.value = (
-                    notebook_tier_default
-                    if notebook_tier_default in notebook_tier_values
-                    else notebook_tier_options[0][1]
-                )
         finally:
-            self.state.daemon.model_select_syncing = False
+            self.state.settings_model_select_syncing = previous_syncing
+
+    def _refresh_settings_models(self) -> None:
+        from swarmee_river.settings import load_settings
+
+        table = self._settings_models_table
+        settings = load_settings()
+        self._refresh_settings_model_selector_pair(settings=settings, target="runtime")
+        self._refresh_settings_model_selector_pair(settings=settings, target="notebook")
 
         if table is not None:
             rows = build_models_table_rows(settings)
@@ -665,21 +666,7 @@ class SettingsMixin:
             else:
                 self._settings_models_selected_id = None
 
-        summary_widget = self._settings_models_summary
-        if summary_widget is not None:
-            provider_label = provider_default if provider_default != "__auto__" else "auto"
-            notebook_provider_label = (
-                notebook_provider_default if notebook_provider_default != "__auto__" else "auto"
-            )
-            provider_count = len(settings.models.providers)
-            tier_count = sum(len(provider.tiers) for provider in settings.models.providers.values())
-            with contextlib.suppress(Exception):
-                summary_widget.update(
-                    "Runtime default: "
-                    f"{provider_label}/{tier_default} | "
-                    f"Notebook fallback: {notebook_provider_label}/{notebook_tier_default} | "
-                    f"Providers: {provider_count} | Tiers: {tier_count}"
-                )
+        self._refresh_settings_models_summary(settings)
 
         auth_widget = self._settings_auth_status
         if auth_widget is not None:
@@ -1380,19 +1367,20 @@ class SettingsMixin:
         # Only internal wiring env overrides are allowed.
         return dict(self._project_settings_env_overrides())
 
-    def _refresh_model_select(self) -> None:
+    def _refresh_model_select_widget_only(self) -> None:
         if self.state.daemon.provider and self.state.daemon.tier and self.state.daemon.tiers:
             self._refresh_model_select_from_daemon(
                 provider=self.state.daemon.provider,
                 tier=self.state.daemon.tier,
                 tiers=self.state.daemon.tiers,
             )
-            self._refresh_orchestrator_status()
-            self._refresh_settings_models()
             return
 
         options, selected_value = self._model_select_options()
         self._apply_model_select_options(options, selected_value)
+
+    def _refresh_model_select(self) -> None:
+        self._refresh_model_select_widget_only()
         self._refresh_orchestrator_status()
         self._refresh_settings_models()
 

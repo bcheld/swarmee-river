@@ -2832,31 +2832,41 @@ def run_tui() -> int:
                         input_widget.styles.display = "block" if mode == "custom" else "none"
                 return
             if select_id in {"settings_models_provider_select", "settings_models_default_tier_select"}:
-                if self.state.daemon.model_select_syncing:
+                if self.state.settings_model_select_syncing:
                     return
                 # Ignore programmatic/default updates during view refresh; only persist
                 # when the user actively changes the selector.
                 has_focus = bool(getattr(select_widget, "has_focus", False))
                 if not has_focus:
                     return
+                from swarmee_river.settings import load_settings
+
                 self._save_models_default_selection()
-                self._refresh_model_select()
-                self._refresh_settings_models()
-                self._refresh_agent_summary()
+                settings = load_settings()
+                self._refresh_settings_model_selector_pair(settings=settings, target="runtime")
+                self._refresh_settings_models_summary(settings)
+                self._refresh_model_select_widget_only()
+                self._refresh_orchestrator_status()
+                self.sub_title = self._current_model_summary()
+                if self._status_bar is not None:
+                    self._status_bar.set_model(self._current_model_summary())
                 self._write_transcript_line("[settings] saved model defaults.")
                 return
             if select_id in {
                 "settings_notebook_models_provider_select",
                 "settings_notebook_models_default_tier_select",
             }:
-                if self.state.daemon.model_select_syncing:
+                if self.state.settings_model_select_syncing:
                     return
                 has_focus = bool(getattr(select_widget, "has_focus", False))
                 if not has_focus:
                     return
+                from swarmee_river.settings import load_settings
+
                 self._save_notebook_models_default_selection()
-                self._refresh_settings_models()
-                self._refresh_agent_summary()
+                settings = load_settings()
+                self._refresh_settings_model_selector_pair(settings=settings, target="notebook")
+                self._refresh_settings_models_summary(settings)
                 self._write_transcript_line("[settings] saved notebook model defaults.")
                 return
             if select_id in {"agent_builder_agent_provider", "agent_builder_agent_tier"}:

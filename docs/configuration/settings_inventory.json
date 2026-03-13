@@ -77,7 +77,7 @@
         "src/swarmee_river/swarmee.py:923",
         "src/swarmee_river/swarmee.py:936",
         "src/swarmee_river/tui/app.py:2452",
-        "src/swarmee_river/tui/mixins/settings.py:1723",
+        "src/swarmee_river/tui/mixins/settings.py:1711",
         "src/swarmee_river/utils/provider_utils.py:100",
         "src/swarmee_river/utils/provider_utils.py:109",
         "src/swarmee_river/utils/provider_utils.py:96"
@@ -4447,7 +4447,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3535"
+        "src/swarmee_river/tui/app.py:3545"
       ],
       "where_set": [
         "TUI Advanced settings",
@@ -4472,7 +4472,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3557"
+        "src/swarmee_river/tui/app.py:3567"
       ],
       "where_set": [
         "TUI Advanced settings",
@@ -4497,7 +4497,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3573"
+        "src/swarmee_river/tui/app.py:3583"
       ],
       "where_set": [
         "TUI Advanced settings",
@@ -4594,7 +4594,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3591"
+        "src/swarmee_river/tui/app.py:3601"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4618,7 +4618,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3394"
+        "src/swarmee_river/tui/app.py:3404"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4642,7 +4642,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3405"
+        "src/swarmee_river/tui/app.py:3415"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4666,7 +4666,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3418"
+        "src/swarmee_river/tui/app.py:3428"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4690,7 +4690,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3508"
+        "src/swarmee_river/tui/app.py:3518"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4714,7 +4714,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3476"
+        "src/swarmee_river/tui/app.py:3486"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4738,7 +4738,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3458"
+        "src/swarmee_river/tui/app.py:3468"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4762,7 +4762,7 @@
       "surface": "tui",
       "usage_count": 2,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3494"
+        "src/swarmee_river/tui/app.py:3504"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4786,7 +4786,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3467"
+        "src/swarmee_river/tui/app.py:3477"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4810,7 +4810,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3449"
+        "src/swarmee_river/tui/app.py:3459"
       ],
       "where_set": [
         "TUI Settings control",
@@ -4834,7 +4834,7 @@
       "surface": "tui",
       "usage_count": 1,
       "where_read": [
-        "src/swarmee_river/tui/app.py:3485"
+        "src/swarmee_river/tui/app.py:3495"
       ],
       "where_set": [
         "TUI Settings control",

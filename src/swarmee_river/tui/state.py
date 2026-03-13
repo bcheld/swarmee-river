@@ -144,6 +144,7 @@ class AppState:
     engage_view_mode: str = "plan"
     tooling_view_mode: str = "tools"
     settings_view_mode: str = "general"
+    settings_model_select_syncing: bool = False
 
 
 __all__ = [

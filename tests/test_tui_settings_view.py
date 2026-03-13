@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from swarmee_river.settings import default_settings_template
 from swarmee_river.tui.mixins.settings import SettingsMixin
 from swarmee_river.tui.views import settings as settings_view
 
@@ -106,6 +107,7 @@ class _SettingsHarness(SettingsMixin):
                 ready=False,
             )
         )
+        self.state.settings_model_select_syncing = False
 
     def query_one(self, selector: str, _widget_type: Any = None) -> _Widget:
         return self._widgets[selector]
@@ -355,6 +357,39 @@ def test_apply_context_budget_setting_can_reset_to_auto() -> None:
     assert harness.saved_payload is not None
     assert "max_prompt_tokens" not in harness.saved_payload.get("context", {})
     assert any("reset to auto" in message for message in harness.messages)
+
+
+def test_settings_model_tier_options_for_specific_provider_exclude_other_provider_tiers() -> None:
+    settings = default_settings_template()
+
+    values = [
+        value
+        for _label, value in SettingsMixin._settings_model_tier_options(
+            settings,
+            provider_value="bedrock",
+        )
+    ]
+
+    assert "fast" in values
+    assert "balanced" in values
+    assert "deep" in values
+    assert "long" in values
+    assert "coding" not in values
+
+
+def test_settings_model_tier_options_for_auto_include_union_of_provider_tiers() -> None:
+    settings = default_settings_template()
+
+    values = [
+        value
+        for _label, value in SettingsMixin._settings_model_tier_options(
+            settings,
+            provider_value="__auto__",
+        )
+    ]
+
+    assert "coding" in values
+    assert "fast" in values
 
 
 def test_save_notebook_models_default_selection_persists_values() -> None:

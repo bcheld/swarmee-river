@@ -1192,6 +1192,134 @@ def test_should_ignore_stale_model_info_update_only_within_target_window():
     )
 
 
+def test_settings_models_select_change_uses_lightweight_runtime_refresh(monkeypatch):
+    app_cls = tui_app.get_swarmee_tui_class()
+
+    class _StatusBar:
+        def __init__(self) -> None:
+            self.model_calls: list[str] = []
+
+        def set_model(self, summary: str) -> None:
+            self.model_calls.append(summary)
+
+    class _Harness:
+        def __init__(self) -> None:
+            self.state = AppState()
+            self._settings_general_context_budget_input = None
+            self._status_bar = _StatusBar()
+            self.messages: list[str] = []
+            self.runtime_saves = 0
+            self.selector_pair_targets: list[str] = []
+            self.summary_refreshes = 0
+            self.model_select_widget_refreshes = 0
+            self.orchestrator_refreshes = 0
+            self.sub_title = ""
+
+        def _save_models_default_selection(self) -> None:
+            self.runtime_saves += 1
+
+        def _refresh_settings_model_selector_pair(self, *, settings, target: str) -> None:  # noqa: ANN001
+            del settings
+            self.selector_pair_targets.append(target)
+
+        def _refresh_settings_models_summary(self, settings) -> None:  # noqa: ANN001
+            del settings
+            self.summary_refreshes += 1
+
+        def _refresh_model_select_widget_only(self) -> None:
+            self.model_select_widget_refreshes += 1
+
+        def _refresh_orchestrator_status(self) -> None:
+            self.orchestrator_refreshes += 1
+
+        def _current_model_summary(self) -> str:
+            return "Model: openai/fast"
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.messages.append(text)
+
+        def _refresh_settings_models(self) -> None:
+            raise AssertionError("full settings models refresh should not run")
+
+        def _refresh_model_select(self) -> None:
+            raise AssertionError("full model select refresh should not run")
+
+        def _refresh_agent_summary(self) -> None:
+            raise AssertionError("agent summary refresh should not run")
+
+    monkeypatch.setattr("swarmee_river.settings.load_settings", lambda: object())
+
+    harness = _Harness()
+    event = SimpleNamespace(
+        select=SimpleNamespace(id="settings_models_provider_select", has_focus=True),
+        value="bedrock",
+    )
+
+    app_cls.on_select_changed(harness, event)
+
+    assert harness.runtime_saves == 1
+    assert harness.selector_pair_targets == ["runtime"]
+    assert harness.summary_refreshes == 1
+    assert harness.model_select_widget_refreshes == 1
+    assert harness.orchestrator_refreshes == 1
+    assert harness.messages == ["[settings] saved model defaults."]
+    assert harness._status_bar.model_calls == ["Model: openai/fast"]
+
+
+def test_settings_notebook_select_change_uses_lightweight_refresh(monkeypatch):
+    app_cls = tui_app.get_swarmee_tui_class()
+
+    class _Harness:
+        def __init__(self) -> None:
+            self.state = AppState()
+            self._settings_general_context_budget_input = None
+            self.messages: list[str] = []
+            self.notebook_saves = 0
+            self.selector_pair_targets: list[str] = []
+            self.summary_refreshes = 0
+
+        def _save_notebook_models_default_selection(self) -> None:
+            self.notebook_saves += 1
+
+        def _refresh_settings_model_selector_pair(self, *, settings, target: str) -> None:  # noqa: ANN001
+            del settings
+            self.selector_pair_targets.append(target)
+
+        def _refresh_settings_models_summary(self, settings) -> None:  # noqa: ANN001
+            del settings
+            self.summary_refreshes += 1
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.messages.append(text)
+
+        def _refresh_settings_models(self) -> None:
+            raise AssertionError("full settings models refresh should not run")
+
+        def _refresh_model_select(self) -> None:
+            raise AssertionError("main model select refresh should not run")
+
+        def _refresh_model_select_widget_only(self) -> None:
+            raise AssertionError("runtime model select widget should not refresh")
+
+        def _refresh_agent_summary(self) -> None:
+            raise AssertionError("agent summary refresh should not run")
+
+    monkeypatch.setattr("swarmee_river.settings.load_settings", lambda: object())
+
+    harness = _Harness()
+    event = SimpleNamespace(
+        select=SimpleNamespace(id="settings_notebook_models_provider_select", has_focus=True),
+        value="openai",
+    )
+
+    app_cls.on_select_changed(harness, event)
+
+    assert harness.notebook_saves == 1
+    assert harness.selector_pair_targets == ["notebook"]
+    assert harness.summary_refreshes == 1
+    assert harness.messages == ["[settings] saved notebook model defaults."]
+
+
 def test_should_ignore_model_select_reversion_during_target_window():
     assert (
         tui_app.should_ignore_model_select_reversion_during_target(
