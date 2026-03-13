@@ -294,6 +294,7 @@ def create_shared_prefix_child_agent(
     parent_agent: Any,
     kind: str,
     seed_instruction: str | None = None,
+    hooks: list[Any] | None = None,
     tool_allowlist: list[str] | None = None,
     callback_handler: Callable[..., Any] | None = None,
 ) -> tuple[Agent, SharedPrefixForkSnapshot]:
@@ -321,9 +322,11 @@ def create_shared_prefix_child_agent(
         except Exception:
             state_payload = None
 
-    hooks: list[Any] = []
+    child_hooks: list[Any] = []
+    if hooks:
+        child_hooks.extend(list(hooks))
     if tool_allowlist:
-        hooks.append(StaticToolAllowlistHooks(tool_allowlist))
+        child_hooks.append(StaticToolAllowlistHooks(tool_allowlist))
 
     kwargs: dict[str, Any] = {
         "model": snapshot.model,
@@ -335,8 +338,8 @@ def create_shared_prefix_child_agent(
     }
     if state_payload is not None:
         kwargs["state"] = state_payload
-    if hooks:
-        kwargs["hooks"] = hooks
+    if child_hooks:
+        kwargs["hooks"] = child_hooks
     trace_attributes = getattr(parent_agent, "trace_attributes", None)
     if isinstance(trace_attributes, dict) and trace_attributes:
         kwargs["trace_attributes"] = dict(trace_attributes)
@@ -350,8 +353,8 @@ def create_shared_prefix_child_agent(
         kwargs.pop("retry_strategy", None)
         kwargs.pop("state", None)
         child = Agent(**kwargs)
-        if hooks:
-            for hook in hooks:
+        if child_hooks:
+            for hook in child_hooks:
                 child.hooks.add_hook(hook)
 
     child._swarmee_prompt_cache = _snapshot_prompt_cache(parent_agent)

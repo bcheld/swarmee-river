@@ -1851,6 +1851,115 @@ def test_run_query_with_optional_plan_executes_approved_pending_plan() -> None:
     assert executed is True
 
 
+def test_generate_plan_passes_runtime_policy_hooks_to_planning_child(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from swarmee_river.hooks.tool_policy import ToolPolicyHooks
+    from swarmee_river.planning import WorkPlan
+    from swarmee_river.settings import default_settings_template
+
+    settings = default_settings_template()
+    captured_child_kwargs: dict[str, object] = {}
+
+    class _FakeModelManager:
+        current_provider = "bedrock"
+        current_tier = "balanced"
+
+        @staticmethod
+        def build_model() -> object:
+            return object()
+
+        @staticmethod
+        def current_context_behavior() -> SimpleNamespace:
+            return SimpleNamespace(strategy="balanced", compaction="auto")
+
+        @staticmethod
+        def resolve_effective_context_budget() -> int:
+            return 200000
+
+        @staticmethod
+        def list_tiers() -> list[object]:
+            return []
+
+    class _FakeArtifactStore:
+        def write_text(self, **_kwargs) -> None:  # noqa: ANN001
+            return None
+
+    class _FakeAgent:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            self.model = kwargs.get("model")
+            self.system_prompt = kwargs.get("system_prompt")
+            self.tools = kwargs.get("tools", [])
+            self.messages = kwargs.get("messages", [])
+            self.tool_registry = SimpleNamespace(registry={}, dynamic_tools={})
+            self.trace_attributes = {}
+            self._retry_strategy = None
+            self.conversation_manager = None
+            self.state = SimpleNamespace(get=lambda: {})
+
+    def _fake_create_shared_prefix_child_agent(*, parent_agent, **kwargs):  # noqa: ANN001, ANN003
+        del parent_agent
+        captured_child_kwargs.update(kwargs)
+        child = SimpleNamespace(system_prompt="system", tools=[], messages=[], model=object())
+        return child, SimpleNamespace(pending_reminder="")
+
+    monkeypatch.setattr(
+        swarmee,
+        "_resolve_provider_and_model_manager",
+        lambda **_kwargs: ("bedrock", None, _FakeModelManager()),
+    )
+    monkeypatch.setattr(swarmee, "detect_runtime_environment", lambda cwd=None: {})
+    monkeypatch.setattr(swarmee, "render_runtime_environment_section", lambda _env: "")
+    monkeypatch.setattr(swarmee, "_build_runtime_tools", lambda _settings: ({}, []))
+    monkeypatch.setattr(swarmee, "enabled_sop_paths", lambda _settings: [])
+    monkeypatch.setattr(swarmee, "enabled_system_prompts", lambda _settings: [])
+    monkeypatch.setattr(swarmee, "ensure_prompt_assets_bootstrapped", lambda: None)
+    monkeypatch.setattr(swarmee, "resolve_orchestrator_prompt_from_agent", lambda _agent: "")
+    monkeypatch.setattr(swarmee, "load_system_prompt", lambda: "")
+    monkeypatch.setattr(swarmee, "build_base_system_prompt", lambda **_kwargs: "system")
+    monkeypatch.setattr(swarmee, "resolve_effective_sop_paths", lambda **_kwargs: [])
+    monkeypatch.setattr(swarmee, "_build_conversation_manager", lambda **_kwargs: None)
+    monkeypatch.setattr(swarmee, "ArtifactStore", _FakeArtifactStore)
+    monkeypatch.setattr(swarmee, "Agent", _FakeAgent)
+    monkeypatch.setattr(swarmee, "create_shared_prefix_child_agent", _fake_create_shared_prefix_child_agent)
+    monkeypatch.setattr(
+        swarmee,
+        "invoke_agent",
+        lambda *_args, **_kwargs: SimpleNamespace(structured_output=WorkPlan(summary="Inspect", steps=[])),
+    )
+
+    runtime = swarmee._build_agent_runtime(
+        SimpleNamespace(
+            query=None,
+            model_provider=None,
+            model_config=None,
+            sop_paths=[],
+            sop=None,
+            window_size=None,
+            context_per_turn=None,
+            max_output_tokens=None,
+        ),
+        settings,
+        False,
+        None,
+    )
+
+    pending = runtime["generate_plan"]("investigate")
+
+    assert pending.current_plan.summary == "Inspect"
+    hooks = captured_child_kwargs["hooks"]
+    assert isinstance(hooks, list)
+    policy_hook = next((hook for hook in hooks if isinstance(hook, ToolPolicyHooks)), None)
+    assert policy_hook is not None
+    event = SimpleNamespace(
+        tool_use={"name": "shell", "input": {"command": "mkdir tmp"}},
+        invocation_state={"swarmee": {"mode": "plan"}},
+        cancel_tool=False,
+    )
+    policy_hook.before_tool_call(event)
+    assert "only allowed in plan mode" in str(event.cancel_tool)
+
+
 class TestOverflowErrorClassification:
     def test_context_window_overflow_markers(self):
         assert swarmee._is_context_window_overflow_error(RuntimeError("OpenAI threw context window overflow error"))

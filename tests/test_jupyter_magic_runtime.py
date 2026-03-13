@@ -331,7 +331,10 @@ def test_execute_with_plan_uses_execute_mode() -> None:
 
 
 def test_generate_plan_uses_child_agent_without_mutating_parent_messages(monkeypatch) -> None:
+    from swarmee_river.hooks.tool_policy import ToolPolicyHooks
+
     parent_agent = SimpleNamespace(messages=[{"role": "user", "content": [{"text": "old"}]}])
+    runtime_hook = ToolPolicyHooks()
     runtime = magic._NotebookRuntime(
         agent=parent_agent,
         tools_dict={},
@@ -341,11 +344,14 @@ def test_generate_plan_uses_child_agent_without_mutating_parent_messages(monkeyp
         base_system_prompt="system",
         artifact_store=SimpleNamespace(write_text=lambda **_kwargs: None),
         knowledge_base_id=None,
+        hooks=[runtime_hook],
     )
 
     child_messages: list[dict[str, Any]] = []
+    child_kwargs: dict[str, Any] = {}
 
     def _fake_create_shared_prefix_child_agent(*, parent_agent: Any, **_kwargs: Any):
+        child_kwargs.update(_kwargs)
         child = SimpleNamespace(messages=[dict(item) for item in parent_agent.messages])
         return child, SimpleNamespace()
 
@@ -362,6 +368,14 @@ def test_generate_plan_uses_child_agent_without_mutating_parent_messages(monkeyp
     assert isinstance(pending, PendingWorkPlan)
     assert parent_agent.messages == [{"role": "user", "content": [{"text": "old"}]}]
     assert child_messages[-1] == {"role": "assistant", "content": [{"text": "planning"}]}
+    assert child_kwargs["hooks"] == [runtime_hook]
+    event = SimpleNamespace(
+        tool_use={"name": "shell", "input": {"command": "mkdir tmp"}},
+        invocation_state={"swarmee": {"mode": "plan"}},
+        cancel_tool=False,
+    )
+    runtime_hook.before_tool_call(event)
+    assert "only allowed in plan mode" in str(event.cancel_tool)
 
 
 def test_run_swarmee_falls_back_to_local_runtime_when_runtime_not_configured(monkeypatch):

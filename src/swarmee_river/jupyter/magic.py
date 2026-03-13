@@ -6,7 +6,7 @@ import shlex
 import threading
 import uuid
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +117,7 @@ class _NotebookRuntime:
     base_system_prompt: str
     artifact_store: ArtifactStore
     knowledge_base_id: str | None
+    hooks: list[Any] = field(default_factory=list)
     startup_notice: str | None = None
     startup_notice_pending: bool = False
 
@@ -699,6 +700,7 @@ def _get_or_create_runtime() -> _NotebookRuntime:
         base_system_prompt=base_system_prompt,
         artifact_store=artifact_store,
         knowledge_base_id=knowledge_base_id,
+        hooks=hooks,
         startup_notice=notebook_warning,
         startup_notice_pending=bool(notebook_warning),
     )
@@ -728,6 +730,7 @@ def _generate_plan(runtime: _NotebookRuntime, prompt: str, *, auto_approve: bool
         parent_agent=runtime.agent,
         kind="notebook_plan",
         seed_instruction=None,
+        hooks=runtime.hooks,
         callback_handler=None,
     )
     child_runtime = _NotebookRuntime(
@@ -739,6 +742,7 @@ def _generate_plan(runtime: _NotebookRuntime, prompt: str, *, auto_approve: bool
         base_system_prompt=runtime.base_system_prompt,
         artifact_store=runtime.artifact_store,
         knowledge_base_id=runtime.knowledge_base_id,
+        hooks=list(runtime.hooks),
     )
     result = _invoke_agent(
         child_runtime,

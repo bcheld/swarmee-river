@@ -2094,6 +2094,7 @@ def _build_agent_runtime(
             parent_agent=agent,
             kind="plan_revision" if revision_count > 0 else "plan",
             seed_instruction=None,
+            hooks=hooks,
             callback_handler=callback_handler,
         )
         invocation_state = _build_resolved_invocation_state(

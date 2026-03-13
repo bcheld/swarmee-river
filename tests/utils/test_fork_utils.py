@@ -100,6 +100,7 @@ def test_run_shared_prefix_text_fork_preserves_parent_prefix(monkeypatch) -> Non
 def test_create_shared_prefix_child_agent_seeds_instruction_and_tool_order(monkeypatch) -> None:
     parent = _parent_agent()
     created: dict[str, Any] = {}
+    runtime_hook = object()
 
     class _FakeAgent:
         def __init__(self, **kwargs: Any) -> None:
@@ -112,6 +113,7 @@ def test_create_shared_prefix_child_agent_seeds_instruction_and_tool_order(monke
         parent_agent=parent,
         kind="strand",
         seed_instruction="Do strand work",
+        hooks=[runtime_hook],
         tool_allowlist=["beta"],
         callback_handler=None,
     )
@@ -121,5 +123,6 @@ def test_create_shared_prefix_child_agent_seeds_instruction_and_tool_order(monke
     assert "Reminder block" in created["messages"][1]["content"][0]["text"]
     assert "Do strand work" in created["messages"][1]["content"][0]["text"]
     assert [tool["tool_name"] for tool in created["tools"]] == ["alpha", "beta"]
-    assert len(created["hooks"]) == 1
-    assert isinstance(created["hooks"][0], fork_utils.StaticToolAllowlistHooks)
+    assert len(created["hooks"]) == 2
+    assert created["hooks"][0] is runtime_hook
+    assert isinstance(created["hooks"][1], fork_utils.StaticToolAllowlistHooks)
