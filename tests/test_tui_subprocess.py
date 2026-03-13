@@ -1963,6 +1963,17 @@ def test_parse_output_line_classifies_traceback_and_fsevents_lines():
     assert fsevents.kind == "warning"
 
 
+def test_parse_output_line_does_not_treat_generic_warning_text_as_warning_event():
+    event = tui_app.parse_output_line("build completed with 1 warning and 0 errors")
+    assert event is None
+
+
+def test_parse_output_line_still_classifies_python_warning_format():
+    event = tui_app.parse_output_line("/tmp/x.py:12: UserWarning: deprecated configuration")
+    assert event is not None
+    assert event.kind == "warning"
+
+
 def test_sanitize_output_text_strips_ansi_and_carriage_returns():
     text = "hello\r\n\x1b[31mred\x1b[0m"
     assert tui_app.sanitize_output_text(text) == "hello\nred"

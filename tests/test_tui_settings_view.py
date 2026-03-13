@@ -57,6 +57,13 @@ class _Widget:
 
 class _SettingsHarness(SettingsMixin):
     def __init__(self, payload: dict[str, Any], *, selected_id: str | None = None) -> None:
+        class _StatusBar:
+            def __init__(self) -> None:
+                self.context_calls: list[tuple[int | None, int | None]] = []
+
+            def set_context(self, *, prompt_tokens_est, budget_tokens) -> None:  # noqa: ANN001
+                self.context_calls.append((prompt_tokens_est, budget_tokens))
+
         self._payload = deepcopy(payload)
         self.saved_payload: dict[str, Any] | None = None
         self._settings_models_selected_id = selected_id
@@ -65,6 +72,7 @@ class _SettingsHarness(SettingsMixin):
         self._refresh_settings_models_calls = 0
         self._refresh_settings_general_calls = 0
         self._refresh_agent_summary_calls = 0
+        self._refresh_prompt_metrics_calls = 0
         self.messages: list[str] = []
         self._widgets: dict[str, _Widget] = {
             "#settings_models_form_provider": _Widget("openai"),
@@ -103,10 +111,14 @@ class _SettingsHarness(SettingsMixin):
                 model_provider_override=None,
                 model_tier_override=None,
                 provider=None,
+                tier=None,
                 proc=None,
                 ready=False,
+                last_prompt_tokens_est=12345,
+                last_budget_tokens=None,
             )
         )
+        self._status_bar = _StatusBar()
         self.state.settings_model_select_syncing = False
 
     def query_one(self, selector: str, _widget_type: Any = None) -> _Widget:
@@ -137,6 +149,9 @@ class _SettingsHarness(SettingsMixin):
 
     def _refresh_agent_summary(self) -> None:
         self._refresh_agent_summary_calls += 1
+
+    def _refresh_prompt_metrics(self) -> None:
+        self._refresh_prompt_metrics_calls += 1
 
     def _write_transcript_line(self, text: str) -> None:
         self.messages.append(text)
@@ -341,21 +356,31 @@ def test_apply_settings_model_manager_result_persists_models_and_env() -> None:
 
 def test_apply_context_budget_setting_persists_custom_value() -> None:
     harness = _SettingsHarness({"context": {}, "models": {}, "env": {}}, selected_id=None)
+    harness.state.daemon.provider = "openai"
+    harness.state.daemon.tier = "fast"
 
     harness._apply_context_budget_setting("250000")
 
     assert harness.saved_payload is not None
     assert harness.saved_payload["context"]["max_prompt_tokens"] == 250000
+    assert harness.state.daemon.last_budget_tokens == 250000
+    assert harness._status_bar.context_calls[-1] == (12345, 250000)
+    assert harness._refresh_prompt_metrics_calls == 1
     assert any("250,000" in message for message in harness.messages)
 
 
 def test_apply_context_budget_setting_can_reset_to_auto() -> None:
     harness = _SettingsHarness({"context": {"max_prompt_tokens": 40000}, "models": {}, "env": {}}, selected_id=None)
+    harness.state.daemon.provider = "openai"
+    harness.state.daemon.tier = "fast"
 
     harness._apply_context_budget_setting("")
 
     assert harness.saved_payload is not None
     assert "max_prompt_tokens" not in harness.saved_payload.get("context", {})
+    assert harness.state.daemon.last_budget_tokens == 400000
+    assert harness._status_bar.context_calls[-1] == (12345, 400000)
+    assert harness._refresh_prompt_metrics_calls == 1
     assert any("reset to auto" in message for message in harness.messages)
 
 

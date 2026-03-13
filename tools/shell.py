@@ -76,13 +76,6 @@ def shell(
     elif getattr(completed, "timed_out", False):
         stderr = stderr or f"Command timed out after {timeout_s}s."
 
-    # Print for interactive `!` usage where the caller ignores the return value.
-    if non_interactive_mode:
-        if stdout:
-            print(stdout, end="" if stdout.endswith("\n") else "\n")
-        if stderr:
-            print(stderr, end="" if stderr.endswith("\n") else "\n")
-
     status = (
         "success"
         if exit_code == 0

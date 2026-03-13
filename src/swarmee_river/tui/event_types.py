@@ -15,6 +15,11 @@ _TRUNCATED_ARTIFACT_RE = re.compile(r"full output saved to (?P<path>[^\]]+)")
 _PROVIDER_NOISE_PREFIX = "[provider]"
 _PROVIDER_FALLBACK_PHRASE = "falling back to"
 _TRACEBACK_FILE_LINE_RE = re.compile(r'^File ".*", line \d+')
+_PYTHON_WARNING_RE = re.compile(
+    r"^(?:.+?:\d+(?::\d+)?:\s*)?(?:deprecationwarning|runtimewarning|userwarning|warning)\s*:",
+    re.IGNORECASE,
+)
+_LOG_WARNING_RE = re.compile(r"^(?:warning:|\[warning\]|\[warn\]|warn:)", re.IGNORECASE)
 _BEDROCK_CHUNK_KEYS = {
     "messageStart",
     "messageStop",
@@ -109,7 +114,7 @@ def parse_output_line(line: str) -> ParsedEvent | None:
     if "operation not permitted" in lower and "/bin/ps" in lower:
         return ParsedEvent(kind="warning", text=text)
 
-    if "warning" in lower or "deprecationwarning" in lower or "runtimewarning" in lower or "userwarning" in lower:
+    if _PYTHON_WARNING_RE.match(stripped) or _LOG_WARNING_RE.match(stripped):
         return ParsedEvent(kind="warning", text=text)
 
     if lower.startswith("[tool ") and any(token in lower for token in {" start", " started", " running"}):

@@ -118,12 +118,53 @@ class SettingsMixin:
         self.state.daemon.last_budget_tokens = (
             budget_tokens if isinstance(budget_tokens, int) and budget_tokens > 0 else None
         )
-        if self._status_bar is not None:
-            self._status_bar.set_context(
+        status_bar = getattr(self, "_status_bar", None)
+        if status_bar is not None:
+            status_bar.set_context(
                 prompt_tokens_est=self.state.daemon.last_prompt_tokens_est,
                 budget_tokens=self.state.daemon.last_budget_tokens,
             )
-        self._refresh_prompt_metrics()
+        refresh_prompt_metrics = getattr(self, "_refresh_prompt_metrics", None)
+        if callable(refresh_prompt_metrics):
+            refresh_prompt_metrics()
+
+    def _settings_from_project_payload(self, payload: dict[str, Any]) -> Any:
+        from swarmee_river.settings import (
+            SwarmeeSettings,
+            deep_merge_dict,
+            default_settings_template,
+        )
+
+        defaults = default_settings_template().to_dict()
+        merged = deep_merge_dict(defaults, payload) if payload else defaults
+        return SwarmeeSettings.from_dict(merged)
+
+    def _refresh_live_context_budget_from_settings_payload(self, payload: dict[str, Any]) -> None:
+        from swarmee_river.session.models import SessionModelManager
+        from swarmee_river.utils.provider_utils import resolve_model_provider
+
+        settings = self._settings_from_project_payload(payload)
+        provider = str(
+            self.state.daemon.model_provider_override or self.state.daemon.provider or ""
+        ).strip().lower()
+        if not provider:
+            provider, _ = resolve_model_provider(
+                cli_provider=None,
+                env_provider=None,
+                settings_provider=settings.models.provider,
+            )
+        tier = str(
+            self.state.daemon.model_tier_override
+            or self.state.daemon.tier
+            or settings.models.default_tier
+            or "balanced"
+        ).strip().lower()
+        manager = SessionModelManager(settings, fallback_provider=provider or None)
+        budget_tokens = manager.resolve_effective_context_budget(
+            provider_name=provider or None,
+            tier_name=tier,
+        )
+        self._apply_runtime_context_budget_tokens(budget_tokens)
 
     def _refresh_settings_bedrock_runtime_controls(self) -> None:
         from swarmee_river.settings import load_settings
@@ -306,6 +347,7 @@ class SettingsMixin:
         else:
             next_payload.pop("context", None)
         self._save_project_settings_payload(next_payload, path)
+        self._refresh_live_context_budget_from_settings_payload(next_payload)
         self._refresh_settings_general()
         self._refresh_settings_env_list()
         self._refresh_settings_env_detail(self._settings_env_selected_key)

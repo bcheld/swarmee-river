@@ -77,7 +77,7 @@
         "src/swarmee_river/swarmee.py:923",
         "src/swarmee_river/swarmee.py:936",
         "src/swarmee_river/tui/app.py:2452",
-        "src/swarmee_river/tui/mixins/settings.py:1711",
+        "src/swarmee_river/tui/mixins/settings.py:1753",
         "src/swarmee_river/utils/provider_utils.py:100",
         "src/swarmee_river/utils/provider_utils.py:109",
         "src/swarmee_river/utils/provider_utils.py:96"
@@ -522,7 +522,7 @@
         "src/swarmee_river/swarmee.py:4103",
         "src/swarmee_river/swarmee.py:4932",
         "src/swarmee_river/swarmee.py:4987",
-        "src/swarmee_river/tui/event_types.py:91",
+        "src/swarmee_river/tui/event_types.py:96",
         "src/swarmee_river/tui/transport.py:279"
       ],
       "where_set": [

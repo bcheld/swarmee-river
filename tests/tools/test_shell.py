@@ -41,3 +41,22 @@ def test_shell_reports_interrupt() -> None:
         assert result["status"] == "error"
         combined = result["content"][1]["text"]
         assert "Command interrupted." in combined
+
+
+def test_shell_does_not_print_raw_stdio_in_non_interactive_mode(capsys) -> None:
+    with mock.patch("tools.shell.run_subprocess_capture_interruptible") as run:
+        run.return_value = SimpleNamespace(
+            stdout="line 1\nwarning text\n",
+            stderr="stderr line\n",
+            returncode=0,
+            interrupted=False,
+            timed_out=False,
+        )
+
+        result = shell(command="echo ok", non_interactive_mode=True)
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+        assert result["status"] == "success"
+        assert "warning text" in result["content"][1]["text"]
