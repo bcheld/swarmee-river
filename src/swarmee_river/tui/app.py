@@ -3440,6 +3440,12 @@ def run_tui() -> int:
             if button_id == "settings_interrupt_control_reset":
                 self._reset_interrupt_control_settings()
                 return
+            if button_id == "settings_aws_athena_apply":
+                self._apply_aws_athena_settings()
+                return
+            if button_id == "settings_aws_athena_reset":
+                self._reset_aws_athena_settings()
+                return
             if button_id == "settings_general_context_budget_apply":
                 self._apply_context_budget_setting(
                     str(getattr(self._settings_general_context_budget_input, "value", "")).strip()

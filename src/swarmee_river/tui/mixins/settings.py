@@ -53,6 +53,10 @@ class SettingsMixin:
         "SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC": "10",
         "SWARMEE_BEDROCK_MAX_RETRIES": "1",
     }
+    _AWS_ATHENA_DEFAULTS: dict[str, str] = {
+        "AWS_REGION": "us-east-2",
+        "ATHENA_QUERY_TIMEOUT": "120",
+    }
     _INTERRUPT_CONTROL_DEFAULTS: dict[str, str] = {
         "SWARMEE_INTERRUPT_TIMEOUT_SEC": "2.0",
     }
@@ -200,6 +204,33 @@ class SettingsMixin:
         if timeout_widget is not None:
             with contextlib.suppress(Exception):
                 timeout_widget.value = str(settings.runtime.interrupt_timeout_sec)
+
+    def _refresh_settings_aws_athena_controls(self) -> None:
+        from swarmee_river.settings import load_settings
+
+        settings = load_settings()
+        aws_region_widget = getattr(self, "_settings_aws_region_input", None)
+        athena_database_widget = getattr(self, "_settings_athena_database_input", None)
+        athena_workgroup_widget = getattr(self, "_settings_athena_workgroup_input", None)
+        athena_output_widget = getattr(self, "_settings_athena_output_input", None)
+        athena_timeout_widget = getattr(self, "_settings_athena_timeout_input", None)
+        if aws_region_widget is not None:
+            with contextlib.suppress(Exception):
+                aws_region_widget.value = str(settings.runtime.aws.region or self._AWS_ATHENA_DEFAULTS["AWS_REGION"])
+        if athena_database_widget is not None:
+            with contextlib.suppress(Exception):
+                athena_database_widget.value = str(settings.runtime.athena.database or "")
+        if athena_workgroup_widget is not None:
+            with contextlib.suppress(Exception):
+                athena_workgroup_widget.value = str(settings.runtime.athena.workgroup or "")
+        if athena_output_widget is not None:
+            with contextlib.suppress(Exception):
+                athena_output_widget.value = str(settings.runtime.athena.output_location or "")
+        if athena_timeout_widget is not None:
+            with contextlib.suppress(Exception):
+                athena_timeout_widget.value = str(
+                    settings.runtime.athena.query_timeout_seconds or self._AWS_ATHENA_DEFAULTS["ATHENA_QUERY_TIMEOUT"]
+                )
 
     def _parse_positive_float_setting(self, raw: str, *, label: str) -> float | None:
         token = str(raw or "").strip()
@@ -417,6 +448,81 @@ class SettingsMixin:
         self._refresh_settings_env_list()
         self._refresh_settings_env_detail(self._settings_env_selected_key)
         self._write_transcript_line("[settings] interrupt control reset to defaults.")
+
+    def _persist_project_aws_athena_settings(
+        self,
+        *,
+        region: str,
+        database: str | None,
+        workgroup: str | None,
+        output_location: str | None,
+        query_timeout_seconds: int,
+    ) -> None:
+        payload, path = self._load_project_settings_payload()
+        next_payload = dict(payload)
+        runtime_payload = (
+            dict(next_payload.get("runtime") or {}) if isinstance(next_payload.get("runtime"), dict) else {}
+        )
+        aws_payload = dict(runtime_payload.get("aws") or {}) if isinstance(runtime_payload.get("aws"), dict) else {}
+        athena_payload = (
+            dict(runtime_payload.get("athena") or {}) if isinstance(runtime_payload.get("athena"), dict) else {}
+        )
+        aws_payload["region"] = region
+        athena_payload["query_timeout_seconds"] = int(query_timeout_seconds)
+        if database:
+            athena_payload["database"] = database
+        else:
+            athena_payload.pop("database", None)
+        if workgroup:
+            athena_payload["workgroup"] = workgroup
+        else:
+            athena_payload.pop("workgroup", None)
+        if output_location:
+            athena_payload["output_location"] = output_location
+        else:
+            athena_payload.pop("output_location", None)
+        runtime_payload["aws"] = aws_payload
+        runtime_payload["athena"] = athena_payload
+        next_payload["runtime"] = runtime_payload
+        self._save_project_settings_payload(next_payload, path)
+
+    def _apply_aws_athena_settings(self) -> None:
+        region = str(getattr(self._settings_aws_region_input, "value", "")).strip()
+        if not region:
+            self._write_transcript_line("[settings] AWS region is required.")
+            return
+        timeout_raw = str(getattr(self._settings_athena_timeout_input, "value", "")).strip()
+        timeout_s = self._parse_non_negative_int_setting(timeout_raw, label="Athena timeout")
+        if timeout_s is None:
+            return
+        if timeout_s < 10:
+            self._write_transcript_line("[settings] Athena timeout must be >= 10 seconds.")
+            return
+        database = str(getattr(self._settings_athena_database_input, "value", "")).strip() or None
+        workgroup = str(getattr(self._settings_athena_workgroup_input, "value", "")).strip() or None
+        output_location = str(getattr(self._settings_athena_output_input, "value", "")).strip() or None
+        self._persist_project_aws_athena_settings(
+            region=region,
+            database=database,
+            workgroup=workgroup,
+            output_location=output_location,
+            query_timeout_seconds=timeout_s,
+        )
+        self._refresh_settings_general()
+        self._write_transcript_line(
+            f"[settings] AWS/Athena defaults updated (region={region}, timeout={timeout_s}s)."
+        )
+
+    def _reset_aws_athena_settings(self) -> None:
+        self._persist_project_aws_athena_settings(
+            region=self._AWS_ATHENA_DEFAULTS["AWS_REGION"],
+            database=None,
+            workgroup=None,
+            output_location=None,
+            query_timeout_seconds=int(self._AWS_ATHENA_DEFAULTS["ATHENA_QUERY_TIMEOUT"]),
+        )
+        self._refresh_settings_general()
+        self._write_transcript_line("[settings] AWS/Athena defaults reset.")
 
     def _create_diagnostics_bundle(self) -> None:
         try:
@@ -1283,6 +1389,7 @@ class SettingsMixin:
             btn.label = f"ESC Interrupt: {'On' if on else 'Off'}"
             btn.variant = "success" if on else "default"
         self._refresh_settings_interrupt_control_controls()
+        self._refresh_settings_aws_athena_controls()
 
         # -- Context Manager select --
         sel = self._settings_general_context_manager_select

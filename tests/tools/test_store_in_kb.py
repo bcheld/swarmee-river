@@ -387,6 +387,7 @@ def test_store_in_kb_custom_region(mock_environment, mock_thread):
 
     # Verify thread was started
     mock_thread.assert_called_once()
+    assert mock_thread.call_args.kwargs["args"][3] == "ap-southeast-2"
 
     # Verify success response
     assert result["status"] == "success"
@@ -424,6 +425,7 @@ def test_data_source_id_selection(mock_environment, mock_thread):
     args = mock_thread.call_args.kwargs["args"]
     assert len(args) == 4  # content, title, kb_id, region_name
     assert args[0] == "Test content"  # First arg is content
+    assert args[3] == "us-east-2"
 
     # Verify thread was started
     mock_thread.return_value.start.assert_called_once()

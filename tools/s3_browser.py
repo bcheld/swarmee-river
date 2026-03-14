@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-import os
 import re
 from datetime import datetime
 from typing import Any
@@ -11,6 +10,7 @@ from typing import Any
 from strands import tool
 
 from swarmee_river.tool_permissions import set_permissions
+from swarmee_river.utils.aws_config import resolve_runtime_aws_region
 from swarmee_river.utils.text_utils import truncate
 
 
@@ -23,7 +23,7 @@ def _error(text: str, *, max_chars: int) -> dict[str, Any]:
 
 
 def _aws_region() -> str:
-    return (os.getenv("AWS_REGION") or "us-east-1").strip() or "us-east-1"
+    return resolve_runtime_aws_region()
 
 
 def _s3_client() -> Any:

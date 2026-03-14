@@ -16,6 +16,7 @@ from strands import tool
 from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.session.store import SessionStore
 from swarmee_river.tool_permissions import set_permissions
+from swarmee_river.utils.aws_config import resolve_runtime_aws_region
 from swarmee_river.utils.text_utils import truncate
 
 _DEFAULT_S3_PREFIX = "swarmee/sessions"
@@ -75,10 +76,9 @@ def _s3_client() -> Any:
     except Exception as exc:
         raise RuntimeError("boto3 is required. Install with: pip install boto3") from exc
 
-    region = (os.getenv("AWS_REGION") or "us-east-1").strip() or "us-east-1"
     return boto3.client(
         "s3",
-        region_name=region,
+        region_name=resolve_runtime_aws_region(),
         config=Config(connect_timeout=15, read_timeout=15, retries={"max_attempts": 2}),
     )
 
@@ -90,10 +90,9 @@ def _kb_client() -> Any:
     except Exception as exc:
         raise RuntimeError("boto3 is required. Install with: pip install boto3") from exc
 
-    region = (os.getenv("AWS_REGION") or "us-east-1").strip() or "us-east-1"
     return boto3.client(
         "bedrock-agent",
-        region_name=region,
+        region_name=resolve_runtime_aws_region(),
         config=Config(connect_timeout=15, read_timeout=15, retries={"max_attempts": 2}),
     )
 

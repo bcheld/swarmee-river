@@ -44,6 +44,10 @@ def _load_settings_payload(path: Path | None = None) -> dict[str, Any]:
     return {}
 
 
+def load_settings_payload(path: Path | None = None) -> dict[str, Any]:
+    return _load_settings_payload(path)
+
+
 def normalize_project_env_overrides(raw_env: Any) -> dict[str, str]:
     # Migration-only: restrict env overrides to internal wiring keys.
     return filter_project_env_overrides(raw_env)
@@ -258,6 +262,55 @@ class ContextConfig:
 
 
 @dataclass(frozen=True)
+class AwsConfig:
+    region: str = "us-east-2"
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "AwsConfig":
+        region = str(raw.get("region") or "us-east-2").strip() or "us-east-2"
+        return cls(region=region)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"region": self.region}
+
+
+@dataclass(frozen=True)
+class AthenaConfig:
+    database: str | None = None
+    workgroup: str | None = None
+    output_location: str | None = None
+    query_timeout_seconds: int = 120
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "AthenaConfig":
+        database = raw.get("database")
+        workgroup = raw.get("workgroup")
+        output_location = raw.get("output_location")
+        return cls(
+            database=str(database).strip() if isinstance(database, str) and str(database).strip() else None,
+            workgroup=str(workgroup).strip() if isinstance(workgroup, str) and str(workgroup).strip() else None,
+            output_location=(
+                str(output_location).strip()
+                if isinstance(output_location, str) and str(output_location).strip()
+                else None
+            ),
+            query_timeout_seconds=_as_int(raw.get("query_timeout_seconds"), default=120, min_value=10) or 120,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "query_timeout_seconds": self.query_timeout_seconds,
+        }
+        if self.database:
+            out["database"] = self.database
+        if self.workgroup:
+            out["workgroup"] = self.workgroup
+        if self.output_location:
+            out["output_location"] = self.output_location
+        return out
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     auto_approve: bool = False
     freeze_tools: bool = False
@@ -280,6 +333,8 @@ class RuntimeConfig:
     preflight_print: bool = False
     interrupt_timeout_sec: float = 2.0
     state_dir: str | None = None
+    aws: AwsConfig = field(default_factory=AwsConfig)
+    athena: AthenaConfig = field(default_factory=AthenaConfig)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "RuntimeConfig":
@@ -297,6 +352,8 @@ class RuntimeConfig:
             interrupt_timeout_sec = 2.0
         state_dir = raw.get("state_dir")
         state_dir = str(state_dir).strip() if isinstance(state_dir, str) and str(state_dir).strip() else None
+        aws_raw = raw.get("aws")
+        athena_raw = raw.get("athena")
         kb_id = raw.get("knowledge_base_id")
         kb_id = str(kb_id).strip() if isinstance(kb_id, str) and str(kb_id).strip() else None
         s3_bucket = raw.get("session_s3_bucket")
@@ -325,6 +382,8 @@ class RuntimeConfig:
             preflight_print=bool(_as_bool(raw.get("preflight_print"), default=False)),
             interrupt_timeout_sec=interrupt_timeout_sec,
             state_dir=state_dir,
+            aws=AwsConfig.from_dict(aws_raw) if isinstance(aws_raw, dict) else AwsConfig(),
+            athena=AthenaConfig.from_dict(athena_raw) if isinstance(athena_raw, dict) else AthenaConfig(),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -349,6 +408,8 @@ class RuntimeConfig:
             "preflight_max_chars": self.preflight_max_chars,
             "preflight_print": self.preflight_print,
             "interrupt_timeout_sec": self.interrupt_timeout_sec,
+            "aws": self.aws.to_dict(),
+            "athena": self.athena.to_dict(),
         }
         if self.state_dir:
             out["state_dir"] = self.state_dir
@@ -541,6 +602,14 @@ def migrate_legacy_env_overrides(payload: dict[str, Any]) -> tuple[dict[str, Any
     def _set_nested(d: dict[str, Any], key: str, value: Any) -> None:
         d[key] = value
 
+    def _ensure_nested_dict(d: dict[str, Any], key: str) -> dict[str, Any]:
+        existing = d.get(key)
+        if isinstance(existing, dict):
+            return existing
+        out: dict[str, Any] = {}
+        d[key] = out
+        return out
+
     def _ensure_provider(provider_name: str) -> dict[str, Any]:
         token = normalize_provider_name(provider_name) or provider_name
         token = str(token).strip().lower()
@@ -612,11 +681,46 @@ def migrate_legacy_env_overrides(payload: dict[str, Any]) -> tuple[dict[str, Any
                 _set_nested(runtime, "tooling_s3_prefix", v)
                 migrated[key] = "runtime.tooling_s3_prefix"
                 continue
+        if key in {"AWS_REGION", "AWS_DEFAULT_REGION"}:
+            v = str(raw_value or "").strip()
+            if v:
+                aws = _ensure_nested_dict(runtime, "aws")
+                _set_nested(aws, "region", v)
+                migrated[key] = "runtime.aws.region"
+                continue
         if key == "AWS_PROFILE":
             v = str(raw_value or "").strip()
             if v:
                 _set_provider_extra("bedrock", "aws_profile", v)
                 migrated[key] = "models.providers.bedrock.aws_profile"
+                continue
+        if key == "ATHENA_DATABASE":
+            v = str(raw_value or "").strip()
+            if v:
+                athena = _ensure_nested_dict(runtime, "athena")
+                _set_nested(athena, "database", v)
+                migrated[key] = "runtime.athena.database"
+                continue
+        if key == "ATHENA_WORKGROUP":
+            v = str(raw_value or "").strip()
+            if v:
+                athena = _ensure_nested_dict(runtime, "athena")
+                _set_nested(athena, "workgroup", v)
+                migrated[key] = "runtime.athena.workgroup"
+                continue
+        if key == "ATHENA_OUTPUT_LOCATION":
+            v = str(raw_value or "").strip()
+            if v:
+                athena = _ensure_nested_dict(runtime, "athena")
+                _set_nested(athena, "output_location", v)
+                migrated[key] = "runtime.athena.output_location"
+                continue
+        if key == "ATHENA_QUERY_TIMEOUT":
+            v = _as_int(raw_value, default=None, min_value=10)
+            if v is not None:
+                athena = _ensure_nested_dict(runtime, "athena")
+                _set_nested(athena, "query_timeout_seconds", v)
+                migrated[key] = "runtime.athena.query_timeout_seconds"
                 continue
         if key == "BYPASS_TOOL_CONSENT":
             b = _normalize_env_bool(raw_value)

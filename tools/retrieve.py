@@ -6,6 +6,7 @@ from typing import Any
 from strands import tool
 
 from swarmee_river.tool_permissions import set_permissions
+from swarmee_river.utils.aws_config import resolve_runtime_aws_region
 from swarmee_river.utils.text_utils import truncate
 
 
@@ -44,7 +45,7 @@ def retrieve(
     except Exception as exc:
         return {"status": "error", "content": [{"text": f"boto3 is required for retrieve: {exc}"}]}
 
-    region = (os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-2").strip()
+    region = resolve_runtime_aws_region()
     n = max(1, int(max_results))
 
     try:

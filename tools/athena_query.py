@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import re
 import time
 from typing import Any
@@ -9,6 +8,7 @@ from typing import Any
 from strands import tool
 
 from swarmee_river.tool_permissions import set_permissions
+from swarmee_river.utils.aws_config import resolve_runtime_athena_config, resolve_runtime_aws_region
 from swarmee_river.utils.text_utils import truncate
 from swarmee_river.utils.tool_interrupts import interrupt_requested, sleep_with_interrupt
 
@@ -84,19 +84,15 @@ def _blocked_statement_keyword(sql: str) -> str | None:
 
 
 def _region() -> str:
-    return (os.getenv("AWS_REGION") or "us-east-1").strip() or "us-east-1"
+    return resolve_runtime_aws_region()
 
 
 def _timeout_seconds() -> int:
-    raw = (os.getenv("ATHENA_QUERY_TIMEOUT") or "120").strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 120
+    value = resolve_runtime_athena_config().query_timeout_seconds
     return max(10, min(600, value))
 
 
-def _aws_client(service_name: str) -> Any:
+def _aws_client(service_name: str, *, region_name: str | None = None) -> Any:
     try:
         import boto3
         from botocore.config import Config
@@ -105,7 +101,7 @@ def _aws_client(service_name: str) -> Any:
 
     return boto3.client(
         service_name,
-        region_name=_region(),
+        region_name=resolve_runtime_aws_region(explicit_region=region_name),
         config=Config(connect_timeout=15, read_timeout=15, retries={"max_attempts": 2}),
     )
 
@@ -160,14 +156,20 @@ def _query(
     if blocked:
         return _error(f"Blocked SQL statement: {blocked}. Only read-only queries are allowed.", max_chars=max_chars)
 
+    athena_cfg = resolve_runtime_athena_config(
+        explicit_database=database,
+        explicit_workgroup=workgroup,
+        explicit_output_location=output_location,
+    )
+
     try:
-        athena = _aws_client("athena")
+        athena = _aws_client("athena", region_name=athena_cfg.region)
     except RuntimeError as exc:
         return _error(str(exc), max_chars=max_chars)
 
-    db = (database or os.getenv("ATHENA_DATABASE") or "").strip() or None
-    wg = (workgroup or os.getenv("ATHENA_WORKGROUP") or "").strip() or None
-    out = (output_location or os.getenv("ATHENA_OUTPUT_LOCATION") or "").strip() or None
+    db = athena_cfg.database
+    wg = athena_cfg.workgroup
+    out = athena_cfg.output_location
     row_cap = max(1, min(5000, int(max_rows)))
 
     start_args: dict[str, Any] = {"QueryString": sql}
@@ -305,9 +307,12 @@ def _describe(*, table: str | None, database: str | None, max_chars: int) -> dic
     if not table_name:
         return _error("table is required for action=describe", max_chars=max_chars)
 
-    db = (database or os.getenv("ATHENA_DATABASE") or "").strip()
+    db = (resolve_runtime_athena_config(explicit_database=database).database or "").strip()
     if not db:
-        return _error("database is required for action=describe (or set ATHENA_DATABASE)", max_chars=max_chars)
+        return _error(
+            "database is required for action=describe (or configure runtime.athena.database / ATHENA_DATABASE)",
+            max_chars=max_chars,
+        )
 
     try:
         glue = _aws_client("glue")
@@ -346,9 +351,12 @@ def _describe(*, table: str | None, database: str | None, max_chars: int) -> dic
 
 
 def _list_tables(*, database: str | None, pattern: str | None, max_chars: int) -> dict[str, Any]:
-    db = (database or os.getenv("ATHENA_DATABASE") or "").strip()
+    db = (resolve_runtime_athena_config(explicit_database=database).database or "").strip()
     if not db:
-        return _error("database is required for action=list_tables (or set ATHENA_DATABASE)", max_chars=max_chars)
+        return _error(
+            "database is required for action=list_tables (or configure runtime.athena.database / ATHENA_DATABASE)",
+            max_chars=max_chars,
+        )
 
     try:
         glue = _aws_client("glue")

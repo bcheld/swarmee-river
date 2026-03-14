@@ -144,16 +144,20 @@ Everything Swarmee River persists locally lives here:
 
 ```
 .swarmee/
-  settings.json          # All configuration (agent profiles, tool policy, context settings, etc.)
-  prompts.json           # Named prompt assets (orchestrator_base and custom prompts)
+  settings.json          # Local workspace overrides (created when you save settings)
+  settings.json.example  # Tracked workspace settings template
+  prompts.json           # Local prompt assets (created on demand)
+  prompts.json.example   # Tracked prompt asset template
   tool_metadata.json     # User-overridden tool tags and access hints
   logs/                  # JSONL event logs, one file per session
     session_<id>.jsonl
   artifacts/             # Truncated tool results stored by artifact ID
   runtime.json           # Broker socket address (written by `swarmee serve`)
+  settings.json.example  # Tracked workspace settings template
+  prompts.json.example   # Tracked prompt asset template
 ```
 
-Do not commit `.swarmee/` — it contains session data and local overrides. It is in `.gitignore` by default.
+Do not commit local `.swarmee/` runtime files — they contain session data and local overrides. The tracked `*.example` files are the only committed exceptions.
 
 ---
 

@@ -14,6 +14,7 @@ import boto3
 from strands import tool
 
 from swarmee_river.tool_permissions import set_permissions
+from swarmee_river.utils.aws_config import resolve_runtime_aws_region
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ def store_in_kb(content: str, title: str | None = None, knowledge_base_id: str |
             ],
         }
 
-    region_name = os.getenv("AWS_REGION", "us-west-2")
+    region_name = resolve_runtime_aws_region()
 
     doc_title = title or f"Swarmee Memory {time.strftime('%Y%m%d_%H%M%S')}"
 

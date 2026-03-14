@@ -6,8 +6,8 @@ __pycache__*
 .ruff_cache
 .welcome
 .swarmee/*
-!.swarmee/settings.json
-!.swarmee/prompts.json
+!.swarmee/settings.json.example
+!.swarmee/prompts.json.example
 .vscode
 build
 *.bak

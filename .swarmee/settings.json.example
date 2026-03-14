@@ -404,7 +404,14 @@
     "providers": {}
   },
   "runtime": {
+    "athena": {
+      "output_location": "s3://YOUR-ATHENA-RESULTS-BUCKET/swarmee/athena/",
+      "query_timeout_seconds": 120
+    },
     "auto_approve": false,
+    "aws": {
+      "region": "us-east-2"
+    },
     "disabled_tools": [],
     "enable_project_context_tool": false,
     "enabled_tools": [],

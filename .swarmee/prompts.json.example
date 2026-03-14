@@ -1,0 +1,14 @@
+[
+  {
+    "id": "orchestrator_base",
+    "name": "Orchestrator Base",
+    "content": "You are a helpful assistant.",
+    "tags": [
+      "orchestrator",
+      "base"
+    ],
+    "source": "project",
+    "created_at": null,
+    "updated_at": null
+  }
+]

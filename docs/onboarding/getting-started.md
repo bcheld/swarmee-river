@@ -111,7 +111,8 @@ Press `Ctrl+C` or `Escape` to exit.
 |-------|-----------|-----------------|
 | **REPL commands** | `:help`, `:approve`, `:cancel`, `:plan`, `:sop`, `:session` | Type `:help` inside the REPL |
 | **TUI tabs** | Run, Agents, Tooling, Settings | Top of the TUI screen |
-| **`.swarmee/settings.json`** | All non-secret config: agents, tool policy, context settings | Created on first run |
+| **`.swarmee/settings.json`** | Local non-secret config: agents, tool policy, context settings | Created when you save local settings |
+| **`.swarmee/settings.json.example`** | Tracked workspace settings template | Committed with the repo |
 | **`.swarmee/` folder** | Logs, artifacts, prompts, session state | `.swarmee/logs/`, `.swarmee/artifacts/` |
 | **`tools/` directory** | Where you drop custom `@tool` files | Project root |
 

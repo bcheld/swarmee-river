@@ -251,7 +251,8 @@ See the [Strands custom provider guide](https://strandsagents.com/latest/user-gu
 
 ```bash
 # Manage orchestrator prompt refs from the fixed Orchestrator row in Agents > Builder.
-# Prompts are stored in .swarmee/prompts.json.
+# Local prompts are stored in .swarmee/prompts.json.
+# The tracked template lives at .swarmee/prompts.json.example.
 ```
 
 ## Integrated Tools

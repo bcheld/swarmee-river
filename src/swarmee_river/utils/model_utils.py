@@ -16,6 +16,7 @@ from strands.models import CacheConfig, Model
 
 from swarmee_river.config.env_policy import getenv_secret
 from swarmee_river.settings import ModelTier, ProviderModels, SwarmeeSettings
+from swarmee_river.utils.aws_config import resolve_runtime_aws_region
 
 _THINKING_ENABLE_TOKENS = {"1", "true", "t", "yes", "y", "on", "enable", "enabled"}
 _THINKING_DISABLE_TOKENS = {"0", "false", "f", "no", "n", "off", "disable", "disabled", ""}
@@ -248,6 +249,7 @@ def _default_bedrock_model_config(settings: SwarmeeSettings) -> dict[str, Any]:
     max_retries = _as_int(extra.get("max_retries"), 2, min_value=0)
     config: dict[str, Any] = {
         "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "region_name": resolve_runtime_aws_region(),
         "max_tokens": max_tokens,
         "boto_client_config": Config(
             read_timeout=read_timeout,

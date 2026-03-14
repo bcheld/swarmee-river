@@ -325,6 +325,23 @@ def compose_settings_tab() -> Iterator[Any]:
                         variant="default",
                     )
 
+                yield Static("AWS & Athena", classes="settings-section-label")
+                with Horizontal(id="settings_aws_athena_row_1"):
+                    yield Input(placeholder="AWS region", id="settings_aws_region_input")
+                    yield Input(placeholder="Athena database", id="settings_athena_database_input")
+                    yield Input(placeholder="Athena workgroup", id="settings_athena_workgroup_input")
+                with Horizontal(id="settings_aws_athena_row_2"):
+                    yield Input(placeholder="Athena output location (s3://...)", id="settings_athena_output_input")
+                    yield Input(placeholder="Athena timeout (sec)", id="settings_athena_timeout_input")
+                with Horizontal(id="settings_aws_athena_actions"):
+                    yield Button("Apply AWS/Athena", id="settings_aws_athena_apply", compact=True, variant="success")
+                    yield Button(
+                        "Reset AWS/Athena",
+                        id="settings_aws_athena_reset",
+                        compact=True,
+                        variant="default",
+                    )
+
                 yield Static("Context", classes="settings-section-label")
                 with Horizontal(id="settings_general_context_row"):
                     yield Select(
@@ -563,6 +580,11 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_toggle_bypass_consent_button = app.query_one("#settings_toggle_bypass_consent", Button)
     app._settings_toggle_esc_interrupt_button = app.query_one("#settings_toggle_esc_interrupt", Button)
     app._settings_interrupt_timeout_input = app.query_one("#settings_interrupt_timeout_input", Input)
+    app._settings_aws_region_input = app.query_one("#settings_aws_region_input", Input)
+    app._settings_athena_database_input = app.query_one("#settings_athena_database_input", Input)
+    app._settings_athena_workgroup_input = app.query_one("#settings_athena_workgroup_input", Input)
+    app._settings_athena_output_input = app.query_one("#settings_athena_output_input", Input)
+    app._settings_athena_timeout_input = app.query_one("#settings_athena_timeout_input", Input)
     app._settings_interrupt_force_restart_select = None
     app._settings_general_context_manager_select = app.query_one("#settings_general_context_manager", Select)
     app._settings_general_preflight_select = app.query_one("#settings_general_preflight", Select)

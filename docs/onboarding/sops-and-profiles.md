@@ -124,7 +124,7 @@ The `orchestrator` profile is special — it always exists, cannot be deleted, a
 
 To customize the orchestrator's base prompt:
 - TUI: Tooling tab > Prompts > select `orchestrator_base` > edit content > Save
-- Direct edit: `.swarmee/prompts.json` → find the `orchestrator_base` entry
+- Direct edit: local `.swarmee/prompts.json` → find the `orchestrator_base` entry (`.swarmee/prompts.json.example` is the tracked template)
 
 ### Creating a Profile via the TUI
 

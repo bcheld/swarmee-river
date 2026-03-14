@@ -87,6 +87,11 @@ class _SettingsHarness(SettingsMixin):
             "#settings_bedrock_connect_timeout_input": _Widget("10"),
             "#settings_bedrock_max_retries_input": _Widget("1"),
             "#settings_interrupt_timeout_input": _Widget("2.0"),
+            "#settings_aws_region_input": _Widget("us-east-2"),
+            "#settings_athena_database_input": _Widget(""),
+            "#settings_athena_workgroup_input": _Widget(""),
+            "#settings_athena_output_input": _Widget(""),
+            "#settings_athena_timeout_input": _Widget("120"),
             "#settings_general_context_budget_mode": _Widget("auto"),
             "#settings_general_context_budget_input": _Widget(""),
             "#settings_models_provider_select": _Widget("__auto__"),
@@ -98,6 +103,11 @@ class _SettingsHarness(SettingsMixin):
         self._settings_bedrock_connect_timeout_input = self._widgets["#settings_bedrock_connect_timeout_input"]
         self._settings_bedrock_max_retries_input = self._widgets["#settings_bedrock_max_retries_input"]
         self._settings_interrupt_timeout_input = self._widgets["#settings_interrupt_timeout_input"]
+        self._settings_aws_region_input = self._widgets["#settings_aws_region_input"]
+        self._settings_athena_database_input = self._widgets["#settings_athena_database_input"]
+        self._settings_athena_workgroup_input = self._widgets["#settings_athena_workgroup_input"]
+        self._settings_athena_output_input = self._widgets["#settings_athena_output_input"]
+        self._settings_athena_timeout_input = self._widgets["#settings_athena_timeout_input"]
         self._settings_general_context_budget_mode_select = self._widgets["#settings_general_context_budget_mode"]
         self._settings_general_context_budget_input = self._widgets["#settings_general_context_budget_input"]
         self._settings_interrupt_force_restart_select = None
@@ -304,6 +314,50 @@ def test_apply_interrupt_control_settings_persists_values() -> None:
         "SWARMEE_INTERRUPT_TIMEOUT_SEC" not in harness.saved_payload.get("env", {})
     )
     assert harness._refresh_settings_general_calls == 1
+
+
+def test_apply_aws_athena_settings_persists_values() -> None:
+    harness = _SettingsHarness({"runtime": {}, "models": {}, "env": {}}, selected_id=None)
+    harness._settings_aws_region_input.value = "us-east-2"
+    harness._settings_athena_database_input.value = "analytics"
+    harness._settings_athena_workgroup_input.value = "primary"
+    harness._settings_athena_output_input.value = "s3://bucket/results/"
+    harness._settings_athena_timeout_input.value = "180"
+
+    harness._apply_aws_athena_settings()
+
+    assert harness.saved_payload is not None
+    assert harness.saved_payload["runtime"]["aws"]["region"] == "us-east-2"
+    assert harness.saved_payload["runtime"]["athena"] == {
+        "database": "analytics",
+        "workgroup": "primary",
+        "output_location": "s3://bucket/results/",
+        "query_timeout_seconds": 180,
+    }
+    assert harness._refresh_settings_general_calls == 1
+
+
+def test_reset_aws_athena_settings_clears_optional_values() -> None:
+    harness = _SettingsHarness(
+        {
+            "runtime": {
+                "aws": {"region": "eu-west-1"},
+                "athena": {
+                    "database": "analytics",
+                    "workgroup": "primary",
+                    "output_location": "s3://bucket/results/",
+                    "query_timeout_seconds": 200,
+                },
+            }
+        },
+        selected_id=None,
+    )
+
+    harness._reset_aws_athena_settings()
+
+    assert harness.saved_payload is not None
+    assert harness.saved_payload["runtime"]["aws"]["region"] == "us-east-2"
+    assert harness.saved_payload["runtime"]["athena"] == {"query_timeout_seconds": 120}
 
 
 def test_apply_bedrock_runtime_settings_rejects_invalid_values() -> None:

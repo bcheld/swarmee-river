@@ -26,8 +26,39 @@ def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path) -> None:
     assert settings.models.default_selection.tier == settings.models.default_tier
     assert settings.notebook.default_selection.provider is None
     assert settings.notebook.default_selection.tier == "fast"
+    assert settings.runtime.aws.region == "us-east-2"
+    assert settings.runtime.athena.query_timeout_seconds == 120
+    assert settings.runtime.athena.database is None
     assert settings.tui.shortcuts.toggle_transcript_mode == ["f8"]
     assert settings.tui.shortcuts.copy_selection == ["ctrl+shift+c", "ctrl+c", "meta+c", "super+c"]
+
+
+def test_load_settings_parses_runtime_aws_and_athena(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "runtime": {
+                    "aws": {"region": "eu-west-1"},
+                    "athena": {
+                        "database": "analytics",
+                        "workgroup": "primary",
+                        "output_location": "s3://bucket/results/",
+                        "query_timeout_seconds": 180,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.runtime.aws.region == "eu-west-1"
+    assert settings.runtime.athena.database == "analytics"
+    assert settings.runtime.athena.workgroup == "primary"
+    assert settings.runtime.athena.output_location == "s3://bucket/results/"
+    assert settings.runtime.athena.query_timeout_seconds == 180
 
 
 def test_load_settings_parses_tui_shortcuts(tmp_path: Path) -> None:
@@ -73,6 +104,32 @@ def test_load_project_env_overrides_parses_env_section(tmp_path: Path) -> None:
     overrides = load_project_env_overrides(settings_path)
     # Project env overrides are migration-only and restricted to internal wiring keys.
     assert overrides == {"PYTHONWARNINGS": "default::DeprecationWarning"}
+
+
+def test_load_settings_migrates_legacy_aws_and_athena_env_overrides(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "env": {
+                    "AWS_REGION": "eu-west-1",
+                    "ATHENA_DATABASE": "analytics",
+                    "ATHENA_WORKGROUP": "primary",
+                    "ATHENA_OUTPUT_LOCATION": "s3://bucket/results/",
+                    "ATHENA_QUERY_TIMEOUT": "180",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.runtime.aws.region == "eu-west-1"
+    assert settings.runtime.athena.database == "analytics"
+    assert settings.runtime.athena.workgroup == "primary"
+    assert settings.runtime.athena.output_location == "s3://bucket/results/"
+    assert settings.runtime.athena.query_timeout_seconds == 180
 
 
 def test_apply_project_env_overrides_honors_overwrite_flag(tmp_path: Path, monkeypatch) -> None:
