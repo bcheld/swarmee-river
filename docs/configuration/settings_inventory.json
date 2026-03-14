@@ -559,7 +559,7 @@
     },
     {
       "classification_reason": "Marked internal by runtime-internal catalog (`RUNTIME_INTERNAL_ENV_VARS`).",
-      "controls": "Controls runtime behavior at src/swarmee_river/handlers/callback_handler.py:169 and related callsites.",
+      "controls": "Controls runtime behavior at src/swarmee_river/handlers/callback_handler.py:1819 and related callsites.",
       "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
       "documented": false,
       "dup_group": null,
@@ -577,10 +577,10 @@
       "surface": "runtime_internal",
       "usage_count": 7,
       "where_read": [
-        "src/swarmee_river/handlers/callback_handler.py:169",
-        "src/swarmee_river/handlers/callback_handler.py:1758",
-        "src/swarmee_river/handlers/callback_handler.py:342",
-        "src/swarmee_river/handlers/callback_handler.py:363",
+        "src/swarmee_river/handlers/callback_handler.py:1819",
+        "src/swarmee_river/handlers/callback_handler.py:183",
+        "src/swarmee_river/handlers/callback_handler.py:370",
+        "src/swarmee_river/handlers/callback_handler.py:391",
         "src/swarmee_river/hooks/file_diff_review.py:156",
         "src/swarmee_river/hooks/tui_metrics.py:209",
         "src/swarmee_river/runtime_service/server.py:752",
@@ -591,6 +591,60 @@
         "code-only/runtime wiring"
       ],
       "write_count": 2
+    },
+    {
+      "classification_reason": "Status derived by deterministic inventory classification rules.",
+      "controls": "Controls runtime behavior at src/swarmee_river/tui/mixins/prompt_ui.py:24 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "TERM",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Platform convention variable (OS/shell), not Swarmee-specific naming.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 1,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/mixins/prompt_ui.py:24"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 0
+    },
+    {
+      "classification_reason": "Status derived by deterministic inventory classification rules.",
+      "controls": "Controls runtime behavior at src/swarmee_river/tui/mixins/prompt_ui.py:21 and related callsites.",
+      "controls_plain": "Internal runtime wiring variable that is usually set by Swarmee, not by users.",
+      "documented": false,
+      "dup_group": null,
+      "id": "TMUX",
+      "keep_configurable_justification": "Kept configurable internally to coordinate spawned runtime processes and transport behavior.",
+      "kind": "env",
+      "notes": "Internal runtime wiring variable; not intended as primary user-facing knob. Platform convention variable (OS/shell), not Swarmee-specific naming.",
+      "precedence": [
+        "launcher/runtime broker wiring env",
+        "process environment",
+        "built-in defaults"
+      ],
+      "read_count": 1,
+      "status": "internal_only",
+      "surface": "runtime_internal",
+      "usage_count": 1,
+      "where_read": [
+        "src/swarmee_river/tui/mixins/prompt_ui.py:21"
+      ],
+      "where_set": [
+        "code-only/runtime wiring"
+      ],
+      "write_count": 0
     },
     {
       "classification_reason": "Status derived by deterministic inventory classification rules.",

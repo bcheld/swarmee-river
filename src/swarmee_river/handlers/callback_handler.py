@@ -89,8 +89,22 @@ _NON_TEXT_EVENT_TOKENS = {
     "text_delta",
     "thinking",
 }
+_PLAN_PROTOCOL_MAX_TEXT_CHARS = 160
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _is_plan_turn(invocation_state: dict[str, Any] | None) -> bool:
+    if not isinstance(invocation_state, dict):
+        return False
+    sw = invocation_state.get("swarmee")
+    if not isinstance(sw, dict):
+        return False
+    return str(sw.get("mode", "")).strip().lower() == "plan"
+
+
+def _normalize_protocol_text(text: str | None) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
 def _message_content_blocks(message: Any) -> list[dict[str, Any]]:
@@ -244,9 +258,23 @@ class CallbackHandler:
         self.tool_histories: dict[str, dict[str, Any]] = {}
         self.interrupt_event: Event | None = None
         self._assistant_stream_buffer: str = ""
+        self._plan_protocol_text_buffer: str = ""
 
     def _reset_text_turn_state(self) -> None:
         self._assistant_stream_buffer = ""
+        self._plan_protocol_text_buffer = ""
+
+    def _record_plan_protocol_text(self, text: str | None) -> None:
+        normalized = _normalize_protocol_text(text)
+        if not normalized:
+            return
+        candidate = f"{self._plan_protocol_text_buffer} {normalized}".strip()
+        self._plan_protocol_text_buffer = candidate
+        if len(candidate) > _PLAN_PROTOCOL_MAX_TEXT_CHARS:
+            raise RuntimeError(
+                "Plan generation drifted into assistant text before WorkPlan. "
+                "Stop solving the task and return a WorkPlan directly."
+            )
 
     @staticmethod
     def _unprinted_suffix(full_text: str, printed_text: str) -> str:
@@ -377,6 +405,10 @@ class CallbackHandler:
             _safe_print(f"[warn] {warning_text.strip()}")
 
         # Handle regular output
+        plan_turn = _is_plan_turn(invocation_state)
+        if plan_turn and data:
+            self._record_plan_protocol_text(data)
+            data = ""
         if data:
             _mark_invoke_diag(
                 invocation_state,
@@ -515,6 +547,7 @@ class TuiCallbackHandler:
         self._bedrock_stream_markers_seen: set[str] = set()
         self._bedrock_missing_text_warning_emitted: bool = False
         self._emitted_reasoning_texts_turn: set[str] = set()
+        self._plan_protocol_text_buffer: str = ""
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Write a single JSONL event to stdout."""
@@ -536,6 +569,7 @@ class TuiCallbackHandler:
         self._suppress_reasoning_ui = False
         self._llm_start_emitted = False
         self._emitted_reasoning_texts_turn.clear()
+        self._plan_protocol_text_buffer = ""
         self._reset_bedrock_stream_state()
 
     def _reset_bedrock_stream_state(self) -> None:
@@ -959,6 +993,18 @@ class TuiCallbackHandler:
         if self._suppress_reasoning_ui:
             return
         self._emit({"event": "thinking", "text": chunk})
+
+    def _record_plan_protocol_text(self, text: str | None) -> None:
+        normalized = _normalize_protocol_text(text)
+        if not normalized:
+            return
+        candidate = f"{self._plan_protocol_text_buffer} {normalized}".strip()
+        self._plan_protocol_text_buffer = candidate
+        if len(candidate) > _PLAN_PROTOCOL_MAX_TEXT_CHARS:
+            raise RuntimeError(
+                "Plan generation drifted into assistant text before WorkPlan. "
+                "Stop solving the task and return a WorkPlan directly."
+            )
 
     def _extract_text_from_result(self, result: Any, *, exclude_reasoning_wrappers: bool = False) -> str | None:
         if isinstance(result, str):
@@ -1475,6 +1521,21 @@ class TuiCallbackHandler:
             if result is not None
             else None
         )
+        plan_turn = _is_plan_turn(invocation_state)
+        if plan_turn:
+            for payload_text in (
+                data,
+                assistant_snapshot_text,
+                extra_snapshot_text,
+                transport_snapshot_text,
+                result_text,
+            ):
+                self._record_plan_protocol_text(payload_text)
+            data = ""
+            assistant_snapshot_text = None
+            extra_snapshot_text = None
+            transport_snapshot_text = None
+            result_text = None
 
         saw_text_before = self._saw_text_delta
         suppress_snapshot_reemit = should_emit_complete and saw_text_before

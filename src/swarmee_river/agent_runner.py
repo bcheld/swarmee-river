@@ -188,6 +188,7 @@ def _start_stall_monitor(
 
     def _emit_warning(text: str, *, elapsed_s: float, stage: str, phase: str, threshold_s: float) -> None:
         metadata = {
+            "warning_kind": "bedrock_stall",
             "bedrock_stall_warn_sec": float(threshold_s),
             "bedrock_stall_elapsed_sec": round(elapsed_s, 2),
             "invoke_stage": stage,

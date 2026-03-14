@@ -56,6 +56,8 @@ PLATFORM_CONVENTION_ENV_VARS: set[str] = {
     "COMSPEC",
     "EDITOR",
     "SHELL",
+    "TERM",
+    "TMUX",
     "XDG_DATA_HOME",
 }
 
@@ -560,7 +562,10 @@ def _collect_tui_settings_controls(app_path: Path) -> list[dict[str, Any]]:
                     "non-secret legacy keys are migrated into structured settings fields."
                 ),
                 "controls_plain": _sentence(
-                    "Advanced TUI control for applying secrets for this session and migrating legacy keys into settings.",
+                    (
+                        "Advanced TUI control for applying secrets for this session and migrating "
+                        "legacy keys into settings."
+                    ),
                     "Advanced TUI environment editor control.",
                 ),
                 "status": "active",
@@ -1262,7 +1267,11 @@ def _load_env_policy_sets() -> tuple[set[str], set[str], set[str]]:
 def build_inventory_payload() -> tuple[dict[str, Any], str]:
     global RUNTIME_INTERNAL_ENV_VARS, RUNTIME_SECRET_ENV_VARS, RUNTIME_INTERNAL_SETTINGS_ENV_OVERRIDE_VARS
 
-    RUNTIME_SECRET_ENV_VARS, RUNTIME_INTERNAL_ENV_VARS, RUNTIME_INTERNAL_SETTINGS_ENV_OVERRIDE_VARS = _load_env_policy_sets()
+    (
+        RUNTIME_SECRET_ENV_VARS,
+        RUNTIME_INTERNAL_ENV_VARS,
+        RUNTIME_INTERNAL_SETTINGS_ENV_OVERRIDE_VARS,
+    ) = _load_env_policy_sets()
 
     env_keys_from_example, env_descriptions = _collect_env_from_example(ENV_EXAMPLE_PATH)
     env_refs = _scan_env_accesses(SRC_DIR)

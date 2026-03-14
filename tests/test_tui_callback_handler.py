@@ -8,6 +8,8 @@ import logging
 import sys
 from threading import Event
 
+import pytest
+
 from swarmee_river.handlers.callback_handler import TuiCallbackHandler
 
 
@@ -761,6 +763,50 @@ def test_warning_text_extra_field_emits_warning_event():
     h = TuiCallbackHandler()
     events = _capture_events(h, lambda: h.callback_handler(warning_text="bedrock stalled"))
     assert events == [{"event": "warning", "text": "bedrock stalled"}]
+
+
+def test_warning_text_extra_field_preserves_warning_metadata():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(
+            warning_text="bedrock stalled",
+            warning_metadata={"warning_kind": "bedrock_stall", "invoke_phase": "pre_progress"},
+        ),
+    )
+    assert events == [
+        {
+            "event": "warning",
+            "text": "bedrock stalled",
+            "warning_kind": "bedrock_stall",
+            "invoke_phase": "pre_progress",
+        }
+    ]
+
+
+def test_plan_turn_suppresses_assistant_text_deltas():
+    h = TuiCallbackHandler()
+    events = _capture_events(
+        h,
+        lambda: h.callback_handler(
+            data="I think the fix is to create a directory first.",
+            invocation_state={"swarmee": {"mode": "plan"}},
+        ),
+    )
+    assert events == []
+
+
+def test_plan_turn_protocol_guard_rejects_substantive_assistant_text():
+    h = TuiCallbackHandler()
+
+    with pytest.raises(RuntimeError, match="Plan generation drifted into assistant text"):
+        _capture_events(
+            h,
+            lambda: h.callback_handler(
+                data="This is a long preamble that keeps solving the task before returning a WorkPlan. " * 4,
+                invocation_state={"swarmee": {"mode": "plan"}},
+            ),
+        )
 
 
 def test_reasoning_extracted_from_nested_extra_payload():

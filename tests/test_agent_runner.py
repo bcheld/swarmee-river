@@ -83,6 +83,7 @@ def test_invoke_agent_emits_pre_progress_warning_for_bedrock(monkeypatch) -> Non
     assert warning_calls, "expected at least one stall warning callback"
     assert "still thinking" in warning_calls[0]["warning_text"].lower()
     assert warning_calls[0]["warning_metadata"]["invoke_phase"] == "pre_progress"
+    assert warning_calls[0]["warning_metadata"]["warning_kind"] == "bedrock_stall"
 
 
 def test_invoke_agent_pre_progress_warning_is_throttled(monkeypatch) -> None:
@@ -196,6 +197,7 @@ def test_bedrock_stall_monitor_emits_post_progress_warning(monkeypatch) -> None:
     assert warning_calls
     assert "stalled" in warning_calls[0]["warning_text"].lower()
     assert warning_calls[0]["warning_metadata"]["invoke_phase"] == "post_progress"
+    assert warning_calls[0]["warning_metadata"]["warning_kind"] == "bedrock_stall"
 
 
 def test_windows_loop_policy_auto_does_not_override(monkeypatch) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import os
 import shutil
@@ -9,6 +10,93 @@ from typing import Any
 
 
 class PromptUIMixin:
+    @staticmethod
+    def _osc52_sequence(payload: str) -> str:
+        encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        return f"\x1b]52;c;{encoded}\x07"
+
+    @classmethod
+    def _terminal_clipboard_sequence(cls, payload: str) -> str:
+        osc52 = cls._osc52_sequence(payload)
+        if os.getenv("TMUX"):
+            escaped = osc52.replace("\x1b", "\x1b\x1b")
+            return f"\x1bPtmux;{escaped}\x1b\\"
+        term = str(os.getenv("TERM", "") or "").lower()
+        if term.startswith("screen"):
+            escaped = osc52.replace("\x1b", "\x1b\x1b")
+            return f"\x1bP{escaped}\x1b\\"
+        return osc52
+
+    def _write_terminal_clipboard_sequence(self, sequence: str) -> bool:
+        targets: list[Any] = []
+        try:
+            tty = open("/dev/tty", "w", encoding="utf-8", errors="ignore")
+            targets.append(tty)
+        except Exception:
+            pass
+        stdout_stream = getattr(sys, "__stdout__", None)
+        if stdout_stream is not None and stdout_stream not in targets:
+            targets.append(stdout_stream)
+        stream = getattr(self, "_driver", None)
+        if stream is not None and stream not in targets:
+            targets.append(stream)
+
+        for target in targets:
+            try:
+                write = getattr(target, "write", None)
+                if callable(write):
+                    write(sequence)
+                    flush = getattr(target, "flush", None)
+                    if callable(flush):
+                        flush()
+                    return True
+            except Exception:
+                continue
+            finally:
+                if getattr(target, "name", None) == "/dev/tty":
+                    with contextlib.suppress(Exception):
+                        target.close()
+        return False
+
+    def _copy_text_via_terminal_clipboard(self, payload: str) -> bool:
+        sequence = self._terminal_clipboard_sequence(payload)
+        return self._write_terminal_clipboard_sequence(sequence)
+
+    def _copy_text_via_native_clipboard(self, payload: str) -> bool:
+        try:
+            if sys.platform == "darwin" and shutil.which("pbcopy"):
+                subprocess.run(["pbcopy"], input=payload, text=True, encoding="utf-8", check=True)
+                return True
+            if os.name == "nt" and shutil.which("clip"):
+                subprocess.run(["clip"], input=payload, text=True, encoding="utf-8", check=True)
+                return True
+            if shutil.which("wl-copy"):
+                subprocess.run(["wl-copy"], input=payload, text=True, encoding="utf-8", check=True)
+                return True
+            if shutil.which("xclip"):
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard"],
+                    input=payload,
+                    text=True,
+                    encoding="utf-8",
+                    check=True,
+                )
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _copy_text_to_clipboard_backend(self, payload: str) -> str:
+        if self._copy_text_via_native_clipboard(payload):
+            return "native_clipboard"
+        if self._copy_text_via_terminal_clipboard(payload):
+            return "terminal_clipboard"
+        try:
+            self.copy_to_clipboard(payload)
+            return "terminal_bridge"
+        except Exception:
+            return "unavailable"
+
     def _refresh_shortcut_map(self, settings: Any | None = None) -> None:
         from swarmee_river.settings import load_settings
 
@@ -218,39 +306,13 @@ class PromptUIMixin:
             self._notify(f"{label}: nothing to copy.", severity="warning")
             return
 
-        # Prefer native clipboard commands in terminal contexts (more reliable than Textual clipboard bridges).
-        try:
-            if sys.platform == "darwin" and shutil.which("pbcopy"):
-                subprocess.run(["pbcopy"], input=payload, text=True, encoding="utf-8", check=True)
-                self._notify(f"{label}: copied to clipboard.")
-                return
-            if os.name == "nt" and shutil.which("clip"):
-                subprocess.run(["clip"], input=payload, text=True, encoding="utf-8", check=True)
-                self._notify(f"{label}: copied to clipboard.")
-                return
-            if shutil.which("wl-copy"):
-                subprocess.run(["wl-copy"], input=payload, text=True, encoding="utf-8", check=True)
-                self._notify(f"{label}: copied to clipboard.")
-                return
-            if shutil.which("xclip"):
-                subprocess.run(
-                    ["xclip", "-selection", "clipboard"],
-                    input=payload,
-                    text=True,
-                    encoding="utf-8",
-                    check=True,
-                )
-                self._notify(f"{label}: copied to clipboard.")
-                return
-        except Exception:
-            pass
-
-        try:
-            self.copy_to_clipboard(payload)
+        backend = self._copy_text_to_clipboard_backend(payload)
+        if backend in {"native_clipboard", "terminal_clipboard"}:
             self._notify(f"{label}: copied to clipboard.")
             return
-        except Exception:
-            pass
+        if backend == "terminal_bridge":
+            self._notify(f"{label}: copy requested via terminal clipboard bridge.", severity="information")
+            return
 
         artifact_path = self._persist_run_transcript(
             pid=(self.state.daemon.proc.pid if self.state.daemon.proc is not None else None),

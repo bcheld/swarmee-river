@@ -631,15 +631,7 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
             app.state.session.error_count += 1
             app._write_issue(f"ERROR: tool {tool_name} failed ({status}) [{tid}]")
             app._update_header_status()
-            app._notify(f"{tool_name} tool failed", severity="error", timeout=6.0)
-            if tid:
-                app._mount_transcript_widget(
-                    app.render_system_message(  # type: ignore[attr-defined]
-                        "Tool failed. Retry or skip using buttons above the prompt."
-                    ),
-                    plain_text="Tool failed. Retry or skip using buttons above the prompt.",
-                )
-                app._show_tool_error_actions(tool_use_id=tid, tool_name=tool_name)
+            app._reset_error_action_prompt()
         app._schedule_session_timeline_refresh()
         return True
 
@@ -901,11 +893,7 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
         if category == ERROR_CATEGORY_TRANSIENT:
             app._reset_error_action_prompt()
         elif category == ERROR_CATEGORY_TOOL_ERROR:
-            tool_use_id = str(error_info.get("tool_use_id", "")).strip()
-            if tool_use_id:
-                tool_record = app._tool_blocks.get(tool_use_id)
-                tool_name = str(tool_record.get("tool", "tool")) if isinstance(tool_record, dict) else "tool"
-                app._show_tool_error_actions(tool_use_id=tool_use_id, tool_name=tool_name)
+            app._reset_error_action_prompt()
         elif category == ERROR_CATEGORY_ESCALATABLE:
             next_tier = str(error_info.get("next_tier", "")).strip() or app._next_available_tier_name()
             app._show_escalation_actions(next_tier=next_tier or None)
@@ -944,6 +932,7 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
 
     if etype == "warning":
         raw_warn_text = str(event.get("text", ""))
+        warning_kind = str(event.get("warning_kind", "")).strip().lower()
         warn_text = raw_warn_text
         if not warn_text.startswith("WARN:"):
             warn_text = f"WARN: {warn_text}"
@@ -954,9 +943,10 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
         with contextlib.suppress(Exception):
             handled_in_popup = bool(app._handle_connect_status_warning(raw_warn_text))
         is_bedrock_region_warning = _is_unresolved_bedrock_region_warning(raw_warn_text)
+        is_bedrock_stall_warning = warning_kind == "bedrock_stall"
         if is_bedrock_region_warning:
             _show_bedrock_setup_guidance_once(app)
-        if not handled_in_popup and not is_bedrock_region_warning:
+        if not handled_in_popup and not is_bedrock_region_warning and not is_bedrock_stall_warning:
             app._notify(warn_text, severity="warning", timeout=4)
         return True
 

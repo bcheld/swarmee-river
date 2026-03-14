@@ -4458,6 +4458,125 @@ def test_action_copy_selection_copies_full_non_prompt_text_area() -> None:
     assert harness.copied == [("Question answer text\n", "plan_question_answer_0 pane")]
 
 
+def test_copy_text_native_clipboard_reports_confirmed_success() -> None:
+    class _Harness(PromptUIMixin):
+        def __init__(self) -> None:
+            self.notifications: list[tuple[str, str]] = []
+            self.native_payloads: list[str] = []
+
+        def _copy_text_via_native_clipboard(self, payload: str) -> bool:
+            self.native_payloads.append(payload)
+            return True
+
+        def _notify(self, msg: str, *, severity: str = "information", timeout: float = 2.5) -> None:
+            del timeout
+            self.notifications.append((msg, severity))
+
+    harness = _Harness()
+    harness._copy_text("selected text", label="selection")
+
+    assert harness.native_payloads == ["selected text"]
+    assert harness.notifications == [("selection: copied to clipboard.", "information")]
+
+
+def test_terminal_clipboard_sequence_wraps_for_tmux(monkeypatch) -> None:
+    monkeypatch.setenv("TMUX", "1")
+    monkeypatch.delenv("TERM", raising=False)
+
+    sequence = PromptUIMixin._terminal_clipboard_sequence("selected text")
+
+    assert sequence.startswith("\x1bPtmux;")
+    assert "]52;c;" in sequence
+    assert sequence.endswith("\x1b\\")
+
+
+def test_copy_text_terminal_clipboard_reports_confirmed_success() -> None:
+    class _Harness(PromptUIMixin):
+        def __init__(self) -> None:
+            self.notifications: list[tuple[str, str]] = []
+            self.terminal_payloads: list[str] = []
+
+        def _copy_text_via_native_clipboard(self, _payload: str) -> bool:
+            return False
+
+        def _copy_text_via_terminal_clipboard(self, payload: str) -> bool:
+            self.terminal_payloads.append(payload)
+            return True
+
+        def _notify(self, msg: str, *, severity: str = "information", timeout: float = 2.5) -> None:
+            del timeout
+            self.notifications.append((msg, severity))
+
+    harness = _Harness()
+    harness._copy_text("selected text", label="selection")
+
+    assert harness.terminal_payloads == ["selected text"]
+    assert harness.notifications == [("selection: copied to clipboard.", "information")]
+
+
+def test_copy_text_terminal_bridge_reports_best_effort_notice() -> None:
+    class _Harness(PromptUIMixin):
+        def __init__(self) -> None:
+            self.notifications: list[tuple[str, str]] = []
+            self.bridge_payloads: list[str] = []
+
+        def _copy_text_via_native_clipboard(self, _payload: str) -> bool:
+            return False
+
+        def _copy_text_via_terminal_clipboard(self, _payload: str) -> bool:
+            return False
+
+        def copy_to_clipboard(self, payload: str) -> None:
+            self.bridge_payloads.append(payload)
+
+        def _notify(self, msg: str, *, severity: str = "information", timeout: float = 2.5) -> None:
+            del timeout
+            self.notifications.append((msg, severity))
+
+    harness = _Harness()
+    harness._copy_text("selected text", label="selection")
+
+    assert harness.bridge_payloads == ["selected text"]
+    assert harness.notifications == [("selection: copy requested via terminal clipboard bridge.", "information")]
+
+
+def test_copy_text_unavailable_falls_back_to_artifact() -> None:
+    class _Harness(PromptUIMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(daemon=SimpleNamespace(proc=None, session_id="sess-1"))
+            self.artifacts: list[str] = []
+            self.transcript: list[str] = []
+
+        def _copy_text_via_native_clipboard(self, _payload: str) -> bool:
+            return False
+
+        def _copy_text_via_terminal_clipboard(self, _payload: str) -> bool:
+            return False
+
+        def copy_to_clipboard(self, _payload: str) -> None:
+            raise RuntimeError("osc52 unavailable")
+
+        def _persist_run_transcript(self, **_kwargs):
+            return "/tmp/copied.txt"
+
+        def _add_artifact_paths(self, paths):
+            self.artifacts.extend(paths)
+
+        def _write_transcript_line(self, line: str) -> None:
+            self.transcript.append(line)
+
+        def _notify(self, *_args, **_kwargs) -> None:
+            raise AssertionError("clipboard fallback should not toast")
+
+    harness = _Harness()
+    harness._copy_text("selected text", label="selection")
+
+    assert harness.artifacts == ["/tmp/copied.txt"]
+    assert harness.transcript == [
+        "[copy] selection: clipboard unavailable. Saved to artifact: /tmp/copied.txt"
+    ]
+
+
 def test_action_interrupt_run_sets_cancelling_state(monkeypatch) -> None:
     sent: list[dict[str, object]] = []
 
@@ -4802,6 +4921,153 @@ def test_warning_event_handler_calls_notify() -> None:
     assert len(notifications) == 1
     assert notifications[0][1] == "warning"
     assert "WARN:" in issues[0]
+
+
+def test_warning_event_handler_suppresses_bedrock_stall_toast() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class FakeState:
+        class session:
+            warning_count = 0
+            error_count = 0
+
+    notifications = []
+    issues = []
+
+    class FakeApp:
+        state = FakeState()
+
+        def _write_issue(self, text):
+            issues.append(text)
+
+        def _update_header_status(self):
+            pass
+
+        def _notify(self, msg, *, severity="information", timeout=2.5):
+            notifications.append((msg, severity, timeout))
+
+    app = FakeApp()
+    result = _handle_error_warning_events(
+        app,
+        "warning",
+        {"text": "Bedrock invocation is still thinking", "warning_kind": "bedrock_stall"},
+    )
+    assert result is True
+    assert app.state.session.warning_count == 1
+    assert notifications == []
+    assert "WARN:" in issues[0]
+
+
+def test_tool_failure_stays_in_transcript_without_prompt_top_recovery_bar() -> None:
+    from swarmee_river.tui.event_router import _handle_tool_events
+
+    mounted: list[str] = []
+    issues: list[str] = []
+    notifications: list[tuple[str, str, float]] = []
+    shown_tool_actions: list[tuple[str, str]] = []
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self._tool_blocks = {
+                "tool-1": {
+                    "tool": "shell",
+                    "input": {"command": "mkdir tmp"},
+                    "start_rendered": True,
+                    "widget": None,
+                }
+            }
+            self._tool_progress_pending_ids = set()
+            self._tool_pending_start = {}
+            self.state = SimpleNamespace(session=SimpleNamespace(error_count=0))
+
+        def _flush_tool_progress_render(self, *_args, **_kwargs) -> None:
+            pass
+
+        def _tool_result_plain_text(self, tool_name, status, duration_s, tool_input):
+            del duration_s, tool_input
+            return f"{tool_name}:{status}"
+
+        def render_tool_result_line(self, tool_name, **_kwargs):
+            return f"widget:{tool_name}"
+
+        def _mount_transcript_widget(self, _widget, *, plain_text=None):
+            mounted.append(str(plain_text or ""))
+
+        def _write_issue(self, text):
+            issues.append(text)
+
+        def _update_header_status(self):
+            pass
+
+        def _notify(self, msg, *, severity="information", timeout=2.5):
+            notifications.append((msg, severity, timeout))
+
+        def _show_tool_error_actions(self, *, tool_use_id: str, tool_name: str) -> None:
+            shown_tool_actions.append((tool_use_id, tool_name))
+
+        def _reset_error_action_prompt(self) -> None:
+            pass
+
+        def _schedule_session_timeline_refresh(self) -> None:
+            pass
+
+    app = FakeApp()
+    handled = _handle_tool_events(
+        app,
+        "tool_result",
+        {"tool_use_id": "tool-1", "status": "error", "duration_s": 1.2},
+    )
+    assert handled is True
+    assert mounted == ["shell:error"]
+    assert shown_tool_actions == []
+    assert notifications == []
+    assert issues == ["ERROR: tool shell failed (error) [tool-1]"]
+    assert app.state.session.error_count == 1
+
+
+def test_tool_error_event_resets_prompt_bar_instead_of_showing_tool_actions() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class FakeState:
+        class daemon:
+            pending_model_select_value = None
+
+        class session:
+            warning_count = 0
+            error_count = 0
+
+    resets: list[bool] = []
+    notifications: list[tuple[str, str, float]] = []
+    issues: list[str] = []
+
+    class FakeApp:
+        state = FakeState()
+        _tool_blocks = {"tool-9": {"tool": "shell"}}
+
+        def _write_issue(self, text):
+            issues.append(text)
+
+        def _update_header_status(self):
+            pass
+
+        def _notify(self, msg, *, severity="information", timeout=2.5):
+            notifications.append((msg, severity, timeout))
+
+        def _reset_error_action_prompt(self):
+            resets.append(True)
+
+        def _show_tool_error_actions(self, **_kwargs):
+            raise AssertionError("tool recovery bar should not be shown")
+
+    handled = _handle_error_warning_events(
+        FakeApp(),
+        "error",
+        {"message": "tool execution failed: tool_use_id=tool-9", "category": "tool_error"},
+    )
+    assert handled is True
+    assert resets == [True]
+    assert notifications
+    assert "ERROR:" in issues[0]
 
 
 def test_handle_output_line_suppresses_duplicate_raw_assistant_echo() -> None:

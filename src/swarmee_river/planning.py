@@ -179,6 +179,7 @@ def classify_intent(prompt: str) -> str:
 def structured_plan_prompt() -> str:
     return (
         "You are Swarmee River in PLAN mode.\n"
+        "- Your job is to produce a WorkPlan, not to solve or draft the final answer.\n"
         "- You may use safe read-only tools to gather context before planning: "
         "file_read, notebook_read, file_search, file_list, glob, grep, retrieve, project_context, "
         "athena_query, conservative read-only shell commands, and single-expression "
@@ -186,6 +187,7 @@ def structured_plan_prompt() -> str:
         "- Stop exploring as soon as you have enough context to emit a concrete WorkPlan.\n"
         "- Do NOT produce any text output. Your final response MUST be a single "
         "WorkPlan tool call with no preceding text.\n"
+        "- Do NOT draft a solution, implementation, or answer in assistant text before the WorkPlan.\n"
         "- Put all analysis, reasoning, and recommendations into the WorkPlan fields "
         "(summary, assumptions, steps).\n"
         "- If you cannot produce a valid WorkPlan, ask focused questions in WorkPlan.questions.\n"
