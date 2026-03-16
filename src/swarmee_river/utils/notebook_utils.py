@@ -106,7 +106,7 @@ def load_notebook_text(
             output_texts = [text for text in output_texts if text]
             if output_texts:
                 rendered.append("Outputs:")
-                rendered.extend(output_texts[:5])
+                rendered.extend(output_texts[:10])
         rendered_parts.append("\n".join(rendered).rstrip())
 
     return "\n\n".join(part for part in rendered_parts if part).strip()

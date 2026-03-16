@@ -1160,8 +1160,9 @@ def run_tui() -> int:
 
         #engage_plan_items {
             display: none;
-            height: 1fr;
+            height: auto;
             min-height: 8;
+            max-height: 24;
             border: round #3b3b3b;
             padding: 0 1;
             margin: 0 0 1 0;
@@ -1946,10 +1947,6 @@ def run_tui() -> int:
             padding: 0 0 1 0;
         }
 
-        #plan_actions {
-            display: none;
-            height: auto;
-        }
 
         #consent_prompt {
             display: none;

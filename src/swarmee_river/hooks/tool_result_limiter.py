@@ -16,6 +16,7 @@ from swarmee_river.state_paths import artifacts_dir as _default_artifacts_dir
 _TOOL_TEXT_LIMITS = {
     "file_read": 4000,
     "file_search": 4000,
+    "notebook_read": 16000,
 }
 
 

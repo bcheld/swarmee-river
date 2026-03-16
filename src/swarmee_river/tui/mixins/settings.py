@@ -538,8 +538,9 @@ class SettingsMixin:
         import contextlib as _ctx
 
         with _ctx.suppress(Exception):
-            pa = self.query_one("#plan_actions")
-            if self.state.plan.pending_record and not self.state.daemon.query_active:
+            pa = self.query_one("#engage_plan_actions_row")
+            has_plan_ui = bool(self.state.plan.plan_json) or bool(self.state.plan.pending_record)
+            if has_plan_ui and not self.state.daemon.query_active:
                 pa.styles.display = "block"
             else:
                 pa.styles.display = "none"

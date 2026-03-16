@@ -20,7 +20,7 @@ def notebook_read(
     start_cell: int | None = None,
     end_cell: int | None = None,
     include_outputs: bool = False,
-    max_chars: int = 4000,
+    max_chars: int = 16000,
 ) -> dict[str, Any]:
     """Read a Jupyter notebook as compact text without executing code."""
     rel_path = str(path or "").strip()
