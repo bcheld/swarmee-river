@@ -150,7 +150,7 @@ def test_bedrock_balanced_tier_uses_extended_thinking_and_capabilities(
     config = captured.get("config")
     assert isinstance(config, dict)
     assert config["additional_request_fields"]["thinking"]["type"] == "enabled"
-    assert config["additional_request_fields"]["thinking"]["budget_tokens"] == 4096
+    assert config["additional_request_fields"]["thinking"]["budget_tokens"] == 8192
     assert tier.reasoning_mode == "extended"
     assert tier.supports_cache_tools is True
     assert tier.supports_forced_tool_with_reasoning is False

@@ -83,6 +83,7 @@ Text: Any = _RichText
 try:
     from swarmee_river.hooks.file_diff_review import FileDiffReviewHooks as _FileDiffReviewHooks
     from swarmee_river.hooks.jsonl_logger import JSONLLoggerHooks as _JSONLLoggerHooks
+    from swarmee_river.hooks.max_tokens_retry import MaxTokensRetryHooks as _MaxTokensRetryHooks
     from swarmee_river.hooks.tui_metrics import TuiMetricsHooks as _TuiMetricsHooks
     from swarmee_river.hooks.tool_consent import ToolConsentHooks as _ToolConsentHooks
     from swarmee_river.hooks.tool_policy import ToolPolicyHooks as _ToolPolicyHooks
@@ -92,6 +93,7 @@ try:
 except Exception:
     _FileDiffReviewHooks = None  # type: ignore[misc,assignment]
     _JSONLLoggerHooks = None  # type: ignore[misc,assignment]
+    _MaxTokensRetryHooks = None  # type: ignore[misc,assignment]
     _TuiMetricsHooks = None  # type: ignore[misc,assignment]
     _ToolConsentHooks = None  # type: ignore[misc,assignment]
     _ToolResultLimiterHooks = None  # type: ignore[misc,assignment]
@@ -99,6 +101,7 @@ except Exception:
     _HAS_STRANDS_HOOKS = False
 FileDiffReviewHooks: Any = _FileDiffReviewHooks
 JSONLLoggerHooks: Any = _JSONLLoggerHooks
+MaxTokensRetryHooks: Any = _MaxTokensRetryHooks
 TuiMetricsHooks: Any = _TuiMetricsHooks
 ToolConsentHooks: Any = _ToolConsentHooks
 ToolResultLimiterHooks: Any = _ToolResultLimiterHooks
@@ -1222,6 +1225,7 @@ def _build_runtime_hooks(
 
     hooks = [
         JSONLLoggerHooks(),
+        MaxTokensRetryHooks(),
         TuiMetricsHooks(pricing=settings.pricing),
         ToolPolicyHooks(safety_settings, runtime=settings.runtime),
         ToolConsentHooks(
@@ -2099,7 +2103,7 @@ def _build_agent_runtime(
                         else "(default)"
                     )
                     error_msg = (
-                        "Error: Response hit the max output token limit.\n"
+                        "Error: Response hit the max output token limit (automatic retry with increased limits was attempted).\n"
                         f"- Current max: {configured_label}\n"
                         "- Fix: increase `models.max_output_tokens` in `.swarmee/settings.json` "
                         "(or pass --max-output-tokens), or ask for a shorter response.\n"

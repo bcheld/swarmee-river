@@ -215,7 +215,7 @@ def test_sanitize_bedrock_converse_config_invalid_budget_falls_back_to_effort_de
 
     thinking = config["additional_request_fields"]["thinking"]
     assert thinking["type"] == "enabled"
-    assert thinking["budget_tokens"] == 4096
+    assert thinking["budget_tokens"] == 8192
 
 
 def test_sanitize_bedrock_converse_config_emits_adaptive_thinking_for_opus_46():

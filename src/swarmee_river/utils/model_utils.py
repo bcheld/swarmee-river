@@ -20,9 +20,9 @@ from swarmee_river.utils.aws_config import resolve_runtime_aws_region
 
 _THINKING_ENABLE_TOKENS = {"1", "true", "t", "yes", "y", "on", "enable", "enabled"}
 _THINKING_DISABLE_TOKENS = {"0", "false", "f", "no", "n", "off", "disable", "disabled", ""}
-_BEDROCK_THINKING_BUDGET_DEFAULT = 2048
-_BEDROCK_THINKING_BUDGET_MAX = 32768
-_BEDROCK_EXTENDED_BUDGETS = {"low": 1024, "medium": 4096, "high": 8192}
+_BEDROCK_THINKING_BUDGET_DEFAULT = 4096
+_BEDROCK_THINKING_BUDGET_MAX = 65536
+_BEDROCK_EXTENDED_BUDGETS = {"low": 2048, "medium": 8192, "high": 16384}
 _BEDROCK_ADAPTIVE_EFFORTS = {"low": "low", "medium": "medium", "high": "high"}
 _BEDROCK_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 _OPENAI_RESPONSES_MIN_STRANDS_VERSION = "1.29.0"
@@ -241,7 +241,7 @@ def bedrock_model_capabilities(model_id: str | None) -> BedrockModelCapabilities
 
 def _default_bedrock_model_config(settings: SwarmeeSettings) -> dict[str, Any]:
     extra = _provider_extra(settings, "bedrock")
-    max_tokens = settings.models.max_output_tokens if settings.models.max_output_tokens is not None else 32768
+    max_tokens = settings.models.max_output_tokens if settings.models.max_output_tokens is not None else 65536
     max_tokens = _as_int(max_tokens, 32768, min_value=1)
     # Treat <= 0 as invalid; callers should use positive seconds.
     read_timeout = _as_float(extra.get("read_timeout_sec"), 300.0, min_value=0.01)
