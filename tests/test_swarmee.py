@@ -1119,6 +1119,7 @@ class TestTuiDaemonMode:
             swarmee.main()
 
         events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip().startswith("{")]
+        model_info_events = [event for event in events if event.get("event") == "model_info"]
         applied_events = [event for event in events if event.get("event") == "profile_applied"]
         assert applied_events
         applied = applied_events[-1]["profile"]
@@ -1159,6 +1160,7 @@ class TestTuiDaemonMode:
                 "activated": True,
             },
         ]
+        assert any("call_agent_triage_research" in list(event.get("tool_names") or []) for event in model_info_events)
 
     def test_tui_daemon_set_profile_replaces_stale_sop_overrides(
         self,

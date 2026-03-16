@@ -42,6 +42,7 @@ def compose_tooling_tab() -> Iterator[Any]:
                             ("Pack", "pack"),
                             ("Native", "native"),
                             ("Connector-backed", "connector-backed"),
+                            ("Runtime-generated", "runtime-generated"),
                         ],
                         id="tooling_tools_source_filter",
                         value="__all__",

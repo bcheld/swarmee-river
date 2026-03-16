@@ -326,6 +326,7 @@ def _handle_agent_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         app._render_agent_builder_panel()
         app._render_agent_overview_panel()
         app._render_bundles_panel()
+        app._refresh_tooling_tools_list()
         app.state.agent_studio.team_presets = normalize_team_presets(applied_profile.team_presets)
         app.state.agent_studio.team_selected_item_id = None
         app._render_agent_team_panel()

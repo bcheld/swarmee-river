@@ -467,6 +467,167 @@ def test_plan_prompt_command_still_starts_plan_mode():
     assert harness.run_calls == [("draft ping check", False, "plan", None)]
 
 
+def test_daemon_start_run_leaves_agent_like_text_untouched(monkeypatch):
+    sent_commands: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "swarmee_river.tui.transport.send_daemon_command",
+        lambda _proc, payload: sent_commands.append(dict(payload)) or True,
+    )
+
+    class _Proc:
+        def poll(self) -> None:
+            return None
+
+    class _StatusBar:
+        def set_state(self, _state: str) -> None:
+            return None
+
+        def set_tool_count(self, _count: int) -> None:
+            return None
+
+        def set_elapsed(self, _elapsed: float) -> None:
+            return None
+
+        def set_model(self, _summary: str) -> None:
+            return None
+
+        def set_provider_usage(self, **_kwargs) -> None:
+            return None
+
+        def set_context(self, **_kwargs) -> None:
+            return None
+
+        def set_plan_step(self, **_kwargs) -> None:
+            return None
+
+    class _Harness(DaemonMixin):
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                daemon=SimpleNamespace(
+                    ready=True,
+                    proc=_Proc(),
+                    query_active=False,
+                    pending_model_select_value=None,
+                    model_provider_override=None,
+                    model_tier_override=None,
+                    provider=None,
+                    tier=None,
+                    current_model=None,
+                    turn_output_chunks=[],
+                    last_usage=None,
+                    last_cost_usd=None,
+                    last_provider_input_tokens=None,
+                    last_provider_cached_input_tokens=None,
+                    last_provider_output_tokens=None,
+                    last_prompt_tokens_est=None,
+                    last_budget_tokens=None,
+                    run_tool_count=0,
+                    run_start_time=None,
+                    run_active_tier_warning_emitted=False,
+                    status_timer=None,
+                ),
+                plan=SimpleNamespace(
+                    current_steps_total=0,
+                    current_summary="",
+                    current_steps=[],
+                    current_step_statuses=[],
+                    current_active_step=None,
+                    updates_seen=False,
+                    received_structured_plan=False,
+                    step_counter=0,
+                    completion_announced=False,
+                ),
+                agent_studio=SimpleNamespace(
+                    agents=[
+                        {"id": "fast-agent", "name": "Fast Agent", "summary": "Quick repo work", "activated": True}
+                    ]
+                ),
+            )
+            self._status_bar = _StatusBar()
+            self._current_assistant_chunks = []
+            self._streaming_buffer = []
+            self._streaming_last_flush_mono = 0.0
+            self._current_assistant_model = None
+            self._current_assistant_timestamp = None
+            self._assistant_completion_seen_turn = False
+            self._assistant_placeholder_written = False
+            self._stream_render_warning_emitted_turn = False
+            self._structured_assistant_seen_turn = False
+            self._raw_assistant_lines_suppressed_turn = 0
+            self._last_structured_assistant_text_turn = ""
+            self._callback_event_trace_turn = []
+            self._active_assistant_message = None
+            self._active_reasoning_block = None
+            self._tool_blocks = {}
+            self._tool_progress_pending_ids = set()
+            self.lines: list[str] = []
+
+        def _dismiss_action_sheet(self, *, restore_focus: bool = False) -> None:
+            _ = restore_focus
+            return None
+
+        def _sync_selected_model_before_run(self) -> None:
+            return None
+
+        def _refresh_plan_actions_visibility(self) -> None:
+            return None
+
+        def _reset_artifacts_panel(self) -> None:
+            return None
+
+        def _reset_consent_panel(self) -> None:
+            return None
+
+        def _reset_error_action_prompt(self) -> None:
+            return None
+
+        def _reset_issues_panel(self) -> None:
+            return None
+
+        def _cancel_streaming_flush_timer(self) -> None:
+            return None
+
+        def _reset_thinking_state(self) -> None:
+            return None
+
+        def _clear_pending_tool_starts(self) -> None:
+            return None
+
+        def _cancel_tool_progress_flush_timer(self) -> None:
+            return None
+
+        def _refresh_prompt_metrics(self) -> None:
+            return None
+
+        def set_interval(self, _seconds: float, _callback) -> SimpleNamespace:  # noqa: ANN001
+            return SimpleNamespace(stop=lambda: None)
+
+        def _record_thinking_event(self, _text: str) -> None:
+            return None
+
+        def _current_model_summary(self) -> str:
+            return "Model: auto"
+
+        def _turn_timestamp(self) -> str:
+            return "2026-03-14T12:00:00Z"
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.lines.append(text)
+
+        def query_one(self, _selector, _type=None):  # noqa: ANN001
+            raise AssertionError("model selector should not be queried in this harness")
+
+    harness = _Harness()
+    harness = _Harness()
+    harness._start_run("@agent fast-agent: search for files", auto_approve=True, mode="execute")
+
+    assert sent_commands
+    assert sent_commands[0]["text"] == "@agent fast-agent: search for files"
+    assert "agent_preference" not in sent_commands[0]
+    assert harness.lines == []
+
+
 def test_plan_approve_dispatch_starts_execute_mode() -> None:
     from swarmee_river.planning import WorkPlan, new_pending_work_plan
 
@@ -3230,6 +3391,52 @@ def test_agent_editor_nested_screens_use_app_push_screen():
     assert callable(app.calls[2][1])
 
 
+def test_agent_editor_empty_catalogs_show_setup_guidance():
+    from textual.message_pump import active_app
+
+    from swarmee_river.tui.widgets import AgentEditorScreen
+
+    class _FakeApp:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object]] = []
+
+        def push_screen(self, screen, callback=None):  # noqa: ANN001
+            self.calls.append((screen, callback))
+
+    app = _FakeApp()
+    token = active_app.set(app)
+    screen = AgentEditorScreen({"id": "writer", "name": "Writer"})
+    status_messages: list[str] = []
+    screen._set_status = lambda text: status_messages.append(text)  # type: ignore[method-assign]
+    try:
+        screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="agent_editor_tools_edit")))
+        screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="agent_editor_sops_edit")))
+        screen.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="agent_editor_kb_edit")))
+    finally:
+        active_app.reset(token)
+
+    assert app.calls == []
+    assert status_messages == [
+        "No tool catalog entries are available yet. Open Tooling > Tools to review discovered tools.",
+        "No SOPs are available yet. Add local SOPs or open Tooling > SOPs to review discovered SOPs.",
+        "No knowledge base entries are imported yet. Open Tooling > KBs to import one first.",
+    ]
+
+
+def test_agent_editor_capability_rows_use_dedicated_layout_css():
+    from swarmee_river.tui.widgets import AgentEditorScreen
+
+    css = AgentEditorScreen.DEFAULT_CSS
+
+    assert ".agent-editor-capability-row" in css
+    assert ".agent-editor-capability-summary" in css
+    assert "min-width: 0;" in css
+    assert ".agent-editor-capability-button" in css
+    assert "width: 16;" in css
+    assert "#agent_editor_prompt_content" in css
+    assert "height: 6;" in css
+
+
 def test_agent_manager_screen_updates_and_deletes_agents():
     from swarmee_river.tui.widgets import AgentManagerScreen
 
@@ -3459,6 +3666,32 @@ def test_apply_agent_builder_editor_result_updates_orchestrator_runtime_model_se
     assert harness.applied_payloads[0]["tier"] == "deep"
     assert any("Saved agent 'Orchestrator'" in line for line in harness.status_lines)
     assert any("Orchestrator" in note for note in harness.dirty_notes)
+
+
+def test_set_agent_draft_dirty_uses_user_facing_status_copy():
+    class _Harness(AgentStudioMixin):
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.statuses: list[str] = []
+            self.reload_calls = 0
+
+        def _set_agent_status(self, message: str) -> None:
+            self.statuses.append(message)
+
+        def _reload_saved_bundles(self, *, selected_id: str | None = None) -> None:
+            _ = selected_id
+            self.reload_calls += 1
+
+    harness = _Harness()
+    harness._set_agent_draft_dirty(True, note="Last change: updated the draft roster in Agent Manager.")
+    harness._set_agent_draft_dirty(False, note="Loaded bundle 'default'.")
+
+    assert harness.statuses[0] == (
+        "Draft has unsaved changes. Save in Bundles to persist. "
+        "Last change: updated the draft roster in Agent Manager."
+    )
+    assert harness.statuses[1] == "Draft is saved and up to date. Loaded bundle 'default'."
+    assert harness.reload_calls == 2
 
 
 def test_model_manager_screen_stage_delete_and_default_pair():

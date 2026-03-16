@@ -1,6 +1,6 @@
-# Multi-Agent Delegation: strand, swarm, and use_agent
+# Multi-Agent Delegation: strand, swarm, use_agent, and Builder Agents
 
-Swarmee River supports three delegation patterns that let the orchestrator hand work off to specialized sub-agents. Each pattern serves a different need.
+Swarmee River supports several delegation patterns that let the orchestrator hand work off to specialized sub-agents. Each pattern serves a different need.
 
 ---
 
@@ -13,7 +13,7 @@ Swarmee River supports three delegation patterns that let the orchestrator hand 
 | **Token isolation** | Each sub-agent has its own context window; long investigations don't crowd out the main session |
 | **Repeatability** | Wrap a complex procedure in a named tool call that can be re-used across sessions |
 
-The orchestrator decides when to delegate — you don't invoke sub-agents directly. You influence this through SOPs (e.g., "use a swarm to parallelize investigation and implementation"), agent profiles, and prompts.
+The orchestrator still decides when to delegate, but you can influence it through SOPs, activated Builder agents, and the generated `call_agent_<id>` tools exposed by the active runtime profile.
 
 ---
 
@@ -77,21 +77,36 @@ The swarm SOP in `sops/swarm.sop.md` provides a detailed template for this patte
 
 ---
 
-## `use_agent` — Profile-Based Delegation
+## `use_agent` — Inline Sub-Agent Fork
 
-`use_agent` delegates to a named **agent profile** that you've defined in `.swarmee/settings.json`. The sub-agent inherits all settings from that profile (SOPs, tools, system prompt snippet).
+`use_agent` is a lightweight text-only sub-agent fork. It is not currently wired to Builder agent IDs or profile IDs, so it should not be treated as a direct way to invoke a named Builder agent.
 
 **When to use:**
-- You have a well-defined reusable specialist (e.g., a security reviewer you always want applied consistently)
-- The sub-agent's behavior is defined by a profile, not inline instructions
+- You want the orchestrator to spin up a tool-less helper for a focused text subtask
+- You want inline subtask instructions without changing the Builder roster
 
-**Example:** If you've defined a `security-reviewer` profile (see [sops-and-profiles.md](sops-and-profiles.md)), the orchestrator can invoke it:
+**Example:** The orchestrator can use it for a focused rewrite or synthesis task:
 
 ```
-use_agent(agent_id="security-reviewer", query="Review the authentication changes in this diff: ...")
+use_agent(
+  prompt="Summarize the release risks in this diff.",
+  system_prompt="You are a careful release reviewer."
+)
 ```
 
-The `security-reviewer` profile's SOPs, tool allowlist, and system prompt snippet all apply automatically.
+## Activated Builder Agents — Generated `call_agent_` Tools
+
+Activated Builder agents are exposed to the orchestrator as runtime-generated tools. Each activated non-orchestrator agent becomes a tool named `call_agent_<sanitized_agent_id>`.
+
+For example, an activated Builder agent with id `fast-agent` becomes:
+
+```
+call_agent_fast_agent(
+  query="Search the repo for Athena callers and summarize where results are written."
+)
+```
+
+These tools are generated from the applied bundle/profile only. Unsaved Builder draft edits do not change live runtime tool availability.
 
 ---
 
@@ -166,7 +181,8 @@ strand(
 | Single agent | 1x | Most tasks |
 | `strand` | 1x + sub-agent context | Isolated long sub-tasks |
 | `swarm` (N agents) | 1x + N sub-agent contexts | N parallel independent tasks |
-| `use_agent` | 1x + profile agent context | Reusable specialist profiles |
+| `use_agent` | 1x + profile agent context | Tool-less text-only helper tasks |
+| `call_agent_<id>` | 1x + sub-agent context | Reusable Builder agents with tool allowlists |
 
 Each sub-agent processes the full query + its own system prompt + any results it produces. For cost-sensitive workloads, prefer passing concise, targeted queries to sub-agents rather than dumping entire conversation histories.
 

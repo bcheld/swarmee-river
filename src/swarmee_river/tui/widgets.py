@@ -3473,7 +3473,9 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         color: $text;
     }
     AgentEditorScreen #agent_editor_body {
-        height: 1fr;
+        height: auto;
+        min-height: 12;
+        max-height: 28;
         border: round #4a5461;
         padding: 1;
         margin: 0 0 1 0;
@@ -3512,8 +3514,22 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         border: round #3e4654;
         padding: 0 1;
     }
+    AgentEditorScreen .agent-editor-capability-row {
+        layout: horizontal;
+        height: auto;
+        margin: 0 0 1 0;
+    }
+    AgentEditorScreen .agent-editor-capability-summary {
+        width: 1fr;
+        min-width: 0;
+        margin: 0 1 0 0;
+    }
+    AgentEditorScreen .agent-editor-capability-button {
+        width: 16;
+        min-width: 16;
+    }
     AgentEditorScreen #agent_editor_prompt_content {
-        height: 10;
+        height: 6;
         margin: 0 0 1 0;
     }
     AgentEditorScreen #agent_editor_activated {
@@ -3579,6 +3595,25 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         self._selected_sops = self._normalize_token_list(normalized.get("sop_names") or [])
         self._selected_kb = str(normalized.get("knowledge_base_id", "") or "").strip()
         self._created_prompt_asset: dict[str, Any] | None = None
+
+    def _tool_catalog_available(self) -> bool:
+        return bool(self._tool_options)
+
+    def _sop_catalog_available(self) -> bool:
+        return bool(self._sop_options)
+
+    def _kb_catalog_available(self) -> bool:
+        return bool(self._kb_options)
+
+    def _capability_unavailable_message(self, capability: str) -> str:
+        key = str(capability or "").strip().lower()
+        if key == "tools":
+            return "No tool catalog entries are available yet. Open Tooling > Tools to review discovered tools."
+        if key == "sops":
+            return "No SOPs are available yet. Add local SOPs or open Tooling > SOPs to review discovered SOPs."
+        if key == "kb":
+            return "No knowledge base entries are imported yet. Open Tooling > KBs to import one first."
+        return "No catalog entries are available for this field yet."
 
     @staticmethod
     def _normalize_token_list(raw: Any, *, lowercase: bool = False) -> list[str]:
@@ -3795,12 +3830,18 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
                 f"Selected prompt: {prompt_label}\n{prompt_preview or 'No prompt asset selected.'}"
             )
         with contextlib.suppress(Exception):
+            tools_summary = f"Tools: {', '.join(self._selected_tools)}" if self._selected_tools else "Tools: inherit"
+            if not self._tool_catalog_available():
+                tools_summary += "\nNo discovered tool catalog entries yet. Open Tooling > Tools."
             self.query_one("#agent_editor_tools_summary", Static).update(
-                f"Tools: {', '.join(self._selected_tools)}" if self._selected_tools else "Tools: inherit"
+                tools_summary
             )
         with contextlib.suppress(Exception):
+            sops_summary = f"SOPs: {', '.join(self._selected_sops)}" if self._selected_sops else "SOPs: inherit"
+            if not self._sop_catalog_available():
+                sops_summary += "\nNo SOPs discovered yet. Add local SOPs or review Tooling > SOPs."
             self.query_one("#agent_editor_sops_summary", Static).update(
-                f"SOPs: {', '.join(self._selected_sops)}" if self._selected_sops else "SOPs: inherit"
+                sops_summary
             )
         kb_label = self._selected_kb or "inherit"
         for label, value in self._kb_options:
@@ -3808,9 +3849,15 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
                 kb_label = label
                 break
         with contextlib.suppress(Exception):
-            self.query_one("#agent_editor_kb_summary", Static).update(f"KB: {kb_label}")
+            kb_summary = f"KB: {kb_label}"
+            if not self._kb_catalog_available():
+                kb_summary += "\nNo imported KB entries yet. Open Tooling > KBs to import one."
+            self.query_one("#agent_editor_kb_summary", Static).update(kb_summary)
 
     def _open_tools_editor(self) -> None:
+        if not self._tool_catalog_available():
+            self._set_status(self._capability_unavailable_message("tools"))
+            return
         self.app.push_screen(
             CatalogMultiSelectScreen(
                 title="Select Agent Tools",
@@ -3829,6 +3876,9 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         self._refresh_capability_summaries()
 
     def _open_sops_editor(self) -> None:
+        if not self._sop_catalog_available():
+            self._set_status(self._capability_unavailable_message("sops"))
+            return
         self.app.push_screen(
             CatalogMultiSelectScreen(
                 title="Select Agent SOPs",
@@ -3847,6 +3897,9 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         self._refresh_capability_summaries()
 
     def _open_kb_editor(self) -> None:
+        if not self._kb_catalog_available():
+            self._set_status(self._capability_unavailable_message("kb"))
+            return
         self.app.push_screen(
             CatalogSingleSelectScreen(
                 title="Select Agent KB",
@@ -3981,17 +4034,44 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
                             allow_blank=False,
                         )
                 yield Static("Tools", classes="agent-editor-label")
-                with Horizontal(classes="agent-editor-row"):
-                    yield Static("", id="agent_editor_tools_summary", classes="agent-editor-summary")
-                    yield Button("Edit Tools", id="agent_editor_tools_edit", variant="default")
+                with Horizontal(classes="agent-editor-capability-row"):
+                    yield Static(
+                        "",
+                        id="agent_editor_tools_summary",
+                        classes="agent-editor-summary agent-editor-capability-summary",
+                    )
+                    yield Button(
+                        "Edit Tools",
+                        id="agent_editor_tools_edit",
+                        variant="default",
+                        classes="agent-editor-capability-button",
+                    )
                 yield Static("SOPs", classes="agent-editor-label")
-                with Horizontal(classes="agent-editor-row"):
-                    yield Static("", id="agent_editor_sops_summary", classes="agent-editor-summary")
-                    yield Button("Edit SOPs", id="agent_editor_sops_edit", variant="default")
+                with Horizontal(classes="agent-editor-capability-row"):
+                    yield Static(
+                        "",
+                        id="agent_editor_sops_summary",
+                        classes="agent-editor-summary agent-editor-capability-summary",
+                    )
+                    yield Button(
+                        "Edit SOPs",
+                        id="agent_editor_sops_edit",
+                        variant="default",
+                        classes="agent-editor-capability-button",
+                    )
                 yield Static("Knowledge Base", classes="agent-editor-label")
-                with Horizontal(classes="agent-editor-row"):
-                    yield Static("", id="agent_editor_kb_summary", classes="agent-editor-summary")
-                    yield Button("Select KB", id="agent_editor_kb_edit", variant="default")
+                with Horizontal(classes="agent-editor-capability-row"):
+                    yield Static(
+                        "",
+                        id="agent_editor_kb_summary",
+                        classes="agent-editor-summary agent-editor-capability-summary",
+                    )
+                    yield Button(
+                        "Select KB",
+                        id="agent_editor_kb_edit",
+                        variant="default",
+                        classes="agent-editor-capability-button",
+                    )
                 yield Checkbox(
                     "Activated",
                     value=bool(self._agent.get("activated")),

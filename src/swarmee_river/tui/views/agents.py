@@ -21,7 +21,7 @@ def compose_agents_tab() -> Iterator[Any]:
             with Vertical(id="agent_overview_view"):
                 yield Static("Orchestrator Agent", id="agent_summary_header")
                 yield Static(
-                    "Activated agents are available for delegation and swarm runs.",
+                    "Activated agents inform assistive delegation and become callable `call_agent_<id>` tools.",
                     id="agent_overview_help",
                 )
                 with Horizontal(id="agent_overview_model_row"):
@@ -51,7 +51,7 @@ def compose_agents_tab() -> Iterator[Any]:
             with Vertical(id="agent_builder_view"):
                 with VerticalScroll(id="agent_builder_scroll"):
                     yield Static(
-                        "Focused roster editor. Save and apply runtime bundles in the Bundles tab.",
+                        "Edit the draft roster here. Save in Bundles to persist and apply changes.",
                         id="agent_builder_help",
                     )
                     yield SidebarHeader(

@@ -169,6 +169,7 @@ from swarmee_river.prompt_assets import (
 )
 from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID, AgentProfile, normalize_agent_definitions
 from swarmee_river.project_map import build_context_snapshot, build_project_map
+from swarmee_river.runtime_agent_tools import build_runtime_agent_tools
 from swarmee_river.runtime_service.client import (
     RuntimeServiceClient,
     default_session_id_for_cwd,
@@ -1289,7 +1290,7 @@ def _build_agent_runtime(
     runtime_environment = detect_runtime_environment(cwd=Path.cwd())
     runtime_environment_prompt_section = render_runtime_environment_section(runtime_environment)
 
-    tools_dict, tools = _build_runtime_tools(settings)
+    static_tools_dict, _ = _build_runtime_tools(settings)
 
     pack_sop_paths = enabled_sop_paths(settings)
     pack_prompt_sections = enabled_system_prompts(settings)
@@ -1312,6 +1313,17 @@ def _build_agent_runtime(
     initial_context_behavior = model_manager.current_context_behavior()
     initial_context_strategy = str(initial_context_behavior.strategy or settings.context.strategy or "balanced")
     initial_compaction_mode = str(initial_context_behavior.compaction or settings.context.compaction or "auto")
+    active_profile_system_prompt_snippets: list[str] = []
+    active_profile_agents: list[dict[str, Any]] = []
+    active_orchestrator_agent: dict[str, Any] | None = None
+    auto_delegate_assistive = True
+
+    def _compose_runtime_tools() -> tuple[dict[str, Any], list[Any]]:
+        merged = dict(static_tools_dict)
+        merged.update(build_runtime_agent_tools(active_profile_agents))
+        return merged, [merged[name] for name in sorted(merged)]
+
+    tools_dict, tools = _compose_runtime_tools()
     summarization_system_prompt = None
     conversation_manager = _build_conversation_manager(
         settings=settings,
@@ -1399,10 +1411,6 @@ def _build_agent_runtime(
     agent._swarmee_prompt_cache = prompt_cache
     active_knowledge_base_id: str | None = knowledge_base_id
     user_context_sources: list[dict[str, str]] = []
-    active_profile_system_prompt_snippets: list[str] = []
-    active_profile_agents: list[dict[str, Any]] = []
-    active_orchestrator_agent: dict[str, Any] | None = None
-    auto_delegate_assistive = True
     user_context_active_reminder_keys: set[str] = set()
     user_context_file_cache: dict[str, dict[str, Any]] = {}
     user_context_sop_cache: dict[str, dict[str, Any]] = {}
@@ -2299,6 +2307,15 @@ def _build_agent_runtime(
         agent = create_agent(messages=messages, state=state)
         ctx.agent = agent
 
+    def _rebuild_runtime_tools_and_agent() -> None:
+        nonlocal tools_dict, tools
+        turn_snapshot = capture_agent_turn_state(agent, prompt_cache=prompt_cache)
+        tools_dict, tools = _compose_runtime_tools()
+        agent_kwargs["tools"] = tools
+        _refresh_conversation_manager_for_current_tier()
+        restore_prompt_cache_turn_state(prompt_cache, turn_snapshot)
+        _swap_agent(turn_snapshot.messages, turn_snapshot.state)
+
     def _build_session_meta() -> dict[str, Any]:
         return _build_session_meta_payload(
             settings=settings,
@@ -2307,7 +2324,13 @@ def _build_agent_runtime(
             active_sop_names=_list_active_sop_names(),
         )
 
-    def _execute_with_plan(user_request: str, pending_plan: PendingWorkPlan, *, welcome_text_local: str) -> Any:
+    def _execute_with_plan(
+        user_request: str,
+        pending_plan: PendingWorkPlan,
+        *,
+        welcome_text_local: str,
+        invocation_state_extra: dict[str, Any] | None = None,
+    ) -> Any:
         nonlocal active_plan_prompt_section
         plan = pending_plan.current_plan
         allowed = {tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan"}
@@ -2325,6 +2348,13 @@ def _build_agent_runtime(
                 "plan_run_id": pending_plan.plan_run_id,
             }
         }
+        extra_sw = (
+            invocation_state_extra.get("swarmee")
+            if isinstance(invocation_state_extra, dict) and isinstance(invocation_state_extra.get("swarmee"), dict)
+            else None
+        )
+        if isinstance(extra_sw, dict):
+            invocation_state["swarmee"].update(dict(extra_sw))
         plan_json_payload = plan_json_for_execution(plan)
 
         lines: list[str] = [
@@ -2492,6 +2522,7 @@ def _build_agent_runtime(
         active_profile_system_prompt_snippets = list(normalized.system_prompt_snippets)
         active_profile_agents = [dict(item) for item in normalized.agents]
         active_orchestrator_agent = _orchestrator_agent_from_agents(active_profile_agents)
+        _rebuild_runtime_tools_and_agent()
         _refresh_orchestrator_system_prompt()
         auto_delegate_assistive = bool(normalized.auto_delegate_assistive)
         applied_sources = set_user_context_sources(normalized_sources)
@@ -4322,6 +4353,7 @@ def main() -> None:
                             exit_status = "error"
                             break
 
+                        base_invocation_state: dict[str, Any] = {"swarmee": {"mode": "execute"}}
                         _, response, executed = _run_query_with_optional_plan(
                             query_text=query_text,
                             forced_mode=forced_mode,
@@ -4329,9 +4361,12 @@ def main() -> None:
                             welcome_text=ctx.welcome_text,
                             generate_plan=_generate_plan,
                             execute_with_plan=lambda req, plan, welcome: _execute_with_plan(
-                                req, plan, welcome_text_local=welcome
+                                req,
+                                plan,
+                                welcome_text_local=welcome,
+                                invocation_state_extra=base_invocation_state,
                             ),
-                            run_agent=lambda req: run_agent(req, invocation_state={"swarmee": {"mode": "execute"}}),
+                            run_agent=lambda req: run_agent(req, invocation_state=base_invocation_state),
                             classify_intent_fn=classify_intent,
                             on_plan=lambda plan: (
                                 setattr(ctx, "last_plan", plan.current_plan),
@@ -4578,6 +4613,7 @@ def main() -> None:
                     before_model_info.get("provider") != after_model_info.get("provider")
                     or before_model_info.get("tier") != after_model_info.get("tier")
                     or before_model_info.get("model_id") != after_model_info.get("model_id")
+                    or before_model_info.get("tool_names") != after_model_info.get("tool_names")
                 ):
                     _write_stdout_jsonl(after_model_info)
                 _write_stdout_jsonl({"event": "profile_applied", "profile": applied_profile})
@@ -4655,6 +4691,7 @@ def main() -> None:
                     before_model_info.get("provider") != after_model_info.get("provider")
                     or before_model_info.get("tier") != after_model_info.get("tier")
                     or before_model_info.get("model_id") != after_model_info.get("model_id")
+                    or before_model_info.get("tool_names") != after_model_info.get("tool_names")
                 ):
                     _write_stdout_jsonl(after_model_info)
                 _write_stdout_jsonl({"event": "bundle_applied", "bundle": applied_bundle, "profile": applied_bundle})

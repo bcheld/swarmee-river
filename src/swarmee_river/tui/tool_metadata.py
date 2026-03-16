@@ -38,7 +38,7 @@ class ToolMeta:
     access_read: bool = False
     access_write: bool = False
     access_execute: bool = False
-    source: str = "core"  # "core", "pack", "native", "connector-backed"
+    source: str = "core"  # "core", "pack", "native", "connector-backed", "runtime-generated"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

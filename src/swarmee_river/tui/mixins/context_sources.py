@@ -643,10 +643,22 @@ class ContextSourcesMixin:
         self._write_transcript_line(f"[tooling] deleted prompt asset: {selected_id}")
 
     def _refresh_tooling_tools_list(self) -> None:
+        from swarmee_river.runtime_agent_tools import build_runtime_agent_tool_metadata
         from swarmee_river.tui.tool_metadata import discover_tools_with_metadata
         from swarmee_river.tui.tooling_handlers import build_tool_table_rows
 
-        catalog = [item.to_dict() for item in discover_tools_with_metadata()]
+        catalog_by_name = {
+            str(item.name).strip(): item.to_dict()
+            for item in discover_tools_with_metadata()
+            if str(item.name).strip()
+        }
+        effective_profile = getattr(self.state.agent_studio, "effective_profile", None)
+        runtime_agents = getattr(effective_profile, "agents", []) if effective_profile is not None else []
+        for item in build_runtime_agent_tool_metadata(runtime_agents):
+            name = str(item.get("name", "")).strip()
+            if name:
+                catalog_by_name[name] = dict(item)
+        catalog = [catalog_by_name[name] for name in sorted(catalog_by_name)]
         source_filter = str(
             getattr(getattr(self, "_tooling_tools_source_filter", None), "value", "__all__") or "__all__"
         )
