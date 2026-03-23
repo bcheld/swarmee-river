@@ -374,7 +374,11 @@ async def test_settings_general_includes_interrupt_control_label(tui_app_factory
         await pilot.pause(delay=0.05)
 
         label = app.query_one("#settings_interrupt_control_label", Static)
+        help_text = app.query_one("#settings_interrupt_control_help", Static)
+        aws_help_text = app.query_one("#settings_aws_athena_help", Static)
         assert "Interrupt Control" in str(label.render())
+        assert "Press ESC to cancel the current turn" in str(help_text.render())
+        assert "workspace defaults for AWS region" in str(aws_help_text.render())
 
 
 # ---------------------------------------------------------------------------

@@ -20,11 +20,19 @@ from swarmee_river.utils.aws_config import resolve_runtime_aws_region
 
 _THINKING_ENABLE_TOKENS = {"1", "true", "t", "yes", "y", "on", "enable", "enabled"}
 _THINKING_DISABLE_TOKENS = {"0", "false", "f", "no", "n", "off", "disable", "disabled", ""}
+_BEDROCK_DEFAULT_OUTPUT_TOKENS = 32_768
 _BEDROCK_THINKING_BUDGET_DEFAULT = 4096
 _BEDROCK_THINKING_BUDGET_MAX = 65536
 _BEDROCK_EXTENDED_BUDGETS = {"low": 2048, "medium": 8192, "high": 16384}
 _BEDROCK_ADAPTIVE_EFFORTS = {"low": "low", "medium": "medium", "high": "high"}
 _BEDROCK_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+_BEDROCK_FAMILY_MAX_OUTPUT_TOKENS = {
+    "claude_opus_4_6": 65_536,
+    "claude_sonnet_4_5": 32_768,
+    "claude_haiku_4_5": 32_768,
+    "claude_generic": 32_768,
+    "generic_bedrock": 32_768,
+}
 _OPENAI_RESPONSES_MIN_STRANDS_VERSION = "1.29.0"
 _OPENAI_RESPONSES_MIN_OPENAI_VERSION = "2.0.0"
 _OPENAI_RESPONSES_PROVIDER_PATH = "swarmee_river.models.openai.OpenAIResponsesModel"
@@ -239,16 +247,26 @@ def bedrock_model_capabilities(model_id: str | None) -> BedrockModelCapabilities
     )
 
 
+def bedrock_max_output_tokens(model_id: str | None) -> int:
+    capabilities = bedrock_model_capabilities(model_id)
+    return _BEDROCK_FAMILY_MAX_OUTPUT_TOKENS.get(capabilities.family, _BEDROCK_DEFAULT_OUTPUT_TOKENS)
+
+
+def clamp_bedrock_max_tokens(value: Any, *, model_id: str | None) -> int:
+    requested = _as_int(value, _BEDROCK_DEFAULT_OUTPUT_TOKENS, min_value=1)
+    return min(requested, bedrock_max_output_tokens(model_id))
+
+
 def _default_bedrock_model_config(settings: SwarmeeSettings) -> dict[str, Any]:
     extra = _provider_extra(settings, "bedrock")
-    max_tokens = settings.models.max_output_tokens if settings.models.max_output_tokens is not None else 65536
-    max_tokens = _as_int(max_tokens, 32768, min_value=1)
+    model_id = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    max_tokens = clamp_bedrock_max_tokens(settings.models.max_output_tokens, model_id=model_id)
     # Treat <= 0 as invalid; callers should use positive seconds.
     read_timeout = _as_float(extra.get("read_timeout_sec"), 300.0, min_value=0.01)
     connect_timeout = _as_float(extra.get("connect_timeout_sec"), 5.0, min_value=0.01)
     max_retries = _as_int(extra.get("max_retries"), 2, min_value=0)
     config: dict[str, Any] = {
-        "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "model_id": model_id,
         "region_name": resolve_runtime_aws_region(),
         "max_tokens": max_tokens,
         "boto_client_config": Config(
@@ -305,6 +323,7 @@ def sanitize_bedrock_converse_config(
     tool_choice: dict[str, Any] | None = None,
 ) -> BedrockModelCapabilities:
     """Normalize Bedrock request config from guided tier settings and model-family capabilities."""
+    config["max_tokens"] = clamp_bedrock_max_tokens(config.get("max_tokens"), model_id=config.get("model_id"))
     capabilities = bedrock_model_capabilities(str(config.get("model_id") or ""))
     additional = dict(config.get("additional_request_fields") or {}) if isinstance(
         config.get("additional_request_fields"), dict

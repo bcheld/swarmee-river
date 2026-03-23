@@ -1438,6 +1438,12 @@ def run_tui() -> int:
             padding: 0 0 1 0;
         }
 
+        .settings-help-text {
+            height: auto;
+            color: $text-muted;
+            padding: 0 0 1 0;
+        }
+
         #settings_models_defaults_row {
             height: auto;
             layout: horizontal;
@@ -1504,6 +1510,9 @@ def run_tui() -> int:
         #settings_general_runtime_row,
         #settings_interrupt_control_row,
         #settings_interrupt_control_actions,
+        #settings_aws_athena_row_1,
+        #settings_aws_athena_row_2,
+        #settings_aws_athena_actions,
         #settings_general_context_row,
         #settings_general_context_budget_row,
         #settings_general_context_budget_actions,
@@ -1542,7 +1551,17 @@ def run_tui() -> int:
             width: 1fr;
             margin: 0 1 0 0;
         }
+        #settings_aws_athena_row_1 Input,
+        #settings_aws_athena_row_2 Input {
+            width: 1fr;
+            margin: 0 1 0 0;
+        }
         #settings_interrupt_control_actions Button {
+            width: 1fr;
+            min-width: 10;
+            margin: 0 1 0 0;
+        }
+        #settings_aws_athena_actions Button {
             width: 1fr;
             min-width: 10;
             margin: 0 1 0 0;
@@ -1553,6 +1572,9 @@ def run_tui() -> int:
             margin: 0 1 0 0;
         }
         #settings_interrupt_control_actions Button:last-child {
+            margin-right: 0;
+        }
+        #settings_aws_athena_actions Button:last-child {
             margin-right: 0;
         }
         #settings_general_context_budget_actions Button:last-child {
@@ -1870,6 +1892,9 @@ def run_tui() -> int:
         .layout-narrow #bundles_actions_primary,
         .layout-narrow #bundles_actions_secondary,
         .layout-narrow #settings_general_runtime_row,
+        .layout-narrow #settings_aws_athena_row_1,
+        .layout-narrow #settings_aws_athena_row_2,
+        .layout-narrow #settings_aws_athena_actions,
         .layout-narrow #settings_interrupt_control_actions,
         .layout-narrow #settings_general_features_row,
         .layout-narrow #settings_general_guardrails_row,
@@ -1885,6 +1910,7 @@ def run_tui() -> int:
         .layout-narrow #bundles_actions_primary Button,
         .layout-narrow #bundles_actions_secondary Button,
         .layout-narrow #settings_general_runtime_row Button,
+        .layout-narrow #settings_aws_athena_actions Button,
         .layout-narrow #settings_interrupt_control_actions Button,
         .layout-narrow #settings_general_features_row Button,
         .layout-narrow #settings_general_guardrails_row Button,
@@ -1896,18 +1922,31 @@ def run_tui() -> int:
             margin: 0 0 1 0;
         }
 
+        .layout-narrow #settings_aws_athena_row_1 Input,
+        .layout-narrow #settings_aws_athena_row_2 Input {
+            width: 1fr;
+            min-width: 0;
+            margin: 0 0 1 0;
+        }
+
         .layout-narrow #engage_view_switch Button:last-child,
         .layout-narrow #tooling_view_switch Button:last-child,
         .layout-narrow #session_view_switch Button:last-child,
         .layout-narrow #bundles_actions_primary Button:last-child,
         .layout-narrow #bundles_actions_secondary Button:last-child,
         .layout-narrow #settings_general_runtime_row Button:last-child,
+        .layout-narrow #settings_aws_athena_actions Button:last-child,
         .layout-narrow #settings_interrupt_control_actions Button:last-child,
         .layout-narrow #settings_general_features_row Button:last-child,
         .layout-narrow #settings_general_guardrails_row Button:last-child,
         .layout-narrow #settings_models_actions Button:last-child,
         .layout-narrow #settings_env_actions Button:last-child,
         .layout-narrow #settings_safety_actions Button:last-child {
+            margin-bottom: 0;
+        }
+
+        .layout-narrow #settings_aws_athena_row_1 Input:last-child,
+        .layout-narrow #settings_aws_athena_row_2 Input:last-child {
             margin-bottom: 0;
         }
 

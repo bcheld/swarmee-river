@@ -9,12 +9,12 @@ from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import AfterModelCallEvent
 
 from swarmee_river.hooks._compat import register_hook_callback
+from swarmee_river.utils.model_utils import bedrock_max_output_tokens
 
 _LOGGER = logging.getLogger(__name__)
 
 _RETRY_STATE_KEY = "_swarmee_max_tokens_retries"
 _MAX_RETRIES = 2
-_MAX_BEDROCK_OUTPUT_TOKENS = 128_000
 _SCALE_FACTOR = 2
 
 
@@ -45,7 +45,8 @@ class MaxTokensRetryHooks(HookProvider):
         if not isinstance(current_max, int) or current_max <= 0:
             current_max = 32_768
 
-        new_max = min(current_max * _SCALE_FACTOR, _MAX_BEDROCK_OUTPUT_TOKENS)
+        model_id = config.get("model_id")
+        new_max = min(current_max * _SCALE_FACTOR, bedrock_max_output_tokens(model_id))
         if new_max <= current_max:
             _LOGGER.info("max_tokens already at cap (%d), not retrying", current_max)
             return

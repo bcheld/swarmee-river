@@ -314,6 +314,12 @@ def compose_settings_tab() -> Iterator[Any]:
                     id="settings_interrupt_control_label",
                     classes="settings-section-label",
                 )
+                yield Static(
+                    "Press ESC to cancel the current turn. Timeout controls how long Swarmee waits for a "
+                    "running model or tool call to stop before warning that the interrupt did not finish cleanly.",
+                    id="settings_interrupt_control_help",
+                    classes="settings-help-text",
+                )
                 with Horizontal(id="settings_interrupt_control_row"):
                     yield Input(placeholder="Interrupt Timeout (sec)", id="settings_interrupt_timeout_input")
                 with Horizontal(id="settings_interrupt_control_actions"):
@@ -326,6 +332,12 @@ def compose_settings_tab() -> Iterator[Any]:
                     )
 
                 yield Static("AWS & Athena", classes="settings-section-label")
+                yield Static(
+                    "Set workspace defaults for AWS region plus Athena database, workgroup, output bucket, and query "
+                    "timeout. Swarmee uses these when a session or tool call does not provide its own overrides.",
+                    id="settings_aws_athena_help",
+                    classes="settings-help-text",
+                )
                 with Horizontal(id="settings_aws_athena_row_1"):
                     yield Input(placeholder="AWS region", id="settings_aws_region_input")
                     yield Input(placeholder="Athena database", id="settings_athena_database_input")

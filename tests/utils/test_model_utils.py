@@ -97,6 +97,7 @@ def test_default_model_config_bedrock_uses_responsive_defaults(monkeypatch):
     config = swarmee_river.utils.model_utils.default_model_config("bedrock", default_settings_template())
     boto_config = config["boto_client_config"]
 
+    assert config["max_tokens"] == 32_768
     assert boto_config.read_timeout == 300.0
     assert boto_config.connect_timeout == 5.0
     assert boto_config.retries["max_attempts"] == 2
@@ -150,6 +151,14 @@ def test_default_model_config_bedrock_no_longer_emits_reasoning_fields_by_defaul
     config = swarmee_river.utils.model_utils.default_model_config("bedrock", default_settings_template())
     assert "additional_request_fields" not in config
     assert "cache_tools" not in config
+
+
+def test_default_model_config_bedrock_clamps_explicit_max_output_tokens_to_model_limit():
+    settings = _settings_with({"models": {"max_output_tokens": 99_999}})
+
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
+
+    assert config["max_tokens"] == 32_768
 
 
 def test_bedrock_model_capabilities_detects_current_claude_families():
@@ -216,6 +225,18 @@ def test_sanitize_bedrock_converse_config_invalid_budget_falls_back_to_effort_de
     thinking = config["additional_request_fields"]["thinking"]
     assert thinking["type"] == "enabled"
     assert thinking["budget_tokens"] == 8192
+
+
+def test_sanitize_bedrock_converse_config_clamps_sonnet_max_tokens_to_safe_limit():
+    settings = _settings_with({"models": {"max_output_tokens": 99_999}})
+    tier = settings.models.providers["bedrock"].tiers["balanced"]
+    config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
+    config["model_id"] = tier.model_id
+    config["max_tokens"] = 65_536
+
+    swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(config, tier=tier, settings=settings)
+
+    assert config["max_tokens"] == 32_768
 
 
 def test_sanitize_bedrock_converse_config_emits_adaptive_thinking_for_opus_46():
