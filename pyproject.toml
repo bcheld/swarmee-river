@@ -33,7 +33,7 @@ dependencies = [
     "openai>=2.0.0,<3.0.0",
     "ipykernel>=6.0.0,<7.0.0",
     "ipython>=8.0.0,<9.0.0",
-    "jupterlab_terminal_clipboard_extension",
+    "jupyterlab-terminal-clipboard-extension",
     "nbformat>=5.0.0,<6.0.0",
     "rich>=14.0.0,<15.0.0",
     "textual>=0.70.0",
