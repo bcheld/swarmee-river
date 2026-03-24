@@ -6,7 +6,15 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass(frozen=True)
+class ClipboardStatus:
+    backend: str
+    confidence: str
+    diagnostics: tuple[str, ...] = ()
 
 
 class PromptUIMixin:
@@ -86,16 +94,66 @@ class PromptUIMixin:
             return False
         return False
 
-    def _copy_text_to_clipboard_backend(self, payload: str) -> str:
+    def _tmux_option_value(self, option: str) -> str | None:
+        if not os.getenv("TMUX") or not shutil.which("tmux"):
+            return None
+        try:
+            result = subprocess.run(
+                ["tmux", "show-options", "-gqv", option],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        value = result.stdout.strip()
+        return value or None
+
+    def _tmux_clipboard_diagnostics(self) -> tuple[str, ...]:
+        if not os.getenv("TMUX"):
+            return ()
+        if not shutil.which("tmux"):
+            return (
+                "tmux session detected, but `tmux` is unavailable for clipboard checks; OSC 52 requests may stay "
+                "inside tmux.",
+            )
+
+        diagnostics: list[str] = []
+        set_clipboard = str(self._tmux_option_value("set-clipboard") or "").strip().lower()
+        if set_clipboard not in {"on", "external"}:
+            diagnostics.append(
+                "tmux `set-clipboard` is not enabled; enable it with `set -g set-clipboard on` so OSC 52 can reach "
+                "the terminal clipboard."
+            )
+        allow_passthrough = str(self._tmux_option_value("allow-passthrough") or "").strip().lower()
+        if allow_passthrough not in {"all", "on"}:
+            diagnostics.append(
+                "tmux `allow-passthrough` is not enabled; set `set -g allow-passthrough on` if your terminal "
+                "supports OSC 52 passthrough."
+            )
+        return tuple(diagnostics)
+
+    def _copy_text_to_clipboard_status(self, payload: str) -> ClipboardStatus:
         if self._copy_text_via_native_clipboard(payload):
-            return "native_clipboard"
+            return ClipboardStatus(backend="native_clipboard", confidence="confirmed")
         if self._copy_text_via_terminal_clipboard(payload):
-            return "terminal_clipboard"
+            return ClipboardStatus(
+                backend="terminal_clipboard",
+                confidence="best_effort",
+                diagnostics=self._tmux_clipboard_diagnostics(),
+            )
         try:
             self.copy_to_clipboard(payload)
-            return "terminal_bridge"
+            return ClipboardStatus(
+                backend="terminal_bridge",
+                confidence="best_effort",
+                diagnostics=self._tmux_clipboard_diagnostics(),
+            )
         except Exception:
-            return "unavailable"
+            return ClipboardStatus(backend="unavailable", confidence="none")
 
     def _refresh_shortcut_map(self, settings: Any | None = None) -> None:
         from swarmee_river.settings import load_settings
@@ -306,12 +364,15 @@ class PromptUIMixin:
             self._notify(f"{label}: nothing to copy.", severity="warning")
             return
 
-        backend = self._copy_text_to_clipboard_backend(payload)
-        if backend in {"native_clipboard", "terminal_clipboard"}:
+        status = self._copy_text_to_clipboard_status(payload)
+        if status.backend == "native_clipboard" and status.confidence == "confirmed":
             self._notify(f"{label}: copied to clipboard.")
             return
-        if backend == "terminal_bridge":
-            self._notify(f"{label}: copy requested via terminal clipboard bridge.", severity="information")
+        if status.backend in {"terminal_clipboard", "terminal_bridge"}:
+            message = f"{label}: copy requested via terminal clipboard."
+            if status.diagnostics:
+                message += " " + " ".join(status.diagnostics)
+            self._notify(message, severity="information")
             return
 
         artifact_path = self._persist_run_transcript(

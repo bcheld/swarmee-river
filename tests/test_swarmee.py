@@ -1892,6 +1892,8 @@ def test_generate_plan_passes_runtime_policy_hooks_to_planning_child(monkeypatch
     class _FakeModelManager:
         current_provider = "bedrock"
         current_tier = "balanced"
+        max_escalations_per_task = 0
+        max_escalations_per_task = 0
 
         @staticmethod
         def build_model() -> object:
@@ -1966,6 +1968,7 @@ def test_generate_plan_passes_runtime_policy_hooks_to_planning_child(monkeypatch
             window_size=None,
             context_per_turn=None,
             max_output_tokens=None,
+            include_welcome_in_prompt=False,
         ),
         settings,
         False,
@@ -1986,6 +1989,310 @@ def test_generate_plan_passes_runtime_policy_hooks_to_planning_child(monkeypatch
     )
     policy_hook.before_tool_call(event)
     assert "only allowed in plan mode" in str(event.cancel_tool)
+
+
+def _build_minimal_plan_runtime(
+    monkeypatch,
+    *,
+    artifact_store_cls,
+    create_shared_prefix_child_agent_fn,
+    invoke_agent_fn,
+):
+    from types import SimpleNamespace
+
+    from swarmee_river.settings import default_settings_template
+
+    settings = default_settings_template()
+
+    class _FakeModelManager:
+        current_provider = "bedrock"
+        current_tier = "balanced"
+        max_escalations_per_task = 0
+
+        @staticmethod
+        def build_model() -> object:
+            return object()
+
+        @staticmethod
+        def current_context_behavior() -> SimpleNamespace:
+            return SimpleNamespace(strategy="balanced", compaction="auto")
+
+        @staticmethod
+        def resolve_effective_context_budget() -> int:
+            return 200000
+
+        @staticmethod
+        def list_tiers() -> list[object]:
+            return []
+
+    class _FakeAgent:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            self.model = kwargs.get("model")
+            self.system_prompt = kwargs.get("system_prompt")
+            self.tools = kwargs.get("tools", [])
+            self.messages = kwargs.get("messages", [])
+            self.tool_registry = SimpleNamespace(registry={}, dynamic_tools={})
+            self.trace_attributes = {}
+            self._retry_strategy = None
+            self.conversation_manager = None
+            self.state = SimpleNamespace(get=lambda: {})
+
+    monkeypatch.setattr(
+        swarmee,
+        "_resolve_provider_and_model_manager",
+        lambda **_kwargs: ("bedrock", None, _FakeModelManager()),
+    )
+    monkeypatch.setattr(swarmee, "detect_runtime_environment", lambda cwd=None: {})
+    monkeypatch.setattr(swarmee, "render_runtime_environment_section", lambda _env: "")
+    monkeypatch.setattr(swarmee, "_build_runtime_tools", lambda _settings: ({}, []))
+    monkeypatch.setattr(swarmee, "enabled_sop_paths", lambda _settings: [])
+    monkeypatch.setattr(swarmee, "enabled_system_prompts", lambda _settings: [])
+    monkeypatch.setattr(swarmee, "ensure_prompt_assets_bootstrapped", lambda: None)
+    monkeypatch.setattr(swarmee, "resolve_orchestrator_prompt_from_agent", lambda _agent: "")
+    monkeypatch.setattr(swarmee, "load_system_prompt", lambda: "")
+    monkeypatch.setattr(swarmee, "build_base_system_prompt", lambda **_kwargs: "system")
+    monkeypatch.setattr(swarmee, "resolve_effective_sop_paths", lambda **_kwargs: [])
+    monkeypatch.setattr(swarmee, "_build_conversation_manager", lambda **_kwargs: None)
+    monkeypatch.setattr(swarmee, "ArtifactStore", artifact_store_cls)
+    monkeypatch.setattr(swarmee, "Agent", _FakeAgent)
+    monkeypatch.setattr(swarmee, "create_shared_prefix_child_agent", create_shared_prefix_child_agent_fn)
+    monkeypatch.setattr(swarmee, "invoke_agent", invoke_agent_fn)
+
+    return swarmee._build_agent_runtime(
+        SimpleNamespace(
+            query=None,
+            model_provider=None,
+            model_config=None,
+            sop_paths=[],
+            sop=None,
+            window_size=None,
+            context_per_turn=None,
+            max_output_tokens=None,
+            include_welcome_in_prompt=False,
+        ),
+        settings,
+        False,
+        None,
+    )
+
+
+def test_generate_plan_captures_planning_context_and_strips_reasoning(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from swarmee_river.planning import PlanPrecondition, WorkPlan
+
+    writes: list[dict[str, object]] = []
+
+    class _FakeArtifactStore:
+        def write_text(self, **kwargs):  # noqa: ANN001
+            writes.append(dict(kwargs))
+            index = len(writes)
+            return SimpleNamespace(artifact_id=f"artifact-{index}", path=Path(f"/tmp/artifact-{index}.json"))
+
+    def _fake_create_shared_prefix_child_agent(*, parent_agent, **_kwargs):  # noqa: ANN001, ANN003
+        child = SimpleNamespace(
+            system_prompt="system",
+            tools=[],
+            messages=[{"role": "user", "content": [{"text": "previous context"}]}],
+            model=object(),
+        )
+        return child, SimpleNamespace(pending_reminder="", prefix_hash="prefix-123", parent_message_count=1)
+
+    def _fake_invoke(child_agent, _query, **_kwargs):  # noqa: ANN001, ANN003
+        child_agent.messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "toolUse": {
+                                "toolUseId": "tool-1",
+                                "name": "athena_query",
+                                "input": {"query": "select 1"},
+                            }
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "toolResult": {
+                                "toolUseId": "tool-1",
+                                "status": "success",
+                                "content": [{"text": "rows: 1"}],
+                            }
+                        }
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"reasoningContent": {"reasoningText": {"text": "hidden chain of thought"}}},
+                        {"text": "planning complete"},
+                    ],
+                },
+            ]
+        )
+        return SimpleNamespace(structured_output=WorkPlan(summary="Inspect Athena results", steps=[]))
+
+    runtime = _build_minimal_plan_runtime(
+        monkeypatch,
+        artifact_store_cls=_FakeArtifactStore,
+        create_shared_prefix_child_agent_fn=_fake_create_shared_prefix_child_agent,
+        invoke_agent_fn=_fake_invoke,
+    )
+
+    pending = runtime["generate_plan"]("investigate")
+
+    assert pending.planning_context is not None
+    assert pending.planning_context.used_tools == ["athena_query"]
+    assert pending.planning_context.fallback_tools == ["athena_query"]
+    assert pending.current_plan.preconditions == [PlanPrecondition.CONVERSATION_CONTEXT]
+    assert "rows: 1" in pending.planning_context.findings_digest
+
+    planning_context_write = next(item for item in writes if item.get("kind") == "planning_context")
+    planning_context_text = str(planning_context_write.get("text") or "")
+    assert "reasoningContent" not in planning_context_text
+    assert "hidden chain of thought" not in planning_context_text
+
+
+def test_execute_with_plan_injects_planning_context_and_filters_fallback_tools(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from swarmee_river.planning import (
+        PendingWorkPlan,
+        PlanningContext,
+        PlanningContextSnapshot,
+        PlanningToolSummary,
+        PlanPrecondition,
+        PlanStep,
+        WorkPlan,
+    )
+
+    class _FakeArtifactStore:
+        def write_text(self, **_kwargs):  # noqa: ANN001
+            return SimpleNamespace(artifact_id="artifact-1", path=Path("/tmp/artifact-1.json"))
+
+    def _fake_create_shared_prefix_child_agent(*, parent_agent, **_kwargs):  # noqa: ANN001, ANN003
+        child = SimpleNamespace(system_prompt="system", tools=[], messages=list(parent_agent.messages), model=object())
+        return child, SimpleNamespace(pending_reminder="", prefix_hash="prefix-123", parent_message_count=1)
+
+    captured: dict[str, object] = {}
+
+    def _fake_invoke(agent, query, **kwargs):  # noqa: ANN001, ANN003
+        captured["query"] = query
+        captured["invocation_state"] = kwargs.get("invocation_state")
+        captured["system_reminder"] = kwargs.get("system_reminder")
+        return SimpleNamespace(structured_output=None, message=[])
+
+    runtime = _build_minimal_plan_runtime(
+        monkeypatch,
+        artifact_store_cls=_FakeArtifactStore,
+        create_shared_prefix_child_agent_fn=_fake_create_shared_prefix_child_agent,
+        invoke_agent_fn=_fake_invoke,
+    )
+    monkeypatch.setattr(
+        swarmee,
+        "capture_shared_prefix_fork",
+        lambda *_args, **_kwargs: SimpleNamespace(prefix_hash="prefix-123", parent_message_count=1),
+    )
+
+    pending = PendingWorkPlan(
+        original_request="investigate",
+        current_plan=WorkPlan(
+            summary="Inspect Athena output",
+            preconditions=[PlanPrecondition.CONVERSATION_CONTEXT],
+            steps=[PlanStep(description="Inspect repo file", tools_expected=["file_read"])],
+        ),
+        planning_context=PlanningContext(
+            findings_digest="- Athena returned one row.",
+            reasoning_digest="Inspect cached planning findings before making changes.",
+            used_tools=["athena_query", "shell"],
+            fallback_tools=["athena_query"],
+            tool_summaries=[
+                PlanningToolSummary(
+                    tool="athena_query",
+                    count=2,
+                    last_input_descriptor="athena_query",
+                    result_summary="rows: 1",
+                )
+            ],
+            context_snapshot=PlanningContextSnapshot(parent_prefix_hash="prefix-123", parent_message_count=1),
+        ),
+    )
+
+    runtime["execute_with_plan"]("investigate", pending, welcome_text_local="")
+
+    invocation_state = captured["invocation_state"]["swarmee"]
+    assert "athena_query" in invocation_state["allowed_tools"]
+    assert "file_read" in invocation_state["allowed_tools"]
+    assert "plan_progress" in invocation_state["allowed_tools"]
+    assert "shell" not in invocation_state["allowed_tools"]
+    reminder = str(captured["system_reminder"] or "")
+    assert "Planning Context (reference only)" in reminder
+    assert "Athena returned one row." in reminder
+    assert "Approved Plan" in reminder
+
+
+def test_execute_with_plan_replans_before_execution_when_context_snapshot_changes(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from swarmee_river.planning import (
+        PendingWorkPlan,
+        PlanExecutionReplanRequired,
+        PlanningContext,
+        PlanningContextSnapshot,
+        PlanPrecondition,
+        PlanStep,
+        WorkPlan,
+    )
+
+    class _FakeArtifactStore:
+        def write_text(self, **kwargs):  # noqa: ANN001
+            kind = str(kwargs.get("kind") or "artifact")
+            return SimpleNamespace(artifact_id=f"{kind}-id", path=Path(f"/tmp/{kind}.json"))
+
+    def _fake_create_shared_prefix_child_agent(*, parent_agent, **_kwargs):  # noqa: ANN001, ANN003
+        child = SimpleNamespace(system_prompt="system", tools=[], messages=list(parent_agent.messages), model=object())
+        return child, SimpleNamespace(pending_reminder="", prefix_hash="replan-prefix", parent_message_count=1)
+
+    def _fake_invoke(agent, _query, **kwargs):  # noqa: ANN001, ANN003
+        if kwargs.get("structured_output_model") is WorkPlan:
+            return SimpleNamespace(structured_output=WorkPlan(summary="Refreshed plan", steps=[]))
+        raise AssertionError("execution should not start when validation forces a replan")
+
+    runtime = _build_minimal_plan_runtime(
+        monkeypatch,
+        artifact_store_cls=_FakeArtifactStore,
+        create_shared_prefix_child_agent_fn=_fake_create_shared_prefix_child_agent,
+        invoke_agent_fn=_fake_invoke,
+    )
+    monkeypatch.setattr(
+        swarmee,
+        "capture_shared_prefix_fork",
+        lambda *_args, **_kwargs: SimpleNamespace(prefix_hash="different-prefix", parent_message_count=2),
+    )
+
+    pending = PendingWorkPlan(
+        original_request="investigate",
+        current_plan=WorkPlan(
+            summary="Inspect Athena output",
+            preconditions=[PlanPrecondition.CONVERSATION_CONTEXT],
+            steps=[PlanStep(description="Inspect repo file")],
+        ),
+        planning_context=PlanningContext(
+            findings_digest="- Athena returned one row.",
+            reasoning_digest="Prior plan used planning-time findings.",
+            context_snapshot=PlanningContextSnapshot(parent_prefix_hash="prefix-123", parent_message_count=1),
+        ),
+    )
+
+    with pytest.raises(PlanExecutionReplanRequired) as exc_info:
+        runtime["execute_with_plan"]("investigate", pending, welcome_text_local="")
+
+    assert "regenerated the plan before execution" in exc_info.value.warning
+    assert exc_info.value.pending_plan.current_plan.summary == "Refreshed plan"
 
 
 class TestOverflowErrorClassification:

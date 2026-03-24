@@ -6,7 +6,15 @@ from types import SimpleNamespace
 from typing import Any
 
 from swarmee_river.jupyter import magic
-from swarmee_river.planning import PendingWorkPlan, WorkPlan
+from swarmee_river.planning import (
+    PendingWorkPlan,
+    PlanningContext,
+    PlanningContextSnapshot,
+    PlanningToolSummary,
+    PlanPrecondition,
+    PlanStep,
+    WorkPlan,
+)
 from swarmee_river.settings import SwarmeeSettings, default_settings_template
 
 
@@ -309,25 +317,68 @@ def test_install_notebook_warning_filters_suppresses_http_request_tool_warning()
     assert caught == []
 
 
-def test_execute_with_plan_uses_execute_mode() -> None:
+def test_execute_with_plan_uses_execute_mode(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
-    def _fake_invoke(_runtime: Any, _query: str, *, invocation_state: dict[str, Any]) -> str:
+    def _fake_invoke(_runtime: Any, query: str, *, invocation_state: dict[str, Any]) -> str:
+        captured["query"] = query
         captured["invocation_state"] = invocation_state
         return "ok"
 
-    runtime = object()
-    plan = WorkPlan(summary="Inspect the issue", steps=[])
+    runtime = magic._NotebookRuntime(
+        agent=SimpleNamespace(messages=[{"role": "user", "content": [{"text": "old"}]}]),
+        tools_dict={},
+        settings=default_settings_template(),
+        model_manager=SimpleNamespace(),
+        runtime_environment={},
+        base_system_prompt="system",
+        artifact_store=SimpleNamespace(),
+        knowledge_base_id=None,
+        hooks=[],
+    )
+    plan = PendingWorkPlan(
+        original_request="investigate",
+        current_plan=WorkPlan(
+            summary="Inspect the issue",
+            preconditions=[PlanPrecondition.CONVERSATION_CONTEXT],
+            steps=[PlanStep(description="Inspect repo", tools_expected=["file_read"])],
+        ),
+        planning_context=PlanningContext(
+            findings_digest="- Notebook planning found one matching file.",
+            reasoning_digest="Use planning evidence as reference only.",
+            used_tools=["athena_query", "shell"],
+            fallback_tools=["athena_query"],
+            tool_summaries=[
+                PlanningToolSummary(
+                    tool="athena_query",
+                    count=1,
+                    last_input_descriptor="athena_query",
+                    result_summary="rows: 1",
+                )
+            ],
+            context_snapshot=PlanningContextSnapshot(parent_prefix_hash="prefix-1", parent_message_count=1),
+        ),
+    )
     original_invoke = magic._invoke_agent
+    original_capture = magic.capture_shared_prefix_fork
     try:
         magic._invoke_agent = _fake_invoke  # type: ignore[assignment]
+        magic.capture_shared_prefix_fork = lambda *_args, **_kwargs: SimpleNamespace(  # type: ignore[assignment]
+            prefix_hash="prefix-1",
+            parent_message_count=1,
+        )
         result = magic._execute_with_plan(runtime, "investigate", plan, auto_approve=True)
     finally:
         magic._invoke_agent = original_invoke  # type: ignore[assignment]
+        magic.capture_shared_prefix_fork = original_capture  # type: ignore[assignment]
 
     assert result == "ok"
     assert captured["invocation_state"]["swarmee"]["mode"] == "execute"
     assert captured["invocation_state"]["swarmee"]["enforce_plan"] is True
+    assert "athena_query" in captured["invocation_state"]["swarmee"]["allowed_tools"]
+    assert "shell" not in captured["invocation_state"]["swarmee"]["allowed_tools"]
+    assert "Planning Context (reference only)" in captured["query"]
+    assert "Approved Plan" in captured["query"]
 
 
 def test_generate_plan_uses_child_agent_without_mutating_parent_messages(monkeypatch) -> None:
@@ -342,7 +393,9 @@ def test_generate_plan_uses_child_agent_without_mutating_parent_messages(monkeyp
         model_manager=SimpleNamespace(current_tier="deep"),
         runtime_environment={},
         base_system_prompt="system",
-        artifact_store=SimpleNamespace(write_text=lambda **_kwargs: None),
+        artifact_store=SimpleNamespace(
+            write_text=lambda **_kwargs: SimpleNamespace(artifact_id="artifact-1", path=Path("/tmp/artifact-1.json"))
+        ),
         knowledge_base_id=None,
         hooks=[runtime_hook],
     )
@@ -353,7 +406,7 @@ def test_generate_plan_uses_child_agent_without_mutating_parent_messages(monkeyp
     def _fake_create_shared_prefix_child_agent(*, parent_agent: Any, **_kwargs: Any):
         child_kwargs.update(_kwargs)
         child = SimpleNamespace(messages=[dict(item) for item in parent_agent.messages])
-        return child, SimpleNamespace()
+        return child, SimpleNamespace(parent_message_count=1, prefix_hash="prefix-1")
 
     def _fake_invoke(runtime_obj: Any, _query: str, **_kwargs: Any):
         runtime_obj.agent.messages.append({"role": "assistant", "content": [{"text": "planning"}]})

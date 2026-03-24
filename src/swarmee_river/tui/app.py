@@ -2726,8 +2726,21 @@ def run_tui() -> int:
                 return
 
         def _notify(self, message: str, *, severity: str = "information", timeout: float | None = 2.5) -> None:
+            normalized_severity = str(severity or "information").strip().lower()
+            if normalized_severity in {"warning", "error"}:
+                prefix = "ERROR" if normalized_severity == "error" else "WARN"
+                issue_line = str(message or "").strip()
+                if issue_line and not issue_line.upper().startswith(f"{prefix}:"):
+                    issue_line = f"{prefix}: {issue_line}"
+                if issue_line and self.state.session.issues_repeat_line != issue_line:
+                    self._write_issue(issue_line)
+                    if normalized_severity == "warning":
+                        self.state.session.warning_count += 1
+                    else:
+                        self.state.session.error_count += 1
+                    self._update_header_status()
             with contextlib.suppress(Exception):
-                self.notify(message, severity=severity, timeout=timeout)
+                self.notify(message, severity=normalized_severity, timeout=timeout)
 
         def action_quit(self) -> None:
             self.state.daemon.is_shutting_down = True

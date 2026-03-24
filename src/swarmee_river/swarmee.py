@@ -121,7 +121,7 @@ SessionS3Hooks: Any = _SessionS3Hooks
 from swarmee_river.agent_runner import invoke_agent
 from swarmee_river.auth.github_copilot import login_device_flow, save_api_key
 from swarmee_river.auth.store import delete_provider_record, list_auth_records, normalize_provider_name
-from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
+from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.cli.builtin_commands import register_builtin_commands
 from swarmee_river.cli.commands import CLIContext, CommandRegistry, handle_pack_command
 from swarmee_river.cli.diagnostics import (
@@ -156,11 +156,20 @@ from swarmee_river.packs import (
 )
 from swarmee_river.planning import (
     PendingWorkPlan,
+    PlanExecutionReplanRequired,
     WorkPlan,
     classify_intent,
     new_pending_work_plan,
     pending_work_plan_from_payload,
     structured_plan_prompt,
+)
+from swarmee_river.planning_context import (
+    build_planning_context,
+    build_precondition_failure_replan_prompt,
+    execution_allowed_tools,
+    maybe_add_conversation_context_precondition,
+    render_planning_context_preamble,
+    validate_plan_preconditions,
 )
 from swarmee_river.prompt_assets import (
     PromptAsset,
@@ -201,7 +210,7 @@ from swarmee_river.utils.agent_utils import (
     capture_agent_turn_state,
     restore_prompt_cache_turn_state,
 )
-from swarmee_river.utils.fork_utils import create_shared_prefix_child_agent
+from swarmee_river.utils.fork_utils import capture_shared_prefix_fork, create_shared_prefix_child_agent
 from swarmee_river.utils import model_utils
 from swarmee_river.utils.env_utils import load_env_file, truthy
 from swarmee_river.utils.kb_utils import load_system_prompt, store_conversation_in_kb
@@ -2103,7 +2112,8 @@ def _build_agent_runtime(
                         else "(default)"
                     )
                     error_msg = (
-                        "Error: Response hit the max output token limit (automatic retry with increased limits was attempted).\n"
+                        "Error: Response hit the max output token limit "
+                        "(automatic retry with increased limits was attempted).\n"
                         f"- Current max: {configured_label}\n"
                         "- Fix: increase `models.max_output_tokens` in `.swarmee/settings.json` "
                         "(or pass --max-output-tokens), or ask for a shorter response.\n"
@@ -2258,6 +2268,16 @@ def _build_agent_runtime(
                 "Try :replan, shorten the request, or change tier."
             )
 
+        planning_context = build_planning_context(
+            plan=plan,
+            child_messages=list(getattr(child_agent, "messages", []) or []),
+            snapshot=snapshot,
+            artifact_store=artifact_store,
+            plan_run_id=plan_run_id,
+            request=user_request,
+            tools_dict=tools_dict,
+        )
+        plan = maybe_add_conversation_context_precondition(plan, planning_context=planning_context)
         artifact_store.write_text(
             kind="plan",
             text=plan.model_dump_json(indent=2),
@@ -2269,6 +2289,7 @@ def _build_agent_runtime(
             plan=plan,
             revision_count=revision_count,
             plan_run_id=plan_run_id,
+            planning_context=planning_context,
         )
 
     def _generate_plan(user_request: str, *, plan_context: dict[str, Any] | None = None) -> PendingWorkPlan:
@@ -2303,6 +2324,7 @@ def _build_agent_runtime(
                 revision_count=revision_count,
                 feedback_history=feedback_history,
                 plan_run_id=pending.plan_run_id,
+                planning_context=pending.planning_context,
             )
         return pending
 
@@ -2337,9 +2359,29 @@ def _build_agent_runtime(
     ) -> Any:
         nonlocal active_plan_prompt_section
         plan = pending_plan.current_plan
-        allowed = {tool_name for tool_name in tools_expected_from_plan(plan) if tool_name != "WorkPlan"}
-        allowed.add("plan_progress")
-        allowed_tools = sorted(allowed)
+        validation = validate_plan_preconditions(
+            pending_plan,
+            current_snapshot=capture_shared_prefix_fork(agent, kind="execute_preflight"),
+        )
+        if not validation.valid:
+            replan_prompt, feedback_entry, warning = build_precondition_failure_replan_prompt(
+                pending_plan,
+                validation=validation,
+            )
+            replanned = _generate_plan(
+                replan_prompt,
+                plan_context={
+                    "original_request": pending_plan.original_request,
+                    "revision_count": pending_plan.revision_count + 1,
+                    "feedback_history": [
+                        *[dict(item) for item in pending_plan.feedback_history],
+                        feedback_entry,
+                    ],
+                },
+            )
+            raise PlanExecutionReplanRequired(pending_plan=replanned, warning=warning)
+
+        allowed_tools = execution_allowed_tools(plan, pending_plan=pending_plan, tools_dict=tools_dict)
         steps = list(plan.steps or [])
         step_descriptions = [str(step.description).strip() for step in steps]
         invocation_state = {
@@ -2389,10 +2431,14 @@ def _build_agent_runtime(
         )
         active_plan_prompt_section = "\n".join(lines).strip()
 
-        approved_plan_section = (
+        queued_sections: list[str] = []
+        planning_context_section = render_planning_context_preamble(pending_plan)
+        if planning_context_section:
+            queued_sections.append(planning_context_section)
+        queued_sections.append(
             "Approved Plan (execute ONLY this plan; if you need changes, ask to :replan):\n" + plan_json_payload
         )
-        prompt_cache.queue_one_off(approved_plan_section)
+        prompt_cache.queue_one_off("\n\n".join(section for section in queued_sections if section).strip())
         refresh_system_prompt(welcome_text_local)
         try:
 
@@ -2657,13 +2703,20 @@ def _run_query_with_optional_plan(
     run_agent: Callable[[str], Any],
     classify_intent_fn: Callable[[str], str],
     on_plan: Callable[[PendingWorkPlan], None],
+    on_warning: Callable[[str], None] | None = None,
     approved_plan: PendingWorkPlan | None = None,
     plan_context: dict[str, Any] | None = None,
 ) -> tuple[PendingWorkPlan | None, Any | None, bool]:
     mode = (forced_mode or "").strip().lower()
     if mode == "execute":
         if approved_plan is not None:
-            return approved_plan, execute_with_plan(query_text, approved_plan, welcome_text), True
+            try:
+                return approved_plan, execute_with_plan(query_text, approved_plan, welcome_text), True
+            except PlanExecutionReplanRequired as exc:
+                if callable(on_warning):
+                    on_warning(exc.warning)
+                on_plan(exc.pending_plan)
+                return exc.pending_plan, None, False
         return None, run_agent(query_text), True
 
     should_plan = mode == "plan" or classify_intent_fn(query_text) == "work"
@@ -2675,7 +2728,13 @@ def _run_query_with_optional_plan(
     if not auto_approve:
         return plan, None, False
 
-    return plan, execute_with_plan(query_text, plan, welcome_text), True
+    try:
+        return plan, execute_with_plan(query_text, plan, welcome_text), True
+    except PlanExecutionReplanRequired as exc:
+        if callable(on_warning):
+            on_warning(exc.warning)
+        on_plan(exc.pending_plan)
+        return exc.pending_plan, None, False
 
 
 def _build_serve_command_parser() -> argparse.ArgumentParser:
@@ -4364,18 +4423,19 @@ def main() -> None:
                             auto_approve=turn_auto_approve,
                             welcome_text=ctx.welcome_text,
                             generate_plan=_generate_plan,
-                            execute_with_plan=lambda req, plan, welcome: _execute_with_plan(
+                            execute_with_plan=lambda req, plan, welcome, _inv=base_invocation_state: _execute_with_plan(
                                 req,
                                 plan,
                                 welcome_text_local=welcome,
-                                invocation_state_extra=base_invocation_state,
+                                invocation_state_extra=_inv,
                             ),
-                            run_agent=lambda req: run_agent(req, invocation_state=base_invocation_state),
+                            run_agent=lambda req, _inv=base_invocation_state: run_agent(req, invocation_state=_inv),
                             classify_intent_fn=classify_intent,
                             on_plan=lambda plan: (
                                 setattr(ctx, "last_plan", plan.current_plan),
                                 _emit_plan_event(plan, write_jsonl=True, echo_console=False),
                             ),
+                            on_warning=lambda text: _write_stdout_jsonl({"event": "warning", "text": text}),
                             approved_plan=approved_plan,
                             plan_context=plan_context,
                         )
@@ -5150,6 +5210,7 @@ def main() -> None:
                     setattr(ctx, "last_plan", p.current_plan),
                     _emit_plan_event(p, write_jsonl=False, echo_console=True),
                 ),
+                on_warning=lambda text: print(f"\n[plan] {text}") if not _tui_events_enabled() else None,
             )
             if plan is not None and not executed:
                 if not _tui_events_enabled():

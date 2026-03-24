@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 from typing import Callable
 
 from swarmee_river.cli.commands import CLIContext, CommandRegistry
+from swarmee_river.planning import PlanExecutionReplanRequired
 
 
 def _prompt_for_context(ctx: CLIContext) -> str:
@@ -77,7 +79,16 @@ def run_repl(
                 if ctx.auto_approve:
                     ctx.output("\nAuto-approving plan (--yes / runtime.auto_approve).")
                     ctx.last_plan = ctx.pending_plan
-                    response = ctx.execute_with_plan(user_input, ctx.pending_plan)
+                    try:
+                        response = ctx.execute_with_plan(user_input, ctx.pending_plan)
+                    except PlanExecutionReplanRequired as exc:
+                        ctx.pending_plan = exc.pending_plan
+                        ctx.pending_request = exc.pending_plan.original_request
+                        ctx.output(f"[plan] {exc.warning}")
+                        ctx.output(ctx.render_plan(exc.pending_plan))
+                        with contextlib.suppress(Exception):
+                            ctx.output(exc.pending_plan.confirmation_prompt)
+                        continue
                     ctx.pending_plan = None
                     ctx.pending_request = None
                     if ctx.knowledge_base_id:

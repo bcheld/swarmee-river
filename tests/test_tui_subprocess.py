@@ -4723,7 +4723,7 @@ def test_terminal_clipboard_sequence_wraps_for_tmux(monkeypatch) -> None:
     assert sequence.endswith("\x1b\\")
 
 
-def test_copy_text_terminal_clipboard_reports_confirmed_success() -> None:
+def test_copy_text_terminal_clipboard_reports_best_effort_notice() -> None:
     class _Harness(PromptUIMixin):
         def __init__(self) -> None:
             self.notifications: list[tuple[str, str]] = []
@@ -4744,7 +4744,43 @@ def test_copy_text_terminal_clipboard_reports_confirmed_success() -> None:
     harness._copy_text("selected text", label="selection")
 
     assert harness.terminal_payloads == ["selected text"]
-    assert harness.notifications == [("selection: copied to clipboard.", "information")]
+    assert harness.notifications == [("selection: copy requested via terminal clipboard.", "information")]
+
+
+def test_copy_text_terminal_clipboard_includes_tmux_guidance_when_needed(monkeypatch) -> None:
+    from swarmee_river.tui.mixins import prompt_ui as prompt_ui_module
+
+    monkeypatch.setenv("TMUX", "1")
+    monkeypatch.setattr(prompt_ui_module.shutil, "which", lambda name: "/usr/bin/tmux" if name == "tmux" else None)
+
+    class _Harness(PromptUIMixin):
+        def __init__(self) -> None:
+            self.notifications: list[tuple[str, str]] = []
+
+        def _copy_text_via_native_clipboard(self, _payload: str) -> bool:
+            return False
+
+        def _copy_text_via_terminal_clipboard(self, _payload: str) -> bool:
+            return True
+
+        def _tmux_option_value(self, option: str) -> str | None:
+            if option == "set-clipboard":
+                return "off"
+            if option == "allow-passthrough":
+                return "off"
+            return None
+
+        def _notify(self, msg: str, *, severity: str = "information", timeout: float = 2.5) -> None:
+            del timeout
+            self.notifications.append((msg, severity))
+
+    harness = _Harness()
+    harness._copy_text("selected text", label="selection")
+
+    assert harness.notifications
+    assert "copy requested via terminal clipboard" in harness.notifications[0][0]
+    assert "set -g set-clipboard on" in harness.notifications[0][0]
+    assert "allow-passthrough" in harness.notifications[0][0]
 
 
 def test_copy_text_terminal_bridge_reports_best_effort_notice() -> None:
@@ -4770,7 +4806,7 @@ def test_copy_text_terminal_bridge_reports_best_effort_notice() -> None:
     harness._copy_text("selected text", label="selection")
 
     assert harness.bridge_payloads == ["selected text"]
-    assert harness.notifications == [("selection: copy requested via terminal clipboard bridge.", "information")]
+    assert harness.notifications == [("selection: copy requested via terminal clipboard.", "information")]
 
 
 def test_copy_text_unavailable_falls_back_to_artifact() -> None:
@@ -4807,6 +4843,40 @@ def test_copy_text_unavailable_falls_back_to_artifact() -> None:
     assert harness.artifacts == ["/tmp/copied.txt"]
     assert harness.transcript == [
         "[copy] selection: clipboard unavailable. Saved to artifact: /tmp/copied.txt"
+    ]
+
+
+def test_notify_archives_app_warning_once_without_duplicate_issue_spam() -> None:
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+
+    class _Harness:
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.issues: list[str] = []
+            self.notifications: list[tuple[str, str, float | None]] = []
+            self.header_updates = 0
+
+        def _write_issue(self, text: str) -> None:
+            self.state.session.issues_repeat_line = text
+            self.issues.append(text)
+
+        def _update_header_status(self) -> None:
+            self.header_updates += 1
+
+        def notify(self, message: str, *, severity: str, timeout: float | None) -> None:
+            self.notifications.append((message, severity, timeout))
+
+    harness = _Harness()
+
+    SwarmeeTUI._notify(harness, "Selection missing.", severity="warning", timeout=4.0)
+    SwarmeeTUI._notify(harness, "Selection missing.", severity="warning", timeout=4.0)
+
+    assert harness.issues == ["WARN: Selection missing."]
+    assert harness.state.session.warning_count == 1
+    assert harness.header_updates == 1
+    assert harness.notifications == [
+        ("Selection missing.", "warning", 4.0),
+        ("Selection missing.", "warning", 4.0),
     ]
 
 

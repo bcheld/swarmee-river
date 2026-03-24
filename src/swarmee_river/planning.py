@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+
+class PlanPrecondition(str, Enum):
+    CONVERSATION_CONTEXT = "conversation_context"
 
 
 class PlanStep(BaseModel):
@@ -34,11 +39,65 @@ class WorkPlan(BaseModel):
     summary: str = Field(..., description="Short summary of the intended changes.")
     assumptions: list[str] = Field(default_factory=list, description="Assumptions being made.")
     questions: list[str] = Field(default_factory=list, description="Questions to ask the user before executing.")
+    preconditions: list[PlanPrecondition] = Field(
+        default_factory=list,
+        description="Structured prerequisites that must still hold at execution time.",
+    )
     steps: list[PlanStep] = Field(default_factory=list, description="Ordered execution steps.")
     confirmation_prompt: str = Field(
         default="Approve this plan? Type :y to execute, :n to cancel, or :replan to regenerate.",
         description="Prompt shown to the user to confirm execution.",
     )
+
+
+    @field_validator("assumptions", "questions", "preconditions", "steps", mode="before")
+    @classmethod
+    def _coerce_none_lists(cls, v: Any) -> Any:
+        return v if v is not None else []
+
+
+class PlanningContextSnapshot(BaseModel):
+    parent_prefix_hash: str = Field(default="", description="Planning-time shared-prefix hash.")
+    parent_message_count: int = Field(default=0, ge=0, description="Planning-time parent message count.")
+
+
+class PlanningToolSummary(BaseModel):
+    tool: str = Field(..., description="Tool name used during planning.")
+    count: int = Field(default=0, ge=0, description="How many times the tool was used during planning.")
+    last_input_descriptor: str = Field(default="", description="Short descriptor of the last tool input.")
+    result_summary: str = Field(default="", description="Short digest of the most recent result.")
+
+
+class PlanningContext(BaseModel):
+    version: Literal[1] = 1
+    findings_digest: str = Field(default="", description="Concise digest of planning-time findings.")
+    reasoning_digest: str = Field(
+        default="",
+        description="Evidence-backed digest of planning conclusions without raw chain-of-thought.",
+    )
+    used_tools: list[str] = Field(default_factory=list, description="Unique tools used during planning.")
+    fallback_tools: list[str] = Field(
+        default_factory=list,
+        description="Safe planner-used tools that execution may reuse without replanning.",
+    )
+    tool_summaries: list[PlanningToolSummary] = Field(
+        default_factory=list,
+        description="Per-tool planning activity summaries.",
+    )
+    context_snapshot: PlanningContextSnapshot | None = Field(
+        default=None,
+        description="Planning-time parent conversation snapshot used for execute-time validation.",
+    )
+    artifact_id: str | None = Field(default=None, description="Artifact id for the persisted planning-context record.")
+    artifact_path: str | None = Field(
+        default=None,
+        description="Artifact path for the persisted planning-context record.",
+    )
+
+    @field_validator("used_tools", "fallback_tools", "tool_summaries", mode="before")
+    @classmethod
+    def _coerce_context_lists(cls, v: Any) -> Any:
+        return v if v is not None else []
 
 
 class PendingWorkPlan(BaseModel):
@@ -50,6 +109,10 @@ class PendingWorkPlan(BaseModel):
     feedback_history: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Structured step/question feedback applied while revising the plan.",
+    )
+    planning_context: PlanningContext | None = Field(
+        default=None,
+        description="Non-user-facing planning-time findings carried into execute mode.",
     )
 
     @property
@@ -105,6 +168,7 @@ def new_pending_work_plan(
     revision_count: int = 0,
     feedback_history: list[dict[str, Any]] | None = None,
     plan_run_id: str | None = None,
+    planning_context: PlanningContext | dict[str, Any] | None = None,
 ) -> PendingWorkPlan:
     return PendingWorkPlan(
         plan_run_id=str(plan_run_id or "").strip() or uuid.uuid4().hex,
@@ -112,6 +176,11 @@ def new_pending_work_plan(
         current_plan=ensure_work_plan(plan),
         revision_count=max(0, int(revision_count or 0)),
         feedback_history=[dict(item) for item in (feedback_history or []) if isinstance(item, dict)],
+        planning_context=(
+            planning_context
+            if isinstance(planning_context, PlanningContext)
+            else (PlanningContext.model_validate(planning_context) if isinstance(planning_context, dict) else None)
+        ),
     )
 
 
@@ -190,9 +259,19 @@ def structured_plan_prompt() -> str:
         "- Do NOT draft a solution, implementation, or answer in assistant text before the WorkPlan.\n"
         "- Put all analysis, reasoning, and recommendations into the WorkPlan fields "
         "(summary, assumptions, steps).\n"
+        "- Use WorkPlan.preconditions for execution-time requirements. Add "
+        "`conversation_context` when the plan depends on planning-time conversation state or "
+        "tool findings that must still be available during execution.\n"
         "- If you cannot produce a valid WorkPlan, ask focused questions in WorkPlan.questions.\n"
         "- Produce a concrete, minimally sufficient plan for the user's request.\n"
         "- If important details are missing, include them as questions (keep them specific).\n"
         "- Steps should reference likely files/tools/commands.\n"
         "- Keep the plan short: 3\u20138 steps unless strictly necessary.\n"
     )
+
+
+class PlanExecutionReplanRequired(RuntimeError):
+    def __init__(self, *, pending_plan: PendingWorkPlan, warning: str) -> None:
+        super().__init__(warning)
+        self.pending_plan = pending_plan
+        self.warning = warning

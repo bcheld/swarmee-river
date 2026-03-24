@@ -12,15 +12,24 @@ from typing import Any
 
 from strands import Agent
 
-from swarmee_river.artifacts import ArtifactStore, tools_expected_from_plan
+from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.context.prompt_cache import format_system_reminder, inject_system_reminder
 from swarmee_river.packs import enabled_system_prompts, load_enabled_pack_tools
 from swarmee_river.planning import (
     PendingWorkPlan,
+    PlanExecutionReplanRequired,
     WorkPlan,
     classify_intent,
     new_pending_work_plan,
     structured_plan_prompt,
+)
+from swarmee_river.planning_context import (
+    build_planning_context,
+    build_precondition_failure_replan_prompt,
+    execution_allowed_tools,
+    maybe_add_conversation_context_precondition,
+    render_planning_context_preamble,
+    validate_plan_preconditions,
 )
 from swarmee_river.project_map import build_context_snapshot
 from swarmee_river.runtime_env import detect_runtime_environment, render_runtime_environment_section
@@ -34,10 +43,10 @@ from swarmee_river.runtime_service.client import (
 from swarmee_river.session.models import SessionModelManager
 from swarmee_river.settings import load_settings
 from swarmee_river.tools import get_tools
-from swarmee_river.utils.agent_runtime_utils import ensure_work_plan, plan_json_for_execution, render_plan_text
+from swarmee_river.utils.agent_runtime_utils import plan_json_for_execution, render_plan_text
 from swarmee_river.utils.agent_utils import capture_agent_turn_state, restore_prompt_cache_turn_state
 from swarmee_river.utils.env_utils import load_env_file
-from swarmee_river.utils.fork_utils import create_shared_prefix_child_agent
+from swarmee_river.utils.fork_utils import capture_shared_prefix_fork, create_shared_prefix_child_agent
 from swarmee_river.utils.kb_utils import load_system_prompt
 from swarmee_river.utils.notebook_utils import (
     NotebookContext as _NotebookContext,
@@ -758,7 +767,7 @@ def _format_prompt(*, notebook_context: _NotebookContext, user_prompt: str) -> s
 
 def _generate_plan(runtime: _NotebookRuntime, prompt: str, *, auto_approve: bool) -> PendingWorkPlan:
     plan_run_id = uuid.uuid4().hex
-    child_agent, _snapshot = create_shared_prefix_child_agent(
+    child_agent, snapshot = create_shared_prefix_child_agent(
         parent_agent=runtime.agent,
         kind="notebook_plan",
         seed_instruction=None,
@@ -796,13 +805,28 @@ def _generate_plan(runtime: _NotebookRuntime, prompt: str, *, auto_approve: bool
     if not isinstance(plan, WorkPlan):
         raise ValueError("Structured plan parse failed")
 
+    planning_context = build_planning_context(
+        plan=plan,
+        child_messages=list(getattr(child_agent, "messages", []) or []),
+        snapshot=snapshot,
+        artifact_store=runtime.artifact_store,
+        plan_run_id=plan_run_id,
+        request=prompt,
+        tools_dict=runtime.tools_dict,
+    )
+    plan = maybe_add_conversation_context_precondition(plan, planning_context=planning_context)
     runtime.artifact_store.write_text(
         kind="plan",
         text=plan.model_dump_json(indent=2),
         suffix="json",
         metadata={"request": prompt, "plan_run_id": plan_run_id},
     )
-    return new_pending_work_plan(original_request=prompt, plan=plan, plan_run_id=plan_run_id)
+    return new_pending_work_plan(
+        original_request=prompt,
+        plan=plan,
+        plan_run_id=plan_run_id,
+        planning_context=planning_context,
+    )
 
 
 def _execute_with_plan(
@@ -812,9 +836,37 @@ def _execute_with_plan(
     *,
     auto_approve: bool,
 ) -> Any:
-    work_plan = ensure_work_plan(plan)
-    plan_run_id = plan.plan_run_id if isinstance(plan, PendingWorkPlan) else None
-    allowed_tools = sorted(tool_name for tool_name in tools_expected_from_plan(work_plan) if tool_name != "WorkPlan")
+    pending_plan = (
+        plan
+        if isinstance(plan, PendingWorkPlan)
+        else new_pending_work_plan(original_request=prompt, plan=plan)
+    )
+    validation = validate_plan_preconditions(
+        pending_plan,
+        current_snapshot=capture_shared_prefix_fork(runtime.agent, kind="notebook_execute_preflight"),
+    )
+    if not validation.valid:
+        replan_prompt, feedback_entry, warning = build_precondition_failure_replan_prompt(
+            pending_plan,
+            validation=validation,
+        )
+        replanned = _generate_plan(runtime, replan_prompt, auto_approve=False)
+        replanned = new_pending_work_plan(
+            original_request=pending_plan.original_request,
+            plan=replanned.current_plan,
+            revision_count=max(replanned.revision_count, pending_plan.revision_count + 1),
+            feedback_history=[
+                *[dict(item) for item in pending_plan.feedback_history],
+                feedback_entry,
+            ],
+            plan_run_id=replanned.plan_run_id,
+            planning_context=replanned.planning_context,
+        )
+        raise PlanExecutionReplanRequired(pending_plan=replanned, warning=warning)
+
+    work_plan = pending_plan.current_plan
+    plan_run_id = pending_plan.plan_run_id if isinstance(pending_plan, PendingWorkPlan) else None
+    allowed_tools = execution_allowed_tools(work_plan, pending_plan=pending_plan, tools_dict=runtime.tools_dict)
     invocation_state = {
         "swarmee": {
             "mode": "execute",
@@ -827,10 +879,15 @@ def _execute_with_plan(
         invocation_state["swarmee"]["plan_run_id"] = plan_run_id
 
     plan_json_payload = plan_json_for_execution(work_plan)
-    approved_plan_section = (
-        "Approved Plan (execute ONLY this plan; if you need changes, regenerate the plan):\n" + plan_json_payload
+    sections: list[str] = []
+    planning_context_section = render_planning_context_preamble(pending_plan)
+    if planning_context_section:
+        sections.append(planning_context_section)
+    sections.append(
+        "Approved Plan (execute ONLY this plan; if you need changes, regenerate the plan):\n"
+        + plan_json_payload
     )
-    reminder = format_system_reminder([approved_plan_section])
+    reminder = format_system_reminder(sections)
     query = inject_system_reminder(user_query=prompt, reminder=reminder)
     return _invoke_agent(runtime, query, invocation_state=invocation_state)
 
@@ -882,6 +939,12 @@ def _run_swarmee(
 
         try:
             result = _execute_with_plan(runtime, prompt, plan, auto_approve=True)
+        except PlanExecutionReplanRequired as exc:
+            rendered = render_plan_text(exc.pending_plan)
+            return _with_runtime_notice(
+                runtime,
+                rendered + "\n\n" + exc.warning + "\nRe-run with `%%swarmee --yes` to execute the refreshed plan.",
+            )
         except MaxTokensReachedException:
             return _with_runtime_notice(
                 runtime,

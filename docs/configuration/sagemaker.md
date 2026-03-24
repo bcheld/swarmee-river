@@ -98,3 +98,20 @@ Notes:
 - The notebook extension runs **non-interactively by default** (tool consent fails closed) unless you pass `--yes`.
 - Use `%%swarmee --no-context` (or `SWARMEE_NOTEBOOK_NO_CONTEXT=true`) for quick one-offs without notebook context injection.
 - For Bedrock in SageMaker, role-based credentials should resolve through the default AWS credential chain without setting `AWS_PROFILE`.
+
+## Clipboard and tmux
+
+Many SageMaker terminal environments run inside `tmux`, which means copy requests can succeed only inside the tmux buffer unless OSC 52 passthrough is enabled end to end.
+
+Recommended tmux settings:
+
+```tmux
+set -g set-clipboard on
+set -g allow-passthrough on
+```
+
+Also make sure the terminal connected to SageMaker allows OSC 52 clipboard access. If it does not, Swarmee will now report terminal-copy requests as best effort instead of claiming the clipboard was definitely updated.
+
+Practical notes:
+- Native clipboard tools such as `pbcopy`, `wl-copy`, or `xclip` are uncommon in SageMaker shells, so terminal clipboard integration is the normal path.
+- If terminal clipboard integration is unavailable, Swarmee falls back to saving the copied text as an artifact so the content is still recoverable.

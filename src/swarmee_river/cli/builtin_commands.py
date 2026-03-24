@@ -19,6 +19,7 @@ from swarmee_river.cli.diagnostics import (
     render_diagnostic_command_for_surface,
     render_diagnostics_command_for_surface,
 )
+from swarmee_river.planning import PlanExecutionReplanRequired
 from swarmee_river.utils.provider_utils import normalize_provider_name as normalize_provider_name_runtime
 from tools.sop import run_sop
 
@@ -88,9 +89,16 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
                 response = ctx.execute_with_plan(ctx.pending_request, ctx.pending_plan)
                 if ctx.knowledge_base_id:
                     ctx.store_conversation(ctx.pending_request, response)
-            finally:
-                ctx.pending_plan = None
-                ctx.pending_request = None
+            except PlanExecutionReplanRequired as exc:
+                ctx.pending_plan = exc.pending_plan
+                ctx.pending_request = exc.pending_plan.original_request
+                ctx.output(f"[plan] {exc.warning}")
+                ctx.output(ctx.render_plan(exc.pending_plan))
+                with contextlib.suppress(Exception):
+                    ctx.output(exc.pending_plan.confirmation_prompt)
+                return CommandDispatchResult(handled=True)
+            ctx.pending_plan = None
+            ctx.pending_request = None
         else:
             ctx.output("No pending plan to approve.")
         return CommandDispatchResult(handled=True)
