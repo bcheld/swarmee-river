@@ -32,6 +32,7 @@ The model manager writes these fields for you. Users should not need to hand-edi
 - `low` — fastest, lowest-cost reasoning profile
 - `medium` — default day-to-day reasoning profile
 - `high` — deeper repo reasoning and multi-step tool orchestration
+- `xhigh` — maximum reasoning depth for models that expose it
 
 ## Bedrock
 
@@ -46,11 +47,11 @@ Bedrock is now modeled as `Claude-first on Bedrock`. Users still pick guided rea
   - medium reasoning
   - standard tool use
 - `deep`
-  - Claude Opus 4.6
+  - Claude Opus 4.7
   - adaptive reasoning
   - cache-safe tool/context defaults
 - `long`
-  - Claude Opus 4.6
+  - Claude Opus 4.7
   - adaptive reasoning
   - long-running context defaults
 
@@ -58,7 +59,7 @@ Bedrock is now modeled as `Claude-first on Bedrock`. Users still pick guided rea
 
 The primary UI does not expose raw Bedrock request fields. Swarmee derives them internally from tier config and model family:
 
-- Claude Opus 4.6 tiers use adaptive thinking.
+- Claude Opus 4.7 tiers use adaptive thinking.
 - Claude Haiku 4.5 and Sonnet 4.5 tiers use extended thinking.
 - Non-Claude Bedrock models fall back to no Bedrock-specific reasoning fields unless explicitly supported.
 - Forced tool choice disables Bedrock reasoning fields for that request because Bedrock does not allow reasoning with forced tool use.

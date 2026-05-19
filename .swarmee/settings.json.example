@@ -102,8 +102,8 @@
               "strategy": "cache_safe"
             },
             "description": "Use when you need stronger reasoning.",
-            "display_name": "Claude Opus 4.6 (deep)",
-            "model_id": "us.anthropic.claude-opus-4-6-v1",
+            "display_name": "Claude Opus 4.7 (deep)",
+            "model_id": "us.anthropic.claude-opus-4-7",
             "provider": "bedrock",
             "reasoning": {
               "effort": "high"
@@ -136,8 +136,8 @@
               "strategy": "long_running"
             },
             "description": "Use for long outputs and large refactors.",
-            "display_name": "Claude Opus 4.6 (long)",
-            "model_id": "us.anthropic.claude-opus-4-6-v1",
+            "display_name": "Claude Opus 4.7 (long)",
+            "model_id": "us.anthropic.claude-opus-4-7",
             "provider": "bedrock",
             "reasoning": {
               "effort": "high"
@@ -307,8 +307,8 @@
               "strategy": "balanced"
             },
             "description": "Default OpenAI tier for most coding tasks.",
-            "display_name": "GPT-5 mini",
-            "model_id": "gpt-5-mini",
+            "display_name": "GPT-5.4 mini",
+            "model_id": "gpt-5.4-mini",
             "provider": "openai",
             "reasoning": {
               "effort": "medium"
@@ -324,9 +324,9 @@
               "compaction": "auto",
               "strategy": "cache_safe"
             },
-            "description": "Optimized tier for coding-heavy workflows and refactors.",
-            "display_name": "GPT-5.3 Codex (coding)",
-            "model_id": "gpt-5.3-codex",
+            "description": "Newest OpenAI frontier tier for coding-heavy workflows and refactors.",
+            "display_name": "GPT-5.5 (coding)",
+            "model_id": "gpt-5.5",
             "provider": "openai",
             "reasoning": {
               "effort": "high"
@@ -342,9 +342,9 @@
               "compaction": "auto",
               "strategy": "cache_safe"
             },
-            "description": "Stronger reasoning; slower / more expensive.",
-            "display_name": "GPT-5.2",
-            "model_id": "gpt-5.2",
+            "description": "Newest OpenAI frontier tier for deep repo reasoning and tool-heavy workflows.",
+            "display_name": "GPT-5.5",
+            "model_id": "gpt-5.5",
             "provider": "openai",
             "reasoning": {
               "effort": "high"
@@ -360,9 +360,9 @@
               "compaction": "manual",
               "strategy": "balanced"
             },
-            "description": "Lowest latency/cost; good for quick iterations.",
-            "display_name": "GPT-5 nano",
-            "model_id": "gpt-5-nano",
+            "description": "Lowest latency/cost frontier OpenAI tier for quick iterations.",
+            "display_name": "GPT-5.4 nano",
+            "model_id": "gpt-5.4-nano",
             "provider": "openai",
             "reasoning": {
               "effort": "low"
@@ -378,9 +378,9 @@
               "compaction": "auto",
               "strategy": "long_running"
             },
-            "description": "Long-form outputs.",
-            "display_name": "GPT-5.2 (long)",
-            "model_id": "gpt-5.2",
+            "description": "Newest OpenAI frontier tier for long-running analysis with larger context.",
+            "display_name": "GPT-5.5 (long)",
+            "model_id": "gpt-5.5",
             "provider": "openai",
             "reasoning": {
               "effort": "medium"

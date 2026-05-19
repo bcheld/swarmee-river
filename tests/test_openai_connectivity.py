@@ -8,7 +8,7 @@ from swarmee_river.utils.model_utils import load_model, load_path
 
 
 @pytest.mark.skipif(os.getenv("SWARMEE_RUN_LIVE_API_TESTS") != "1", reason="Live API tests disabled")
-@pytest.mark.parametrize("model_id", ["gpt-5-nano", "gpt-5-mini", "gpt-5.2"])
+@pytest.mark.parametrize("model_id", ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.5"])
 def test_openai_connectivity(model_id: str):
     load_env_file()
     if not os.getenv("OPENAI_API_KEY"):
@@ -38,7 +38,7 @@ def test_openai_gpt52_multi_turn_connectivity():
     model = load_model(
         provider_path,
         {
-            "model_id": "gpt-5.2",
+            "model_id": "gpt-5.5",
             "client_args": {"api_key": os.getenv("OPENAI_API_KEY")},
             "params": {"max_output_tokens": 64},
         },

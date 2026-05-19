@@ -59,7 +59,7 @@ def test_model_select_options_lists_all_configured_provider_tiers(monkeypatch):
             self.provider = "openai"
             self.default_tier = "balanced"
             self.providers = {
-                "openai": _Provider({"balanced": _Tier("gpt-5-mini")}),
+                "openai": _Provider({"balanced": _Tier("gpt-5.4-mini")}),
                 "bedrock": _Provider({"balanced": _Tier("anthropic.claude-sonnet")}),
             }
             self.tiers = {"balanced": _Tier("global-balanced"), "fast": _Tier("global-fast")}
@@ -103,7 +103,7 @@ def test_model_select_options_keeps_explicit_bedrock_override_selected(monkeypat
             self.provider = None
             self.default_tier = "balanced"
             self.providers = {
-                "openai": _Provider({"balanced": _Tier("gpt-5-mini")}),
+                "openai": _Provider({"balanced": _Tier("gpt-5.4-mini")}),
                 "bedrock": _Provider({"deep": _Tier("anthropic.claude-sonnet")}),
             }
             self.tiers = {}
@@ -207,7 +207,7 @@ def test_handle_model_info_updates_runtime_context_budget():
         {
             "provider": "bedrock",
             "tier": "deep",
-            "model_id": "us.anthropic.claude-opus-4-6-v1",
+            "model_id": "us.anthropic.claude-opus-4-7",
             "context_budget_tokens": 200000,
             "tiers": [
                 {
@@ -738,6 +738,67 @@ def test_plan_step_update_ignores_stale_plan_run_id() -> None:
     assert harness.rendered is False
 
 
+def test_plain_plan_event_populates_review_pane() -> None:
+    from swarmee_river.tui.event_router import _handle_plan_events
+
+    class _Harness:
+        def __init__(self) -> None:
+            self.state = AppState()
+            self._last_run_auto_approve = False
+            self._split_ratio = 3
+            self.plain_plan_text = ""
+            self.engage_modes: list[str] = []
+            self.switched_tabs: list[str] = []
+            self.saved = False
+            self.actions_refreshed = False
+            self.status_refreshed = False
+
+        def _set_pending_plan_record(self, _record) -> None:
+            raise AssertionError("plain rendered plans should not create a pending record")
+
+        def _clear_pending_plan_record(self) -> None:
+            self.state.plan.pending_record = None
+            self.state.plan.pending_prompt = None
+
+        def _populate_plain_planning_view(self, rendered: str) -> None:
+            self.plain_plan_text = rendered
+
+        def action_widen_side(self) -> None:
+            self._split_ratio -= 1
+
+        def _set_engage_view_mode(self, mode: str) -> None:
+            self.engage_modes.append(mode)
+            self.state.engage_view_mode = mode
+
+        def _switch_side_tab(self, tab_id: str) -> None:
+            self.switched_tabs.append(tab_id)
+
+        def _refresh_plan_status_bar(self) -> None:
+            self.status_refreshed = True
+
+        def _refresh_plan_actions_visibility(self) -> None:
+            self.actions_refreshed = True
+
+        def _save_session(self) -> None:
+            self.saved = True
+
+    harness = _Harness()
+    rendered = "Proposed plan:\n- Inspect current planning pane\n- Fix layout"
+
+    handled = _handle_plan_events(harness, "plan", {"event": "plan", "rendered": rendered})
+
+    assert handled is True
+    assert harness.state.plan.text == rendered
+    assert harness.state.plan.received_structured_plan is True
+    assert harness.plain_plan_text == rendered
+    assert harness.engage_modes == ["plan"]
+    assert harness.switched_tabs == ["tab_engage"]
+    assert harness._split_ratio == 1
+    assert harness.actions_refreshed is True
+    assert harness.status_refreshed is True
+    assert harness.saved is True
+
+
 def test_start_fresh_session_rotates_session_id_and_restarts_daemon():
     class _Harness(SessionMixin):
         def __init__(self) -> None:
@@ -1026,7 +1087,7 @@ def test_daemon_model_select_options_injects_pending_when_missing_from_available
         provider="openai",
         tier="balanced",
         tiers=[
-            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5-mini"},
+            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5.4-mini"},
         ],
         pending_value="openai|deep",
     )
@@ -1041,7 +1102,7 @@ def test_daemon_model_select_options_injects_override_when_missing_from_availabl
         provider="openai",
         tier="balanced",
         tiers=[
-            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5-mini"},
+            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5.4-mini"},
         ],
         override_provider="openai",
         override_tier="deep",
@@ -1057,7 +1118,7 @@ def test_daemon_model_select_options_includes_other_provider_unavailable_rows():
         provider="openai",
         tier="balanced",
         tiers=[
-            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5-mini"},
+            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5.4-mini"},
             {
                 "provider": "bedrock",
                 "name": "deep",
@@ -1080,7 +1141,7 @@ def test_choose_model_summary_parts_prefers_pending_until_confirmed():
     provider, tier, model_id = tui_app.choose_model_summary_parts(
         daemon_provider="openai",
         daemon_tier="balanced",
-        daemon_model_id="gpt-5-mini",
+        daemon_model_id="gpt-5.4-mini",
         pending_value="openai|fast",
     )
     assert provider == "openai"
@@ -1092,35 +1153,35 @@ def test_choose_model_summary_parts_uses_model_id_when_pending_matches_daemon():
     provider, tier, model_id = tui_app.choose_model_summary_parts(
         daemon_provider="openai",
         daemon_tier="fast",
-        daemon_model_id="gpt-5-mini",
+        daemon_model_id="gpt-5.4-mini",
         pending_value="openai|fast",
     )
     assert provider == "openai"
     assert tier == "fast"
-    assert model_id == "gpt-5-mini"
+    assert model_id == "gpt-5.4-mini"
 
 
 def test_choose_model_summary_parts_falls_back_to_daemon_without_pending():
     provider, tier, model_id = tui_app.choose_model_summary_parts(
         daemon_provider="openai",
         daemon_tier="balanced",
-        daemon_model_id="gpt-5-mini",
+        daemon_model_id="gpt-5.4-mini",
         daemon_tiers=[],
         pending_value=None,
     )
     assert provider == "openai"
     assert tier == "balanced"
-    assert model_id == "gpt-5-mini"
+    assert model_id == "gpt-5.4-mini"
 
 
 def test_choose_model_summary_parts_prefers_override_over_stale_daemon():
     provider, tier, model_id = tui_app.choose_model_summary_parts(
         daemon_provider="openai",
         daemon_tier="balanced",
-        daemon_model_id="gpt-5-mini",
+        daemon_model_id="gpt-5.4-mini",
         daemon_tiers=[
-            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5-mini"},
-            {"provider": "openai", "name": "fast", "available": True, "model_id": "gpt-5-nano"},
+            {"provider": "openai", "name": "balanced", "available": True, "model_id": "gpt-5.4-mini"},
+            {"provider": "openai", "name": "fast", "available": True, "model_id": "gpt-5.4-nano"},
         ],
         pending_value=None,
         override_provider="openai",
@@ -1128,7 +1189,7 @@ def test_choose_model_summary_parts_prefers_override_over_stale_daemon():
     )
     assert provider == "openai"
     assert tier == "fast"
-    assert model_id == "gpt-5-nano"
+    assert model_id == "gpt-5.4-nano"
 
 
 def test_looks_like_plan_output():
@@ -3107,6 +3168,36 @@ def test_settings_models_manage_button_opens_popup_manager():
     assert harness.called == 1
 
 
+def test_settings_models_inline_editor_buttons_call_handlers():
+    class _Harness:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def _save_model_form(self) -> None:
+            self.calls.append("save")
+
+        def _clear_model_form(self) -> None:
+            self.calls.append("clear")
+
+        def _delete_model_form_selection(self) -> None:
+            self.calls.append("delete")
+
+        def _restore_model_form_selection(self) -> None:
+            self.calls.append("restore")
+
+    SwarmeeTUI = tui_app.get_swarmee_tui_class()
+    for button_id, expected in (
+        ("settings_models_form_save", "save"),
+        ("settings_models_form_clear", "clear"),
+        ("settings_models_form_delete", "delete"),
+        ("settings_models_form_restore", "restore"),
+    ):
+        harness = _Harness()
+        event = SimpleNamespace(button=SimpleNamespace(id=button_id))
+        SwarmeeTUI.on_button_pressed(harness, event)
+        assert harness.calls == [expected]
+
+
 def test_agents_builder_header_uses_sidebar_header_action():
     import inspect
 
@@ -3151,9 +3242,13 @@ def test_settings_models_row_selection_updates_model_detail():
             self._settings_env_table = None
             self._settings_models_selected_id = None
             self.detail_refreshes = 0
+            self.form_refreshes = 0
 
         def _refresh_settings_model_detail(self) -> None:
             self.detail_refreshes += 1
+
+        def _refresh_settings_model_form(self) -> None:
+            self.form_refreshes += 1
 
     harness = _Harness()
     SwarmeeTUI = tui_app.get_swarmee_tui_class()
@@ -3164,6 +3259,7 @@ def test_settings_models_row_selection_updates_model_detail():
     SwarmeeTUI.on_data_table_row_selected(harness, event)
     assert harness._settings_models_selected_id == "openai|coding"
     assert harness.detail_refreshes == 1
+    assert harness.form_refreshes == 1
 
 
 def test_tag_manager_result_updates_tags_and_preserves_non_tag_fields(tmp_path, monkeypatch):
@@ -3705,8 +3801,8 @@ def test_model_manager_screen_stage_delete_and_default_pair():
             "providers": {
                 "openai": {
                     "tiers": {
-                        "balanced": {"provider": "openai", "model_id": "gpt-5-mini"},
-                        "coding": {"provider": "openai", "model_id": "gpt-5.3-codex"},
+                        "balanced": {"provider": "openai", "model_id": "gpt-5.4-mini"},
+                        "coding": {"provider": "openai", "model_id": "gpt-5.5"},
                     }
                 }
             },
@@ -3741,7 +3837,7 @@ def test_model_manager_result_payload_preserves_guided_openai_fields():
                     "tiers": {
                         "deep": {
                             "provider": "openai",
-                            "model_id": "gpt-5.2",
+                            "model_id": "gpt-5.5",
                             "transport": "responses",
                             "reasoning": {"effort": "high"},
                             "tooling": {"mode": "tool-heavy", "discovery": "search"},
@@ -3783,12 +3879,12 @@ def test_model_manager_screen_accepts_raw_model_id_input():
     widgets = {
         "#model_edit_provider": _Widget("bedrock"),
         "#model_edit_tier": _Widget("deep"),
-        "#model_edit_model_id": _Widget("us.anthropic.claude-opus-4-6-v1"),
+        "#model_edit_model_id": _Widget("us.anthropic.claude-opus-4-7"),
         "#model_edit_reasoning": _Widget("high"),
         "#model_edit_tool_mode": _Widget("tool-heavy"),
         "#model_edit_context_strategy": _Widget("cache_safe"),
         "#model_edit_context_compaction": _Widget("auto"),
-        "#model_edit_display_name": _Widget("Claude Opus 4.6 (deep)"),
+        "#model_edit_display_name": _Widget("Claude Opus 4.7 (deep)"),
         "#model_edit_description": _Widget("Adaptive Claude reasoning for harder analytics tasks."),
         "#model_edit_price_input": _Widget(""),
         "#model_edit_price_output": _Widget(""),
@@ -3801,9 +3897,9 @@ def test_model_manager_screen_accepts_raw_model_id_input():
 
     assert screen._save_editor_entry() is True
     saved = screen.build_result_payload()["models"]["providers"]["bedrock"]["tiers"]["deep"]
-    assert saved["model_id"] == "us.anthropic.claude-opus-4-6-v1"
+    assert saved["model_id"] == "us.anthropic.claude-opus-4-7"
     assert saved["tooling"]["mode"] == "tool-heavy"
-    assert "Model ID: us.anthropic.claude-opus-4-6-v1" in widgets["#model_manager_preview"].text
+    assert "Model ID: us.anthropic.claude-opus-4-7" in widgets["#model_manager_preview"].text
 
 
 def test_prompt_row_selected_opens_metadata_editor_for_editable_columns():
@@ -3927,7 +4023,7 @@ def test_set_planning_ui_mode_toggles_actions_row_visibility():
             self.state = AppState()
             self._widgets = {
                 "#plan": _Widget(),
-                "#engage_plan_summary_scroll": _Widget(),
+                "#engage_plan_scroll": _Widget(),
                 "#engage_plan_summary": _Widget(),
                 "#engage_plan_items": _Widget(),
                 "#engage_plan_questions": _Widget(),
@@ -3950,12 +4046,12 @@ def test_set_planning_ui_mode_toggles_actions_row_visibility():
     app._set_planning_ui_mode(pre_plan=True)
     assert app._widgets["#engage_start_plan"].styles.display == "block"
     assert app._widgets["#engage_plan_actions_row"].styles.display == "none"
-    assert app._widgets["#engage_plan_summary_scroll"].styles.display == "none"
+    assert app._widgets["#engage_plan_scroll"].styles.display == "none"
 
     app._set_planning_ui_mode(pre_plan=False)
     assert app._widgets["#engage_start_plan"].styles.display == "none"
     assert app._widgets["#engage_plan_actions_row"].styles.display == "block"
-    assert app._widgets["#engage_plan_summary_scroll"].styles.display == "block"
+    assert app._widgets["#engage_plan_scroll"].styles.display == "block"
 
 
 def test_app_escape_dismisses_error_action_prompt() -> None:
@@ -4525,13 +4621,13 @@ def test_assistant_message_accumulates_deltas():
 def test_assistant_message_finalize_renders_model_and_timestamp_metadata():
     from swarmee_river.tui.widgets import AssistantMessage
 
-    msg = AssistantMessage(model="gpt-5-mini", timestamp="2:34 PM")
+    msg = AssistantMessage(model="gpt-5.4-mini", timestamp="2:34 PM")
     msg._buffer.append("Hello")
     assert msg.finalize() == "Hello"
     content = msg._Static__content  # type: ignore[attr-defined]
     renderables = getattr(content, "renderables", [])
     assert len(renderables) == 2
-    assert getattr(renderables[1], "plain", "") == "gpt-5-mini · 2:34 PM"
+    assert getattr(renderables[1], "plain", "") == "gpt-5.4-mini · 2:34 PM"
 
 
 def test_user_message_renders_timestamp_when_provided():
@@ -5002,7 +5098,7 @@ def test_reasoning_unavailable_notice_emits_once_for_responses_or_bedrock_reason
                 {
                     "name": "deep",
                     "provider": "bedrock",
-                    "model_id": "us.anthropic.claude-opus-4-6-v1",
+                    "model_id": "us.anthropic.claude-opus-4-7",
                     "reasoning_effort": "high",
                     "reasoning_mode": "adaptive",
                 }
@@ -5030,7 +5126,7 @@ def test_openai_responses_without_reasoning_effort_does_not_emit_unavailable_not
                 {
                     "name": "balanced",
                     "provider": "openai",
-                    "model_id": "gpt-5-mini",
+                    "model_id": "gpt-5.4-mini",
                     "transport": "responses",
                     "reasoning_effort": None,
                     "reasoning_mode": "none",
@@ -5422,7 +5518,7 @@ def test_tui_output_path_does_not_duplicate_assistant_text_for_dual_strands_call
     class _Harness(OutputMixin, ToolsMixin):
         def __init__(self) -> None:
             self.state = SimpleNamespace(
-                daemon=SimpleNamespace(query_active=True, turn_output_chunks=[], current_model="gpt-5-nano"),
+                daemon=SimpleNamespace(query_active=True, turn_output_chunks=[], current_model="gpt-5.4-nano"),
                 session=SimpleNamespace(warning_count=0, error_count=0),
             )
             self._structured_assistant_seen_turn = False
@@ -6350,7 +6446,7 @@ def test_suppressed_raw_echo_stays_suppressed_through_complete_and_turn_complete
                 daemon=SimpleNamespace(
                     query_active=True,
                     turn_output_chunks=[],
-                    current_model="openai/gpt-5.2",
+                    current_model="openai/gpt-5.5",
                     last_restored_turn_count=0,
                 ),
                 session=SimpleNamespace(warning_count=0, error_count=0),

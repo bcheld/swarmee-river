@@ -54,7 +54,7 @@ class _StructuredAnswer(BaseModel):
 
 def _model(
     *,
-    model_id: str = "gpt-5.2",
+    model_id: str = "gpt-5.5",
     client: _FakeClient | None = None,
 ) -> openai_model.OpenAIResponsesModel:
     return openai_model.instance(
@@ -174,7 +174,7 @@ async def test_openai_stream_wraps_assistant_history_bad_request() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model_id", ["gpt-5-nano", "gpt-5-mini", "gpt-5.2"])
+@pytest.mark.parametrize("model_id", ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.5"])
 async def test_openai_stream_normalizes_incremental_text_events(model_id: str) -> None:
     responses = _FakeResponsesAPI(
         stream_events=[

@@ -5408,7 +5408,13 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
                         yield Input(placeholder="model_id", id="model_edit_model_id")
                     with Horizontal(classes="model-edit-row"):
                         yield Select(
-                            [("Reasoning: low", "low"), ("Reasoning: medium", "medium"), ("Reasoning: high", "high")],
+                            [
+                                ("Reasoning: none", "none"),
+                                ("Reasoning: low", "low"),
+                                ("Reasoning: medium", "medium"),
+                                ("Reasoning: high", "high"),
+                                ("Reasoning: xhigh", "xhigh"),
+                            ],
                             id="model_edit_reasoning",
                             value="medium",
                         )

@@ -501,6 +501,49 @@ def compose_settings_tab() -> Iterator[Any]:
                         compact=True,
                     )
                 yield DataTable(id="settings_models_table", cursor_type="row")
+                yield Static("Selected Model", classes="settings-section-label")
+                with Horizontal(id="settings_models_form_identity_row"):
+                    yield Select(
+                        options=[
+                            ("bedrock", "bedrock"),
+                            ("openai", "openai"),
+                            ("ollama", "ollama"),
+                            ("github_copilot", "github_copilot"),
+                        ],
+                        allow_blank=False,
+                        id="settings_models_form_provider",
+                        compact=True,
+                    )
+                    yield Select(
+                        options=[
+                            ("fast", "fast"),
+                            ("balanced", "balanced"),
+                            ("deep", "deep"),
+                            ("long", "long"),
+                            ("coding", "coding"),
+                        ],
+                        allow_blank=False,
+                        id="settings_models_form_tier",
+                        compact=True,
+                    )
+                    yield Input(placeholder="model_id", id="settings_models_form_model_id")
+                with Horizontal(id="settings_models_form_text_row"):
+                    yield Input(placeholder="Display name", id="settings_models_form_display_name")
+                    yield Input(placeholder="Description", id="settings_models_form_description")
+                with Horizontal(id="settings_models_form_price_row"):
+                    yield Input(placeholder="Input $ / 1M", id="settings_models_form_price_input")
+                    yield Input(placeholder="Output $ / 1M", id="settings_models_form_price_output")
+                    yield Input(placeholder="Cached input $ / 1M", id="settings_models_form_price_cached")
+                with Horizontal(id="settings_models_form_actions"):
+                    yield Button("Save Model", id="settings_models_form_save", compact=True, variant="success")
+                    yield Button("New", id="settings_models_form_clear", compact=True, variant="default")
+                    yield Button("Hide", id="settings_models_form_delete", compact=True, variant="warning")
+                    yield Button(
+                        "Restore Defaults",
+                        id="settings_models_form_restore",
+                        compact=True,
+                        variant="default",
+                    )
                 with Horizontal(id="settings_auth_row"):
                     yield Button("Connect Copilot", id="settings_auth_connect_copilot", compact=True, variant="success")
                     yield Button("Connect AWS", id="settings_auth_connect_aws", compact=True, variant="primary")
@@ -568,6 +611,14 @@ def wire_settings_widgets(app: Any) -> None:
     app._settings_general_summary = app.query_one("#settings_general_summary", Static)
     app._settings_models_summary = app.query_one("#settings_models_summary", Static)
     app._settings_models_detail = app.query_one("#settings_models_detail", Static)
+    app._settings_models_form_provider_select = app.query_one("#settings_models_form_provider", Select)
+    app._settings_models_form_tier_select = app.query_one("#settings_models_form_tier", Select)
+    app._settings_models_form_model_id_input = app.query_one("#settings_models_form_model_id", Input)
+    app._settings_models_form_display_name_input = app.query_one("#settings_models_form_display_name", Input)
+    app._settings_models_form_description_input = app.query_one("#settings_models_form_description", Input)
+    app._settings_models_form_price_input = app.query_one("#settings_models_form_price_input", Input)
+    app._settings_models_form_price_output_input = app.query_one("#settings_models_form_price_output", Input)
+    app._settings_models_form_price_cached_input = app.query_one("#settings_models_form_price_cached", Input)
     app._settings_notebook_models_provider_select = app.query_one("#settings_notebook_models_provider_select", Select)
     app._settings_notebook_models_default_tier_select = app.query_one(
         "#settings_notebook_models_default_tier_select",

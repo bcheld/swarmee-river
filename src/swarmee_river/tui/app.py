@@ -1158,11 +1158,9 @@ def run_tui() -> int:
             padding: 0 0 1 0;
         }
 
-        #engage_plan_items {
+        #engage_plan_scroll {
             display: none;
-            height: auto;
-            min-height: 8;
-            max-height: 24;
+            height: 1fr;
             border: round #3b3b3b;
             padding: 0 1;
             margin: 0 0 1 0;
@@ -1174,17 +1172,10 @@ def run_tui() -> int:
             scrollbar-color-active: #b3b3b3;
         }
 
-        #engage_plan_summary_scroll {
+        #engage_plan_items {
             display: none;
             height: auto;
-            max-height: 8;
             margin: 0 0 1 0;
-            scrollbar-background: #2f2f2f;
-            scrollbar-background-hover: #3a3a3a;
-            scrollbar-background-active: #454545;
-            scrollbar-color: #7f7f7f;
-            scrollbar-color-hover: #999999;
-            scrollbar-color-active: #b3b3b3;
         }
 
         #engage_plan_summary {
@@ -1196,16 +1187,7 @@ def run_tui() -> int:
         #engage_plan_questions {
             display: none;
             height: auto;
-            max-height: 14;
-            border: round #3b3b3b;
-            padding: 0 1;
             margin: 0 0 1 0;
-            scrollbar-background: #2f2f2f;
-            scrollbar-background-hover: #3a3a3a;
-            scrollbar-background-active: #454545;
-            scrollbar-color: #7f7f7f;
-            scrollbar-color-hover: #999999;
-            scrollbar-color-active: #b3b3b3;
         }
 
         #engage_plan_actions_row {
@@ -2276,10 +2258,11 @@ def run_tui() -> int:
         _engage_plan_view: Any = None
         _engage_session_view: Any = None
         _engage_orchestrator_status: Any = None  # Static | None
-        _engage_plan_summary_scroll: Any = None  # VerticalScroll | None
+        _engage_plan_scroll: Any = None  # VerticalScroll | None
+        _engage_plan_summary_scroll: Any = None  # Backward-compatible alias for _engage_plan_scroll.
         _engage_plan_summary: Any = None  # Static | None
-        _engage_plan_questions: Any = None  # VerticalScroll | None
-        _engage_plan_items: Any = None  # VerticalScroll | None
+        _engage_plan_questions: Any = None  # Vertical | None
+        _engage_plan_items: Any = None  # Vertical | None
         # Tooling tab
         _tooling_view_prompts_button: Any = None
         _tooling_view_tools_button: Any = None
@@ -2312,6 +2295,14 @@ def run_tui() -> int:
         _settings_models_summary: Any = None  # Static | None
         _settings_models_table: Any = None  # DataTable | None
         _settings_models_detail: Any = None  # Static | None
+        _settings_models_form_provider_select: Any = None  # Select | None
+        _settings_models_form_tier_select: Any = None  # Select | None
+        _settings_models_form_model_id_input: Any = None  # Input | None
+        _settings_models_form_display_name_input: Any = None  # Input | None
+        _settings_models_form_description_input: Any = None  # Input | None
+        _settings_models_form_price_input: Any = None  # Input | None
+        _settings_models_form_price_output_input: Any = None  # Input | None
+        _settings_models_form_price_cached_input: Any = None  # Input | None
         _settings_auth_status: Any = None  # Static | None
         _settings_aws_profile_input: Any = None  # Input | None
         _settings_diag_level_select: Any = None  # Select | None
@@ -3142,6 +3133,7 @@ def run_tui() -> int:
                         selected_id if selected_id and not selected_id.startswith("__") else None
                     )
                     self._refresh_settings_model_detail()
+                    self._refresh_settings_model_form()
                 return
             if table is not None and table is self._settings_env_table:
                 row_key = getattr(event, "row_key", None)
@@ -3225,6 +3217,7 @@ def run_tui() -> int:
                         selected_id if selected_id and not selected_id.startswith("__") else None
                     )
                     self._refresh_settings_model_detail()
+                    self._refresh_settings_model_form()
                 return
             if table is not None and table is self._settings_env_table:
                 row_key = getattr(event, "row_key", None)
@@ -3596,6 +3589,18 @@ def run_tui() -> int:
                 return
             if button_id == "settings_models_open_manager":
                 self._open_settings_model_manager()
+                return
+            if button_id == "settings_models_form_save":
+                self._save_model_form()
+                return
+            if button_id == "settings_models_form_clear":
+                self._clear_model_form()
+                return
+            if button_id == "settings_models_form_delete":
+                self._delete_model_form_selection()
+                return
+            if button_id == "settings_models_form_restore":
+                self._restore_model_form_selection()
                 return
             if button_id == "settings_env_apply":
                 key = (self._settings_env_selected_key or "").strip()

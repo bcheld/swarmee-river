@@ -77,7 +77,7 @@ class _SettingsHarness(SettingsMixin):
         self._widgets: dict[str, _Widget] = {
             "#settings_models_form_provider": _Widget("openai"),
             "#settings_models_form_tier": _Widget("balanced"),
-            "#settings_models_form_model_id": _Widget("gpt-5-mini"),
+            "#settings_models_form_model_id": _Widget("gpt-5.4-mini"),
             "#settings_models_form_display_name": _Widget(""),
             "#settings_models_form_description": _Widget(""),
             "#settings_models_form_price_input": _Widget(""),
@@ -110,6 +110,14 @@ class _SettingsHarness(SettingsMixin):
         self._settings_athena_timeout_input = self._widgets["#settings_athena_timeout_input"]
         self._settings_general_context_budget_mode_select = self._widgets["#settings_general_context_budget_mode"]
         self._settings_general_context_budget_input = self._widgets["#settings_general_context_budget_input"]
+        self._settings_models_form_provider_select = self._widgets["#settings_models_form_provider"]
+        self._settings_models_form_tier_select = self._widgets["#settings_models_form_tier"]
+        self._settings_models_form_model_id_input = self._widgets["#settings_models_form_model_id"]
+        self._settings_models_form_display_name_input = self._widgets["#settings_models_form_display_name"]
+        self._settings_models_form_description_input = self._widgets["#settings_models_form_description"]
+        self._settings_models_form_price_input = self._widgets["#settings_models_form_price_input"]
+        self._settings_models_form_price_output_input = self._widgets["#settings_models_form_price_output"]
+        self._settings_models_form_price_cached_input = self._widgets["#settings_models_form_price_cached"]
         self._settings_interrupt_force_restart_select = None
         self._settings_diag_level_select = None
         self._settings_diag_redact_toggle = None
@@ -178,7 +186,7 @@ def test_delete_model_hides_row_and_removes_override() -> None:
                     "openai": {
                         "tiers": {
                             "balanced": {"provider": "openai", "model_id": "custom-model"},
-                            "fast": {"provider": "openai", "model_id": "gpt-5-nano"},
+                            "fast": {"provider": "openai", "model_id": "gpt-5.4-nano"},
                         }
                     }
                 }
@@ -241,6 +249,48 @@ def test_save_model_unhides_hidden_tier_and_updates_row() -> None:
     assert balanced["model_id"] == "gpt-5-custom"
     assert balanced["display_name"] == "Custom"
     assert balanced["description"] == "Custom tier description"
+
+
+def test_refresh_settings_model_form_populates_selected_model_fields() -> None:
+    harness = _SettingsHarness(
+        {
+            "models": {
+                "providers": {
+                    "openai": {
+                        "tiers": {
+                            "deep": {
+                                "provider": "openai",
+                                "model_id": "gpt-5.5",
+                                "display_name": "GPT-5.5",
+                                "description": "Newest OpenAI frontier tier.",
+                            }
+                        }
+                    }
+                }
+            },
+            "pricing": {
+                "providers": {
+                    "openai": {
+                        "input_per_1m": 5.0,
+                        "output_per_1m": 30.0,
+                        "cached_input_per_1m": 0.5,
+                    }
+                }
+            },
+        },
+        selected_id="openai|deep",
+    )
+
+    harness._refresh_settings_model_form()
+
+    assert harness.query_one("#settings_models_form_provider").value == "openai"
+    assert harness.query_one("#settings_models_form_tier").value == "deep"
+    assert harness.query_one("#settings_models_form_model_id").value == "gpt-5.5"
+    assert harness.query_one("#settings_models_form_display_name").value == "GPT-5.5"
+    assert harness.query_one("#settings_models_form_description").value == "Newest OpenAI frontier tier."
+    assert harness.query_one("#settings_models_form_price_input").value == "5.0"
+    assert harness.query_one("#settings_models_form_price_output").value == "30.0"
+    assert harness.query_one("#settings_models_form_price_cached").value == "0.5"
 
 
 def test_model_env_overrides_merge_project_env_and_model_overrides() -> None:
@@ -386,7 +436,7 @@ def test_apply_settings_model_manager_result_persists_models_and_env() -> None:
                         "tiers": {
                             "coding": {
                                 "provider": "openai",
-                                "model_id": "gpt-5.3-codex",
+                                "model_id": "gpt-5.5",
                             }
                         }
                     }
@@ -400,7 +450,7 @@ def test_apply_settings_model_manager_result_persists_models_and_env() -> None:
 
     assert harness.saved_payload is not None
     assert harness.saved_payload["models"]["default_selection"]["tier"] == "coding"
-    assert harness.saved_payload["models"]["providers"]["openai"]["tiers"]["coding"]["model_id"] == "gpt-5.3-codex"
+    assert harness.saved_payload["models"]["providers"]["openai"]["tiers"]["coding"]["model_id"] == "gpt-5.5"
     bedrock = harness.saved_payload["models"]["providers"]["bedrock"]
     assert bedrock["read_timeout_sec"] == 300.0
     assert "env" not in harness.saved_payload or (

@@ -21,7 +21,7 @@ def test_load_settings_uses_builtins_when_file_missing(tmp_path: Path) -> None:
     assert settings.models.provider is None
     assert "openai" in settings.models.providers
     assert "github_copilot" in settings.models.providers
-    assert settings.models.providers["openai"].tiers["fast"].model_id == "gpt-5-nano"
+    assert settings.models.providers["openai"].tiers["fast"].model_id == "gpt-5.4-nano"
     assert settings.models.providers["openai"].tiers["fast"].display_name
     assert settings.models.default_selection.tier == settings.models.default_tier
     assert settings.notebook.default_selection.provider is None
@@ -275,7 +275,7 @@ def test_tier_model_id_override_is_per_tier(tmp_path: Path) -> None:
                     "providers": {
                         "openai": {
                             "tiers": {
-                                "fast": {"model_id": "gpt-5-nano"},
+                                "fast": {"model_id": "gpt-5.4-nano"},
                                 "balanced": {"model_id": "gpt-4o-mini"},
                             }
                         }
@@ -290,7 +290,7 @@ def test_tier_model_id_override_is_per_tier(tmp_path: Path) -> None:
     manager = SessionModelManager(settings, fallback_provider="openai")
     tiers = _tiers_by_provider_and_name(manager)
 
-    assert tiers[("openai", "fast")].model_id == "gpt-5-nano"
+    assert tiers[("openai", "fast")].model_id == "gpt-5.4-nano"
     assert tiers[("openai", "balanced")].model_id == "gpt-4o-mini"
 
 

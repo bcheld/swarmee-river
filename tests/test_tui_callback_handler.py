@@ -838,7 +838,7 @@ def test_reasoning_capability_missing_stream_logs_diagnostic(caplog):
                 "swarmee": {
                     "provider": "bedrock",
                     "tier": "deep",
-                    "model_id": "us.anthropic.claude-opus-4-6-v1",
+                    "model_id": "us.anthropic.claude-opus-4-7",
                     "reasoning_effort": "high",
                     "reasoning_mode": "adaptive",
                 }

@@ -162,7 +162,7 @@ def test_default_model_config_bedrock_clamps_explicit_max_output_tokens_to_model
 
 
 def test_bedrock_model_capabilities_detects_current_claude_families():
-    adaptive = swarmee_river.utils.model_utils.bedrock_model_capabilities("us.anthropic.claude-opus-4-6-v1")
+    adaptive = swarmee_river.utils.model_utils.bedrock_model_capabilities("us.anthropic.claude-opus-4-7")
     extended = swarmee_river.utils.model_utils.bedrock_model_capabilities(
         "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
     )
@@ -432,7 +432,8 @@ def test_sanitize_openai_responses_config_strips_reasoning_for_unsupported_model
 
 
 def test_openai_model_supports_responses_reasoning_flags_unsupported_variants():
-    assert swarmee_river.utils.model_utils.openai_model_supports_responses_reasoning("gpt-5.2") is True
+    assert swarmee_river.utils.model_utils.openai_model_supports_responses_reasoning("gpt-5.5") is True
+    assert swarmee_river.utils.model_utils.openai_model_supports_responses_reasoning("gpt-5.4-mini") is True
     assert swarmee_river.utils.model_utils.openai_model_supports_responses_reasoning("gpt-5-mini") is False
     assert swarmee_river.utils.model_utils.openai_model_supports_responses_reasoning("gpt-5-micro") is False
 
@@ -538,7 +539,7 @@ def test_load_model_openai_provider_uses_unique_dynamic_module_name():
     model = swarmee_river.utils.model_utils.load_model(
         provider_path,
         {
-            "model_id": "gpt-5-nano",
+            "model_id": "gpt-5.4-nano",
             "client_args": {"api_key": "sk-test"},
             "params": {"max_output_tokens": 32},
             "transport": "responses",

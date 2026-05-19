@@ -31,14 +31,14 @@ class PlanMixin:
                 self.query_one(f"#{button_id}", Button).disabled = not enabled
 
     def _set_planning_ui_mode(self, *, pre_plan: bool) -> None:
-        from textual.containers import Horizontal, VerticalScroll
+        from textual.containers import Horizontal, Vertical, VerticalScroll
         from textual.widgets import Button, Static, TextArea
 
         plan_panel = self.query_one("#plan", TextArea)
         summary = self.query_one("#engage_plan_summary", Static)
-        summary_scroll = self.query_one("#engage_plan_summary_scroll", VerticalScroll)
-        steps = self.query_one("#engage_plan_items", VerticalScroll)
-        questions = self.query_one("#engage_plan_questions", VerticalScroll)
+        plan_scroll = self.query_one("#engage_plan_scroll", VerticalScroll)
+        steps = self.query_one("#engage_plan_items", Vertical)
+        questions = self.query_one("#engage_plan_questions", Vertical)
         actions_row = self.query_one("#engage_plan_actions_row", Horizontal)
         start_button = self.query_one("#engage_start_plan", Button)
 
@@ -48,7 +48,7 @@ class PlanMixin:
             start_button.styles.display = "block"
             actions_row.styles.display = "none"
             summary.styles.display = "none"
-            summary_scroll.styles.display = "none"
+            plan_scroll.styles.display = "none"
             steps.styles.display = "none"
             questions.styles.display = "none"
             with contextlib.suppress(Exception):
@@ -60,10 +60,12 @@ class PlanMixin:
         start_button.styles.display = "none"
         actions_row.styles.display = "block"
         summary_text = str(getattr(self.state.plan, "current_summary", "") or "").strip()
-        summary.styles.display = "block" if summary_text else "none"
-        summary_scroll.styles.display = "block" if summary_text else "none"
+        plain_plan_text = str(getattr(self.state.plan, "text", "") or "").strip()
+        summary.styles.display = "block" if summary_text or plain_plan_text else "none"
         steps.styles.display = "block" if list(steps.children) else "none"
         questions.styles.display = "block" if list(questions.children) else "none"
+        has_review_content = summary.styles.display == "block" or list(steps.children) or list(questions.children)
+        plan_scroll.styles.display = "block" if has_review_content else "none"
         self._set_planning_controls_enabled(enabled=not self.state.daemon.query_active)
         with contextlib.suppress(Exception):
             self.query_one("#engage_planning_header", Static).update(
@@ -141,8 +143,6 @@ class PlanMixin:
         # Render summary + assumptions
         summary_widget = self._engage_plan_summary
         if summary_widget is not None:
-            from textual.containers import VerticalScroll
-
             summary_lines: list[str] = []
             summary_text = str(plan_json.get("summary", "")).strip()
             if summary_text:
@@ -156,17 +156,17 @@ class PlanMixin:
             summary_widget.update("\n".join(summary_lines) if summary_lines else "")
             summary_widget.styles.display = "block" if summary_lines else "none"
             with _ctx.suppress(Exception):
-                summary_scroll = self.query_one("#engage_plan_summary_scroll", VerticalScroll)
-                summary_scroll.styles.display = "block" if summary_lines else "none"
-                summary_scroll.scroll_home(animate=False)
+                plan_scroll = self.query_one("#engage_plan_scroll")
+                plan_scroll.styles.display = "block"
+                plan_scroll.scroll_home(animate=False)
 
         # Clear existing plan step rows
         container = self._engage_plan_items
         if container is None:
             with _ctx.suppress(Exception):
-                from textual.containers import VerticalScroll
+                from textual.containers import Vertical
 
-                container = self.query_one("#engage_plan_items", VerticalScroll)
+                container = self.query_one("#engage_plan_items", Vertical)
                 self._engage_plan_items = container
         if container is None:
             return
@@ -225,6 +225,35 @@ class PlanMixin:
                     )
             questions_container.styles.display = "block" if list(questions_container.children) else "none"
 
+        self._set_planning_controls_enabled(enabled=not self.state.daemon.query_active)
+        with _ctx.suppress(Exception):
+            plan_scroll = self.query_one("#engage_plan_scroll")
+            plan_scroll.styles.display = "block"
+            plan_scroll.scroll_home(animate=False)
+
+    def _populate_plain_planning_view(self, rendered: str) -> None:
+        """Show a non-structured plan event in the review pane instead of leaving it blank."""
+        import contextlib as _ctx
+
+        text = str(rendered or "").strip()
+        self.state.plan.plan_json = None
+        self.state.plan.current_summary = text
+        self._set_planning_ui_mode(pre_plan=False)
+        if self._engage_plan_summary is not None:
+            with _ctx.suppress(Exception):
+                self._engage_plan_summary.update(text)
+                self._engage_plan_summary.styles.display = "block" if text else "none"
+        for container in (self._engage_plan_items, self._engage_plan_questions):
+            if container is None:
+                continue
+            for child in list(container.children):
+                with _ctx.suppress(Exception):
+                    child.remove()
+            container.styles.display = "none"
+        with _ctx.suppress(Exception):
+            plan_scroll = self.query_one("#engage_plan_scroll")
+            plan_scroll.styles.display = "block" if text else "none"
+            plan_scroll.scroll_home(animate=False)
         self._set_planning_controls_enabled(enabled=not self.state.daemon.query_active)
 
     def _handle_planning_continue(self) -> None:
@@ -340,10 +369,8 @@ class PlanMixin:
             with _ctx.suppress(Exception):
                 self._engage_plan_summary.update("")
         with _ctx.suppress(Exception):
-            from textual.containers import VerticalScroll
-
-            summary_scroll = self.query_one("#engage_plan_summary_scroll", VerticalScroll)
-            summary_scroll.styles.display = "none"
+            plan_scroll = self.query_one("#engage_plan_scroll")
+            plan_scroll.styles.display = "none"
         questions_container = self._engage_plan_questions
         if questions_container is not None:
             for child in list(questions_container.children):

@@ -23,10 +23,11 @@ _THINKING_DISABLE_TOKENS = {"0", "false", "f", "no", "n", "off", "disable", "dis
 _BEDROCK_DEFAULT_OUTPUT_TOKENS = 32_768
 _BEDROCK_THINKING_BUDGET_DEFAULT = 4096
 _BEDROCK_THINKING_BUDGET_MAX = 65536
-_BEDROCK_EXTENDED_BUDGETS = {"low": 2048, "medium": 8192, "high": 16384}
-_BEDROCK_ADAPTIVE_EFFORTS = {"low": "low", "medium": "medium", "high": "high"}
+_BEDROCK_EXTENDED_BUDGETS = {"none": 0, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768}
+_BEDROCK_ADAPTIVE_EFFORTS = {"none": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high"}
 _BEDROCK_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 _BEDROCK_FAMILY_MAX_OUTPUT_TOKENS = {
+    "claude_opus_4_7": 128_000,
     "claude_opus_4_6": 65_536,
     "claude_sonnet_4_5": 32_768,
     "claude_haiku_4_5": 32_768,
@@ -211,6 +212,13 @@ def _provider_extra(settings: SwarmeeSettings, provider: str) -> dict[str, Any]:
 
 def bedrock_model_capabilities(model_id: str | None) -> BedrockModelCapabilities:
     normalized = str(model_id or "").strip().lower()
+    if "anthropic.claude-opus-4-7" in normalized:
+        return BedrockModelCapabilities(
+            family="claude_opus_4_7",
+            reasoning_mode="adaptive",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+        )
     if "anthropic.claude-opus-4-6" in normalized:
         return BedrockModelCapabilities(
             family="claude_opus_4_6",
@@ -301,6 +309,8 @@ def _bedrock_extended_budget_for_tier(tier: ModelTier, settings: SwarmeeSettings
     if override > 0:
         return min(override, _BEDROCK_THINKING_BUDGET_MAX)
     effort = tier.reasoning.effort if tier.reasoning is not None else "medium"
+    if effort == "none":
+        return 0
     return min(_BEDROCK_EXTENDED_BUDGETS.get(effort, _BEDROCK_THINKING_BUDGET_DEFAULT), _BEDROCK_THINKING_BUDGET_MAX)
 
 
@@ -356,7 +366,10 @@ def sanitize_bedrock_converse_config(
             config.pop("additional_request_fields", None)
         return capabilities
 
-    if capabilities.reasoning_mode == "adaptive":
+    effort = tier.reasoning.effort if tier.reasoning is not None else "medium"
+    if effort == "none":
+        pass
+    elif capabilities.reasoning_mode == "adaptive":
         additional["thinking"] = {"type": "adaptive"}
         additional["output_config"] = {"effort": _bedrock_adaptive_effort_for_tier(tier)}
     elif capabilities.reasoning_mode == "extended":
@@ -391,7 +404,7 @@ def default_model_config(provider: str, settings: SwarmeeSettings) -> dict[str, 
 
     if provider == "openai":
         extra = _provider_extra(settings, "openai")
-        model_id = "gpt-5-nano"
+        model_id = "gpt-5.4-nano"
         max_tokens = settings.models.max_output_tokens
         params: dict[str, Any] = {}
         if isinstance(max_tokens, int) and max_tokens > 0:

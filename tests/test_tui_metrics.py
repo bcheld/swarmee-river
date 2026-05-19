@@ -24,7 +24,7 @@ def test_after_invocation_normalizes_attribute_usage_payload(monkeypatch) -> Non
     hook.enabled = True
     event = SimpleNamespace(
         result=SimpleNamespace(metrics=SimpleNamespace(latest_agent_invocation=SimpleNamespace(usage=_UsageObject()))),
-        invocation_state={"swarmee": {"provider": "bedrock", "model_id": "us.anthropic.claude-opus-4-6-v1"}},
+        invocation_state={"swarmee": {"provider": "bedrock", "model_id": "us.anthropic.claude-opus-4-7"}},
     )
 
     hook.after_invocation(event)
@@ -53,7 +53,7 @@ def test_after_model_call_normalizes_attribute_usage_payload(monkeypatch) -> Non
     hook.enabled = True
     event = SimpleNamespace(
         usage=_UsageObject(),
-        invocation_state={"swarmee": {"provider": "openai", "model_id": "gpt-5-mini"}},
+        invocation_state={"swarmee": {"provider": "openai", "model_id": "gpt-5.4-mini"}},
     )
 
     hook.after_model_call(event)

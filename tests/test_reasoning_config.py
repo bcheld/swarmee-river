@@ -73,7 +73,7 @@ def test_openai_guided_reasoning_applies_to_deep_tier(tmp_path: Path, monkeypatc
     assert config["params"]["reasoning"] == {"effort": "high"}
 
 
-def test_openai_balanced_gpt5_mini_uses_responses_without_reasoning(
+def test_openai_balanced_gpt54_mini_uses_guided_reasoning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = load_settings(tmp_path / "settings.json")
@@ -93,12 +93,11 @@ def test_openai_balanced_gpt5_mini_uses_responses_without_reasoning(
 
     config = captured.get("config")
     assert isinstance(config, dict)
-    assert config["model_id"] == "gpt-5-mini"
+    assert config["model_id"] == "gpt-5.4-mini"
     assert config["transport"] == "responses"
-    assert "reasoning" not in config["params"]
+    assert config["params"]["reasoning"] == {"effort": "medium"}
     tier = _tier_status_by_provider_and_name(manager, provider="openai", name="balanced")
-    assert tier.reasoning_effort is None
-    assert tier.reasoning_mode == "none"
+    assert tier.reasoning_effort == "medium"
 
 
 def test_bedrock_deep_tier_strips_thinking_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

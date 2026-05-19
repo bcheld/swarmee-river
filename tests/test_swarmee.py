@@ -2364,6 +2364,8 @@ class TestStructuredPlanPrompt:
             "Plan prompt must instruct the model not to produce text before WorkPlan"
         )
         assert "do not draft a solution" in prompt.lower()
+        assert "do not implement" in prompt.lower()
+        assert "approval gate" in prompt.lower()
         assert "WorkPlan tool call" in prompt
 
     def test_structured_plan_prompt_does_not_ban_all_tools(self):

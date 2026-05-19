@@ -84,7 +84,7 @@ def test_generate_session_summary_includes_tools_plans_and_errors() -> None:
         "updated_at": "2026-02-20T10:30:00",
         "provider": "openai",
         "tier": "deep",
-        "model_id": "gpt-5.2",
+        "model_id": "gpt-5.5",
         "last_plan": {"summary": "Ship S3 session export"},
     }
     messages = [
@@ -126,7 +126,7 @@ def test_session_s3_export_uploads_expected_files(
 ) -> None:
     sid = session_workspace.create(session_id="sess-1", meta={"provider": "openai", "tier": "deep"})
     meta = session_workspace.read_meta(sid)
-    meta["model_id"] = "gpt-5.2"
+    meta["model_id"] = "gpt-5.5"
     session_workspace.save(sid, meta=meta, state={"ok": True}, last_plan={"summary": "Plan summary"})
     session_workspace.save_messages(
         sid,

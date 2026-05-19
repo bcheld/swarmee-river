@@ -1031,8 +1031,8 @@ class AgentStudioMixin:
             with contextlib.suppress(Exception):
                 self._refresh_tooling_prompts_list()
         self._render_agent_builder_panel()
-        self._set_agent_builder_status("Saved draft changes from Agent Manager.")
-        self._set_agent_draft_dirty(True, note="Agent Manager updated the draft roster.")
+        self._set_agent_builder_status("Agent Manager saved changes into the draft roster.")
+        self._set_agent_draft_dirty(True, note="Last change: updated the draft roster in Agent Manager.")
 
     def _open_agent_builder_editor_new(self) -> None:
         from swarmee_river.prompt_assets import load_prompt_assets
@@ -1129,7 +1129,7 @@ class AgentStudioMixin:
                 self._refresh_tooling_prompts_list()
         self._render_agent_builder_panel()
         self._set_agent_builder_status(f"Saved agent '{payload['name']}' in draft.")
-        self._set_agent_draft_dirty(True, note=f"Agent '{payload['name']}' saved in draft.")
+        self._set_agent_draft_dirty(True, note=f"Last change: saved agent '{payload['name']}' in the draft roster.")
 
     def _delete_selected_builder_agent(self) -> None:
         selected = self._agent_builder_item_by_id(self.state.agent_studio.builder_selected_item_id)
@@ -1147,7 +1147,7 @@ class AgentStudioMixin:
         self.state.agent_studio.builder_selected_item_id = None
         self._render_agent_builder_panel()
         self._set_agent_builder_status(f"Deleted agent '{selected_id}' from draft.")
-        self._set_agent_draft_dirty(True, note=f"Agent '{selected_id}' removed from draft.")
+        self._set_agent_draft_dirty(True, note=f"Last change: removed agent '{selected_id}' from the draft roster.")
 
     def _insert_activated_agents_run_prompt(self, *, run_now: bool = False) -> None:
         prompt_assets_by_id: dict[str, Any] = {}
@@ -1238,12 +1238,13 @@ class AgentStudioMixin:
 
     def _set_agent_draft_dirty(self, dirty: bool, *, note: str | None = None) -> None:
         self.state.agent_studio.draft_dirty = bool(dirty)
+        self.state.agent_studio.draft_status_note = str(note or "").strip()
         if self.state.agent_studio.draft_dirty:
-            base = "Draft changes pending."
+            base = "Draft has unsaved changes. Save in Bundles to persist."
         else:
-            base = "Draft synced."
-        if isinstance(note, str) and note.strip():
-            self._set_agent_status(f"{base} {note.strip()}")
+            base = "Draft is saved and up to date."
+        if self.state.agent_studio.draft_status_note:
+            self._set_agent_status(f"{base} {self.state.agent_studio.draft_status_note}")
         else:
             self._set_agent_status(base)
         self._reload_saved_bundles()

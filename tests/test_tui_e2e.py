@@ -72,6 +72,67 @@ async def test_plain_text_output_appends_to_transcript(tui_app_factory):
         assert "Hello from the daemon" in transcript_lines
 
 
+async def test_structured_plan_event_populates_single_scroll_review(tui_app_factory):
+    from textual.containers import Vertical, VerticalScroll
+    from textual.widgets import Static
+
+    async with tui_app_factory() as (app, pilot, transport):
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+
+        transport.emit_event(
+            {
+                "event": "plan",
+                "rendered": "Proposed plan:\n- Inspect planning pane\n- Simplify scrolling",
+                "plan_json": {
+                    "summary": "Fix planning pane",
+                    "steps": [
+                        {"description": "Inspect the planning pane event path"},
+                        {"description": "Replace nested review scrollers"},
+                    ],
+                    "questions": ["Should approval require all steps?"],
+                },
+            }
+        )
+        reached = await _wait_for(
+            lambda: app.state.plan.current_summary == "Fix planning pane" and len(app.state.plan.current_steps) == 2,
+            pilot=pilot,
+        )
+        assert reached, "plan event did not switch to the plan review pane"
+
+        plan_scroll = app.query_one("#engage_plan_scroll", VerticalScroll)
+        steps = app.query_one("#engage_plan_items", Vertical)
+        questions = app.query_one("#engage_plan_questions", Vertical)
+        summary = app.query_one("#engage_plan_summary", Static)
+
+        assert plan_scroll.styles.display == "block"
+        assert steps.styles.display == "block"
+        assert questions.styles.display == "block"
+        assert "Fix planning pane" in str(summary.render())
+        assert len(steps.children) == 2
+        assert len(questions.children) == 1
+
+
+async def test_plain_plan_event_is_visible_in_plan_review(tui_app_factory):
+    from textual.containers import VerticalScroll
+    from textual.widgets import Static
+
+    async with tui_app_factory() as (app, pilot, transport):
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+
+        rendered = "Proposed plan:\n- Reproduce missing pane update\n- Add fallback rendering"
+        transport.emit_event({"event": "plan", "rendered": rendered})
+        reached = await _wait_for(lambda: app.state.plan.text == rendered, pilot=pilot)
+        assert reached, "plain plan event did not switch to the plan review pane"
+
+        plan_scroll = app.query_one("#engage_plan_scroll", VerticalScroll)
+        summary = app.query_one("#engage_plan_summary", Static)
+
+        assert plan_scroll.styles.display == "block"
+        assert rendered in str(summary.render())
+
+
 # ---------------------------------------------------------------------------
 # Scenario 3 — /new resets the session timeline
 # ---------------------------------------------------------------------------
@@ -379,6 +440,32 @@ async def test_settings_general_includes_interrupt_control_label(tui_app_factory
         assert "Interrupt Control" in str(label.render())
         assert "Press ESC to cancel the current turn" in str(help_text.render())
         assert "workspace defaults for AWS region" in str(aws_help_text.render())
+
+
+async def test_settings_models_inline_editor_updates_openai_model_id(tui_app_factory):
+    import json
+    from pathlib import Path
+
+    from textual.widgets import Input, Select
+
+    async with tui_app_factory() as (app, pilot, _transport):
+        app._switch_side_tab("tab_settings")
+        app._set_settings_view_mode("models")
+        await pilot.pause(delay=0.1)
+
+        app.query_one("#settings_models_form_provider", Select).value = "openai"
+        app.query_one("#settings_models_form_tier", Select).value = "balanced"
+        app.query_one("#settings_models_form_model_id", Input).value = "gpt-5.4-mini"
+        app.query_one("#settings_models_form_display_name", Input).value = "GPT-5.4 mini"
+        app.query_one("#settings_models_form_description", Input).value = "Default OpenAI tier for most coding tasks."
+
+        app.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="settings_models_form_save")))
+        await pilot.pause(delay=0.1)
+
+        payload = json.loads((Path.cwd() / ".swarmee" / "settings.json").read_text(encoding="utf-8"))
+        balanced = payload["models"]["providers"]["openai"]["tiers"]["balanced"]
+        assert balanced["model_id"] == "gpt-5.4-mini"
+        assert balanced["display_name"] == "GPT-5.4 mini"
 
 
 # ---------------------------------------------------------------------------

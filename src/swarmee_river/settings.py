@@ -133,7 +133,7 @@ class ModelReasoningConfig:
         return cls(
             effort=_normalized_choice(
                 raw.get("effort"),
-                allowed={"low", "medium", "high"},
+                allowed={"none", "low", "medium", "high", "xhigh"},
                 default="medium",
             )
         )
@@ -1819,8 +1819,8 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "deep": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-opus-4-6-v1",
-                            display_name="Claude Opus 4.6 (deep)",
+                            model_id="us.anthropic.claude-opus-4-7",
+                            display_name="Claude Opus 4.7 (deep)",
                             description="Adaptive Claude reasoning for harder analytics tasks.",
                             reasoning=ModelReasoningConfig(effort="high"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
@@ -1832,8 +1832,8 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "long": ModelTier(
                             provider="bedrock",
-                            model_id="us.anthropic.claude-opus-4-6-v1",
-                            display_name="Claude Opus 4.6 (long)",
+                            model_id="us.anthropic.claude-opus-4-7",
+                            display_name="Claude Opus 4.7 (long)",
                             description="Use for long-running Bedrock sessions and larger outputs.",
                             reasoning=ModelReasoningConfig(effort="high"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
@@ -1851,9 +1851,9 @@ def default_settings_template() -> SwarmeeSettings:
                     tiers={
                         "fast": ModelTier(
                             provider="openai",
-                            model_id="gpt-5-nano",
-                            display_name="GPT-5 nano",
-                            description="Lowest latency/cost; good for quick iterations.",
+                            model_id="gpt-5.4-nano",
+                            display_name="GPT-5.4 nano",
+                            description="Lowest latency/cost frontier OpenAI tier for quick iterations.",
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="low"),
                             tooling=ModelToolingConfig(mode="minimal", discovery="off"),
@@ -1865,8 +1865,8 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "balanced": ModelTier(
                             provider="openai",
-                            model_id="gpt-5-mini",
-                            display_name="GPT-5 mini",
+                            model_id="gpt-5.4-mini",
+                            display_name="GPT-5.4 mini",
                             description="Default OpenAI tier for most coding tasks.",
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="medium"),
@@ -1879,9 +1879,9 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "deep": ModelTier(
                             provider="openai",
-                            model_id="gpt-5.2",
-                            display_name="GPT-5.2",
-                            description="Deep repo reasoning with tool-heavy workflows.",
+                            model_id="gpt-5.5",
+                            display_name="GPT-5.5",
+                            description="Newest OpenAI frontier tier for deep repo reasoning and tool-heavy workflows.",
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="high"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
@@ -1893,9 +1893,9 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "long": ModelTier(
                             provider="openai",
-                            model_id="gpt-5.2",
-                            display_name="GPT-5.2 (long)",
-                            description="Long-running analysis with more aggressive compaction.",
+                            model_id="gpt-5.5",
+                            display_name="GPT-5.5 (long)",
+                            description="Newest OpenAI frontier tier for long-running analysis with larger context.",
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="medium"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),
@@ -1907,9 +1907,9 @@ def default_settings_template() -> SwarmeeSettings:
                         ),
                         "coding": ModelTier(
                             provider="openai",
-                            model_id="gpt-5.3-codex",
-                            display_name="GPT-5.3 Codex (coding)",
-                            description="Optimized tier for coding-heavy workflows and refactors.",
+                            model_id="gpt-5.5",
+                            display_name="GPT-5.5 (coding)",
+                            description="Newest OpenAI frontier tier for coding-heavy workflows and refactors.",
                             transport="responses",
                             reasoning=ModelReasoningConfig(effort="high"),
                             tooling=ModelToolingConfig(mode="tool-heavy", discovery="search"),

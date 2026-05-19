@@ -248,6 +248,8 @@ def classify_intent(prompt: str) -> str:
 def structured_plan_prompt() -> str:
     return (
         "You are Swarmee River in PLAN mode.\n"
+        "- PLAN mode is an approval gate: do not implement, mutate files, run write actions, "
+        "or produce the final answer until a WorkPlan has been approved.\n"
         "- Your job is to produce a WorkPlan, not to solve or draft the final answer.\n"
         "- You may use safe read-only tools to gather context before planning: "
         "file_read, notebook_read, file_search, file_list, glob, grep, retrieve, project_context, "

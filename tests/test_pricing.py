@@ -4,24 +4,24 @@ from swarmee_river.pricing import resolve_pricing
 
 
 def test_resolve_pricing_openai_gpt5_nano_has_model_override() -> None:
-    pricing = resolve_pricing(provider="openai", model_id="gpt-5-nano")
+    pricing = resolve_pricing(provider="openai", model_id="gpt-5.4-nano")
     assert pricing is not None
-    assert pricing.input_per_1m == 0.05
-    assert pricing.output_per_1m == 0.4
-    assert pricing.cached_input_per_1m == 0.005
+    assert pricing.input_per_1m == 0.20
+    assert pricing.output_per_1m == 1.25
+    assert pricing.cached_input_per_1m == 0.02
 
 
 def test_resolve_pricing_openai_gpt53_codex_uses_model_specific_rate() -> None:
-    pricing = resolve_pricing(provider="openai", model_id="gpt-5.3-codex")
+    pricing = resolve_pricing(provider="openai", model_id="gpt-5.5")
     assert pricing is not None
-    assert pricing.input_per_1m == 1.75
-    assert pricing.output_per_1m == 14.0
-    assert pricing.cached_input_per_1m == 0.175
+    assert pricing.input_per_1m == 5.0
+    assert pricing.output_per_1m == 30.0
+    assert pricing.cached_input_per_1m == 0.5
 
 
 def test_resolve_pricing_bedrock_new_model_ids_have_defaults() -> None:
     haiku = resolve_pricing(provider="bedrock", model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0")
-    opus = resolve_pricing(provider="bedrock", model_id="us.anthropic.claude-opus-4-6-v1")
+    opus = resolve_pricing(provider="bedrock", model_id="us.anthropic.claude-opus-4-7")
     assert haiku is not None
     assert opus is not None
     assert haiku.input_per_1m == 1.0

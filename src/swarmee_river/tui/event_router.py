@@ -711,6 +711,15 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
             with contextlib.suppress(Exception):
                 app._switch_side_tab("tab_engage")
         else:
+            if isinstance(rendered, str) and rendered.strip():
+                app._populate_plain_planning_view(rendered)
+                if app.state.plan.pre_planning_split_ratio is None:
+                    app.state.plan.pre_planning_split_ratio = app._split_ratio
+                while app._split_ratio > 1:
+                    app.action_widen_side()
+                app._set_engage_view_mode("plan")
+                with contextlib.suppress(Exception):
+                    app._switch_side_tab("tab_engage")
             app._refresh_plan_status_bar()
         app._refresh_plan_actions_visibility()
         app._save_session()

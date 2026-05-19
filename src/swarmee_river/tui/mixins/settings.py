@@ -539,7 +539,8 @@ class SettingsMixin:
 
         with _ctx.suppress(Exception):
             pa = self.query_one("#engage_plan_actions_row")
-            has_plan_ui = bool(self.state.plan.plan_json) or bool(self.state.plan.pending_record)
+            has_plain_plan = bool(self.state.plan.received_structured_plan and str(self.state.plan.text or "").strip())
+            has_plan_ui = bool(self.state.plan.plan_json) or bool(self.state.plan.pending_record) or has_plain_plan
             if has_plan_ui and not self.state.daemon.query_active:
                 pa.styles.display = "block"
             else:
@@ -831,6 +832,7 @@ class SettingsMixin:
                 aws_input.value = configured_profile
 
         self._refresh_settings_model_detail()
+        self._refresh_settings_model_form(settings=settings)
 
     def _refresh_settings_model_detail(self) -> None:
         from swarmee_river.pricing import resolve_pricing
@@ -873,6 +875,66 @@ class SettingsMixin:
                     ]
                 )
             )
+
+    def _refresh_settings_model_form(self, *, settings: Any | None = None) -> None:
+        if settings is None:
+            payload, _path = self._load_project_settings_payload()
+            settings = self._settings_from_project_payload(payload)
+        selected = str(self._settings_models_selected_id or "").strip().lower()
+        provider_name = ""
+        tier_name = ""
+        tier = None
+        if "|" in selected:
+            provider_name, tier_name = selected.split("|", 1)
+            provider_name = provider_name.strip().lower()
+            tier_name = tier_name.strip().lower()
+            provider = settings.models.providers.get(provider_name)
+            tier = provider.tiers.get(tier_name) if provider is not None else None
+
+        provider_widget = getattr(self, "_settings_models_form_provider_select", None)
+        tier_widget = getattr(self, "_settings_models_form_tier_select", None)
+        model_id_widget = getattr(self, "_settings_models_form_model_id_input", None)
+        display_widget = getattr(self, "_settings_models_form_display_name_input", None)
+        description_widget = getattr(self, "_settings_models_form_description_input", None)
+        price_input_widget = getattr(self, "_settings_models_form_price_input", None)
+        price_output_widget = getattr(self, "_settings_models_form_price_output_input", None)
+        price_cached_widget = getattr(self, "_settings_models_form_price_cached_input", None)
+
+        if provider_widget is not None:
+            with contextlib.suppress(Exception):
+                provider_widget.value = provider_name or "openai"
+        if tier_widget is not None:
+            with contextlib.suppress(Exception):
+                tier_widget.value = tier_name or "balanced"
+        if model_id_widget is not None:
+            with contextlib.suppress(Exception):
+                model_id_widget.value = str(getattr(tier, "model_id", "") or "")
+        if display_widget is not None:
+            with contextlib.suppress(Exception):
+                display_widget.value = str(getattr(tier, "display_name", "") or "")
+        if description_widget is not None:
+            with contextlib.suppress(Exception):
+                description_widget.value = str(getattr(tier, "description", "") or "")
+
+        provider_pricing = settings.pricing.providers.get(provider_name) if provider_name else None
+        if price_input_widget is not None:
+            with contextlib.suppress(Exception):
+                price_input_widget.value = (
+                    "" if provider_pricing is None or provider_pricing.input_per_1m is None
+                    else str(provider_pricing.input_per_1m)
+                )
+        if price_output_widget is not None:
+            with contextlib.suppress(Exception):
+                price_output_widget.value = (
+                    "" if provider_pricing is None or provider_pricing.output_per_1m is None
+                    else str(provider_pricing.output_per_1m)
+                )
+        if price_cached_widget is not None:
+            with contextlib.suppress(Exception):
+                price_cached_widget.value = (
+                    "" if provider_pricing is None or provider_pricing.cached_input_per_1m is None
+                    else str(provider_pricing.cached_input_per_1m)
+                )
 
     def _load_project_settings_payload(self) -> tuple[dict[str, Any], Path]:
         from swarmee_river.settings import deep_merge_dict, default_settings_template

@@ -105,6 +105,7 @@ class AgentStudioState:
     saved_bundles: list[dict[str, Any]] = field(default_factory=list)
     effective_profile: Any = None
     draft_dirty: bool = False
+    draft_status_note: str = ""
     form_syncing: bool = False
     agents: list[dict[str, Any]] = field(default_factory=list)
     activated_items: list[dict[str, Any]] = field(default_factory=list)
