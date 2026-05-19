@@ -5469,6 +5469,74 @@ def test_tool_error_event_resets_prompt_bar_instead_of_showing_tool_actions() ->
     assert "ERROR:" in issues[0]
 
 
+def test_error_event_with_tier_substring_does_not_revert_pending_model_dropdown() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class _Harness:
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.daemon.pending_model_select_value = "openai|deep"
+            self.refresh_model_select_calls = 0
+
+        def _refresh_model_select(self) -> None:
+            self.refresh_model_select_calls += 1
+
+        def _write_issue(self, _text: str) -> None:
+            pass
+
+        def _update_header_status(self) -> None:
+            pass
+
+        def _notify(self, _msg: str, *, severity: str = "information", timeout: float | None = 2.5) -> None:
+            del severity, timeout
+
+        def _reset_error_action_prompt(self) -> None:
+            pass
+
+    harness = _Harness()
+    handled = _handle_error_warning_events(
+        harness,
+        "error",
+        {"message": "Frontier provider returned a transient tier metadata warning"},
+    )
+
+    assert handled is True
+    assert harness.state.daemon.pending_model_select_value == "openai|deep"
+    assert harness.refresh_model_select_calls == 0
+
+
+def test_model_selection_error_reverts_pending_model_dropdown() -> None:
+    from swarmee_river.tui.event_router import _handle_error_warning_events
+
+    class _Harness:
+        def __init__(self) -> None:
+            self.state = AppState()
+            self.state.daemon.pending_model_select_value = "openai|deep"
+            self.refresh_model_select_calls = 0
+
+        def _refresh_model_select(self) -> None:
+            self.refresh_model_select_calls += 1
+
+        def _write_issue(self, _text: str) -> None:
+            pass
+
+        def _update_header_status(self) -> None:
+            pass
+
+        def _notify(self, _msg: str, *, severity: str = "information", timeout: float | None = 2.5) -> None:
+            del severity, timeout
+
+        def _reset_error_action_prompt(self) -> None:
+            pass
+
+    harness = _Harness()
+    handled = _handle_error_warning_events(harness, "error", {"message": "Unknown tier: ultra"})
+
+    assert handled is True
+    assert harness.state.daemon.pending_model_select_value is None
+    assert harness.refresh_model_select_calls == 1
+
+
 def test_handle_output_line_suppresses_duplicate_raw_assistant_echo() -> None:
     class _Harness(OutputMixin):
         def __init__(self) -> None:

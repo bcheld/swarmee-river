@@ -239,7 +239,7 @@ def test_sanitize_bedrock_converse_config_clamps_sonnet_max_tokens_to_safe_limit
     assert config["max_tokens"] == 32_768
 
 
-def test_sanitize_bedrock_converse_config_emits_adaptive_thinking_for_opus_46():
+def test_sanitize_bedrock_converse_config_omits_adaptive_thinking_for_opus_47():
     settings = _settings_with({})
     tier = settings.models.providers["bedrock"].tiers["deep"]
     config = swarmee_river.utils.model_utils.default_model_config("bedrock", settings)
@@ -250,9 +250,7 @@ def test_sanitize_bedrock_converse_config_emits_adaptive_thinking_for_opus_46():
     assert config["cache_tools"] == "default"
     assert isinstance(config["cache_config"], CacheConfig)
     assert config["cache_config"].strategy == "auto"
-    assert config["additional_request_fields"]["thinking"] == {"type": "adaptive"}
-    assert config["additional_request_fields"]["output_config"] == {"effort": "high"}
-    assert "anthropic_beta" not in config["additional_request_fields"]
+    assert "additional_request_fields" not in config
 
 
 def test_sanitize_bedrock_converse_config_strips_reasoning_when_tool_choice_forces_tool_use():

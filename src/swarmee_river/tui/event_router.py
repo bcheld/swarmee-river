@@ -887,10 +887,17 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
         error_text = error_message
         if not error_text.startswith("ERROR:"):
             error_text = f"ERROR: {error_text}"
-        normalized_error = error_text.lower()
-        if app.state.daemon.pending_model_select_value and (
-            "set_tier" in normalized_error or "cannot set tier" in normalized_error or "tier" in normalized_error
-        ):
+        normalized_error = normalized_message.lower()
+        model_select_failed = (
+            normalized_error.startswith("set_tier.")
+            or normalized_error.startswith("set_model.")
+            or normalized_error.startswith("cannot set tier ")
+            or normalized_error.startswith("cannot set model ")
+            or normalized_error.startswith("unknown tier:")
+            or normalized_error.startswith("unknown provider/tier selection:")
+            or normalized_error == "both provider and tier are required"
+        )
+        if app.state.daemon.pending_model_select_value and model_select_failed:
             app.state.daemon.pending_model_select_value = None
             app._refresh_model_select()
         app.state.session.error_count += 1

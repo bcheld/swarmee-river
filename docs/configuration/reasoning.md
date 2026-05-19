@@ -48,18 +48,18 @@ Bedrock is now modeled as `Claude-first on Bedrock`. Users still pick guided rea
   - standard tool use
 - `deep`
   - Claude Opus 4.7
-  - adaptive reasoning
+  - high guided reasoning
   - cache-safe tool/context defaults
 - `long`
   - Claude Opus 4.7
-  - adaptive reasoning
+  - high guided reasoning
   - long-running context defaults
 
 ### Bedrock request mapping
 
 The primary UI does not expose raw Bedrock request fields. Swarmee derives them internally from tier config and model family:
 
-- Claude Opus 4.7 tiers use adaptive thinking.
+- Claude Opus 4.7 tiers do not emit raw `additional_request_fields.thinking`; guided reasoning remains a tier-level setting.
 - Claude Haiku 4.5 and Sonnet 4.5 tiers use extended thinking.
 - Non-Claude Bedrock models fall back to no Bedrock-specific reasoning fields unless explicitly supported.
 - Forced tool choice disables Bedrock reasoning fields for that request because Bedrock does not allow reasoning with forced tool use.

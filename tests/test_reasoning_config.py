@@ -21,7 +21,7 @@ def _tier_status_by_provider_and_name(
     raise AssertionError(f"Missing tier status for {provider}/{name}")
 
 
-def test_bedrock_deep_tier_sets_adaptive_reasoning_for_opus_46(
+def test_bedrock_deep_tier_omits_adaptive_reasoning_payload_for_opus_47(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = load_settings(tmp_path / "settings.json")
@@ -41,8 +41,7 @@ def test_bedrock_deep_tier_sets_adaptive_reasoning_for_opus_46(
 
     config = captured.get("config")
     assert isinstance(config, dict)
-    assert config["additional_request_fields"]["thinking"] == {"type": "adaptive"}
-    assert config["additional_request_fields"]["output_config"] == {"effort": "high"}
+    assert "additional_request_fields" not in config
     assert config["cache_tools"] == "default"
 
 

@@ -1147,9 +1147,9 @@ def run_tui() -> int:
         }
 
         #engage_planning_header {
-            height: auto;
+            height: 1;
             color: $text-muted;
-            padding: 0 0 1 0;
+            padding: 0;
         }
 
         #engage_execution_header {
@@ -1163,7 +1163,7 @@ def run_tui() -> int:
             height: 1fr;
             border: round #3b3b3b;
             padding: 0 1;
-            margin: 0 0 1 0;
+            margin: 0;
             scrollbar-background: #2f2f2f;
             scrollbar-background-hover: #3a3a3a;
             scrollbar-background-active: #454545;
@@ -1194,11 +1194,12 @@ def run_tui() -> int:
             display: none;
             height: auto;
             layout: horizontal;
-            margin: 0 0 1 0;
+            margin: 0;
         }
 
         #engage_plan_actions_row Button {
             width: 1fr;
+            min-width: 0;
             margin: 0 1 0 0;
         }
 
@@ -1213,9 +1214,9 @@ def run_tui() -> int:
         }
 
         #engage_orchestrator_status {
-            height: auto;
+            height: 1;
             color: $accent;
-            padding: 0 0 1 0;
+            padding: 0;
         }
 
         /* ── Help text (muted hints below headers) ── */
@@ -1943,18 +1944,14 @@ def run_tui() -> int:
             margin-bottom: 0;
         }
 
-        .layout-narrow #engage_plan_actions_row {
-            layout: vertical;
-        }
-
         .layout-narrow #engage_plan_actions_row Button {
             width: 1fr;
             min-width: 0;
-            margin: 0 0 1 0;
+            margin: 0 1 0 0;
         }
 
         .layout-narrow #engage_plan_actions_row Button:last-child {
-            margin-bottom: 0;
+            margin-right: 0;
         }
 
         #settings_safety_status {

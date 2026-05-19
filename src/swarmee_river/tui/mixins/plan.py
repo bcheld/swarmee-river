@@ -68,9 +68,7 @@ class PlanMixin:
         plan_scroll.styles.display = "block" if has_review_content else "none"
         self._set_planning_controls_enabled(enabled=not self.state.daemon.query_active)
         with contextlib.suppress(Exception):
-            self.query_one("#engage_planning_header", Static).update(
-                "Review the plan below. Uncheck steps to exclude,\nadd comments and answers, then press Continue."
-            )
+            self.query_one("#engage_planning_header", Static).update("Review, adjust, Continue.")
 
     def _extract_plan_step_descriptions(self, plan_json: dict[str, Any]) -> list[str]:
         steps_raw = plan_json.get("steps", [])

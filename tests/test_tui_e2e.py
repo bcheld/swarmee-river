@@ -133,6 +133,53 @@ async def test_plain_plan_event_is_visible_in_plan_review(tui_app_factory):
         assert rendered in str(summary.render())
 
 
+async def test_plan_review_actions_stay_visible_in_small_terminal(tui_app_factory):
+    from textual.containers import Horizontal, VerticalScroll
+    from textual.widgets import Button
+
+    async with tui_app_factory(size=(80, 24)) as (app, pilot, transport):
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+
+        transport.emit_event(
+            {
+                "event": "plan",
+                "rendered": "Proposed plan:\n- Keep actions visible\n- Keep plan scrollable",
+                "plan_json": {
+                    "summary": "Fix compact planning review",
+                    "steps": [{"description": f"Review step {index}"} for index in range(1, 12)],
+                    "questions": ["Any final adjustment?"],
+                },
+            }
+        )
+        reached = await _wait_for(
+            lambda: app.state.plan.current_summary == "Fix compact planning review",
+            pilot=pilot,
+        )
+        assert reached, "plan event did not render in the compact planning pane"
+
+        plan_view = app.query_one("#engage_plan_view")
+        actions_row = app.query_one("#engage_plan_actions_row", Horizontal)
+        plan_scroll = app.query_one("#engage_plan_scroll", VerticalScroll)
+        action_buttons = [
+            app.query_one("#engage_continue_plan", Button),
+            app.query_one("#engage_clear_plan", Button),
+            app.query_one("#engage_cancel_plan", Button),
+        ]
+
+        assert actions_row.styles.display == "block"
+        assert plan_scroll.styles.display == "block"
+        assert plan_scroll.region.height > 0
+        assert plan_scroll.virtual_size.height > plan_scroll.size.height
+
+        pane_bottom = plan_view.region.y + plan_view.region.height
+        for widget in [actions_row, *action_buttons]:
+            region = widget.region
+            assert region.height > 0
+            assert plan_view.region.y <= region.y
+            assert region.y + region.height <= pane_bottom
+
+
 # ---------------------------------------------------------------------------
 # Scenario 3 — /new resets the session timeline
 # ---------------------------------------------------------------------------

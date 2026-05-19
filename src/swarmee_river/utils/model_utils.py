@@ -24,7 +24,6 @@ _BEDROCK_DEFAULT_OUTPUT_TOKENS = 32_768
 _BEDROCK_THINKING_BUDGET_DEFAULT = 4096
 _BEDROCK_THINKING_BUDGET_MAX = 65536
 _BEDROCK_EXTENDED_BUDGETS = {"none": 0, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768}
-_BEDROCK_ADAPTIVE_EFFORTS = {"none": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high"}
 _BEDROCK_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 _BEDROCK_FAMILY_MAX_OUTPUT_TOKENS = {
     "claude_opus_4_7": 128_000,
@@ -314,11 +313,6 @@ def _bedrock_extended_budget_for_tier(tier: ModelTier, settings: SwarmeeSettings
     return min(_BEDROCK_EXTENDED_BUDGETS.get(effort, _BEDROCK_THINKING_BUDGET_DEFAULT), _BEDROCK_THINKING_BUDGET_MAX)
 
 
-def _bedrock_adaptive_effort_for_tier(tier: ModelTier) -> str:
-    effort = tier.reasoning.effort if tier.reasoning is not None else "medium"
-    return _BEDROCK_ADAPTIVE_EFFORTS.get(effort, "medium")
-
-
 def _forced_bedrock_tool_choice(tool_choice: Any) -> bool:
     if not isinstance(tool_choice, dict):
         return False
@@ -370,8 +364,7 @@ def sanitize_bedrock_converse_config(
     if effort == "none":
         pass
     elif capabilities.reasoning_mode == "adaptive":
-        additional["thinking"] = {"type": "adaptive"}
-        additional["output_config"] = {"effort": _bedrock_adaptive_effort_for_tier(tier)}
+        pass
     elif capabilities.reasoning_mode == "extended":
         additional["thinking"] = {
             "type": "enabled",
