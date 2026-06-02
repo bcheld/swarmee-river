@@ -129,6 +129,63 @@ def test_after_model_call_logs_model_id(tmp_path: Path, monkeypatch: pytest.Monk
     assert data["usage"]["input_tokens"] == 1000
 
 
+def test_after_model_call_logs_bedrock_cache_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_project_settings(
+        tmp_path,
+        {
+            "diagnostics": {
+                "log_events": True,
+                "redact": False,
+                "log_redact": False,
+                "log_dir": "logs",
+            }
+        },
+    )
+
+    hook = JSONLLoggerHooks()
+
+    class FakeModel:
+        _swarmee_last_cache_diagnostics = {
+            "bedrock_cache_checkpoint_count": 4,
+            "bedrock_cache_checkpoint_locations": ["tools", "system", "messages[1]", "messages[3]"],
+            "bedrock_cache_ttl": "1h",
+        }
+
+    class FakeAgent:
+        model = FakeModel()
+
+    class FakeEvent:
+        def __init__(self) -> None:
+            self.agent = FakeAgent()
+            self.invocation_state: dict = {
+                "swarmee": {
+                    "invocation_id": "inv-1",
+                    "model_t0": {},
+                    "model_id": "us.anthropic.claude-opus-4-7",
+                },
+                "swarmee_model_call_id": "call-1",
+            }
+            self.usage = {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 300,
+                "cacheWriteInputTokens": 50,
+            }
+            self.response = {"role": "assistant", "content": "done"}
+
+    hook.after_model_call(FakeEvent())
+
+    raw = hook._log_path.read_text(encoding="utf-8")  # noqa: SLF001
+    data = json.loads(raw.splitlines()[-1])
+    assert data["bedrock_cache_checkpoint_count"] == 4
+    assert data["bedrock_cache_checkpoint_locations"] == ["tools", "system", "messages[1]", "messages[3]"]
+    assert data["bedrock_cache_ttl"] == "1h"
+    assert data["cache_read_input_tokens"] == 300
+    assert data["cache_write_input_tokens"] == 50
+    assert data["total_input_tokens"] == 450
+
+
 def test_jsonl_logger_treats_nul_dir_as_null_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     _write_project_settings(

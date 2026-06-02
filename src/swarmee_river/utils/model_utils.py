@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from botocore.config import Config
 from packaging.version import InvalidVersion, Version
-from strands.models import CacheConfig, Model
+from strands.models import Model
 
 from swarmee_river.config.env_policy import getenv_secret
 from swarmee_river.settings import ModelTier, ProviderModels, SwarmeeSettings
@@ -25,14 +25,6 @@ _BEDROCK_THINKING_BUDGET_DEFAULT = 4096
 _BEDROCK_THINKING_BUDGET_MAX = 65536
 _BEDROCK_EXTENDED_BUDGETS = {"none": 0, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768}
 _BEDROCK_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
-_BEDROCK_FAMILY_MAX_OUTPUT_TOKENS = {
-    "claude_opus_4_7": 128_000,
-    "claude_opus_4_6": 65_536,
-    "claude_sonnet_4_5": 32_768,
-    "claude_haiku_4_5": 32_768,
-    "claude_generic": 32_768,
-    "generic_bedrock": 32_768,
-}
 _OPENAI_RESPONSES_MIN_STRANDS_VERSION = "1.29.0"
 _OPENAI_RESPONSES_MIN_OPENAI_VERSION = "2.0.0"
 _OPENAI_RESPONSES_PROVIDER_PATH = "swarmee_river.models.openai.OpenAIResponsesModel"
@@ -50,7 +42,114 @@ class BedrockModelCapabilities:
     reasoning_mode: str
     supports_guardrails: bool
     supports_cache_tools: bool
+    max_output_tokens: int
+    cache_min_tokens: int | None = None
+    cache_max_checkpoints: int = 0
+    cache_ttl_values: tuple[str, ...] = ()
+    unsupported_inference_params: tuple[str, ...] = ()
     supports_forced_tool_with_reasoning: bool = False
+
+    @property
+    def supports_prompt_cache(self) -> bool:
+        return self.supports_cache_tools and self.cache_max_checkpoints > 0
+
+
+@dataclass(frozen=True)
+class BedrockPromptCachePolicy:
+    enabled: bool
+    cache_type: str = "default"
+    ttl: str | None = None
+    max_checkpoints: int = 4
+    min_tokens: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "enabled": self.enabled,
+            "cache_type": self.cache_type,
+            "max_checkpoints": self.max_checkpoints,
+        }
+        if self.ttl:
+            out["ttl"] = self.ttl
+        if self.min_tokens is not None:
+            out["min_tokens"] = self.min_tokens
+        return out
+
+
+_BEDROCK_CAPABILITIES: tuple[tuple[str, BedrockModelCapabilities], ...] = (
+    (
+        "anthropic.claude-opus-4-7",
+        BedrockModelCapabilities(
+            family="claude_opus_4_7",
+            reasoning_mode="adaptive",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+            max_output_tokens=128_000,
+            cache_min_tokens=4096,
+            cache_max_checkpoints=4,
+            cache_ttl_values=("5m", "1h"),
+            unsupported_inference_params=("temperature", "top_p", "top_k"),
+        ),
+    ),
+    (
+        "anthropic.claude-opus-4-6",
+        BedrockModelCapabilities(
+            family="claude_opus_4_6",
+            reasoning_mode="adaptive",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+            max_output_tokens=65_536,
+            cache_min_tokens=4096,
+            cache_max_checkpoints=4,
+            cache_ttl_values=("5m",),
+        ),
+    ),
+    (
+        "anthropic.claude-sonnet-4-5",
+        BedrockModelCapabilities(
+            family="claude_sonnet_4_5",
+            reasoning_mode="extended",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+            max_output_tokens=32_768,
+            cache_min_tokens=4096,
+            cache_max_checkpoints=4,
+            cache_ttl_values=("5m", "1h"),
+        ),
+    ),
+    (
+        "anthropic.claude-haiku-4-5",
+        BedrockModelCapabilities(
+            family="claude_haiku_4_5",
+            reasoning_mode="extended",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+            max_output_tokens=32_768,
+            cache_min_tokens=4096,
+            cache_max_checkpoints=4,
+            cache_ttl_values=("5m", "1h"),
+        ),
+    ),
+    (
+        "anthropic.claude",
+        BedrockModelCapabilities(
+            family="claude_generic",
+            reasoning_mode="extended",
+            supports_guardrails=True,
+            supports_cache_tools=True,
+            max_output_tokens=32_768,
+            cache_min_tokens=1024,
+            cache_max_checkpoints=4,
+            cache_ttl_values=("5m",),
+        ),
+    ),
+)
+_GENERIC_BEDROCK_CAPABILITIES = BedrockModelCapabilities(
+    family="generic_bedrock",
+    reasoning_mode="none",
+    supports_guardrails=True,
+    supports_cache_tools=False,
+    max_output_tokens=32_768,
+)
 
 
 @dataclass(frozen=True)
@@ -211,52 +310,14 @@ def _provider_extra(settings: SwarmeeSettings, provider: str) -> dict[str, Any]:
 
 def bedrock_model_capabilities(model_id: str | None) -> BedrockModelCapabilities:
     normalized = str(model_id or "").strip().lower()
-    if "anthropic.claude-opus-4-7" in normalized:
-        return BedrockModelCapabilities(
-            family="claude_opus_4_7",
-            reasoning_mode="adaptive",
-            supports_guardrails=True,
-            supports_cache_tools=True,
-        )
-    if "anthropic.claude-opus-4-6" in normalized:
-        return BedrockModelCapabilities(
-            family="claude_opus_4_6",
-            reasoning_mode="adaptive",
-            supports_guardrails=True,
-            supports_cache_tools=True,
-        )
-    if "anthropic.claude-sonnet-4-5" in normalized:
-        return BedrockModelCapabilities(
-            family="claude_sonnet_4_5",
-            reasoning_mode="extended",
-            supports_guardrails=True,
-            supports_cache_tools=True,
-        )
-    if "anthropic.claude-haiku-4-5" in normalized:
-        return BedrockModelCapabilities(
-            family="claude_haiku_4_5",
-            reasoning_mode="extended",
-            supports_guardrails=True,
-            supports_cache_tools=True,
-        )
-    if "anthropic.claude" in normalized:
-        return BedrockModelCapabilities(
-            family="claude_generic",
-            reasoning_mode="extended",
-            supports_guardrails=True,
-            supports_cache_tools=True,
-        )
-    return BedrockModelCapabilities(
-        family="generic_bedrock",
-        reasoning_mode="none",
-        supports_guardrails=True,
-        supports_cache_tools=False,
-    )
+    for needle, capabilities in _BEDROCK_CAPABILITIES:
+        if needle in normalized:
+            return capabilities
+    return _GENERIC_BEDROCK_CAPABILITIES
 
 
 def bedrock_max_output_tokens(model_id: str | None) -> int:
-    capabilities = bedrock_model_capabilities(model_id)
-    return _BEDROCK_FAMILY_MAX_OUTPUT_TOKENS.get(capabilities.family, _BEDROCK_DEFAULT_OUTPUT_TOKENS)
+    return bedrock_model_capabilities(model_id).max_output_tokens
 
 
 def clamp_bedrock_max_tokens(value: Any, *, model_id: str | None) -> int:
@@ -302,6 +363,46 @@ def _bedrock_beta_features(settings: SwarmeeSettings) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _bedrock_prompt_cache_ttl(
+    *,
+    tier: ModelTier,
+    settings: SwarmeeSettings,
+    capabilities: BedrockModelCapabilities,
+) -> str | None:
+    extra = _provider_extra(settings, "bedrock")
+    raw = str(extra.get("prompt_cache_ttl") or "").strip().lower()
+    ttl = raw or ("1h" if tier.context is not None and tier.context.strategy == "long_running" else "")
+    if not ttl:
+        return None
+    if ttl not in capabilities.cache_ttl_values:
+        logger.info(
+            "Ignoring unsupported Bedrock prompt cache ttl '%s' for model family '%s'.",
+            ttl,
+            capabilities.family,
+        )
+        return None
+    return ttl
+
+
+def _bedrock_prompt_cache_policy(
+    *,
+    tier: ModelTier,
+    settings: SwarmeeSettings,
+    capabilities: BedrockModelCapabilities,
+) -> BedrockPromptCachePolicy:
+    cache_strategy = tier.context.strategy if tier.context is not None else "balanced"
+    enabled = capabilities.supports_prompt_cache and cache_strategy in {"cache_safe", "long_running"}
+    explicit_cache_tools = str(_provider_extra(settings, "bedrock").get("cache_tools") or "").strip()
+    cache_type = explicit_cache_tools or "default"
+    return BedrockPromptCachePolicy(
+        enabled=enabled,
+        cache_type=cache_type,
+        ttl=_bedrock_prompt_cache_ttl(tier=tier, settings=settings, capabilities=capabilities) if enabled else None,
+        max_checkpoints=capabilities.cache_max_checkpoints or 0,
+        min_tokens=capabilities.cache_min_tokens,
+    )
+
+
 def _bedrock_extended_budget_for_tier(tier: ModelTier, settings: SwarmeeSettings) -> int:
     extra = _provider_extra(settings, "bedrock")
     override = _as_int(extra.get("thinking_budget_tokens"), 0, min_value=1)
@@ -329,29 +430,38 @@ def sanitize_bedrock_converse_config(
     """Normalize Bedrock request config from guided tier settings and model-family capabilities."""
     config["max_tokens"] = clamp_bedrock_max_tokens(config.get("max_tokens"), model_id=config.get("model_id"))
     capabilities = bedrock_model_capabilities(str(config.get("model_id") or ""))
-    additional = dict(config.get("additional_request_fields") or {}) if isinstance(
-        config.get("additional_request_fields"), dict
-    ) else {}
+    additional = (
+        dict(config.get("additional_request_fields") or {})
+        if isinstance(config.get("additional_request_fields"), dict)
+        else {}
+    )
 
     additional.pop("thinking", None)
     additional.pop("output_config", None)
     additional.pop("anthropic_beta", None)
+    for key in capabilities.unsupported_inference_params:
+        additional.pop(key, None)
 
-    if capabilities.supports_cache_tools:
-        explicit_cache_tools = str(_provider_extra(settings, "bedrock").get("cache_tools") or "").strip()
-        if explicit_cache_tools:
-            config["cache_tools"] = explicit_cache_tools
-        elif tier.context is not None and tier.context.strategy in {"cache_safe", "long_running"}:
-            config["cache_tools"] = "default"
-        else:
-            config.pop("cache_tools", None)
+    for key in capabilities.unsupported_inference_params:
+        config.pop(key, None)
+    additional_args = (
+        dict(config.get("additional_args") or {}) if isinstance(config.get("additional_args"), dict) else {}
+    )
+    for key in capabilities.unsupported_inference_params:
+        additional_args.pop(key, None)
+    if additional_args:
+        config["additional_args"] = additional_args
+    else:
+        config.pop("additional_args", None)
+
+    cache_policy = _bedrock_prompt_cache_policy(tier=tier, settings=settings, capabilities=capabilities)
+    config.pop("cache_config", None)
+    if cache_policy.enabled:
+        config["cache_tools"] = cache_policy.cache_type
+        config["swarmee_cache_policy"] = cache_policy.to_dict()
     else:
         config.pop("cache_tools", None)
-
-    if tier.context is not None and tier.context.strategy in {"cache_safe", "long_running"}:
-        config["cache_config"] = CacheConfig(strategy="auto")
-    else:
-        config.pop("cache_config", None)
+        config.pop("swarmee_cache_policy", None)
 
     if _forced_bedrock_tool_choice(tool_choice) or _bedrock_reasoning_disabled(settings):
         if additional:
@@ -526,8 +636,7 @@ def openai_model_supports_responses_reasoning(model_id: str | None) -> bool:
     if not normalized:
         return True
     return not any(
-        normalized == token or normalized.startswith(f"{token}-")
-        for token in _OPENAI_RESPONSES_REASONING_UNSUPPORTED
+        normalized == token or normalized.startswith(f"{token}-") for token in _OPENAI_RESPONSES_REASONING_UNSUPPORTED
     )
 
 

@@ -43,6 +43,80 @@ def test_bedrock_deep_tier_omits_adaptive_reasoning_payload_for_opus_47(
     assert isinstance(config, dict)
     assert "additional_request_fields" not in config
     assert config["cache_tools"] == "default"
+    assert "cache_config" not in config
+    assert config["swarmee_cache_policy"] == {
+        "enabled": True,
+        "cache_type": "default",
+        "max_checkpoints": 4,
+        "min_tokens": 4096,
+    }
+
+
+def test_bedrock_opus_47_strips_unsupported_sampling_params(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        """
+        {
+          "models": {
+            "providers": {
+              "bedrock": {
+                "tiers": {
+                  "deep": {
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                    "top_k": 10,
+                    "additional_request_fields": {"top_k": 10}
+                  }
+                }
+              }
+            }
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    settings = load_settings(settings_path)
+    manager = SessionModelManager(settings, fallback_provider="bedrock")
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(model_utils, "load_path", lambda _provider: Path("dummy.py"))
+
+    def fake_load_model(_path: Path, config: dict) -> object:
+        captured["config"] = config
+        return object()
+
+    monkeypatch.setattr(model_utils, "load_model", fake_load_model)
+
+    manager.build_model("deep")
+
+    config = captured.get("config")
+    assert isinstance(config, dict)
+    assert "temperature" not in config
+    assert "top_p" not in config
+    assert "top_k" not in config
+    assert "additional_request_fields" not in config
+
+
+def test_bedrock_long_tier_uses_one_hour_cache_ttl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = load_settings(tmp_path / "settings.json")
+    manager = SessionModelManager(settings, fallback_provider="bedrock")
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(model_utils, "load_path", lambda _provider: Path("dummy.py"))
+
+    def fake_load_model(_path: Path, config: dict) -> object:
+        captured["config"] = config
+        return object()
+
+    monkeypatch.setattr(model_utils, "load_model", fake_load_model)
+
+    manager.build_model("long")
+
+    config = captured.get("config")
+    assert isinstance(config, dict)
+    assert config["swarmee_cache_policy"]["ttl"] == "1h"
 
 
 def test_openai_guided_reasoning_applies_to_deep_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,9 +146,7 @@ def test_openai_guided_reasoning_applies_to_deep_tier(tmp_path: Path, monkeypatc
     assert config["params"]["reasoning"] == {"effort": "high"}
 
 
-def test_openai_balanced_gpt54_mini_uses_guided_reasoning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_openai_balanced_gpt54_mini_uses_guided_reasoning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = load_settings(tmp_path / "settings.json")
     manager = SessionModelManager(settings, fallback_provider="openai")
 

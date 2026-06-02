@@ -780,6 +780,9 @@ def _build_resolved_invocation_state(
             sw_state["context_budget_tokens"] = resolve_budget() if callable(resolve_budget) else None
             sw_state["supports_guardrails"] = getattr(current, "supports_guardrails", None)
             sw_state["supports_cache_tools"] = getattr(current, "supports_cache_tools", None)
+            sw_state["prompt_cache_min_tokens"] = getattr(current, "prompt_cache_min_tokens", None)
+            sw_state["prompt_cache_max_checkpoints"] = getattr(current, "prompt_cache_max_checkpoints", None)
+            sw_state["prompt_cache_ttl_values"] = getattr(current, "prompt_cache_ttl_values", None)
             sw_state["supports_forced_tool_with_reasoning"] = getattr(
                 current, "supports_forced_tool_with_reasoning", None
             )
@@ -944,6 +947,9 @@ def _build_model_info_event_payload(
                 "context_budget_tokens": item.context_max_prompt_tokens,
                 "supports_guardrails": item.supports_guardrails,
                 "supports_cache_tools": item.supports_cache_tools,
+                "prompt_cache_min_tokens": item.prompt_cache_min_tokens,
+                "prompt_cache_max_checkpoints": item.prompt_cache_max_checkpoints,
+                "prompt_cache_ttl_values": item.prompt_cache_ttl_values,
                 "supports_forced_tool_with_reasoning": item.supports_forced_tool_with_reasoning,
                 "available": item.available,
                 "reason": item.reason,
@@ -2086,6 +2092,22 @@ def _build_agent_runtime(
                             if not _tui_events_enabled():
                                 print(f"\n{error_msg}")
                             raise RuntimeError(error_msg)
+                    sw = invocation_state.get("swarmee")
+                    if isinstance(sw, dict):
+                        cache_diag_fn = getattr(conversation_manager, "cache_diagnostics_for_agent", None)
+                        if callable(cache_diag_fn):
+                            with contextlib.suppress(Exception):
+                                raw_diag = cache_diag_fn(agent)
+                                if isinstance(raw_diag, dict):
+                                    for key in (
+                                        "uncached_tail_tokens_est",
+                                        "recent_read_tool_results",
+                                        "compacted_read_results",
+                                        "compaction_headroom_tokens",
+                                    ):
+                                        value = raw_diag.get(key)
+                                        if value is not None:
+                                            sw[key] = value
                     system_reminder = prompt_cache.pop_reminder()
                     agent._swarmee_current_invocation_state = invocation_state
                     return invoke_agent(

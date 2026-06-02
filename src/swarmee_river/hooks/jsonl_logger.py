@@ -126,6 +126,67 @@ def _extract_usage_payload(event: Any) -> Any:
     return None
 
 
+def _usage_lookup(raw: Any, *keys: str) -> Any:
+    if isinstance(raw, dict):
+        for key in keys:
+            if key in raw:
+                return raw.get(key)
+        return None
+    for key in keys:
+        with contextlib.suppress(Exception):
+            value = getattr(raw, key)
+            if value is not None:
+                return value
+    return None
+
+
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _cache_usage_diagnostics(usage: Any) -> dict[str, int]:
+    if usage is None:
+        return {}
+    input_tokens = _as_int(_usage_lookup(usage, "input_tokens", "inputTokens", "prompt_tokens", "promptTokens"))
+    cache_read = _as_int(_usage_lookup(usage, "cache_read_input_tokens", "cacheReadInputTokens"))
+    cache_write = _as_int(_usage_lookup(usage, "cache_write_input_tokens", "cacheWriteInputTokens"))
+    if cache_read is None:
+        details = _usage_lookup(usage, "prompt_tokens_details", "promptTokensDetails")
+        cache_read = _as_int(_usage_lookup(details, "cached_tokens", "cachedTokens"))
+    out: dict[str, int] = {}
+    if input_tokens is not None:
+        out["input_tokens"] = input_tokens
+    if cache_read is not None:
+        out["cache_read_input_tokens"] = cache_read
+    if cache_write is not None:
+        out["cache_write_input_tokens"] = cache_write
+    if input_tokens is not None:
+        out["total_input_tokens"] = input_tokens + max(0, cache_read or 0) + max(0, cache_write or 0)
+    return out
+
+
+def _bedrock_model_cache_diagnostics(event: Any) -> dict[str, Any]:
+    agent = getattr(event, "agent", None)
+    model = getattr(agent, "model", None) if agent is not None else None
+    diagnostics = getattr(model, "_swarmee_last_cache_diagnostics", None)
+    return dict(diagnostics) if isinstance(diagnostics, dict) else {}
+
+
+def _bedrock_model_cache_policy(event: Any) -> dict[str, Any]:
+    agent = getattr(event, "agent", None)
+    model = getattr(agent, "model", None) if agent is not None else None
+    policy = getattr(model, "_swarmee_cache_policy", None)
+    return dict(policy) if isinstance(policy, dict) else {}
+
+
 def _is_null_log_sink(raw: str | None) -> bool:
     token = str(raw or "").strip().lower()
     if not token:
@@ -149,9 +210,7 @@ class JSONLLoggerHooks(HookProvider):
         settings = load_settings()
         raw_log_dir = settings.diagnostics.log_dir or str(_default_logs_dir())
         self._discard_output = _is_null_log_sink(raw_log_dir)
-        self.log_dir = Path(
-            os.devnull if self._discard_output else raw_log_dir
-        )
+        self.log_dir = Path(os.devnull if self._discard_output else raw_log_dir)
         self.session_id = os.getenv("SWARMEE_SESSION_ID", uuid.uuid4().hex)
         self.max_field_chars = 8000
         self._write_count = 0
@@ -337,10 +396,14 @@ class JSONLLoggerHooks(HookProvider):
             "fork_extra_prompt_chars",
             "fork_used_pending_reminder",
             "compaction_headroom_tokens",
+            "uncached_tail_tokens_est",
         ):
             value = sw.get(key)
             if value is not None:
                 payload[key] = value
+        cache_policy = _bedrock_model_cache_policy(event)
+        if cache_policy:
+            payload["bedrock_cache_policy"] = cache_policy
         if message_breakdown:
             payload["message_breakdown"] = message_breakdown
 
@@ -369,6 +432,8 @@ class JSONLLoggerHooks(HookProvider):
             "response": resp_summary,
             "usage": usage,
         }
+        payload_out.update(_bedrock_model_cache_diagnostics(event))
+        payload_out.update(_cache_usage_diagnostics(usage))
         model_id = sw.get("model_id")
         if model_id is not None:
             payload_out["model_id"] = model_id

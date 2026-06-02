@@ -120,3 +120,127 @@ def test_validate_converse_stream_request_rejects_invalid_payload() -> None:
 
     with pytest.raises(bedrock_model.BedrockConverseStreamValidationError, match="request validation failed"):
         bedrock_model._validate_converse_stream_request(request, client=model.client)
+
+
+class _FakeFormattingBedrockModel:
+    BedrockConfig = dict
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.config = dict(kwargs)
+        self.client = type("Client", (), {"meta": type("Meta", (), {"service_model": None})()})()
+
+    def _format_request(
+        self,
+        messages: list[dict[str, Any]],
+        tool_specs: list[dict[str, Any]] | None = None,
+        system_prompt_content: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        _ = tool_choice
+        request: dict[str, Any] = {
+            "modelId": self.config["model_id"],
+            "messages": messages,
+            "system": list(system_prompt_content or []),
+            "inferenceConfig": {},
+        }
+        if tool_specs:
+            request["toolConfig"] = {
+                "tools": [
+                    {
+                        "toolSpec": {
+                            "name": spec["name"],
+                            "description": spec["description"],
+                            "inputSchema": spec["inputSchema"],
+                        }
+                    }
+                    for spec in tool_specs
+                ]
+            }
+            if self.config.get("cache_tools"):
+                request["toolConfig"]["tools"].append({"cachePoint": {"type": self.config["cache_tools"]}})
+        return request
+
+
+def _cache_locations(request: dict[str, Any]) -> list[str]:
+    locations: list[str] = []
+    for item in request.get("toolConfig", {}).get("tools", []):
+        if "cachePoint" in item:
+            locations.append("tools")
+    for item in request.get("system", []):
+        if "cachePoint" in item:
+            locations.append("system")
+    for idx, message in enumerate(request.get("messages", [])):
+        for item in message.get("content", []):
+            if "cachePoint" in item:
+                locations.append(f"messages[{idx}]")
+    return locations
+
+
+def test_swarmee_cache_policy_places_explicit_checkpoints(monkeypatch) -> None:
+    monkeypatch.setattr(bedrock_model, "BedrockModel", _FakeFormattingBedrockModel)
+    model = bedrock_model.instance(
+        model_id="us.anthropic.claude-opus-4-7",
+        region_name="us-east-1",
+        cache_tools="default",
+        swarmee_cache_policy={
+            "enabled": True,
+            "cache_type": "default",
+            "max_checkpoints": 4,
+        },
+    )
+
+    request = model._format_request(
+        [
+            {"role": "user", "content": [{"text": "first"}]},
+            {"role": "assistant", "content": [{"text": "stable older"}]},
+            {"role": "user", "content": [{"text": "second"}]},
+            {"role": "assistant", "content": [{"text": "stable newer"}]},
+            {"role": "user", "content": [{"text": "<system-reminder>dynamic</system-reminder>\n\ncurrent query"}]},
+        ],
+        tool_specs=[{"name": "read", "description": "Read", "inputSchema": {"json": {"type": "object"}}}],
+        system_prompt_content=[{"text": "stable system"}],
+    )
+
+    locations = _cache_locations(request)
+    assert locations == ["tools", "system", "messages[1]", "messages[3]"]
+    assert len(locations) == 4
+    assert request["messages"][-1]["content"] == [
+        {"text": "<system-reminder>dynamic</system-reminder>\n\ncurrent query"}
+    ]
+    assert model._swarmee_last_cache_diagnostics["bedrock_cache_checkpoint_count"] == 4
+
+
+def test_swarmee_cache_policy_emits_one_hour_ttl_for_long_running(monkeypatch) -> None:
+    monkeypatch.setattr(bedrock_model, "BedrockModel", _FakeFormattingBedrockModel)
+    model = bedrock_model.instance(
+        model_id="us.anthropic.claude-opus-4-7",
+        region_name="us-east-1",
+        cache_tools="default",
+        swarmee_cache_policy={
+            "enabled": True,
+            "cache_type": "default",
+            "ttl": "1h",
+            "max_checkpoints": 4,
+        },
+    )
+
+    request = model._format_request(
+        [{"role": "assistant", "content": [{"text": "stable"}]}, {"role": "user", "content": [{"text": "now"}]}],
+        tool_specs=[{"name": "read", "description": "Read", "inputSchema": {"json": {"type": "object"}}}],
+        system_prompt_content=[{"text": "stable system"}],
+    )
+
+    cache_points: list[dict[str, Any]] = []
+    for item in request["toolConfig"]["tools"]:
+        if "cachePoint" in item:
+            cache_points.append(item["cachePoint"])
+    for item in request["system"]:
+        if "cachePoint" in item:
+            cache_points.append(item["cachePoint"])
+    for message in request["messages"]:
+        for item in message["content"]:
+            if "cachePoint" in item:
+                cache_points.append(item["cachePoint"])
+
+    assert cache_points
+    assert {point.get("ttl") for point in cache_points} == {"1h"}

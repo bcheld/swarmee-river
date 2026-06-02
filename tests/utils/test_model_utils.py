@@ -4,7 +4,6 @@ import pathlib
 import unittest.mock
 
 import pytest
-from strands.models import CacheConfig
 
 import swarmee_river
 import swarmee_river.utils.model_utils
@@ -248,8 +247,13 @@ def test_sanitize_bedrock_converse_config_omits_adaptive_thinking_for_opus_47():
     swarmee_river.utils.model_utils.sanitize_bedrock_converse_config(config, tier=tier, settings=settings)
 
     assert config["cache_tools"] == "default"
-    assert isinstance(config["cache_config"], CacheConfig)
-    assert config["cache_config"].strategy == "auto"
+    assert "cache_config" not in config
+    assert config["swarmee_cache_policy"] == {
+        "enabled": True,
+        "cache_type": "default",
+        "max_checkpoints": 4,
+        "min_tokens": 4096,
+    }
     assert "additional_request_fields" not in config
 
 

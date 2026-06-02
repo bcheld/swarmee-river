@@ -35,6 +35,9 @@ class TierStatus:
     reasoning_mode: str | None
     supports_guardrails: bool | None
     supports_cache_tools: bool | None
+    prompt_cache_min_tokens: int | None
+    prompt_cache_max_checkpoints: int | None
+    prompt_cache_ttl_values: tuple[str, ...] | None
     supports_forced_tool_with_reasoning: bool | None
     available: bool
     reason: str | None = None
@@ -147,6 +150,11 @@ class SessionModelManager:
                         reasoning_mode=reasoning_mode,
                         supports_guardrails=capabilities.supports_guardrails if capabilities is not None else None,
                         supports_cache_tools=capabilities.supports_cache_tools if capabilities is not None else None,
+                        prompt_cache_min_tokens=capabilities.cache_min_tokens if capabilities is not None else None,
+                        prompt_cache_max_checkpoints=(
+                            capabilities.cache_max_checkpoints if capabilities is not None else None
+                        ),
+                        prompt_cache_ttl_values=capabilities.cache_ttl_values if capabilities is not None else None,
                         supports_forced_tool_with_reasoning=(
                             capabilities.supports_forced_tool_with_reasoning if capabilities is not None else None
                         ),
