@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import json as _json
 import logging
+import threading
+from collections import deque
 from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
@@ -12,7 +15,30 @@ _CONSENT_CHOICES = {"y", "n", "a", "v"}
 _THINKING_EXPORT_MAX_CHARS = 5000
 _TURN_TRACE_MAX = 16
 
+# Indicator events where only the latest value matters. They are stored in a
+# last-write-wins slot instead of the droppable per-line dispatch queue, so a
+# burst of transcript output can never leave the usage/context indicators
+# stuck on a stale value.
+_METRICS_EVENT_KINDS = frozenset({"usage", "context"})
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def metrics_event_kind(line: str) -> str | None:
+    """Return 'usage'/'context' if *line* is a metrics JSONL event, else None."""
+    stripped = line.lstrip()
+    if not stripped.startswith("{") or '"event"' not in stripped:
+        return None
+    if '"usage"' not in stripped and '"context"' not in stripped:
+        return None
+    try:
+        payload = _json.loads(stripped)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    kind = str(payload.get("event", "")).strip().lower()
+    return kind if kind in _METRICS_EVENT_KINDS else None
 
 
 def _artifact_paths_from_event(event: Any) -> list[str]:
@@ -490,7 +516,119 @@ class OutputMixin:
         self._assistant_placeholder_written = False
         self._active_assistant_message = None
 
+    _OUTPUT_QUEUE_MAX = 10_000
+    _OUTPUT_LINES_PER_DRAIN = 400
+
+    def _ensure_metrics_slots(self) -> None:
+        if getattr(self, "_metrics_slots", None) is None:
+            self._metrics_slots: dict[str, tuple[str, str | None]] = {}
+            self._metrics_slots_lock = threading.Lock()
+            self._metrics_drain_scheduled = False
+
+    def _ensure_output_queue(self) -> None:
+        if getattr(self, "_pending_output_lines", None) is None:
+            self._pending_output_lines: deque[tuple[str, str | None]] = deque()
+            self._pending_output_lock = threading.Lock()
+            self._output_drain_scheduled = False
+            self._output_lines_dropped = 0
+
+    def _enqueue_output_line(self, line: str, raw_line: str | None) -> None:
+        """Called from the daemon reader thread for regular output lines.
+
+        Lines are buffered and drained in batches on the UI thread so the
+        reader consumes the wire at full speed instead of one blocking
+        call_from_thread round-trip per line.
+        """
+        self._ensure_output_queue()
+        with self._pending_output_lock:
+            if len(self._pending_output_lines) >= self._OUTPUT_QUEUE_MAX:
+                self._pending_output_lines.popleft()
+                self._output_lines_dropped += 1
+            self._pending_output_lines.append((line, raw_line))
+        if not self._output_drain_scheduled:
+            self._output_drain_scheduled = True
+            if not self._post_to_ui_thread(self._drain_pending_output_lines):
+                self._output_drain_scheduled = False
+
+    def _drain_pending_output_lines(self) -> None:
+        """UI-thread batch drain; bounded per tick to keep input responsive."""
+        self._output_drain_scheduled = False
+        queue = getattr(self, "_pending_output_lines", None)
+        if not queue:
+            self._flush_pending_metrics_slots()
+            return
+        batch: list[tuple[str, str | None]] = []
+        with self._pending_output_lock:
+            while queue and len(batch) < self._OUTPUT_LINES_PER_DRAIN:
+                batch.append(queue.popleft())
+            remaining = bool(queue)
+            dropped = self._output_lines_dropped
+            self._output_lines_dropped = 0
+        for line, raw_line in batch:
+            self._handle_output_line(line, raw_line)
+        self._flush_pending_metrics_slots()
+        if dropped:
+            self._write_transcript_line(f"[tui] dropped {dropped} output line(s) under sustained load.")
+        if remaining and not self._output_drain_scheduled:
+            self._output_drain_scheduled = True
+            try:
+                self.call_later(self._drain_pending_output_lines)
+            except Exception:
+                # The periodic drain timer picks the remainder up.
+                self._output_drain_scheduled = False
+
+    def _drain_all_pending_output_lines(self) -> None:
+        """Synchronously apply everything still buffered (used at exit)."""
+        queue = getattr(self, "_pending_output_lines", None)
+        if queue is not None:
+            while True:
+                with self._pending_output_lock:
+                    batch = list(queue)
+                    queue.clear()
+                if not batch:
+                    break
+                for line, raw_line in batch:
+                    self._handle_output_line(line, raw_line)
+        self._flush_pending_metrics_slots()
+
+    def _periodic_stream_drain(self) -> None:
+        """Safety-net tick: re-dispatch stragglers even if a nudge was lost."""
+        self._ensure_thread_dispatch_state()
+        self._drain_thread_dispatch_backlog()
+        self._drain_pending_output_lines()
+
+    def _store_metrics_line(self, kind: str, line: str, raw_line: str | None) -> None:
+        """Called from the daemon reader thread for usage/context events.
+
+        Last write wins per kind; the slot is drained on the UI thread either
+        by the scheduled callback or before the next regular line.
+        """
+        self._ensure_metrics_slots()
+        with self._metrics_slots_lock:
+            self._metrics_slots[kind] = (line, raw_line)
+        if not self._metrics_drain_scheduled:
+            self._metrics_drain_scheduled = True
+            if not self._post_to_ui_thread(self._flush_pending_metrics_slots):
+                self._metrics_drain_scheduled = False
+
+    def _flush_pending_metrics_slots(self) -> None:
+        slots = getattr(self, "_metrics_slots", None)
+        self._metrics_drain_scheduled = False
+        if not slots:
+            return
+        with self._metrics_slots_lock:
+            pending = list(slots.values())
+            slots.clear()
+        for line, raw_line in pending:
+            self._process_output_line(line, raw_line)
+
     def _handle_output_line(self, line: str, raw_line: str | None = None) -> None:
+        # Apply any queued indicator updates first so they observe the same
+        # ordering they had on the wire relative to this line.
+        self._flush_pending_metrics_slots()
+        self._process_output_line(line, raw_line)
+
+    def _process_output_line(self, line: str, raw_line: str | None = None) -> None:
         from swarmee_river.tui.event_router import handle_daemon_event as _handle_daemon_event_router
         from swarmee_river.tui.event_types import parse_output_line, parse_tui_event
 

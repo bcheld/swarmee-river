@@ -113,6 +113,9 @@ class DaemonMixin:
     def _handle_daemon_exit(self, proc: _DaemonTransport, *, return_code: int) -> None:
         if self.state.daemon.proc is not proc:
             return
+        # Apply everything still on the wire (e.g. a final turn_complete)
+        # before deciding how to finalize the turn.
+        self._drain_all_pending_output_lines()
         was_query_active = self.state.daemon.query_active
         self.state.daemon.ready = False
         self.state.daemon.pending_model_select_value = None
@@ -141,12 +144,24 @@ class DaemonMixin:
         self._write_transcript_line("[daemon] run /daemon restart to restart the background agent.")
 
     def _stream_daemon_output(self, proc: _DaemonTransport) -> None:
+        from swarmee_river.tui.mixins.output import metrics_event_kind
+
         try:
             while True:
                 raw_line = proc.read_line()
                 if raw_line == "":
                     break
-                self._call_from_thread_safe(self._handle_output_line, raw_line.rstrip("\n"), raw_line)
+                line = raw_line.rstrip("\n")
+                metrics_kind = metrics_event_kind(line)
+                if metrics_kind is not None:
+                    # Usage/context indicators are last-write-wins: never queue
+                    # them behind transcript rendering, never drop them.
+                    self._store_metrics_line(metrics_kind, line, raw_line)
+                    continue
+                # Buffer instead of one blocking call_from_thread round-trip
+                # per line: the reader must consume the wire faster than the
+                # UI renders, or indicators and consent prompts arrive late.
+                self._enqueue_output_line(line, raw_line)
         except Exception as exc:
             self._call_from_thread_safe(self._write_transcript_line, f"[daemon] output stream error: {exc}")
         finally:

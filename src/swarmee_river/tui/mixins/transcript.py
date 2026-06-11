@@ -269,6 +269,48 @@ class TranscriptMixin:
 
         self._mount_transcript_widget(render_system_message(line), plain_text=line)
 
+    def _post_to_ui_thread(self, callback: Any) -> bool:
+        """Fire-and-forget scheduling onto the UI loop. Never blocks.
+
+        Unlike call_from_thread this does not wait for the callback to run,
+        so the daemon reader thread can keep consuming the wire while the UI
+        is busy rendering. Returns False if scheduling was not possible (the
+        periodic drain timer is the safety net for that case).
+        """
+        if self.state.daemon.is_shutting_down:
+            return False
+        if getattr(self, "_thread_id", None) == threading.get_ident():
+            try:
+                callback()
+            except Exception:
+                return False
+            return True
+        loop = getattr(self, "_loop", None)
+        if loop is None:
+            return False
+
+        def _invoke_in_app_context() -> None:
+            try:
+                from textual._context import active_app
+
+                reset_token = active_app.set(self)
+            except Exception:
+                reset_token = None
+            try:
+                callback()
+            finally:
+                if reset_token is not None:
+                    with contextlib.suppress(Exception):
+                        active_app.reset(reset_token)
+
+        try:
+            if loop.is_closed():
+                return False
+            loop.call_soon_threadsafe(_invoke_in_app_context)
+        except Exception:
+            return False
+        return True
+
     def _call_from_thread_safe(self, callback: Any, *args: Any, **kwargs: Any) -> None:
         if self.state.daemon.is_shutting_down:
             return

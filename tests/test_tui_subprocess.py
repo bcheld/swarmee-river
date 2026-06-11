@@ -673,8 +673,9 @@ def test_plan_approve_dispatch_starts_execute_mode() -> None:
             auto_approve: bool,
             mode: str | None = None,
             plan_context: dict[str, object] | None = None,
-        ) -> None:
+        ) -> bool:
             self.run_calls.append((prompt, auto_approve, mode, plan_context))
+            return True
 
         def _write_transcript_line(self, text: str) -> None:
             self.transcript.append(text)

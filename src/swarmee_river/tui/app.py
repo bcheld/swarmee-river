@@ -2410,6 +2410,10 @@ def run_tui() -> int:
                 self._schedule_session_timeline_refresh(delay=0.1)
             self._refresh_agent_summary()
             self._spawn_daemon()
+            # Safety-net drain for buffered daemon output and the
+            # usage/context indicator slots: event-driven nudges can be lost
+            # under dispatch pressure, and indicators must never stay stale.
+            self.set_interval(0.05, self._periodic_stream_drain)
 
         def _sidebar_width(self) -> int:
             side = None
