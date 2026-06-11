@@ -61,9 +61,25 @@ def _tool_result_text(tool_result: dict[str, Any]) -> str:
     return "\n\n".join(parts).strip()
 
 
+# Tool sets only change on hot-load; re-serializing every schema on every
+# estimate is wasted work in the indicator hot path (doc 12 F2). Keyed by
+# container identity + size so adding/removing tools invalidates naturally.
+_tool_schema_chars_cache: dict[int, tuple[int, int]] = {}
+_TOOL_SCHEMA_CACHE_MAX = 8
+
+
 def estimate_tool_schema_chars(tools: Any) -> int:
     if tools is None:
         return 0
+    try:
+        size = len(tools)  # type: ignore[arg-type]
+    except TypeError:
+        size = -1
+    key = id(tools)
+    cached = _tool_schema_chars_cache.get(key)
+    if cached is not None and size >= 0 and cached[0] == size:
+        return cached[1]
+
     if isinstance(tools, dict):
         values = list(tools.values())
     elif isinstance(tools, (list, tuple, set)):
@@ -77,6 +93,10 @@ def estimate_tool_schema_chars(tools: Any) -> int:
             total += len(json.dumps(tool, ensure_ascii=False, sort_keys=True, default=str))
         except Exception:
             total += len(str(tool))
+    if size >= 0:
+        if key not in _tool_schema_chars_cache and len(_tool_schema_chars_cache) >= _TOOL_SCHEMA_CACHE_MAX:
+            _tool_schema_chars_cache.pop(next(iter(_tool_schema_chars_cache)))
+        _tool_schema_chars_cache[key] = (size, total)
     return total
 
 
@@ -236,6 +256,47 @@ def _extract_message_text(message: dict[str, Any]) -> str:
 
     return "\n".join(parts)
 
+# Prefix cache for message character totals: conversation lists are
+# append-only between compactions, so re-extracting every message on every
+# estimate makes indicator updates O(conversation length) per event
+# (doc 12 F2). Keyed by list identity; compaction paths must call
+# invalidate_message_chars_cache because tool-result compaction mutates
+# message contents in place without changing the list length.
+_message_chars_cache: dict[int, tuple[int, int]] = {}
+_MESSAGE_CHARS_CACHE_MAX = 8
+
+
+def invalidate_message_chars_cache(messages: Any = None) -> None:
+    if messages is None:
+        _message_chars_cache.clear()
+        return
+    _message_chars_cache.pop(id(messages), None)
+
+
+def _message_chars_total(messages: list[dict[str, Any]]) -> int:
+    key = id(messages)
+    count = len(messages)
+    # The final message may still be streaming (mutated in place as content
+    # arrives), so only completed predecessors enter the cached prefix.
+    cacheable = max(0, count - 1)
+    cached = _message_chars_cache.get(key)
+    if cached is not None and cached[0] <= cacheable:
+        start, total = cached
+    else:
+        start, total = 0, 0
+    for message in messages[start:cacheable]:
+        if isinstance(message, dict):
+            total += len(_extract_message_text(message))
+    if key not in _message_chars_cache and len(_message_chars_cache) >= _MESSAGE_CHARS_CACHE_MAX:
+        _message_chars_cache.pop(next(iter(_message_chars_cache)))
+    _message_chars_cache[key] = (cacheable, total)
+    if count:
+        last = messages[-1]
+        if isinstance(last, dict):
+            total += len(_extract_message_text(last))
+    return total
+
+
 def estimate_tokens(
     *,
     system_prompt: str | None,
@@ -247,9 +308,7 @@ def estimate_tokens(
     if system_prompt:
         total_chars += len(system_prompt)
     total_chars += max(0, int(tool_schema_chars or 0))
-    for message in messages:
-        if isinstance(message, dict):
-            total_chars += len(_extract_message_text(message))
+    total_chars += _message_chars_total(messages)
 
     divisor = max(1, chars_per_token)
     return int(math.ceil(total_chars / divisor))
@@ -399,6 +458,7 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
         messages = getattr(agent, "messages", [])
         if not isinstance(messages, list) or len(messages) < 2:
             return
+        invalidate_message_chars_cache(messages)
         super().reduce_context(agent, e=e, **kwargs)
 
     def _compaction_trigger_tokens(self) -> int:
@@ -456,6 +516,10 @@ class BudgetedSummarizingConversationManager(SummarizingConversationManager):
             record.tool_result["content"] = [{"text": summary}]
             compacted += 1
 
+        if compacted:
+            # Contents changed in place without changing the list length, so
+            # the prefix cache cannot detect it on its own.
+            invalidate_message_chars_cache(messages)
         return compacted
 
     def estimate_uncached_tail_tokens(self, agent: "Any") -> int:
