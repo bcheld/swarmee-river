@@ -936,25 +936,81 @@ class SettingsMixin:
                     else str(provider_pricing.cached_input_per_1m)
                 )
 
+    def _notify_settings_issue(self, message: str, *, severity: str = "error") -> None:
+        try:
+            self.notify(message, title="Settings", severity=severity, timeout=10)
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._write_transcript_line(f"[settings] {message}")
+
     def _load_project_settings_payload(self) -> tuple[dict[str, Any], Path]:
-        from swarmee_river.settings import deep_merge_dict, default_settings_template
+        from swarmee_river.settings import (
+            deep_merge_dict,
+            default_settings_template,
+            normalize_legacy_model_defaults,
+        )
 
         path = Path.cwd() / ".swarmee" / "settings.json"
         raw: dict[str, Any] = {}
+        corrupt = False
         if path.exists() and path.is_file():
-            with contextlib.suppress(OSError, ValueError):
+            try:
                 loaded = _json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                corrupt = True
+            else:
                 if isinstance(loaded, dict):
                     raw = loaded
+                else:
+                    corrupt = True
+        if corrupt and not bool(getattr(self, "_settings_payload_corrupt", False)):
+            self._notify_settings_issue(
+                f"{path} is unreadable or not valid JSON; using defaults. "
+                "It will be backed up before any settings change overwrites it."
+            )
+        self._settings_payload_corrupt = corrupt
+        raw = normalize_legacy_model_defaults(raw)
         defaults = default_settings_template().to_dict()
         merged = deep_merge_dict(defaults, raw) if raw else defaults
         return merged, path
 
-    def _save_project_settings_payload(self, payload: dict[str, Any], path: Path) -> None:
+    def _backup_corrupt_settings_file(self, path: Path) -> Path | None:
+        import shutil
+
+        try:
+            if not (path.exists() and path.is_file()):
+                return None
+            backup = path.with_name(f"{path.name}.broken-{int(time.time())}")
+            shutil.copy2(path, backup)
+            return backup
+        except OSError:
+            return None
+
+    def _save_project_settings_payload(self, payload: dict[str, Any], path: Path) -> bool:
         from swarmee_river.settings import SwarmeeSettings, save_settings
 
-        parsed = SwarmeeSettings.from_dict(payload if isinstance(payload, dict) else {})
-        save_settings(parsed, path=path)
+        # Never overwrite a file the user hand-edited into an unparseable
+        # state without preserving it first (doc 11 F1).
+        if bool(getattr(self, "_settings_payload_corrupt", False)):
+            backup = self._backup_corrupt_settings_file(path)
+            if backup is None and path.exists():
+                self._notify_settings_issue(
+                    f"could not back up unparseable {path.name}; settings change NOT saved."
+                )
+                return False
+            if backup is not None:
+                self._notify_settings_issue(
+                    f"unparseable {path.name} preserved as {backup.name}; saving fresh settings.",
+                    severity="warning",
+                )
+            self._settings_payload_corrupt = False
+        try:
+            parsed = SwarmeeSettings.from_dict(payload if isinstance(payload, dict) else {})
+            save_settings(parsed, path=path)
+        except Exception as exc:
+            self._notify_settings_issue(f"failed to save {path.name}: {exc}")
+            return False
+        return True
 
     def _project_settings_env_overrides(self) -> dict[str, str]:
         from swarmee_river.settings import normalize_project_env_overrides

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1711,6 +1712,37 @@ class SwarmeeSettings:
         return base
 
 
+def normalize_legacy_model_defaults(raw: dict[str, Any]) -> dict[str, Any]:
+    """Reconcile legacy `models.default_tier`/`models.provider` with
+    `models.default_selection` before defaults are merged in.
+
+    `ModelsConfig.from_dict` gives `default_selection.tier` precedence, and
+    the defaults template materializes a `default_selection`. Without this
+    step, a hand-edited file that only sets `default_tier` is silently
+    overridden by the template's selection after the deep merge.
+    """
+    models = raw.get("models")
+    if not isinstance(models, dict):
+        return raw
+    if isinstance(models.get("default_selection"), dict):
+        return raw
+    tier = str(models.get("default_tier") or "").strip().lower()
+    provider_raw = models.get("provider")
+    provider = provider_raw.strip() if isinstance(provider_raw, str) and provider_raw.strip() else None
+    if not tier and not provider:
+        return raw
+    selection: dict[str, Any] = {}
+    if tier:
+        selection["tier"] = tier
+    if provider:
+        selection["provider"] = provider
+    out = dict(raw)
+    out_models = dict(models)
+    out_models["default_selection"] = selection
+    out["models"] = out_models
+    return out
+
+
 def load_settings(path: Path | None = None) -> SwarmeeSettings:
     """
     Load Swarmee settings from `.swarmee/settings.json` (project-local).
@@ -1720,6 +1752,8 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
     if raw and isinstance(raw, dict) and raw.get("env"):
         raw, _migrated, _dropped = migrate_legacy_env_overrides(raw)
 
+    if isinstance(raw, dict):
+        raw = normalize_legacy_model_defaults(raw)
     defaults = default_settings_template().to_dict()
     merged = deep_merge_dict(defaults, raw) if raw else defaults
     settings = SwarmeeSettings.from_dict(merged)
@@ -1769,7 +1803,22 @@ def load_settings(path: Path | None = None) -> SwarmeeSettings:
 def save_settings(settings: SwarmeeSettings, path: Path | None = None) -> Path:
     settings_path = path or _default_settings_path()
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload = json.dumps(settings.to_dict(), indent=2, sort_keys=True) + "\n"
+    # Write-to-temp + rename so a crash or full disk mid-write can never
+    # leave a truncated settings file behind.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=settings_path.name + ".", suffix=".tmp", dir=str(settings_path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(tmp_name, settings_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
     return settings_path
 
 
