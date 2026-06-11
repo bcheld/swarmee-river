@@ -397,21 +397,35 @@ class PlanMixin:
             if pending is None:
                 self._write_transcript_line("[run] no pending plan.")
                 return
-            self._clear_pending_plan_record()
             self._refresh_plan_actions_visibility()
-            self._start_run(
+            # Only discard the approved plan once the daemon actually accepted
+            # the dispatch; otherwise keep it so the user can retry approval
+            # instead of re-planning from scratch.
+            started = self._start_run(
                 pending.original_request,
                 auto_approve=True,
                 mode="execute",
                 plan_context={"approved_plan": pending.model_dump()},
             )
+            if started:
+                self._clear_pending_plan_record()
+            else:
+                self._write_transcript_line("[plan] approval not dispatched; plan kept for retry.")
+            self._refresh_plan_actions_visibility()
             self._save_session()
             return
         if normalized == "replan":
             pending = self._pending_plan_record()
             prompt = pending.original_request if pending is not None else self._last_prompt
+            if not prompt and pending is not None:
+                summary = str(pending.summary or "").strip()
+                if summary:
+                    prompt = f"Revise the plan for: {summary}"
             if not prompt:
-                self._write_transcript_line("[run] no previous prompt to replan.")
+                self._write_transcript_line(
+                    "[plan] no saved request to replan from. Type the revised request "
+                    "in the prompt and submit it in plan mode."
+                )
                 return
             plan_context = None
             if pending is not None:

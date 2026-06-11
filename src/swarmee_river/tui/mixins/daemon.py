@@ -298,22 +298,23 @@ class DaemonMixin:
         auto_approve: bool,
         mode: str | None = None,
         plan_context: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
+        """Dispatch a query to the daemon. Returns True only if it was sent."""
         from textual.widgets import Select
 
         from swarmee_river.tui.transport import send_daemon_command
 
         if not self.state.daemon.ready:
             self._write_transcript_line("[run] daemon is not ready. Use /daemon restart.")
-            return
+            return False
         proc = self.state.daemon.proc
         if proc is None or proc.poll() is not None:
             self._write_transcript_line("[run] daemon is not running. Use /daemon restart.")
             self.state.daemon.ready = False
-            return
+            return False
         if self.state.daemon.query_active:
             self._write_transcript_line("[run] already running; use /stop.")
-            return
+            return False
         self._dismiss_action_sheet(restore_focus=False)
         self._sync_selected_model_before_run()
 
@@ -454,6 +455,8 @@ class DaemonMixin:
             if self._status_bar is not None:
                 self._status_bar.set_state("idle")
             self._write_transcript_line("[run] failed to send query to daemon.")
+            return False
+        return True
 
     def _stop_run(self) -> None:
         from swarmee_river.tui.transport import send_daemon_command

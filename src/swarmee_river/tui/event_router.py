@@ -753,7 +753,10 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype == "plan_step_update":
         event_plan_run_id = str(event.get("plan_run_id", "")).strip() or None
         current_plan_run_id = str(app.state.plan.plan_run_id or "").strip() or None
-        if event_plan_run_id is not None and event_plan_run_id != current_plan_run_id:
+        # When the displayed plan has a known run id, only matching updates may
+        # touch it: stale events from a previous run (which may carry no id at
+        # all) must not corrupt the current plan's step markers.
+        if current_plan_run_id is not None and event_plan_run_id != current_plan_run_id:
             return True
         step_index_raw = event.get("step_index")
         status = str(event.get("status", "")).strip().lower()
@@ -795,7 +798,10 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype == "plan_complete":
         event_plan_run_id = str(event.get("plan_run_id", "")).strip() or None
         current_plan_run_id = str(app.state.plan.plan_run_id or "").strip() or None
-        if event_plan_run_id is not None and event_plan_run_id != current_plan_run_id:
+        # Same guard as plan_step_update: a known current run id only accepts
+        # matching events, so a stale id-less completion can't mark the new
+        # plan as done.
+        if current_plan_run_id is not None and event_plan_run_id != current_plan_run_id:
             return True
         app.state.plan.step_counter = app.state.plan.current_steps_total
         if app.state.plan.current_step_statuses:
