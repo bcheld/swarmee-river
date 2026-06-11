@@ -746,6 +746,9 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
                 with ui_guard():
                     app._switch_side_tab("tab_engage")
             app._refresh_plan_status_bar()
+        from swarmee_river.tui.state import PlanningPhase
+
+        app.state.plan.transition_phase(PlanningPhase.REVIEWING)
         app._refresh_plan_actions_visibility()
         app._save_session()
         return True

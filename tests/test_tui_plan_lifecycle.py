@@ -130,3 +130,55 @@ async def test_replan_with_no_prompt_gives_recovery_guidance(tui_app_factory):
         transcript = "\n".join(app._transcript_fallback_lines)
         assert "no saved request to replan" in transcript
         assert "prompt" in transcript  # actionable guidance, not a dead-end
+
+
+@pytest.mark.asyncio
+async def test_planning_phase_follows_lifecycle(tui_app_factory):
+    from swarmee_river.tui.state import PlanningPhase
+
+    async with tui_app_factory() as (app, pilot, transport):
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+        assert app.state.plan.phase == PlanningPhase.IDLE
+
+        # Plan run dispatched -> GENERATING
+        app._start_run("plan something", auto_approve=False, mode="plan")
+        assert app.state.plan.phase == PlanningPhase.GENERATING
+
+        # Plan arrives -> REVIEWING
+        transport.emit_event(_plan_event("plan-xyz"))
+        reached = await _wait_for(
+            lambda: app.state.plan.phase == PlanningPhase.REVIEWING, pilot=pilot
+        )
+        assert reached
+
+        # Turn completes while reviewing: phase must stay REVIEWING.
+        transport.emit_event({"event": "turn_complete", "exit_status": "ok"})
+        await pilot.pause(delay=0.2)
+        assert app.state.plan.phase == PlanningPhase.REVIEWING
+
+        # Clearing the plan -> IDLE
+        app._dispatch_plan_action("clearplan")
+        await pilot.pause(delay=0.1)
+        assert app.state.plan.phase == PlanningPhase.IDLE
+
+
+@pytest.mark.asyncio
+async def test_approve_transitions_to_executing_then_idle(tui_app_factory):
+    from swarmee_river.tui.state import PlanningPhase
+
+    async with tui_app_factory() as (app, pilot, transport):
+        transport.emit_ready()
+        await _wait_for(lambda: app.state.daemon.ready, pilot=pilot)
+
+        transport.emit_event(_plan_event("plan-exec"))
+        await _wait_for(lambda: app.state.plan.phase == PlanningPhase.REVIEWING, pilot=pilot)
+
+        app._set_pending_plan_record(_pending_plan_payload())
+        app._dispatch_plan_action("approve")
+        await pilot.pause(delay=0.1)
+        assert app.state.plan.phase == PlanningPhase.EXECUTING
+
+        transport.emit_event({"event": "turn_complete", "exit_status": "ok"})
+        reached = await _wait_for(lambda: app.state.plan.phase == PlanningPhase.IDLE, pilot=pilot)
+        assert reached

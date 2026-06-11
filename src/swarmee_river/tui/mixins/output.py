@@ -793,6 +793,12 @@ class OutputMixin:
             self._status_bar.set_plan_step(current=None, total=None)
         self.state.daemon.run_start_time = None
         self.state.daemon.query_active = False
+        from swarmee_river.tui.state import PlanningPhase
+
+        if self.state.plan.phase in (PlanningPhase.GENERATING, PlanningPhase.EXECUTING):
+            # A plan event would already have moved GENERATING -> REVIEWING;
+            # reaching turn end still in GENERATING means no plan arrived.
+            self.state.plan.transition_phase(PlanningPhase.IDLE)
         self._clear_pending_tool_starts()
         self._cancel_tool_progress_flush_timer()
         self._tool_progress_pending_ids = set()

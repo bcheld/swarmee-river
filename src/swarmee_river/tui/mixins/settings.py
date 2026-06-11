@@ -534,17 +534,18 @@ class SettingsMixin:
         self._write_transcript_line(f"[settings] support bundle created: {bundle_path}")
 
     def _refresh_plan_actions_visibility(self) -> None:
-        """Show plan action buttons only when a plan is pending approval."""
-        import contextlib as _ctx
+        """Show plan action buttons only when a plan is awaiting user input."""
+        from swarmee_river.tui.state import PlanningPhase
 
-        with _ctx.suppress(Exception):
+        with ui_guard():
             pa = self.query_one("#engage_plan_actions_row")
+            phase = self.state.plan.phase
             has_plain_plan = bool(self.state.plan.received_structured_plan and str(self.state.plan.text or "").strip())
             has_plan_ui = bool(self.state.plan.plan_json) or bool(self.state.plan.pending_record) or has_plain_plan
-            if has_plan_ui and not self.state.daemon.query_active:
-                pa.styles.display = "block"
-            else:
-                pa.styles.display = "none"
+            visible = phase == PlanningPhase.REVIEWING or (
+                phase == PlanningPhase.IDLE and has_plan_ui and not self.state.daemon.query_active
+            )
+            pa.styles.display = "block" if visible else "none"
 
     def _refresh_settings_env_list(self) -> None:
         """Populate the Settings env list from env.example catalog."""

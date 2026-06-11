@@ -471,6 +471,12 @@ class DaemonMixin:
                 self._status_bar.set_state("idle")
             self._write_transcript_line("[run] failed to send query to daemon.")
             return False
+        from swarmee_river.tui.state import PlanningPhase
+
+        if mode_normalized == "plan":
+            self.state.plan.transition_phase(PlanningPhase.GENERATING)
+        elif mode_normalized == "execute" and self.state.plan.current_steps_total > 0:
+            self.state.plan.transition_phase(PlanningPhase.EXECUTING)
         return True
 
     def _stop_run(self) -> None:

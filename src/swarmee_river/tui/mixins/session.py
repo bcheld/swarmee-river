@@ -59,6 +59,8 @@ class SessionMixin:
         return value or None
 
     def _set_pending_plan_record(self, record: PendingWorkPlan | dict[str, Any] | None) -> None:
+        from swarmee_river.tui.state import PlanningPhase
+
         pending = pending_work_plan_from_payload(record)
         if pending is None:
             self.state.plan.pending_record = None
@@ -69,14 +71,18 @@ class SessionMixin:
         self.state.plan.pending_prompt = pending.original_request
         self.state.plan.plan_run_id = pending.plan_run_id
         self.state.plan.plan_json = pending.current_plan.model_dump()
+        self.state.plan.transition_phase(PlanningPhase.REVIEWING)
 
     def _clear_pending_plan_record(self) -> None:
         self.state.plan.pending_record = None
         self.state.plan.pending_prompt = None
 
     def _reset_plan_panel(self) -> None:
+        from swarmee_river.tui.state import PlanningPhase
+
         self._set_plan_panel("")
         self._clear_pending_plan_record()
+        self.state.plan.transition_phase(PlanningPhase.IDLE)
         self.state.plan.plan_run_id = None
         self.state.plan.current_steps_total = 0
         self.state.plan.current_summary = ""

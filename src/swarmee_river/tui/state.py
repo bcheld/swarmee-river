@@ -2,8 +2,42 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class PlanningPhase(str, Enum):
+    """Explicit lifecycle for the plan/approve/execute workflow.
+
+    Replaces phase inference from scattered flags (pending_record,
+    received_structured_plan, query_active, ...), which made transitions
+    impossible to validate or debug (doc 14 F1).
+    """
+
+    IDLE = "idle"
+    GENERATING = "generating"
+    REVIEWING = "reviewing"
+    EXECUTING = "executing"
+
+
+_PLANNING_TRANSITIONS: frozenset[tuple[PlanningPhase, PlanningPhase]] = frozenset(
+    {
+        (PlanningPhase.IDLE, PlanningPhase.GENERATING),
+        (PlanningPhase.IDLE, PlanningPhase.EXECUTING),
+        (PlanningPhase.IDLE, PlanningPhase.REVIEWING),  # session restore
+        (PlanningPhase.GENERATING, PlanningPhase.REVIEWING),
+        (PlanningPhase.GENERATING, PlanningPhase.IDLE),  # run ended with no plan
+        (PlanningPhase.REVIEWING, PlanningPhase.GENERATING),  # replan / feedback
+        (PlanningPhase.REVIEWING, PlanningPhase.EXECUTING),  # approve
+        (PlanningPhase.REVIEWING, PlanningPhase.IDLE),  # clear
+        (PlanningPhase.EXECUTING, PlanningPhase.IDLE),
+        (PlanningPhase.EXECUTING, PlanningPhase.REVIEWING),  # mid-run replan
+    }
+)
 
 
 @dataclass
@@ -57,6 +91,15 @@ class PlanState:
     received_structured_plan: bool = False
     plan_json: dict | None = None
     pre_planning_split_ratio: int | None = None
+    phase: PlanningPhase = PlanningPhase.IDLE
+
+    def transition_phase(self, target: PlanningPhase) -> None:
+        current = self.phase if isinstance(self.phase, PlanningPhase) else PlanningPhase(str(self.phase))
+        if current == target:
+            return
+        if (current, target) not in _PLANNING_TRANSITIONS:
+            _LOGGER.warning("unexpected planning phase transition: %s -> %s", current.value, target.value)
+        self.phase = target
 
 
 @dataclass
