@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import contextlib
 from typing import Any
 
 from swarmee_river.planning import build_plan_revision_prompt
+from swarmee_river.tui.ui_guard import ui_guard
 
 
 class PlanMixin:
@@ -12,7 +12,7 @@ class PlanMixin:
 
         plan_panel = self.query_one("#plan", TextArea)
         plan_panel.read_only = not editable
-        with contextlib.suppress(Exception):
+        with ui_guard():
             plan_panel.show_cursor = editable
 
     def _set_plan_panel(self, content: str) -> None:
@@ -27,7 +27,7 @@ class PlanMixin:
         from textual.widgets import Button
 
         for button_id in ("engage_continue_plan", "engage_clear_plan", "engage_cancel_plan"):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one(f"#{button_id}", Button).disabled = not enabled
 
     def _set_planning_ui_mode(self, *, pre_plan: bool) -> None:
@@ -51,7 +51,7 @@ class PlanMixin:
             plan_scroll.styles.display = "none"
             steps.styles.display = "none"
             questions.styles.display = "none"
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one("#engage_planning_header", Static).update("Planning controls")
             return
 
@@ -67,7 +67,7 @@ class PlanMixin:
         has_review_content = summary.styles.display == "block" or list(steps.children) or list(questions.children)
         plan_scroll.styles.display = "block" if has_review_content else "none"
         self._set_planning_controls_enabled(enabled=not self.state.daemon.query_active)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#engage_planning_header", Static).update("Review, adjust, Continue.")
 
     def _extract_plan_step_descriptions(self, plan_json: dict[str, Any]) -> list[str]:

@@ -10,6 +10,7 @@ from typing import Any
 from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.state_paths import logs_dir
 from swarmee_river.tui.text_sanitize import sanitize_output_text
+from swarmee_river.tui.ui_guard import ui_guard
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
 _THINKING_EXPORT_MAX_CHARS = 5000
@@ -169,9 +170,9 @@ class OutputMixin:
             return
         widget = self._consent_prompt_widget
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.hide_prompt()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#prompt", TextArea).focus()
 
     def _schedule_consent_prompt_hide(self, *, delay: float = 1.0) -> None:
@@ -198,7 +199,7 @@ class OutputMixin:
 
         widget = self._consent_prompt_widget
         if widget is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget = self.query_one("#consent_prompt", ConsentPrompt)
                 self._consent_prompt_widget = widget
         if widget is None:
@@ -227,14 +228,14 @@ class OutputMixin:
         self._consent_tool_name = "tool"
         widget = self._consent_prompt_widget
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.hide_prompt()
 
     def _reset_error_action_prompt(self) -> None:
         self._pending_error_action = None
         widget = self._error_action_prompt_widget
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.hide_prompt()
 
     def _reset_run_local_ui_state(self, *, clear_prompt_context: bool) -> None:
@@ -323,7 +324,7 @@ class OutputMixin:
             "tool_use_id": tool_use_id,
             "tool_name": tool_name,
         }
-        with contextlib.suppress(Exception):
+        with ui_guard():
             widget.show_tool_error(tool_name=tool_name, tool_use_id=tool_use_id)
 
     def _show_escalation_actions(self, *, next_tier: str | None = None) -> None:
@@ -335,7 +336,7 @@ class OutputMixin:
             "kind": "escalation",
             "next_tier": resolved_next or None,
         }
-        with contextlib.suppress(Exception):
+        with ui_guard():
             widget.show_escalation(next_tier=resolved_next or None)
 
     def _resume_after_error(self, *, escalate: bool) -> None:
@@ -462,7 +463,7 @@ class OutputMixin:
         approved = normalized_choice in {"y", "a"}
         widget = self._consent_prompt_widget
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.show_confirmation(decision_line, approved=approved)
         self._schedule_consent_prompt_hide(delay=1.0)
         if not send_daemon_command(self.state.daemon.proc, {"cmd": "consent_response", "choice": normalized_choice}):
@@ -476,7 +477,7 @@ class OutputMixin:
         self._flush_streaming_buffer()
         if not self._current_assistant_chunks:
             if self._active_assistant_message is not None:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     self._active_assistant_message.finalize(
                         model=self._current_assistant_model,
                         timestamp=self._current_assistant_timestamp or self._turn_timestamp(),
@@ -496,7 +497,7 @@ class OutputMixin:
         if meta_parts:
             plain_lines.append(" · ".join(meta_parts))
         if self._active_assistant_message is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._active_assistant_message.finalize(model=model, timestamp=timestamp)
             if meta_parts:
                 self._record_transcript_fallback(" · ".join(meta_parts))
@@ -760,7 +761,7 @@ class OutputMixin:
     def _collapse_intermediate_activity_boxes(self) -> None:
         block = self._active_reasoning_block
         if block is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 block.collapse()
         for record in list(self._tool_blocks.values()):
             if not isinstance(record, dict):
@@ -768,7 +769,7 @@ class OutputMixin:
             widget = record.get("widget")
             if widget is None:
                 continue
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.collapse()
 
     def _finalize_turn(self, *, exit_status: str) -> None:

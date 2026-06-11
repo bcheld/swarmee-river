@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from swarmee_river.diagnostics import append_session_issue
+from swarmee_river.tui.ui_guard import ui_guard
 from swarmee_river.planning import PendingWorkPlan, new_pending_work_plan, pending_work_plan_from_payload
 from swarmee_river.session.graph_index import (
     build_session_graph_index,
@@ -212,7 +213,7 @@ class SessionMixin:
             selected_issue = self._session_issue_by_id(selected_id)
             if selected_issue is None and issues:
                 selected_issue = issues[-1]
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     list_widget.select_by_id(str(selected_issue.get("id", "")), emit=False)
             self._set_session_issue_selection(selected_issue)
         else:
@@ -250,11 +251,11 @@ class SessionMixin:
             if selected_id and rows:
                 for idx, (event_id, _summary, _kind, _when) in enumerate(rows):
                     if event_id == selected_id:
-                        with contextlib.suppress(Exception):
+                        with ui_guard():
                             table.move_cursor(row=idx)
                         break
             elif rows:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     table.move_cursor(row=len(rows) - 1)
             cursor_coordinate = getattr(table, "cursor_coordinate", None)
             row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
@@ -407,12 +408,12 @@ class SessionMixin:
                 f"{self.state.session.issues_repeat_line}"
             )
             self.state.session.issue_lines.append(repeated)
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 append_session_issue(session_id=self.state.daemon.session_id, line=repeated, cwd=Path.cwd())
         self.state.session.issues_repeat_line = line
         self.state.session.issues_repeat_count = 0
         self.state.session.issue_lines.append(line)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             append_session_issue(session_id=self.state.daemon.session_id, line=line, cwd=Path.cwd())
         if len(self.state.session.issue_lines) > 2000:
             self.state.session.issue_lines = self.state.session.issue_lines[-2000:]
@@ -436,7 +437,7 @@ class SessionMixin:
             f"… repeated {self.state.session.issues_repeat_count} more time(s): {self.state.session.issues_repeat_line}"
         )
         self.state.session.issue_lines.append(repeated)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             append_session_issue(session_id=self.state.daemon.session_id, line=repeated, cwd=Path.cwd())
         self.state.session.issues_repeat_line = None
         self.state.session.issues_repeat_count = 0
@@ -564,7 +565,7 @@ class SessionMixin:
                 legacy_plan_json = data.get("plan_json")
                 legacy_prompt = str(data.get("plan_pending_prompt") or "").strip()
                 if isinstance(legacy_plan_json, dict) and legacy_prompt:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         pending_record = new_pending_work_plan(
                             original_request=legacy_prompt,
                             plan=legacy_plan_json,

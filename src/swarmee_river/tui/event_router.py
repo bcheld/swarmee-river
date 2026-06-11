@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json as _json
 from pathlib import Path
 from typing import Any
@@ -25,6 +24,7 @@ from swarmee_river.settings import load_settings
 from swarmee_river.tui.agent_studio import normalize_session_safety_overrides, normalize_team_presets
 from swarmee_river.tui.event_types import extract_tui_text_chunk
 from swarmee_river.tui.text_sanitize import sanitize_output_text
+from swarmee_river.tui.ui_guard import ui_guard
 
 _TRANSIENT_TOAST_TIMEOUT_S = 5.0
 _FATAL_TOAST_TIMEOUT_S = 3600.0
@@ -233,9 +233,9 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
             app._sync_context_sources_with_daemon(notify_on_failure=True)
         if app._active_sop_names or app._sops_ready_for_sync:
             app._sync_active_sops_with_daemon(notify_on_failure=True)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._runtime_proxy_recovery_attempted.clear()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._flush_pending_connect_retry()
         app._refresh_agent_summary()
         if not session_id:
@@ -299,13 +299,13 @@ def _handle_connection_and_session_events(app: Any, etype: str, event: dict[str,
 
     if etype == "turn_complete":
         exit_status = str(event.get("exit_status", "ok"))
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._trace_turn_event("turn_complete")
         try:
             app._finalize_turn(exit_status=exit_status)
         except Exception:
             pass
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._set_planning_controls_enabled(enabled=True)
         if exit_status in {"ok", "interrupted"}:
             app._reset_error_action_prompt()
@@ -464,11 +464,11 @@ def _handle_usage_and_compaction_events(app: Any, etype: str, event: dict[str, A
             if isinstance(after_tokens, int) and isinstance(app.state.daemon.last_budget_tokens, int):
                 token_text = f" {after_tokens:,}/{app.state.daemon.last_budget_tokens:,} tokens"
             line = f"[context] {'auto-' if automatic else ''}compacted{token_text}{detail_text}."
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 app._write_transcript_line(line)
             app._notify("Context compacted.", severity="information", timeout=4.0)
         elif warning_text:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 app._write_transcript_line(f"[context] {warning_text}")
             app._notify(warning_text, severity="warning", timeout=6.0)
         else:
@@ -481,7 +481,7 @@ def _handle_usage_and_compaction_events(app: Any, etype: str, event: dict[str, A
 def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype in {"llm_start", "model_start", "before_model_call"}:
         app._assistant_completion_seen_turn = False
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._trace_turn_event("llm_start")
         app._record_thinking_event("")
         return True
@@ -491,7 +491,7 @@ def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> boo
         if not chunk:
             return True
         if not bool(getattr(app, "_structured_assistant_seen_turn", False)):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 app._trace_turn_event("text_delta(first)")
         app._structured_assistant_seen_turn = True
         prior_text = str(getattr(app, "_last_structured_assistant_text_turn", "") or "")
@@ -509,18 +509,18 @@ def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> boo
         if bool(getattr(app, "_assistant_completion_seen_turn", False)):
             return True
         app._assistant_completion_seen_turn = True
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._trace_turn_event("text_complete")
         app._cancel_streaming_flush_timer()
         app._flush_streaming_buffer()
         app._finalize_assistant_message()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._force_transcript_tail_after_refresh()
         return True
 
     if etype == "thinking":
         label = "thinking(delta)" if str(event.get("text", "")).strip() else "thinking(empty)"
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._trace_turn_event(label)
         app._record_thinking_event(str(event.get("text", "")))
         return True
@@ -530,10 +530,10 @@ def _handle_streaming_events(app: Any, etype: str, event: dict[str, Any]) -> boo
 
 def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
     if etype == "tool_start":
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._trace_turn_event("tool_start")
         app._dismiss_thinking(emit_summary=True)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app._finalize_assistant_segment_before_intermediate_block()
         tid = str(event.get("tool_use_id", "")).strip() or f"tool-{app.state.daemon.run_tool_count + 1}"
         tool_name = str(event.get("tool", "unknown"))
@@ -562,7 +562,7 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         tid = str(event.get("tool_use_id", "")).strip()
         record = app._tool_blocks.get(tid)
         if record is None and tid:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 app._finalize_assistant_segment_before_intermediate_block()
             fallback_tool_name = str(event.get("tool", "unknown"))
             record = {
@@ -605,7 +605,7 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
                 app._emit_tool_start_line(tid)
             widget = record.get("widget")
             if widget is not None and isinstance(record.get("input"), dict):
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     widget.set_input(record["input"])
         return True
 
@@ -620,7 +620,7 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         record = app._tool_blocks.get(tid)
         tool_name = str(event.get("tool", "unknown"))
         if record is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 app._finalize_assistant_segment_before_intermediate_block()
         if record is not None:
             record["status"] = status
@@ -639,7 +639,7 @@ def _handle_tool_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         plain = app._tool_result_plain_text(tool_name, status, duration_s, tool_input)
         widget = record.get("widget") if isinstance(record, dict) else None
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.set_result(status, duration_s)
             app._record_transcript_fallback(plain)
         else:
@@ -733,7 +733,7 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
             while app._split_ratio > 1:
                 app.action_widen_side()
             app._set_engage_view_mode("plan")
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 app._switch_side_tab("tab_engage")
         else:
             if isinstance(rendered, str) and rendered.strip():
@@ -743,7 +743,7 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
                 while app._split_ratio > 1:
                     app.action_widen_side()
                 app._set_engage_view_mode("plan")
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     app._switch_side_tab("tab_engage")
             app._refresh_plan_status_bar()
         app._refresh_plan_actions_visibility()
@@ -761,7 +761,7 @@ def _handle_plan_events(app: Any, etype: str, event: dict[str, Any]) -> bool:
         step_index_raw = event.get("step_index")
         status = str(event.get("status", "")).strip().lower()
         if not isinstance(step_index_raw, int):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 step_index_raw = int(step_index_raw)
         if not isinstance(step_index_raw, int):
             return True
@@ -835,7 +835,7 @@ def _handle_diff_review_events(app: Any, etype: str, event: dict[str, Any]) -> b
 
     diff_text = ""
     if artifact_path:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             diff_text = ArtifactStore().read_text(Path(artifact_path))
     if not diff_text:
         diff_text = "(diff preview unavailable)"
@@ -883,10 +883,10 @@ def _bedrock_setup_guidance_shown(app: Any) -> bool:
 def _mark_bedrock_setup_guidance_shown(app: Any) -> None:
     session_state = getattr(getattr(app, "state", None), "session", None)
     if session_state is not None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             session_state.bedrock_setup_guidance_shown = True
             return
-    with contextlib.suppress(Exception):
+    with ui_guard():
         app._bedrock_setup_guidance_shown = True
 
 
@@ -900,7 +900,7 @@ def _show_bedrock_setup_guidance_once(app: Any) -> None:
         ),
         plain_text=_BEDROCK_SETUP_GUIDANCE_TEXT,
     )
-    with contextlib.suppress(Exception):
+    with ui_guard():
         app._switch_side_tab("tab_settings")
         app._set_settings_view_mode("models")
         app._refresh_settings_models()
@@ -969,7 +969,7 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
                 ),
                 plain_text=auth_hint,
             )
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 app._switch_side_tab("tab_settings")
                 app._set_settings_view_mode("models")
                 app._refresh_settings_models()
@@ -988,7 +988,7 @@ def _handle_error_warning_events(app: Any, etype: str, event: dict[str, Any]) ->
         app._write_issue(warn_text)
         app._update_header_status()
         handled_in_popup = False
-        with contextlib.suppress(Exception):
+        with ui_guard():
             handled_in_popup = bool(app._handle_connect_status_warning(raw_warn_text))
         is_bedrock_region_warning = _is_unresolved_bedrock_region_warning(raw_warn_text)
         is_bedrock_stall_warning = warning_kind == "bedrock_stall"
