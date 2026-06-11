@@ -6,6 +6,7 @@ import contextlib
 import json as _json
 import re
 import textwrap
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -1302,7 +1303,59 @@ class UserMessage(Static):
         super().__init__(render_text, **kwargs)
 
 
-class AssistantMessage(Static):
+class StreamRenderCoalescer:
+    """Limits streaming re-renders to at most one per interval.
+
+    Re-rendering the full accumulated markdown on every delta costs O(n²)
+    per message and saturates the UI thread during generation. Deltas arrive
+    far faster than they can be read: the first delta renders immediately,
+    later deltas within the interval coalesce into one trailing render.
+    """
+
+    STREAM_RENDER_INTERVAL_S = 0.15
+
+    _stream_render_timer: Any = None
+    _stream_render_last_mono: float = 0.0
+    _stream_render_pending: bool = False
+
+    def _render_stream_content(self) -> None:
+        raise NotImplementedError
+
+    def _request_stream_render(self) -> None:
+        if self._stream_render_timer is not None:
+            self._stream_render_pending = True
+            return
+        remaining = self.STREAM_RENDER_INTERVAL_S - (time.monotonic() - self._stream_render_last_mono)
+        if remaining <= 0:
+            self._render_stream_now()
+            return
+        self._stream_render_pending = True
+        try:
+            self._stream_render_timer = self.set_timer(remaining, self._flush_stream_render)  # type: ignore[attr-defined]
+        except Exception:
+            # No running event loop (e.g. widget not mounted): render directly.
+            self._stream_render_timer = None
+            self._render_stream_now()
+
+    def _flush_stream_render(self) -> None:
+        self._stream_render_timer = None
+        if self._stream_render_pending:
+            self._render_stream_now()
+
+    def _render_stream_now(self) -> None:
+        self._stream_render_pending = False
+        self._stream_render_last_mono = time.monotonic()
+        self._render_stream_content()
+
+    def _cancel_stream_render(self) -> None:
+        timer, self._stream_render_timer = self._stream_render_timer, None
+        if timer is not None:
+            with contextlib.suppress(Exception):
+                timer.stop()
+        self._stream_render_pending = False
+
+
+class AssistantMessage(Static, StreamRenderCoalescer):
     """Accumulates text_delta events and renders as markdown via Rich."""
 
     DEFAULT_CSS = """
@@ -1320,11 +1373,14 @@ class AssistantMessage(Static):
 
     def append_delta(self, text: str) -> None:
         self._buffer.append(text)
-        full = "".join(self._buffer)
-        self.update(RichMarkdown(full))
+        self._request_stream_render()
+
+    def _render_stream_content(self) -> None:
+        self.update(RichMarkdown("".join(self._buffer)))
 
     def finalize(self, *, model: str | None = None, timestamp: str | None = None) -> str:
         """Called on text_complete. Returns the full raw text."""
+        self._cancel_stream_render()
         if isinstance(model, str) and model.strip():
             self._model = model.strip()
         if isinstance(timestamp, str) and timestamp.strip():
@@ -1334,6 +1390,8 @@ class AssistantMessage(Static):
         if meta_parts:
             meta_line = " · ".join(meta_parts)
             self.update(RichGroup(RichMarkdown(full), RichText(meta_line, style="dim")))
+        else:
+            self.update(RichMarkdown(full))
         return full
 
     @property
@@ -1341,7 +1399,7 @@ class AssistantMessage(Static):
         return "".join(self._buffer)
 
 
-class AssistantStreamBlock(Static):
+class AssistantStreamBlock(Static, StreamRenderCoalescer):
     """Collapsible assistant response card for live streaming output."""
 
     DEFAULT_CSS = """
@@ -1409,13 +1467,21 @@ class AssistantStreamBlock(Static):
         chunk = str(text or "")
         if not chunk:
             return
+        first_chunk = not self._buffer
         self._buffer.append(chunk)
-        self._refresh_header(running=True)
+        if first_chunk:
+            # The running header is static and re-expanding on every delta
+            # would fight a user who collapsed the card mid-stream.
+            self._refresh_header(running=True)
+            with contextlib.suppress(Exception):
+                self.query_one(Collapsible).collapsed = False
+        self._request_stream_render()
+
+    def _render_stream_content(self) -> None:
         self._refresh_body()
-        with contextlib.suppress(Exception):
-            self.query_one(Collapsible).collapsed = False
 
     def finalize(self, *, model: str | None = None, timestamp: str | None = None) -> str:
+        self._cancel_stream_render()
         if isinstance(model, str) and model.strip():
             self._model = model.strip()
         if isinstance(timestamp, str) and timestamp.strip():
@@ -1436,7 +1502,7 @@ class AssistantStreamBlock(Static):
         return "".join(self._buffer)
 
 
-class ReasoningBlock(Static):
+class ReasoningBlock(Static, StreamRenderCoalescer):
     """Collapsible card for model reasoning/thinking output."""
 
     DEFAULT_CSS = """
@@ -1491,13 +1557,19 @@ class ReasoningBlock(Static):
         chunk = str(text or "")
         if not chunk:
             return
+        first_chunk = not self._buffer
         self._buffer.append(chunk)
+        if first_chunk:
+            self._refresh_header(running=True)
+            with contextlib.suppress(Exception):
+                self.query_one(Collapsible).collapsed = False
+        self._request_stream_render()
+
+    def _render_stream_content(self) -> None:
         self._refresh_body()
-        self._refresh_header(running=True)
-        with contextlib.suppress(Exception):
-            self.query_one(Collapsible).collapsed = False
 
     def finalize(self, *, elapsed_s: float | None = None) -> str:
+        self._cancel_stream_render()
         if isinstance(elapsed_s, (int, float)):
             self._elapsed_s = max(0.0, float(elapsed_s))
         self._refresh_body()
