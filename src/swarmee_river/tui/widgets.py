@@ -2443,6 +2443,7 @@ class CommandPalette(Static):
         ("/connect", "Connect provider auth (Copilot/AWS)"),
         ("/auth", "List/logout provider auth"),
         ("/diagnostics bundle", "Create support bundle"),
+        ("/diagnostics ui", "Show UI health counters"),
         ("/copy", "Copy transcript"),
         ("/copy plan", "Copy plan text"),
         ("/copy issues", "Copy issues"),

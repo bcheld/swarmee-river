@@ -57,3 +57,30 @@ def test_no_failure_counts_on_success() -> None:
     with ui_guard("fine"):
         pass
     assert ui_guard_failure_counts() == {}
+
+
+def test_diagnostics_ui_command_reports_counters(monkeypatch) -> None:
+    from swarmee_river.tui.mixins.daemon import DaemonMixin
+
+    with ui_guard("plan.visibility"):
+        raise ValueError("widget missing")
+
+    class _Host:
+        _thread_dispatch_dropped_total = 2
+        _output_lines_dropped_total = 7
+        _pending_output_lines = None
+
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        _write_ui_diagnostics = DaemonMixin._write_ui_diagnostics
+
+        def _write_transcript_line(self, text: str) -> None:
+            self.lines.append(text)
+
+    host = _Host()
+    host._write_ui_diagnostics()
+    output = "\n".join(host.lines)
+    assert "plan.visibility" in output
+    assert "Dropped cross-thread dispatches: 2" in output
+    assert "Output lines dropped under load: 7" in output

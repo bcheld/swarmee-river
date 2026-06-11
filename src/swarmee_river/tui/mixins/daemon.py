@@ -593,6 +593,26 @@ class DaemonMixin:
             self._append_auth_connect_popup_line(f"Retrying auth for {provider_label}...")
             self._pending_connect_retry_payload = None
 
+    def _write_ui_diagnostics(self) -> None:
+        """Summarize internal UI health: suppressed failures and drop counters."""
+        from swarmee_river.tui.ui_guard import ui_guard_failure_counts
+
+        lines = ["UI diagnostics:"]
+        counts = ui_guard_failure_counts()
+        if counts:
+            lines.append(f"  Suppressed UI failures ({sum(counts.values())} total):")
+            for label, count in sorted(counts.items(), key=lambda item: -item[1])[:10]:
+                lines.append(f"    {count:>5}  {label}")
+        else:
+            lines.append("  Suppressed UI failures: none")
+        dispatch_dropped = int(getattr(self, "_thread_dispatch_dropped_total", 0) or 0)
+        lines.append(f"  Dropped cross-thread dispatches: {dispatch_dropped}")
+        pending = getattr(self, "_pending_output_lines", None)
+        lines.append(f"  Buffered output lines awaiting render: {len(pending) if pending else 0}")
+        output_dropped = int(getattr(self, "_output_lines_dropped_total", 0) or 0)
+        lines.append(f"  Output lines dropped under load: {output_dropped}")
+        self._write_transcript_line("\n".join(lines))
+
     def _write_keybindings_reference(self) -> None:
         """List every keyboard shortcut, generated from BINDINGS so it can't drift."""
         from textual.binding import Binding
@@ -761,6 +781,9 @@ class DaemonMixin:
             return True
         if action == "diagnostics_usage":
             self._write_transcript_line(_DIAGNOSTICS_USAGE_TEXT)
+            return True
+        if action == "diagnostics_ui":
+            self._write_ui_diagnostics()
             return True
         if action == "diagnostics_bundle":
             from swarmee_river.diagnostics import create_support_bundle

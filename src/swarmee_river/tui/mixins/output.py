@@ -532,6 +532,7 @@ class OutputMixin:
             self._pending_output_lock = threading.Lock()
             self._output_drain_scheduled = False
             self._output_lines_dropped = 0
+            self._output_lines_dropped_total = 0
 
     def _enqueue_output_line(self, line: str, raw_line: str | None) -> None:
         """Called from the daemon reader thread for regular output lines.
@@ -545,6 +546,7 @@ class OutputMixin:
             if len(self._pending_output_lines) >= self._OUTPUT_QUEUE_MAX:
                 self._pending_output_lines.popleft()
                 self._output_lines_dropped += 1
+                self._output_lines_dropped_total += 1
             self._pending_output_lines.append((line, raw_line))
         if not self._output_drain_scheduled:
             self._output_drain_scheduled = True
