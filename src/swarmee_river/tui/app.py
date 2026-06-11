@@ -2062,30 +2062,35 @@ def run_tui() -> int:
             background: #1f1f1f;
         }
         """
+        # Footer chips render in BINDINGS order and silently clip past the
+        # terminal width, so: importance-ordered, exactly one visible
+        # binding per action. Alternates stay registered but hidden
+        # (tests/test_tui_bindings.py enforces the one-visible rule).
         BINDINGS = [
-            Binding("f5", "submit_prompt", "Send prompt", show=False),
-            ("escape", "interrupt_run", "Interrupt run"),
-            ("f8", "toggle_transcript_mode", "Toggle transcript mode"),
-            Binding("ctrl+k", "open_action_sheet", "Actions", priority=True, show=False),
             Binding("ctrl+p", "open_action_sheet", "Actions", priority=True),
-            Binding("ctrl+space", "open_action_sheet", "Actions", priority=True, show=False),
+            ("escape", "interrupt_run", "Interrupt run"),
+            ("ctrl+f", "search_transcript", "Search"),
+            ("f8", "toggle_transcript_mode", "Toggle transcript mode"),
             ("ctrl+shift+c", "copy_selection", "Copy selection"),
-            ("ctrl+c", "copy_selection", "Copy selection"),
-            ("meta+c", "copy_selection", "Copy selection"),
-            ("super+c", "copy_selection", "Copy selection"),
-            ("ctrl+d", "quit", "Quit"),
-            ("tab", "focus_prompt", "Focus prompt"),
             Binding("ctrl+left", "widen_side", "Widen side", priority=True),
             Binding("ctrl+right", "widen_transcript", "Widen transcript", priority=True),
-            Binding("ctrl+shift+left", "widen_side", "Widen side", priority=True),
-            Binding("ctrl+shift+right", "widen_transcript", "Widen transcript", priority=True),
+            ("tab", "focus_prompt", "Focus prompt"),
+            ("ctrl+d", "quit", "Quit"),
+            # Hidden alternates.
+            Binding("f5", "submit_prompt", "Send prompt", show=False),
+            Binding("ctrl+k", "open_action_sheet", "Actions", priority=True, show=False),
+            Binding("ctrl+space", "open_action_sheet", "Actions", priority=True, show=False),
+            Binding("ctrl+c", "copy_selection", "Copy selection", show=False),
+            Binding("meta+c", "copy_selection", "Copy selection", show=False),
+            Binding("super+c", "copy_selection", "Copy selection", show=False),
+            Binding("ctrl+shift+left", "widen_side", "Widen side", priority=True, show=False),
             Binding("alt+left", "widen_side", "Widen side", priority=True, show=False),
-            Binding("alt+right", "widen_transcript", "Widen transcript", priority=True, show=False),
             Binding("ctrl+h", "widen_side", "Widen side", priority=True, show=False),
+            Binding("f6", "widen_side", "Widen side", show=False),
+            Binding("ctrl+shift+right", "widen_transcript", "Widen transcript", priority=True, show=False),
+            Binding("alt+right", "widen_transcript", "Widen transcript", priority=True, show=False),
             Binding("ctrl+l", "widen_transcript", "Widen transcript", priority=True, show=False),
-            ("f6", "widen_side", "Widen side"),
-            ("f7", "widen_transcript", "Widen transcript"),
-            ("ctrl+f", "search_transcript", "Search"),
+            Binding("f7", "widen_transcript", "Widen transcript", show=False),
         ]
 
         state: AppState
