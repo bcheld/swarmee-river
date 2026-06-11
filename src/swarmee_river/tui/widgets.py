@@ -8,6 +8,7 @@ import re
 import textwrap
 import time
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -75,22 +76,32 @@ def render_thinking_indicator(
     return rendered
 
 
+@lru_cache(maxsize=256)
+def _cached_assistant_renderable(
+    text: str, model: str | None, timestamp: str | None
+) -> RichMarkdown | RichGroup:
+    body = RichMarkdown(text)
+    meta_parts = [part for part in (model, timestamp) if part]
+    if not meta_parts:
+        return body
+    return RichGroup(body, RichText(" · ".join(meta_parts), style="dim"))
+
+
 def render_assistant_message(
     text: str,
     *,
     model: str | None = None,
     timestamp: str | None = None,
 ) -> RichMarkdown | RichGroup:
-    """Render a finalized assistant response with optional metadata."""
-    body = RichMarkdown(text)
-    meta_parts: list[str] = []
-    if isinstance(model, str) and model.strip():
-        meta_parts.append(model.strip())
-    if isinstance(timestamp, str) and timestamp.strip():
-        meta_parts.append(timestamp.strip())
-    if not meta_parts:
-        return body
-    return RichGroup(body, RichText(" · ".join(meta_parts), style="dim"))
+    """Render a finalized assistant response with optional metadata.
+
+    Cached: markdown parsing is the expensive step, and transcript rebuilds
+    (mode toggles, session restore) re-render every historical message.
+    Finalized messages are immutable, so the cache never invalidates.
+    """
+    normalized_model = model.strip() if isinstance(model, str) and model.strip() else None
+    normalized_timestamp = timestamp.strip() if isinstance(timestamp, str) and timestamp.strip() else None
+    return _cached_assistant_renderable(text, normalized_model, normalized_timestamp)
 
 
 def render_tool_start_line(
@@ -2508,8 +2519,10 @@ class ActionSheet(Vertical):
     }
     ActionSheet #action_sheet_panel {
         width: 72;
+        min-width: 36;
         max-width: 96%;
         height: auto;
+        max-height: 90%;
         border: round $accent;
         background: $surface;
         padding: 0 1;
@@ -2519,7 +2532,7 @@ class ActionSheet(Vertical):
         color: $text-muted;
     }
     ActionSheet #action_sheet_items {
-        height: 10;
+        height: auto;
         max-height: 10;
         min-height: 1;
         margin: 0 0 1 0;
