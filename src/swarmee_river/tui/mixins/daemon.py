@@ -593,6 +593,37 @@ class DaemonMixin:
             self._append_auth_connect_popup_line(f"Retrying auth for {provider_label}...")
             self._pending_connect_retry_payload = None
 
+    def _write_keybindings_reference(self) -> None:
+        """List every keyboard shortcut, generated from BINDINGS so it can't drift."""
+        from textual.binding import Binding
+
+        grouped: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for entry in type(self).BINDINGS:
+            if isinstance(entry, Binding):
+                binding = entry
+            else:
+                key, action, description = entry
+                binding = Binding(key, action, description)
+            info = grouped.get(binding.action)
+            if info is None:
+                info = {"description": binding.description, "visible": [], "hidden": []}
+                grouped[binding.action] = info
+                order.append(binding.action)
+            (info["visible"] if binding.show else info["hidden"]).append(binding.key)
+        lines = ["Keyboard shortcuts (the footer shows the primary key):"]
+        for action in order:
+            info = grouped[action]
+            if info["visible"]:
+                primary = ", ".join(info["visible"])
+                alternates = list(info["hidden"])
+            else:
+                primary = info["hidden"][0]
+                alternates = info["hidden"][1:]
+            suffix = f"  (also: {', '.join(alternates)})" if alternates else ""
+            lines.append(f"  {primary:<18} {info['description']}{suffix}")
+        self._write_transcript_line("\n".join(lines))
+
     def _handle_pre_run_command(self, text: str) -> bool:
         from swarmee_river.tui.commands import (
             _AUTH_USAGE_TEXT,
@@ -621,6 +652,9 @@ class DaemonMixin:
         if action == "help":
             lines = [f"  {cmd:<16} {desc}" for cmd, desc in CommandPalette.TUI_COMMANDS]
             self._write_transcript_line("Available commands:\n" + "\n".join(lines))
+            return True
+        if action == "keys":
+            self._write_keybindings_reference()
             return True
         if action == "open_usage":
             self._write_transcript_line(_OPEN_USAGE_TEXT)

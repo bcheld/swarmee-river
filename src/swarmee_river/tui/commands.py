@@ -62,6 +62,8 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
     normalized = text.lower()
     if normalized == "/help":
         return "help", None
+    if normalized == "/keys":
+        return "keys", None
     if normalized == "/restore":
         return "restore", None
     if normalized == "/new":

@@ -2075,6 +2075,7 @@ def run_tui() -> int:
             Binding("ctrl+left", "widen_side", "Widen side", priority=True),
             Binding("ctrl+right", "widen_transcript", "Widen transcript", priority=True),
             ("tab", "focus_prompt", "Focus prompt"),
+            ("f1", "show_keys", "Help"),
             ("ctrl+d", "quit", "Quit"),
             # Hidden alternates.
             Binding("f5", "submit_prompt", "Send prompt", show=False),

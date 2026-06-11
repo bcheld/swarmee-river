@@ -2415,6 +2415,7 @@ class CommandPalette(Static):
 
     TUI_COMMANDS: list[tuple[str, str]] = [
         ("/help", "Show available commands"),
+        ("/keys", "List all keyboard shortcuts"),
         ("/plan", "Generate a plan"),
         ("/run", "Execute immediately"),
         ("/approve", "Execute pending plan"),
@@ -2456,12 +2457,13 @@ class CommandPalette(Static):
         """Filter commands by prefix and update display. Empty prefix shows all."""
         prefix_lower = prefix.lower()
         self._filtered = [(cmd, desc) for cmd, desc in self.TUI_COMMANDS if cmd.startswith(prefix_lower)]
+        if not self._filtered:
+            # Typo recovery: fall back to substring matching before giving up,
+            # and stay visible either way — vanishing silently reads as broken.
+            self._filtered = [(cmd, desc) for cmd, desc in self.TUI_COMMANDS if prefix_lower.lstrip("/") in cmd]
         self._selected_index = 0
-        if self._filtered:
-            self._render_items()
-            self.styles.display = "block"
-        else:
-            self.styles.display = "none"
+        self._render_items()
+        self.styles.display = "block"
 
     def move_selection(self, delta: int) -> None:
         if not self._filtered:
@@ -2482,6 +2484,9 @@ class CommandPalette(Static):
         return str(self.styles.display) != "none"
 
     def _render_items(self) -> None:
+        if not self._filtered:
+            self.update("[dim]No matching commands — backspace to see all[/dim]")
+            return
         lines: list[str] = []
         for i, (cmd, desc) in enumerate(self._filtered):
             marker = "[bold]>[/bold] " if i == self._selected_index else "  "

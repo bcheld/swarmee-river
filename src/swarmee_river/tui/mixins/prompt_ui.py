@@ -274,6 +274,9 @@ class PromptUIMixin:
 
         self.query_one("#prompt", TextArea).focus()
 
+    def action_show_keys(self) -> None:
+        self._write_keybindings_reference()
+
     def action_submit_prompt(self) -> None:
         from textual.widgets import TextArea
 
