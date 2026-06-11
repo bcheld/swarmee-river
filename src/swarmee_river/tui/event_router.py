@@ -91,6 +91,31 @@ def _extract_usage_counts(usage: dict[str, Any]) -> tuple[int, int, int]:
     return input_tokens, output_tokens, cached
 
 
+_settings_cache: tuple[tuple[str, float] | None, Any] | None = None
+
+
+def _cached_settings() -> Any:
+    """`load_settings()` with an mtime-keyed cache.
+
+    The usage-cost fallback runs on the UI thread for every usage event that
+    arrives without a daemon-computed `cost_usd`; re-reading and re-parsing
+    settings.json on each event stalls the event loop. The cache invalidates
+    when the settings file changes on disk.
+    """
+    global _settings_cache
+    path = Path.cwd() / ".swarmee" / "settings.json"
+    key: tuple[str, float] | None
+    try:
+        key = (str(path), path.stat().st_mtime)
+    except OSError:
+        key = None
+    if _settings_cache is not None and _settings_cache[0] == key:
+        return _settings_cache[1]
+    settings = load_settings()
+    _settings_cache = (key, settings)
+    return settings
+
+
 def _compute_usage_cost_fallback(event: dict[str, Any]) -> float | None:
     usage = event.get("usage")
     if not isinstance(usage, dict):
@@ -99,7 +124,7 @@ def _compute_usage_cost_fallback(event: dict[str, Any]) -> float | None:
     provider = str(event.get("provider", "")).strip().lower()
     model_id = str(event.get("model_id", "")).strip() or None
     pricing = resolve_pricing(provider=provider or None, model_id=model_id)
-    settings = load_settings()
+    settings = _cached_settings()
     override = settings.pricing.providers.get(provider) if provider else None
     if override is None:
         override = settings.pricing.default
