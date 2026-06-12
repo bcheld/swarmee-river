@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json as _json
 import uuid
 from typing import Any
@@ -41,6 +40,7 @@ from swarmee_river.tui.agent_studio import (
 )
 from swarmee_river.tui.model_select import choose_model_summary_parts
 from swarmee_river.tui.transport import send_daemon_command as _transport_send_daemon_command
+from swarmee_river.tui.ui_guard import ui_guard
 
 _AGENT_PROFILE_SELECT_NONE = "__agent_profile_none__"
 _AGENT_TOOL_CONSENT_VALUES = {"ask", "allow", "deny"}
@@ -96,14 +96,14 @@ class AgentStudioMixin:
     def _set_agent_builder_row_controls(self, agent_def: dict[str, Any] | None) -> None:
         is_orchestrator = self._is_orchestrator_agent_id(str((agent_def or {}).get("id", "")).strip())
         if self._agent_builder_agent_id_input is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._agent_builder_agent_id_input.disabled = is_orchestrator
         if self._agent_builder_agent_activated_checkbox is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._agent_builder_agent_activated_checkbox.disabled = is_orchestrator
                 if is_orchestrator:
                     self._agent_builder_agent_activated_checkbox.value = False
-        with contextlib.suppress(Exception):
+        with ui_guard():
             delete_button = self.query_one("#agent_builder_agent_delete")
             delete_button.disabled = is_orchestrator
 
@@ -115,14 +115,14 @@ class AgentStudioMixin:
         if provider and tier:
             self._pin_model_select_target(provider, tier)
             self._set_model_tier_from_value(f"{provider}|{tier}")
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._persist_quick_model_selection(provider=provider, tier=tier)
         else:
             self.state.daemon.pending_model_select_value = None
             self.state.daemon.model_provider_override = None
             self.state.daemon.model_tier_override = None
             self._pin_model_select_target("", "")
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._persist_quick_model_selection(provider=None, tier=None)
             self._refresh_model_select()
             self._update_header_status()
@@ -147,7 +147,7 @@ class AgentStudioMixin:
         for bundle in self.state.agent_studio.saved_bundles:
             if str(bundle.get("id", "")).strip() != target:
                 continue
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 return AgentProfile.from_dict(bundle)
         return None
 
@@ -353,7 +353,7 @@ class AgentStudioMixin:
         content = str(text or "")
         if not content.strip():
             return False
-        with contextlib.suppress(Exception):
+        with ui_guard():
             # PromptTextArea is defined inside run_tui(); query by ID only.
             prompt_widget = self.query_one("#prompt")
             prompt_widget.clear()
@@ -491,7 +491,7 @@ class AgentStudioMixin:
             selected_item = self._agent_tools_item_by_id(selected_id)
             if selected_item is None and self.state.agent_studio.tools_items:
                 selected_item = self.state.agent_studio.tools_items[0]
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     list_widget.select_by_id(str(selected_item.get("id", "")), emit=False)
             self._set_agent_tools_selection(selected_item)
         else:
@@ -516,7 +516,7 @@ class AgentStudioMixin:
             selected_item = self._agent_team_item_by_id(selected_id)
             if selected_item is None and self.state.agent_studio.team_items:
                 selected_item = self.state.agent_studio.team_items[0]
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     list_widget.select_by_id(str(selected_item.get("id", "")), emit=False)
             self._set_agent_team_selection(selected_item)
         else:
@@ -544,7 +544,7 @@ class AgentStudioMixin:
             return
         if self.state.agent_studio.tool_catalog:
             return
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.state.agent_studio.tool_catalog = sorted(set(get_tools().keys()))
 
     def _agent_builder_item_by_id(self, item_id: str | None) -> dict[str, Any] | None:
@@ -610,11 +610,11 @@ class AgentStudioMixin:
                 self._agent_builder_prompt_asset_tags_input.value = ""
             if self._agent_builder_agent_provider_select is not None:
                 provider = str(normalized.get("provider", "")).strip().lower() if normalized else ""
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     self._agent_builder_agent_provider_select.value = provider or "__inherit__"
             if self._agent_builder_agent_tier_select is not None:
                 tier = str(normalized.get("tier", "")).strip().lower() if normalized else ""
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     self._agent_builder_agent_tier_select.value = tier or "__inherit__"
             if self._agent_builder_agent_activated_checkbox is not None:
                 self._agent_builder_agent_activated_checkbox.value = (
@@ -842,7 +842,7 @@ class AgentStudioMixin:
 
         self._set_agent_builder_status(f"Promoted inline prompt to tooling asset '{prompt_id}'.")
         self._set_agent_draft_dirty(True, note=f"Inline prompt promoted to '{prompt_id}'.")
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self._refresh_tooling_prompts_list()
 
     def _set_agent_builder_selection(self, item: dict[str, Any] | None) -> None:
@@ -880,11 +880,11 @@ class AgentStudioMixin:
             if selected_id and rows:
                 for idx, (item_id, _name, _summary, _model, _activated) in enumerate(rows):
                     if item_id == selected_id:
-                        with contextlib.suppress(Exception):
+                        with ui_guard():
                             table.move_cursor(row=idx)
                         break
             elif rows:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     table.move_cursor(row=0)
             cursor_coordinate = getattr(table, "cursor_coordinate", None)
             row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
@@ -971,11 +971,11 @@ class AgentStudioMixin:
             if selected_id and rows:
                 for idx, (item_id, _name, _summary, _model, _state) in enumerate(rows):
                     if item_id == selected_id:
-                        with contextlib.suppress(Exception):
+                        with ui_guard():
                             table.move_cursor(row=idx)
                         break
             elif rows:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     table.move_cursor(row=0)
             cursor_coordinate = getattr(table, "cursor_coordinate", None)
             row_index = int(getattr(cursor_coordinate, "row", -1) or -1)
@@ -1028,7 +1028,7 @@ class AgentStudioMixin:
         if isinstance(orchestrator, dict):
             self._apply_orchestrator_runtime_model_selection(orchestrator)
         if bool(result.get("prompt_assets_changed")):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._refresh_tooling_prompts_list()
         self._render_agent_builder_panel()
         self._set_agent_builder_status("Agent Manager saved changes into the draft roster.")
@@ -1125,7 +1125,7 @@ class AgentStudioMixin:
         if self._is_orchestrator_agent_id(payload_id):
             self._apply_orchestrator_runtime_model_selection(payload)
         if isinstance(created_prompt_asset, dict):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._refresh_tooling_prompts_list()
         self._render_agent_builder_panel()
         self._set_agent_builder_status(f"Saved agent '{payload['name']}' in draft.")
@@ -1151,7 +1151,7 @@ class AgentStudioMixin:
 
     def _insert_activated_agents_run_prompt(self, *, run_now: bool = False) -> None:
         prompt_assets_by_id: dict[str, Any] = {}
-        with contextlib.suppress(Exception):
+        with ui_guard():
             from swarmee_river.prompt_assets import load_prompt_assets
 
             prompt_assets_by_id = {str(item.id).strip().lower(): item for item in load_prompt_assets()}
@@ -1444,11 +1444,11 @@ class AgentStudioMixin:
         if selected_id and rows:
             for index, (row_id, _t, _n, _id, _m, _a) in enumerate(rows):
                 if row_id == selected_id:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         table.move_cursor(row=index)
                     break
         elif rows:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 table.move_cursor(row=0)
         cursor = getattr(table, "cursor_coordinate", None)
         row_index = int(getattr(cursor, "row", -1) or -1)

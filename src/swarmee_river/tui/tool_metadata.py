@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -12,6 +11,7 @@ from swarmee_river.packs import load_enabled_pack_tools
 from swarmee_river.settings import load_settings
 from swarmee_river.state_paths import state_dir
 from swarmee_river.tool_permissions import STRANDS_TOOL_PERMISSIONS, get_permissions
+from swarmee_river.tui.ui_guard import ui_guard
 
 _TOOL_OVERRIDES_FILENAME = "tool_metadata.json"
 
@@ -82,7 +82,7 @@ def load_tool_metadata_overrides() -> dict[str, dict[str, Any]]:
     path = _overrides_path()
     if not path.exists():
         return {}
-    with contextlib.suppress(Exception):
+    with ui_guard():
         raw = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
             return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
@@ -122,7 +122,7 @@ def discover_tools_with_metadata(tools_dict: dict[str, Any] | None = None) -> li
     for name, tool_obj in sorted(tools_dict.items()):
         # Extract docstring.
         docstring = ""
-        with contextlib.suppress(Exception):
+        with ui_guard():
             raw_doc = getattr(tool_obj, "__doc__", None) or ""
             # Take the first non-empty line as a short description.
             for line in str(raw_doc).strip().splitlines():

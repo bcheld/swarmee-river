@@ -143,6 +143,7 @@ from swarmee_river.tui.transport import (
 from swarmee_river.tui.transport import (
     write_to_proc as _transport_write_to_proc,
 )
+from swarmee_river.tui.ui_guard import ui_guard
 
 _COMPAT_AGENT_HELPERS = (
     build_activated_agent_sidebar_items,
@@ -767,7 +768,7 @@ def run_tui() -> int:
                 method = getattr(self, method_name, None)
                 if not callable(method):
                     continue
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     method(*args)
                     return
 
@@ -776,7 +777,7 @@ def run_tui() -> int:
             for method_name in ("insert", "insert_text_at_cursor"):
                 method = getattr(self, method_name, None)
                 if callable(method):
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         method(text)
                         return
 
@@ -928,7 +929,7 @@ def run_tui() -> int:
                         for method_name in ("insert", "insert_text_at_cursor"):
                             method = getattr(self, method_name, None)
                             if callable(method):
-                                with contextlib.suppress(Exception):
+                                with ui_guard():
                                     method(selected + " ")
                                     break
                     palette.hide()
@@ -2418,18 +2419,18 @@ def run_tui() -> int:
 
         def _sidebar_width(self) -> int:
             side = None
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 side = self.query_one("#side", Vertical)
             if side is not None:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     width = int(getattr(getattr(side, "content_region", None), "width", 0) or 0)
                     if width > 0:
                         return width
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     width = int(getattr(getattr(side, "region", None), "width", 0) or 0)
                     if width > 0:
                         return width
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     width = int(getattr(getattr(side, "size", None), "width", 0) or 0)
                     if width > 0:
                         return width
@@ -2550,7 +2551,7 @@ def run_tui() -> int:
                 "Tips: use /commands in the prompt, Builder for roster edits, and Bundles for save/apply."
             )
             transcript = self.query_one("#transcript", VerticalScroll)
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 transcript.scroll_end(animate=False)
             self._set_transcript_mode("rich", notify=False)
 
@@ -2642,7 +2643,7 @@ def run_tui() -> int:
             self._action_sheet_previous_focus = None
             self._action_sheet_mode = "root"
             if restore_focus and previous is not None:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     previous.focus()
 
         def action_open_action_sheet(self) -> None:
@@ -2737,7 +2738,7 @@ def run_tui() -> int:
                     else:
                         self.state.session.error_count += 1
                     self._update_header_status()
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.notify(message, severity=normalized_severity, timeout=timeout)
 
         def action_quit(self) -> None:
@@ -2764,9 +2765,9 @@ def run_tui() -> int:
             if self.state.daemon.proc is not None and self.state.daemon.proc.poll() is None:
                 self._shutdown_transport(self.state.daemon.proc)
             if self.state.daemon.runner_thread is not None and self.state.daemon.runner_thread.is_alive():
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     self.state.daemon.runner_thread.join(timeout=1.0)
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._save_session()
             self.exit(return_code=0)
 
@@ -2832,7 +2833,7 @@ def run_tui() -> int:
                     index = int(checkbox_id.split("_")[-1])
                 except (ValueError, IndexError):
                     return
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     row = self.query_one(f"#plan_step_row_{index}", PlanStepRow)
                     row.toggle_comment_visibility()
                 return
@@ -2875,7 +2876,7 @@ def run_tui() -> int:
                 mode = str(getattr(event, "value", "")).strip().lower()
                 input_widget = self._settings_general_context_budget_input
                 if input_widget is not None:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         input_widget.styles.display = "block" if mode == "custom" else "none"
                 return
             if select_id in {"settings_models_provider_select", "settings_models_default_tier_select"}:
@@ -2945,7 +2946,7 @@ def run_tui() -> int:
                 self.state.daemon.pending_model_select_value = None
                 self.state.daemon.model_provider_override = None
                 self.state.daemon.model_tier_override = None
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     self._persist_quick_model_selection(provider=None, tier=None)
             elif value == _MODEL_LOADING_VALUE:
                 return
@@ -2966,7 +2967,7 @@ def run_tui() -> int:
                     now_mono=time.monotonic(),
                 ):
                     return
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     self._persist_quick_model_selection(provider=requested_provider, tier=requested_tier)
                 self._pin_model_select_target(requested_provider, requested_tier)
                 if (
@@ -3033,7 +3034,7 @@ def run_tui() -> int:
             path = getattr(event, "path", None)
             if path is None:
                 return
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 scope_input = self.query_one("#settings_scope_path_input", Input)
                 scope_input.value = str(path)
 
@@ -3075,7 +3076,7 @@ def run_tui() -> int:
                     cursor = getattr(table, "cursor_coordinate", None)
                     col_index = int(getattr(cursor, "column", -1) or -1)
                     column_key = ""
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         if table.is_valid_column_index(col_index):
                             col = table.get_column_at(col_index)
                             raw_key = getattr(col, "key", "")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json as _json
 import re
 import textwrap
@@ -23,6 +22,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
 from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID
+from swarmee_river.tui.ui_guard import ui_guard
 
 
 def render_user_message(text: str, *, timestamp: str | None = None) -> RichPanel:
@@ -546,7 +546,7 @@ class ConsentPrompt(Vertical):
             yield Button("Never (v)", id="consent_choice_v", variant="warning", compact=True)
 
     def on_mount(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#consent_body", VerticalScroll).can_focus = True
 
     def set_prompt(
@@ -580,7 +580,7 @@ class ConsentPrompt(Vertical):
             rich_context.append(", ".join(changed_paths), style="dim")
         self.query_one("#consent_context", Static).update(rich_context)
         self.query_one("#consent_separator", Static).update(RichText("─" * 28, style="dim"))
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#consent_body", VerticalScroll).scroll_home(animate=False)
         diff_widget = self.query_one("#consent_diff", Static)
         if isinstance(diff_preview, str) and diff_preview.strip():
@@ -610,7 +610,7 @@ class ConsentPrompt(Vertical):
         self.query_one("#consent_actions", Horizontal).styles.display = "block"
 
         for choice in self._CHOICE_IDS:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 button = self.query_one(f"#consent_choice_{choice}", Button)
                 is_available = choice in available
                 button.disabled = not is_available
@@ -625,16 +625,16 @@ class ConsentPrompt(Vertical):
     def hide_prompt(self) -> None:
         self._clear_highlight()
         self.styles.display = "none"
-        with contextlib.suppress(Exception):
+        with ui_guard():
             diff_widget = self.query_one("#consent_diff", Static)
             diff_widget.styles.display = "none"
             diff_widget.update("")
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#consent_actions", Horizontal).styles.display = "block"
 
     def focus_first_choice(self) -> None:
         for choice in self._CHOICE_IDS:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 button = self.query_one(f"#consent_choice_{choice}", Button)
                 if not button.disabled and str(button.styles.display) != "none":
                     button.focus()
@@ -646,7 +646,7 @@ class ConsentPrompt(Vertical):
         status_style = "bold green" if approved else "bold red"
         self.query_one("#consent_context", Static).update(RichText(message, style=status_style))
         self.query_one("#consent_separator", Static).update("")
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#consent_actions", Horizontal).styles.display = "none"
         self.styles.display = "block"
 
@@ -665,16 +665,16 @@ class ConsentPrompt(Vertical):
         app = getattr(self, "app", None)
         if app is None:
             return
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app.notify("Tool consent required", severity="warning", timeout=10)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             app.bell()
 
     def _flash_highlight(self) -> None:
         timer = self._highlight_timer
         self._highlight_timer = None
         if timer is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 timer.stop()
         self.add_class("-highlight")
         self._highlight_timer = self.set_timer(2.0, self._clear_highlight)
@@ -683,7 +683,7 @@ class ConsentPrompt(Vertical):
         timer = self._highlight_timer
         self._highlight_timer = None
         if timer is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 timer.stop()
         self.remove_class("-highlight")
 
@@ -693,7 +693,7 @@ class ConsentPrompt(Vertical):
             return
         buttons: list[Button] = []
         for choice in self._CHOICE_IDS:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 button = self.query_one(f"#consent_choice_{choice}", Button)
                 if not button.disabled and str(button.styles.display) != "none":
                     buttons.append(button)
@@ -788,17 +788,17 @@ class ErrorActionPrompt(Vertical):
 
     def focus_first_choice(self) -> None:
         for button_id in self._BUTTON_IDS:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 button = self.query_one(f"#{button_id}", Button)
                 if not button.disabled and str(button.styles.display) != "none":
                     button.focus()
                     return
 
     def _show_buttons(self, visible: set[str]) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#error_action_escalate", Button).label = "Escalate"
         for button_id in self._BUTTON_IDS:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 button = self.query_one(f"#{button_id}", Button)
                 show = button_id in visible
                 button.disabled = not show
@@ -817,7 +817,7 @@ class ErrorActionPrompt(Vertical):
             reset_prompt()
         focus_prompt = getattr(app, "action_focus_prompt", None)
         if callable(focus_prompt):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 focus_prompt()
         event.stop()
         event.prevent_default()
@@ -882,17 +882,17 @@ class SidebarHeader(Horizontal):
 
     def set_title(self, title: str) -> None:
         self._title = str(title or "").strip()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one(".sidebar-header-title", Static).update(self._title)
 
     def set_badges(self, badges: list[str] | None) -> None:
         self._badges = [str(item).strip() for item in (badges or []) if str(item).strip()]
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.refresh(recompose=True)
 
     def set_actions(self, actions: list[dict[str, Any]] | None) -> None:
         self._actions = [dict(item) for item in (actions or []) if isinstance(item, dict)]
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.refresh(recompose=True)
 
 
@@ -992,15 +992,15 @@ class SidebarListItem(Static):
 
     def _apply_classes(self) -> None:
         for class_name in self._STATE_CLASS_MAP.values():
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.remove_class(class_name)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.add_class(self._STATE_CLASS_MAP[self._state])
         if self._selected:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.add_class("-selected")
         else:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.remove_class("-selected")
 
     def _render_text(self) -> None:
@@ -1177,7 +1177,7 @@ class SidebarList(Vertical):
             return
         container = self.query_one("#sidebar_list_scroll", VerticalScroll)
         for child in list(container.children):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 child.remove()
 
         if not self._items:
@@ -1202,7 +1202,7 @@ class SidebarList(Vertical):
         for index, widget in enumerate(item_widgets):
             widget.set_selected(index == self._selected_index)
         if 0 <= self._selected_index < len(item_widgets):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 container.scroll_to_widget(item_widgets[self._selected_index], animate=False)
 
 
@@ -1278,12 +1278,12 @@ class SidebarDetail(Vertical):
     def set_preview(self, preview: Any) -> None:
         self._preview = preview if preview not in (None, "") else ""
         text = self._preview if self._preview else "(no selection)"
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one(".sidebar-detail-preview", Static).update(text)
 
     def set_actions(self, actions: list[dict[str, Any]] | None) -> None:
         self._actions = [dict(item) for item in (actions or []) if isinstance(item, dict)]
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.refresh(recompose=True)
 
     def on_button_pressed(self, event: Any) -> None:
@@ -1361,7 +1361,7 @@ class StreamRenderCoalescer:
     def _cancel_stream_render(self) -> None:
         timer, self._stream_render_timer = self._stream_render_timer, None
         if timer is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 timer.stop()
         self._stream_render_pending = False
 
@@ -1461,13 +1461,13 @@ class AssistantStreamBlock(Static, StreamRenderCoalescer):
         return " · ".join(parts)
 
     def _refresh_header(self, *, running: bool) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             collapsible = self.query_one(Collapsible)
             collapsible.title = self._header_text(running=running)
 
     def _refresh_body(self) -> None:
         body = "".join(self._buffer)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             target = self.query_one(".assistant-stream-body", Static)
             if body.strip():
                 target.update(RichMarkdown(body))
@@ -1484,7 +1484,7 @@ class AssistantStreamBlock(Static, StreamRenderCoalescer):
             # The running header is static and re-expanding on every delta
             # would fight a user who collapsed the card mid-stream.
             self._refresh_header(running=True)
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one(Collapsible).collapsed = False
         self._request_stream_render()
 
@@ -1499,13 +1499,13 @@ class AssistantStreamBlock(Static, StreamRenderCoalescer):
             self._timestamp = timestamp.strip()
         self._refresh_body()
         self._refresh_header(running=False)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one(Collapsible).collapsed = True
         return "".join(self._buffer)
 
     def collapse(self) -> None:
         self._refresh_header(running=False)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one(Collapsible).collapsed = True
 
     @property
@@ -1552,12 +1552,12 @@ class ReasoningBlock(Static, StreamRenderCoalescer):
         return title
 
     def _refresh_header(self, *, running: bool) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one(Collapsible).title = self._header_text(running=running)
 
     def _refresh_body(self) -> None:
         text = "".join(self._buffer)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             body = self.query_one(".reasoning-body", Static)
             if text.strip():
                 body.update(RichMarkdown(text))
@@ -1572,7 +1572,7 @@ class ReasoningBlock(Static, StreamRenderCoalescer):
         self._buffer.append(chunk)
         if first_chunk:
             self._refresh_header(running=True)
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one(Collapsible).collapsed = False
         self._request_stream_render()
 
@@ -1585,13 +1585,13 @@ class ReasoningBlock(Static, StreamRenderCoalescer):
             self._elapsed_s = max(0.0, float(elapsed_s))
         self._refresh_body()
         self._refresh_header(running=False)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one(Collapsible).collapsed = True
         return "".join(self._buffer)
 
     def collapse(self) -> None:
         self._refresh_header(running=False)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one(Collapsible).collapsed = True
 
 
@@ -1786,11 +1786,11 @@ class ToolCallBlock(Static):
         else:
             self._result_text = f"\u2717 {self._tool_name} ({status}) ({duration_s:.1f}s)"
         self._refresh_header()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one(Collapsible).collapsed = True
 
     def collapse(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one(Collapsible).collapsed = True
 
 
@@ -2004,14 +2004,14 @@ class PlanStepRow(Vertical):
 
     @property
     def is_included(self) -> bool:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             cb = self.query_one(f"#plan_step_cb_{self._step_index}", Checkbox)
             return bool(cb.value)
         return True
 
     @property
     def comment(self) -> str:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             inp = self.query_one(f"#plan_step_comment_{self._step_index}", Input)
             return (inp.value or "").strip()
         return ""
@@ -2051,7 +2051,7 @@ class PlanStepRow(Vertical):
         )
 
     def toggle_comment_visibility(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             comment_input = self.query_one(f"#plan_step_comment_{self._step_index}", Input)
             if self.is_included:
                 comment_input.styles.display = "none"
@@ -2100,7 +2100,7 @@ class PlanQuestionRow(Vertical):
 
     @property
     def answer(self) -> str:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             answer_box = self.query_one(f"#plan_question_answer_{self._question_index}", TextArea)
             return str(answer_box.text or "").strip()
         return ""
@@ -2146,7 +2146,7 @@ class PlanQuestionRow(Vertical):
         return max(1, total)
 
     def _sync_height(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             answer_box = self.query_one(f"#plan_question_answer_{self._question_index}", TextArea)
             width = int(getattr(getattr(answer_box, "content_region", None), "width", 0) or 0)
             if width <= 0:
@@ -2157,11 +2157,11 @@ class PlanQuestionRow(Vertical):
             answer_box.styles.height = visible_lines + 2
             if line_count > self._MAX_VIS_LINES:
                 answer_box.styles.overflow_y = "auto"
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     answer_box.scroll_end(animate=False)
             else:
                 answer_box.styles.overflow_y = "hidden"
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 answer_box.refresh(layout=True)
 
 
@@ -2322,7 +2322,7 @@ class ContextBudgetBar(Static):
         timer = self._anim_timer
         self._anim_timer = None
         if timer is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 timer.stop()
 
     def _animate_step(self) -> None:
@@ -2637,20 +2637,20 @@ class ActionSheet(Vertical):
     def _render_items(self) -> None:
         if not getattr(self, "is_mounted", False):
             return
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#action_sheet_title", Static).update(self._title)
         container: VerticalScroll | None = None
-        with contextlib.suppress(Exception):
+        with ui_guard():
             container = self.query_one("#action_sheet_items", VerticalScroll)
         if container is None:
             return
 
         target_height = min(10, max(1, len(self._actions)))
-        with contextlib.suppress(Exception):
+        with ui_guard():
             container.styles.height = target_height
 
         for child in list(container.children):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 child.remove()
 
         for idx, action in enumerate(self._actions):
@@ -2665,7 +2665,7 @@ class ActionSheet(Vertical):
             row.mount(Static(shortcut, classes="action-sheet-right"))
 
         if 0 <= self._selected_index < len(container.children):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 container.scroll_to_widget(container.children[self._selected_index], animate=False)
 
 
@@ -2928,7 +2928,7 @@ class TagEditScreen(ModalScreen[str | None]):
                 yield Button("Cancel", id="tag_edit_cancel", variant="default")
 
     def on_mount(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#tag_edit_input", Input).focus()
 
     def on_button_pressed(self, event: Any) -> None:
@@ -3011,7 +3011,7 @@ class TableCellEditScreen(ModalScreen[str | None]):
                 yield Button("Cancel", id="table_cell_edit_cancel", variant="default")
 
     def on_mount(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#table_cell_edit_input", Input).focus()
 
     def on_button_pressed(self, event: Any) -> None:
@@ -3105,10 +3105,10 @@ class AuthConnectScreen(ModalScreen[None]):
         if not line:
             return
         self._lines.append(line)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             target = self.query_one("#auth_connect_text", Static)
             target.update(self._render_lines())
-        with contextlib.suppress(Exception):
+        with ui_guard():
             body = self.query_one("#auth_connect_body", VerticalScroll)
             body.scroll_end(animate=False)
 
@@ -3190,7 +3190,7 @@ class PromptUsedByEditScreen(ModalScreen[list[str] | None]):
     def _selected_agent_ids(self) -> list[str]:
         selected: list[str] = []
         for checkbox_id, agent_id in self._checkbox_to_agent_id.items():
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 checkbox = self.query_one(f"#{checkbox_id}", Checkbox)
                 if bool(getattr(checkbox, "value", False)):
                     selected.append(agent_id)
@@ -3199,7 +3199,7 @@ class PromptUsedByEditScreen(ModalScreen[list[str] | None]):
     def on_mount(self) -> None:
         first_id = next(iter(self._checkbox_to_agent_id), "")
         if first_id:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one(f"#{first_id}", Checkbox).focus()
 
     def on_button_pressed(self, event: Any) -> None:
@@ -3304,7 +3304,7 @@ class CatalogMultiSelectScreen(ModalScreen[list[str] | None]):
         selected: list[str] = []
         seen: set[str] = set()
         for checkbox_id, option in self._checkbox_map.items():
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 checkbox = self.query_one(f"#{checkbox_id}", Checkbox)
                 if bool(getattr(checkbox, "value", False)):
                     lowered = option.lower()
@@ -3314,7 +3314,7 @@ class CatalogMultiSelectScreen(ModalScreen[list[str] | None]):
                     selected.append(option)
         custom_value = ""
         if self._allow_custom_values:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 custom_value = str(self.query_one("#catalog_multi_custom", Input).value or "")
             for raw in custom_value.split(","):
                 token = str(raw).strip()
@@ -3356,11 +3356,11 @@ class CatalogMultiSelectScreen(ModalScreen[list[str] | None]):
     def on_mount(self) -> None:
         first_checkbox_id = next(iter(self._checkbox_map), "")
         if first_checkbox_id:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one(f"#{first_checkbox_id}", Checkbox).focus()
                 return
         if self._allow_custom_values:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one("#catalog_multi_custom", Input).focus()
 
     def on_button_pressed(self, event: Any) -> None:
@@ -3475,7 +3475,7 @@ class CatalogSingleSelectScreen(ModalScreen[str | None]):
     def _resolve_value(self) -> str:
         custom_value = ""
         if self._allow_custom_values:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 custom_value = str(self.query_one("#catalog_single_custom", Input).value or "").strip()
             if custom_value:
                 return custom_value
@@ -3508,7 +3508,7 @@ class CatalogSingleSelectScreen(ModalScreen[str | None]):
                 yield Button("Cancel", id="catalog_single_cancel", variant="default")
 
     def on_mount(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#catalog_single_select", Select).focus()
 
     def on_button_pressed(self, event: Any) -> None:
@@ -3778,7 +3778,7 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         providers = list(AgentEditorScreen._DEFAULT_PROVIDERS)
         tiers_by_provider: dict[str, list[str]] = {}
         global_tiers = list(AgentEditorScreen._DEFAULT_TIERS)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             from swarmee_river.settings import load_settings
 
             settings = load_settings()
@@ -3884,11 +3884,11 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         return next((item for item in self._prompt_assets if str(item.get("id", "")).strip().lower() == selected), None)
 
     def _set_status(self, text: str) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#agent_editor_status", Static).update(str(text or "").strip())
 
     def _refresh_tier_options(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             tier_select = self.query_one("#agent_editor_tier", Select)
             options = self._tier_options(self._selected_provider)
             tier_select.set_options(options)
@@ -3898,7 +3898,7 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
             tier_select.value = current
 
     def _refresh_prompt_options(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             prompt_select = self.query_one("#agent_editor_prompt_select", Select)
             options = self._prompt_options()
             prompt_select.set_options(options)
@@ -3916,18 +3916,18 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         prompt_preview = str((prompt_asset or {}).get("content", "")).strip()
         if len(prompt_preview) > 120:
             prompt_preview = prompt_preview[:117] + "..."
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#agent_editor_prompt_summary", Static).update(
                 f"Selected prompt: {prompt_label}\n{prompt_preview or 'No prompt asset selected.'}"
             )
-        with contextlib.suppress(Exception):
+        with ui_guard():
             tools_summary = f"Tools: {', '.join(self._selected_tools)}" if self._selected_tools else "Tools: inherit"
             if not self._tool_catalog_available():
                 tools_summary += "\nNo discovered tool catalog entries yet. Open Tooling > Tools."
             self.query_one("#agent_editor_tools_summary", Static).update(
                 tools_summary
             )
-        with contextlib.suppress(Exception):
+        with ui_guard():
             sops_summary = f"SOPs: {', '.join(self._selected_sops)}" if self._selected_sops else "SOPs: inherit"
             if not self._sop_catalog_available():
                 sops_summary += "\nNo SOPs discovered yet. Add local SOPs or review Tooling > SOPs."
@@ -3939,7 +3939,7 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
             if value.lower() == self._selected_kb.lower() and self._selected_kb:
                 kb_label = label
                 break
-        with contextlib.suppress(Exception):
+        with ui_guard():
             kb_summary = f"KB: {kb_label}"
             if not self._kb_catalog_available():
                 kb_summary += "\nNo imported KB entries yet. Open Tooling > KBs to import one."
@@ -4049,9 +4049,9 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
         self._prompt_assets = self._normalize_prompt_assets([*self._prompt_assets, asset])
         self._created_prompt_asset = dict(asset)
         self._selected_prompt_ref = str(asset["id"]).strip().lower()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#agent_editor_prompt_name", Input).value = ""
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#agent_editor_prompt_content", TextArea).load_text("")
         self._refresh_prompt_options()
         self._refresh_capability_summaries()
@@ -4175,16 +4175,16 @@ class AgentEditorScreen(ModalScreen[dict[str, Any] | None]):
 
     def on_mount(self) -> None:
         if self._is_orchestrator:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one("#agent_editor_id", Input).disabled = True
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 activated = self.query_one("#agent_editor_activated", Checkbox)
                 activated.value = False
                 activated.disabled = True
         self._refresh_tier_options()
         self._refresh_prompt_options()
         self._refresh_capability_summaries()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#agent_editor_name", Input).focus()
 
     def on_select_changed(self, event: Any) -> None:
@@ -4338,11 +4338,11 @@ class AgentManagerScreen(ModalScreen[dict[str, Any] | None]):
         return next((item for item in self._agents if str(item.get("id", "")).strip() == self._selected_id), None)
 
     def _set_status(self, text: str) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#agent_manager_status", Static).update(str(text or "").strip())
 
     def _refresh_selector(self) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             select = self.query_one("#agent_manager_select", Select)
             options = self._agent_options()
             select.set_options(options)
@@ -4369,9 +4369,9 @@ class AgentManagerScreen(ModalScreen[dict[str, Any] | None]):
                     f"KB: {str(agent.get('knowledge_base_id') or 'inherit')}",
                 ]
             )
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#agent_manager_preview", Static).update(preview)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#agent_manager_delete", Button).disabled = bool(
                 agent and str(agent.get("id", "")).strip().lower() == ORCHESTRATOR_AGENT_ID
             )
@@ -4466,7 +4466,7 @@ class AgentManagerScreen(ModalScreen[dict[str, Any] | None]):
     def on_mount(self) -> None:
         self._refresh_selector()
         self._refresh_preview()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#agent_manager_select", Select).focus()
 
     def on_select_changed(self, event: Any) -> None:
@@ -4702,7 +4702,7 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
         return None
 
     def _set_status(self, text: str) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#tool_tag_manager_status", Static).update(str(text or "").strip())
 
     def _refresh_tag_select(self) -> None:
@@ -4725,7 +4725,7 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
         container = self.query_one("#tool_tag_manager_list", VerticalScroll)
         self._row_button_to_tool = {}
         for child in list(container.children):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 child.remove()
 
         selected_lower = self._selected_tag_lower()
@@ -4896,7 +4896,7 @@ class ToolTagManagerScreen(ModalScreen[dict[str, Any] | None]):
     def on_mount(self) -> None:
         self._refresh_tag_select()
         self._refresh_tool_rows()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#tool_tag_manager_select", Select).focus()
 
     def on_select_changed(self, event: Any) -> None:
@@ -5180,14 +5180,14 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         return options
 
     def _set_status(self, text: str) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#model_manager_status", Static).update(str(text or "").strip())
 
     def _refresh_summary(self) -> None:
         default_provider, default_tier = self._default_pair()
         row_count = len(self._model_rows())
         default_label = f"{default_provider}/{default_tier}" if default_provider else f"auto/{default_tier}"
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#model_manager_summary", Static).update(
                 f"Models: {row_count} | Default: {default_label}"
             )
@@ -5239,7 +5239,7 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
                 f"Context strategy: {context_strategy} | Compaction: {compaction}",
             ]
         )
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#model_manager_preview", Static).update(preview)
 
     def _load_editor(self, *, provider: str, tier: str, payload: dict[str, Any]) -> None:
@@ -5281,7 +5281,7 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         if provider and tier:
             target = f"{provider}|{tier}"
         selector = self.query_one("#model_manager_model_select", Select)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             selector.value = target
 
     def _refresh_model_select_options(self) -> None:
@@ -5295,7 +5295,7 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         if selected_value not in values:
             self._selected_entry = None
             selected_value = "__none__"
-        with contextlib.suppress(Exception):
+        with ui_guard():
             selector.value = selected_value
         self._refresh_summary()
 
@@ -5369,7 +5369,7 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
             self._selected_entry is not None
             and (self._selected_entry[0] != provider or self._selected_entry[1] != tier)
         ):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 prev_provider = providers.get(self._selected_entry[0], {})
                 prev_tiers = prev_provider.get("tiers", {}) if isinstance(prev_provider, dict) else {}
                 if isinstance(prev_tiers, dict):
@@ -5558,7 +5558,7 @@ class ModelConfigManagerScreen(ModalScreen[dict[str, Any] | None]):
         self._refresh_model_select_options()
         self._refresh_summary()
         self._refresh_editor_preview()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#model_manager_model_select", Select).focus()
 
     def on_select_changed(self, event: Any) -> None:

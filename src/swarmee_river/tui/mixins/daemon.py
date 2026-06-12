@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import os
 import threading
 import time
@@ -15,6 +14,7 @@ from swarmee_river.tui.transport import (
     _SubprocessTransport,
     send_daemon_command,
 )
+from swarmee_river.tui.ui_guard import ui_guard
 
 _BROKER_STARTUP_TIMEOUT_S = 6.0
 _BROKER_STARTUP_TIMEOUT_WINDOWS_S = 20.0
@@ -34,7 +34,7 @@ def _broker_diagnostics_hint(cwd: Path) -> str:
     discovery = runtime_discovery_path(cwd=cwd)
     broker_log: str | None = None
     if discovery.exists():
-        with contextlib.suppress(Exception):
+        with ui_guard():
             payload = load_runtime_discovery(discovery)
             broker_log = payload.broker_log_path
     if broker_log:
@@ -72,7 +72,7 @@ class DaemonMixin:
                 "Keep this popup open while completing browser/device steps.",
             ]
         if self._auth_connect_screen is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._auth_connect_screen.dismiss(None)
             self._auth_connect_screen = None
         screen = AuthConnectScreen(title=title, lines=intro)
@@ -89,7 +89,7 @@ class DaemonMixin:
         screen = self._auth_connect_screen
         if screen is None:
             return
-        with contextlib.suppress(Exception):
+        with ui_guard():
             screen.append_line(line)
 
     def _handle_connect_status_warning(self, text: str) -> bool:
@@ -166,7 +166,7 @@ class DaemonMixin:
             self._call_from_thread_safe(self._write_transcript_line, f"[daemon] output stream error: {exc}")
         finally:
             return_code = 0
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 return_code = proc.wait()
             self._call_from_thread_safe(self._handle_daemon_exit, proc, return_code=return_code)
 
@@ -179,10 +179,10 @@ class DaemonMixin:
             proc.close()
             return
         send_daemon_command(proc, {"cmd": "shutdown"})
-        with contextlib.suppress(Exception):
+        with ui_guard():
             proc.wait(timeout=3.0)
         if proc.poll() is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 proc.close()
 
     def _request_daemon_shutdown(self) -> None:
@@ -265,7 +265,7 @@ class DaemonMixin:
 
             if daemon is None:
                 try:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         shutdown_runtime_broker(cwd=cwd)
                     daemon_proc = spawn_swarmee_daemon(
                         session_id=requested_session_id,
@@ -428,7 +428,7 @@ class DaemonMixin:
             desired_provider = (self.state.daemon.model_provider_override or "").strip().lower()
             desired_tier = (self.state.daemon.model_tier_override or "").strip().lower()
         if not desired_tier:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 selector = self.query_one("#model_select", Select)
                 selected_value = str(getattr(selector, "value", "")).strip()
                 from swarmee_river.tui.model_select import parse_model_select_value
@@ -577,7 +577,7 @@ class DaemonMixin:
         self._write_transcript_line(
             f"[daemon] runtime broker does not support '{normalized}'. Restarting broker/session transport..."
         )
-        with contextlib.suppress(Exception):
+        with ui_guard():
             shutdown_runtime_broker(cwd=Path.cwd())
         if normalized == "connect" and isinstance(self._pending_connect_payload, dict):
             self._pending_connect_retry_payload = dict(self._pending_connect_payload)

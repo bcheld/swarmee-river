@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 from typing import Any
+from swarmee_river.tui.ui_guard import ui_guard
 
 
 def _s3_client() -> Any:
@@ -41,7 +41,7 @@ def _tooling_prefix() -> str:
         from swarmee_river.settings import load_settings
     except Exception:
         return "swarmee/tooling"
-    with contextlib.suppress(Exception):
+    with ui_guard():
         settings = load_settings()
         prefix = str(settings.runtime.tooling_s3_prefix or "").strip()
         if prefix:
@@ -98,7 +98,7 @@ def import_prompts_from_s3(
     prompts: list[dict[str, Any]] = []
 
     # Try a prompts.json index first.
-    with contextlib.suppress(Exception):
+    with ui_guard():
         index = _get_object_json(bucket, f"{base}prompts.json")
         if isinstance(index, list):
             prompts.extend(index)
@@ -108,7 +108,7 @@ def import_prompts_from_s3(
     for obj in _list_objects(bucket, base):
         key = obj["key"]
         if key.endswith(".prompt.md"):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 content = _get_object_text(bucket, key)
                 name = key.rsplit("/", 1)[-1].removesuffix(".prompt.md")
                 prompts.append({"id": name, "name": name, "content": content, "source": "s3"})
@@ -129,7 +129,7 @@ def import_sops_from_s3(
     for obj in _list_objects(bucket, base):
         key = obj["key"]
         if key.endswith(".sop.md"):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 content = _get_object_text(bucket, key)
                 name = key.rsplit("/", 1)[-1].removesuffix(".sop.md")
                 sops.append({"name": name, "content": content, "source": "s3", "path": f"s3://{bucket}/{key}"})
@@ -145,7 +145,7 @@ def import_tools_config_from_s3(
     base = prefix or f"{_tooling_prefix()}/tools"
     key = f"{base.rstrip('/')}/tools.json"
 
-    with contextlib.suppress(Exception):
+    with ui_guard():
         data = _get_object_json(bucket, key)
         if isinstance(data, dict):
             return data
@@ -161,7 +161,7 @@ def import_kbs_from_s3(
     base = prefix or f"{_tooling_prefix()}/kbs"
     key = f"{base.rstrip('/')}/kbs.json"
 
-    with contextlib.suppress(Exception):
+    with ui_guard():
         data = _get_object_json(bucket, key)
         if isinstance(data, list):
             return data

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
+from swarmee_river.tui.ui_guard import ui_guard
 
 _SOP_FILE_SUFFIX = ".sop.md"
 _SOP_SOURCE_LOCAL = "local"
@@ -111,7 +111,7 @@ def discover_available_sops() -> list[dict[str, str]]:
         for file_path in sorted(directory.glob(f"*{_SOP_FILE_SUFFIX}")):
             if not file_path.is_file():
                 continue
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 name, content = _load_sop_file(file_path)
                 _add_record(name=name, path=str(file_path.resolve()), source=_SOP_SOURCE_LOCAL, content=content)
 
@@ -130,7 +130,7 @@ def discover_available_sops() -> list[dict[str, str]]:
             for file_path in sorted(sop_dir.glob(f"*{_SOP_FILE_SUFFIX}")):
                 if not file_path.is_file():
                     continue
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     name, content = _load_sop_file(file_path)
                     _add_record(name=name, path=str(file_path.resolve()), source=source_label, content=content)
     except Exception:
@@ -149,7 +149,7 @@ def discover_available_sops() -> list[dict[str, str]]:
                 if not file_path.is_file():
                     continue
                 saw_file = True
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     name, content = _load_sop_file(file_path)
                     _add_record(name=name, path=str(file_path.resolve()), source=_SOP_SOURCE_STRANDS, content=content)
         if not saw_file:
