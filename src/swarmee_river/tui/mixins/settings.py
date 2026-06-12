@@ -1025,6 +1025,20 @@ class SettingsMixin:
             if value:
                 os.environ[key] = value
 
+    def _notify_restart_required(self, what: str) -> None:
+        """Settings the daemon reads at spawn time only apply after a restart."""
+        if not bool(getattr(self.state.daemon, "ready", False)):
+            return
+        # Forms persist several keys in one action; one notice is enough.
+        now = time.monotonic()
+        if now - float(getattr(self, "_restart_notice_last_mono", 0.0)) < 2.0:
+            return
+        self._restart_notice_last_mono = now
+        self._notify_settings_issue(
+            f"{what} saved; the running daemon keeps its current value until restart (/daemon restart).",
+            severity="warning",
+        )
+
     def _persist_project_setting_env_override(self, key: str, value: str | None) -> None:
         from swarmee_river.config.env_policy import INTERNAL_SETTINGS_ENV_OVERRIDE_ALLOWLIST, SECRET_ENV_ALLOWLIST
         from swarmee_river.settings import migrate_legacy_env_overrides
@@ -1062,7 +1076,8 @@ class SettingsMixin:
                 payload["env"] = internal_env_payload
             else:
                 payload.pop("env", None)
-            self._save_project_settings_payload(payload, path)
+            if self._save_project_settings_payload(payload, path):
+                self._notify_restart_required(normalized_key)
             return
 
         # Non-secret runtime configuration must be stored as structured settings.
@@ -1082,7 +1097,8 @@ class SettingsMixin:
                 bedrock.pop("aws_profile", None)
             if internal_env_payload:
                 temp_payload["env"] = internal_env_payload
-            self._save_project_settings_payload(temp_payload, path)
+            if self._save_project_settings_payload(temp_payload, path):
+                self._notify_restart_required("AWS profile")
             return
         if normalized_key == "SWARMEE_STATE_DIR":
             runtime = temp_payload.setdefault("runtime", {})
@@ -1092,7 +1108,8 @@ class SettingsMixin:
                 runtime.pop("state_dir", None)
             if internal_env_payload:
                 temp_payload["env"] = internal_env_payload
-            self._save_project_settings_payload(temp_payload, path)
+            if self._save_project_settings_payload(temp_payload, path):
+                self._notify_restart_required("State directory")
             return
 
         if normalized_value:
@@ -1142,7 +1159,8 @@ class SettingsMixin:
         else:
             migrated_payload.pop("env", None)
 
-        self._save_project_settings_payload(migrated_payload, path)
+        if self._save_project_settings_payload(migrated_payload, path):
+            self._notify_restart_required(normalized_key)
 
     def _model_tier_key(self, provider: str, tier: str) -> str:
         return f"{str(provider or '').strip().lower()}|{str(tier or '').strip().lower()}"

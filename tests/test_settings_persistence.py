@@ -109,3 +109,36 @@ def test_settings_round_trip_preserves_custom_values(project_dir) -> None:
     assert payload["models"]["default_tier"] == "fast"
     assert host._save_project_settings_payload(payload, path) is True
     assert load_settings(path).models.default_tier == "fast"
+
+
+def test_restart_required_notice_for_env_override(project_dir) -> None:
+    """Daemon-spawn-time settings must warn that a restart is needed (doc 11 F8)."""
+
+    class _Daemon:
+        ready = True
+
+    class _State:
+        daemon = _Daemon()
+
+    host = _Host()
+    host.state = _State()
+    host._persist_project_setting_env_override("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", "120")
+    assert any("restart" in msg for _sev, msg in host.notifications), host.notifications
+
+    # Burst guard: a second key in the same form save adds no second notice.
+    count = len(host.notifications)
+    host._persist_project_setting_env_override("SWARMEE_BEDROCK_MAX_RETRIES", "5")
+    assert len(host.notifications) == count
+
+
+def test_no_restart_notice_when_daemon_not_running(project_dir) -> None:
+    class _Daemon:
+        ready = False
+
+    class _State:
+        daemon = _Daemon()
+
+    host = _Host()
+    host.state = _State()
+    host._persist_project_setting_env_override("SWARMEE_BEDROCK_READ_TIMEOUT_SEC", "120")
+    assert not any("restart" in msg for _sev, msg in host.notifications)
