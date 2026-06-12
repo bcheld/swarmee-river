@@ -1,10 +1,15 @@
 # 11 — Settings: Reliability, Persistence, and UX Overhaul
 
 **Date:** 2026-06-10
-**Status:** Proposed
+**Status:** In progress — see implementation status below
 **Theme:** User complaints that settings "don't stick", silently revert, or don't take effect.
 
 ---
+
+**Implementation status (2026-06-12):**
+- DONE — F1/F3: atomic saves, corrupt-file backup, save-error surfacing (commit 3513779). Bonus fix: legacy `models.default_tier` no longer clobbered by the defaults template.
+- DONE — F8 (scoped): restart-required warning toasts for daemon-spawn-time settings, burst-guarded.
+- REMAINING — F2 lost-update coordinator (SettingsStore), F4 model-selection intent flow, F5/F6 cached loads + external-edit detection, F7 field validation, F9/F10 defaults consolidation.
 
 ## Problem Statement
 

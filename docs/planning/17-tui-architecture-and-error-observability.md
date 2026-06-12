@@ -1,10 +1,16 @@
 # 17 — TUI Architecture & Error Observability
 
 **Date:** 2026-06-10
-**Status:** Proposed
+**Status:** In progress — see implementation status below
 **Theme:** Structural causes behind the recurring breakage: god-class composition, blanket exception suppression, and test gaps. This is the "stop the bleeding for good" plan that makes docs 11-16 stick.
 
 ---
+
+**Implementation status (2026-06-12):**
+- DONE — F1: ui_guard helper + full TUI-layer migration (~250 sites across all tui modules; typed suppressions intentionally kept) (d8f6046 + follow-up).
+- DONE — F5: /diagnostics ui health summary (a07f6ac).
+- DONE — F4 (partial): pilot tests for plan/action-sheet visibility, settings round-trip, streaming budgets, dropped-event floods.
+- REMAINING — F2 component extraction, F3 widgets.py split.
 
 ## Problem Statement
 

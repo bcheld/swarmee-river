@@ -1,10 +1,17 @@
 # 14 — Planning Feature: Workflow Reliability Overhaul
 
 **Date:** 2026-06-10
-**Status:** Proposed
+**Status:** In progress — see implementation status below
 **Theme:** User complaints about the plan/approve/execute workflow (the most-reported area).
 
 ---
+
+**Implementation status (2026-06-12):**
+- DONE — F1: explicit PlanningPhase with validated transition table; visibility branches on phase (7fe1114).
+- DONE — F2: strict run-id matching for plan_step_update/plan_complete (995ad19).
+- DONE — F3/F4: approve keeps the plan until dispatch is acknowledged; replan fallback + recovery guidance (995ad19).
+- DONE — F8: plan UI failures now logged via ui_guard (d8f6046).
+- REMAINING — F5 layout bounds hardening (pilot test exists), F6 async preflight validation, F7 interaction papercuts.
 
 ## Problem Statement
 

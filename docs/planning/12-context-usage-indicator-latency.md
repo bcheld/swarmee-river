@@ -1,10 +1,16 @@
 # 12 — Context/Usage Indicators: Latency and Staleness
 
 **Date:** 2026-06-10
-**Status:** Proposed
+**Status:** In progress — see implementation status below
 **Theme:** User complaints that token/context/cost indicators lag behind activity or show stale values.
 
 ---
+
+**Implementation status (2026-06-12):**
+- DONE — F1: mtime-cached settings for the cost fallback (96776b6).
+- DONE — F3/F5: last-write-wins metrics slots, buffered reader, 50ms drain timer; indicators can no longer be dropped or queued behind rendering (04c89e1).
+- DONE — F2: incremental token estimation with compaction invalidation; tool-schema size cached (2b00dd5).
+- REMAINING — F4 animation debounce (largely mitigated by the slot coalescing).
 
 ## Problem Statement
 

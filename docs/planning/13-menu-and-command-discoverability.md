@@ -1,10 +1,17 @@
 # 13 — Menus & Commands: Visibility and Discoverability
 
 **Date:** 2026-06-10
-**Status:** Proposed
+**Status:** In progress — see implementation status below
 **Theme:** User complaints that "menu items are not visible."
 
 ---
+
+**Implementation status (2026-06-12):**
+- DONE — F1: one visible binding per action, importance-ordered footer, guard tests (d62fa51).
+- DONE — F2: /keys reference + visible F1 Help chip, generated from BINDINGS (c95f07f).
+- DONE — F3: palette no-match row + substring fallback (c95f07f).
+- DONE — F4 (ActionSheet half): adaptive panel sizing + 60x20/80x24 pilot tests (f78a859).
+- REMAINING — F4 palette width-aware truncation; F5 action-sheet/slash-command unification.
 
 ## Problem Statement
 

@@ -1,10 +1,14 @@
 # 16 — Startup Latency: Lazy Imports and Event-Driven Readiness
 
 **Date:** 2026-06-10
-**Status:** Proposed
+**Status:** In progress — see implementation status below
 **Theme:** Slow CLI invocation and slow TUI first paint.
 
 ---
+
+**Implementation status (2026-06-12):**
+- DONE — F1 (package half): PEP 562 lazy loading for swarmee_river/__init__.py and models providers; `import swarmee_river.settings` 1.27s -> 0.07s (102d7f5).
+- REMAINING — F1 (CLI half): swarmee.py still imports strands at module scope (Agent + MaxTokensReachedException in 5 except clauses); fast `--help` needs the arg parser extracted to a light module and the console script repointed. F2 backoff polling, F3 paint-first startup.
 
 ## Problem Statement
 
