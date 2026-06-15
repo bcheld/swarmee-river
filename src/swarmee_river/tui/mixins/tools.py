@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from swarmee_river.tui.text_sanitize import sanitize_output_text
+from swarmee_river.tui.ui_guard import ui_guard
 
 _STREAMING_FLUSH_INTERVAL_S = 0.15
 _TOOL_PROGRESS_RENDER_INTERVAL_S = 0.15
@@ -73,7 +74,7 @@ class ToolsMixin:
         recovered = False
         existing = self._active_assistant_message
         self._active_assistant_message = None
-        with contextlib.suppress(Exception):
+        with ui_guard():
             if existing is not None:
                 existing.remove()
         try:
@@ -213,7 +214,7 @@ class ToolsMixin:
         tool_input = record.get("input")
         block = ToolCallBlock(tool_name, tool_use_id)
         if isinstance(tool_input, dict):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 block.set_input(tool_input)
         record["widget"] = block
         self._mount_transcript_widget(block, plain_text=self._tool_start_plain_text(tool_name, tool_input))
@@ -283,7 +284,7 @@ class ToolsMixin:
             if force or (now - last) >= _TOOL_PROGRESS_RENDER_INTERVAL_S:
                 stream = str(record.get("pending_stream", "stdout") or "stdout")
                 if widget is not None:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         widget.append_output(pending, stream=stream)
                 else:
                     self._mount_transcript_widget(
@@ -309,7 +310,7 @@ class ToolsMixin:
             return False
         tool_name = str(record.get("tool", "unknown"))
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.set_elapsed(elapsed_s)
         else:
             self._mount_transcript_widget(

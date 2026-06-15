@@ -4,6 +4,7 @@ import contextlib
 import time
 
 from swarmee_river.tui.text_sanitize import sanitize_output_text
+from swarmee_river.tui.ui_guard import ui_guard
 
 _THINKING_DISPLAY_DEBOUNCE_S = 0.2
 _THINKING_ANIMATION_INTERVAL_S = 0.5
@@ -62,7 +63,7 @@ class ThinkingMixin:
         self._active_thinking_indicator = None
         if indicator is None:
             return
-        with contextlib.suppress(Exception):
+        with ui_guard():
             indicator.remove()
 
     def _cancel_thinking_min_visible_timer(self) -> None:
@@ -154,7 +155,7 @@ class ThinkingMixin:
         self._thinking_frame_index = 0
         bar = self._thinking_bar
         if bar is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 bar.hide_thinking()
 
     def _record_thinking_event(self, thinking_text: str) -> None:
@@ -179,7 +180,7 @@ class ThinkingMixin:
             self._thinking_char_count += len(chunk)
             block = self._active_reasoning_block
             if block is not None:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     block.append_delta(chunk)
         self._render_thinking_bar()
         self._schedule_thinking_display_update()
@@ -196,7 +197,7 @@ class ThinkingMixin:
             self._clear_thinking_indicator()
             bar = self._thinking_bar
             if bar is not None:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     bar.hide_thinking()
             return
 
@@ -224,7 +225,7 @@ class ThinkingMixin:
             self._record_transcript_fallback(summary_line)
         block = self._active_reasoning_block
         if block is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 block.finalize(elapsed_s=elapsed_s)
             self._active_reasoning_block = None
 

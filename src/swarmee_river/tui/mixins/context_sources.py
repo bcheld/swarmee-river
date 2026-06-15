@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import re
 import uuid
 from typing import Any
@@ -9,6 +8,7 @@ from swarmee_river.profiles.models import ORCHESTRATOR_AGENT_ID, normalize_agent
 from swarmee_river.tui.commands import _CONTEXT_USAGE_TEXT, _SOP_USAGE_TEXT
 from swarmee_river.tui.sops import discover_available_sop_names, discover_available_sops
 from swarmee_river.tui.transport import send_daemon_command as _transport_send_daemon_command
+from swarmee_river.tui.ui_guard import ui_guard
 
 _CONTEXT_SOURCE_ICONS: dict[str, str] = {
     "file": "📄",
@@ -172,12 +172,12 @@ class ContextSourcesMixin:
         if prev_selected and rows:
             for idx, (prompt_id, _, _, _, _, _) in enumerate(rows):
                 if prompt_id == prev_selected:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         table.move_cursor(row=idx)
                     self._tooling_select_prompt(prev_selected)
                     return
         if rows:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 table.move_cursor(row=0)
             self._tooling_select_prompt(rows[0][0])
             return
@@ -194,7 +194,7 @@ class ContextSourcesMixin:
         self.state.tooling.prompt_selected_id = str(selected.get("id", "")).strip() if selected else None
 
         if self._tooling_prompt_content_input is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._tooling_prompt_content_input.text = str((selected or {}).get("content", "")).strip()
 
     def _tooling_prompt_new(self) -> None:
@@ -220,7 +220,7 @@ class ContextSourcesMixin:
         self.state.tooling.prompt_selected_id = new_id
         self._refresh_tooling_prompts_list()
         if self._tooling_prompt_content_input is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._tooling_prompt_content_input.focus()
 
     def _tooling_prompt_open_table_cell_editor(self, row_id: str, column_key: str) -> None:
@@ -424,9 +424,9 @@ class ContextSourcesMixin:
             return
         self.state.agent_studio.agents = normalize_agent_definitions(updated_agents)
         self._set_agent_draft_dirty(True, note=f"Updated prompt references: {old_token} -> {new_token}.")
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self._render_agent_builder_panel()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self._render_agent_overview_panel()
 
     def _tooling_prompt_apply_used_by_edit(self, prompt_id: str, selected_agent_ids: list[str] | None) -> None:
@@ -461,9 +461,9 @@ class ContextSourcesMixin:
             return
         self.state.agent_studio.agents = normalize_agent_definitions(updated_agents)
         self._set_agent_draft_dirty(True, note=f"Updated prompt assignments for '{token}'.")
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self._render_agent_builder_panel()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self._render_agent_overview_panel()
         self._refresh_tooling_prompts_list()
 
@@ -490,12 +490,12 @@ class ContextSourcesMixin:
         if prev_selected and rows:
             for idx, (name, _, _, _) in enumerate(rows):
                 if name == prev_selected:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         table.move_cursor(row=idx)
                     self._tooling_select_sop(prev_selected)
                     return
         if rows:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 table.move_cursor(row=0)
             self._tooling_select_sop(rows[0][0])
             return
@@ -514,7 +514,7 @@ class ContextSourcesMixin:
         self.state.tooling.sop_selected_id = str(selected.get("name", "")).strip() if selected else None
         detail = self._tooling_sops_detail
         if detail is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 if selected is None:
                     detail.set_preview("Select an SOP to view details. Press Enter to activate/deactivate.")
                 else:
@@ -540,21 +540,21 @@ class ContextSourcesMixin:
             table.add_row(name, kb_id, description, key=kb_id)
 
         empty_state = None
-        with contextlib.suppress(Exception):
+        with ui_guard():
             empty_state = self.query_one("#kbs_empty_state")
         if empty_state is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 empty_state.styles.display = "none" if rows else "block"
 
         if prev_selected and rows:
             for idx, (kb_id, _, _) in enumerate(rows):
                 if kb_id == prev_selected:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         table.move_cursor(row=idx)
                     self._tooling_select_kb(prev_selected)
                     return
         if rows:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 table.move_cursor(row=0)
             self._tooling_select_kb(rows[0][0])
             return
@@ -576,7 +576,7 @@ class ContextSourcesMixin:
             )
         self.state.tooling.kb_selected_id = target_id if selected is not None else None
         if self._kbs_detail is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 if selected is None:
                     self._kbs_detail.set_preview("Select a knowledge base entry to view details.")
                 else:
@@ -708,11 +708,11 @@ class ContextSourcesMixin:
         if prev_selected and rows:
             for idx, (name, _, _, _) in enumerate(rows):
                 if name == prev_selected:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         table.move_cursor(row=idx)
                     break
         elif rows:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 table.move_cursor(row=0)
             first_name = rows[0][0] if rows else None
             if first_name:
@@ -730,7 +730,7 @@ class ContextSourcesMixin:
             )
         self.state.tooling.tool_selected_id = str(selected.get("name", "")).strip() if selected else None
         if self._tooling_tools_detail is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 if selected is None:
                     self._tooling_tools_detail.set_preview("Select a tool to view details.")
                 else:
@@ -927,14 +927,14 @@ class ContextSourcesMixin:
 
         container = self._context_sources_list
         if container is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 container = self.query_one("#context_sources_list", VerticalScroll)
                 self._context_sources_list = container
         if container is None:
             return
 
         for child in list(container.children):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 child.remove()
 
         if not self._context_sources:
@@ -966,14 +966,14 @@ class ContextSourcesMixin:
         self._context_sop_names = discover_available_sop_names()
         selector = self._context_sop_select
         if selector is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 selector = self.query_one("#context_sop_select", Select)
                 self._context_sop_select = selector
         if selector is None:
             return
         options: list[tuple[str, str]] = [("Select SOP...", _CONTEXT_SELECT_PLACEHOLDER)]
         options.extend((name, name) for name in self._context_sop_names)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             selector.set_options(options)
             selector.value = _CONTEXT_SELECT_PLACEHOLDER
 
@@ -1132,13 +1132,13 @@ class ContextSourcesMixin:
         self._context_add_mode = normalized
         input_row = None
         sop_row = None
-        with contextlib.suppress(Exception):
+        with ui_guard():
             input_row = self.query_one("#context_input_row", Horizontal)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             sop_row = self.query_one("#context_sop_row", Horizontal)
         input_widget = self._context_input
         if input_widget is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 input_widget = self.query_one("#context_input", Input)
                 self._context_input = input_widget
 
@@ -1154,7 +1154,7 @@ class ContextSourcesMixin:
                     input_widget.placeholder = "Enter knowledge base ID"
                 else:
                     input_widget.placeholder = "Enter context note"
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     input_widget.value = ""
                     input_widget.focus()
             return
@@ -1166,7 +1166,7 @@ class ContextSourcesMixin:
                 sop_row.styles.display = "block"
             self._refresh_context_sop_options()
             if self._context_sop_select is not None:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     self._context_sop_select.focus()
             return
 

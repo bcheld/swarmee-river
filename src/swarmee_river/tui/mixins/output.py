@@ -1,18 +1,45 @@
 from __future__ import annotations
 
 import contextlib
+import json as _json
 import logging
+import threading
+from collections import deque
 from typing import Any
 
 from swarmee_river.artifacts import ArtifactStore
 from swarmee_river.state_paths import logs_dir
 from swarmee_river.tui.text_sanitize import sanitize_output_text
+from swarmee_river.tui.ui_guard import ui_guard
 
 _CONSENT_CHOICES = {"y", "n", "a", "v"}
 _THINKING_EXPORT_MAX_CHARS = 5000
 _TURN_TRACE_MAX = 16
 
+# Indicator events where only the latest value matters. They are stored in a
+# last-write-wins slot instead of the droppable per-line dispatch queue, so a
+# burst of transcript output can never leave the usage/context indicators
+# stuck on a stale value.
+_METRICS_EVENT_KINDS = frozenset({"usage", "context"})
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def metrics_event_kind(line: str) -> str | None:
+    """Return 'usage'/'context' if *line* is a metrics JSONL event, else None."""
+    stripped = line.lstrip()
+    if not stripped.startswith("{") or '"event"' not in stripped:
+        return None
+    if '"usage"' not in stripped and '"context"' not in stripped:
+        return None
+    try:
+        payload = _json.loads(stripped)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    kind = str(payload.get("event", "")).strip().lower()
+    return kind if kind in _METRICS_EVENT_KINDS else None
 
 
 def _artifact_paths_from_event(event: Any) -> list[str]:
@@ -143,9 +170,9 @@ class OutputMixin:
             return
         widget = self._consent_prompt_widget
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.hide_prompt()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.query_one("#prompt", TextArea).focus()
 
     def _schedule_consent_prompt_hide(self, *, delay: float = 1.0) -> None:
@@ -172,7 +199,7 @@ class OutputMixin:
 
         widget = self._consent_prompt_widget
         if widget is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget = self.query_one("#consent_prompt", ConsentPrompt)
                 self._consent_prompt_widget = widget
         if widget is None:
@@ -201,14 +228,14 @@ class OutputMixin:
         self._consent_tool_name = "tool"
         widget = self._consent_prompt_widget
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.hide_prompt()
 
     def _reset_error_action_prompt(self) -> None:
         self._pending_error_action = None
         widget = self._error_action_prompt_widget
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.hide_prompt()
 
     def _reset_run_local_ui_state(self, *, clear_prompt_context: bool) -> None:
@@ -297,7 +324,7 @@ class OutputMixin:
             "tool_use_id": tool_use_id,
             "tool_name": tool_name,
         }
-        with contextlib.suppress(Exception):
+        with ui_guard():
             widget.show_tool_error(tool_name=tool_name, tool_use_id=tool_use_id)
 
     def _show_escalation_actions(self, *, next_tier: str | None = None) -> None:
@@ -309,7 +336,7 @@ class OutputMixin:
             "kind": "escalation",
             "next_tier": resolved_next or None,
         }
-        with contextlib.suppress(Exception):
+        with ui_guard():
             widget.show_escalation(next_tier=resolved_next or None)
 
     def _resume_after_error(self, *, escalate: bool) -> None:
@@ -436,7 +463,7 @@ class OutputMixin:
         approved = normalized_choice in {"y", "a"}
         widget = self._consent_prompt_widget
         if widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.show_confirmation(decision_line, approved=approved)
         self._schedule_consent_prompt_hide(delay=1.0)
         if not send_daemon_command(self.state.daemon.proc, {"cmd": "consent_response", "choice": normalized_choice}):
@@ -450,7 +477,7 @@ class OutputMixin:
         self._flush_streaming_buffer()
         if not self._current_assistant_chunks:
             if self._active_assistant_message is not None:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     self._active_assistant_message.finalize(
                         model=self._current_assistant_model,
                         timestamp=self._current_assistant_timestamp or self._turn_timestamp(),
@@ -470,7 +497,7 @@ class OutputMixin:
         if meta_parts:
             plain_lines.append(" · ".join(meta_parts))
         if self._active_assistant_message is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._active_assistant_message.finalize(model=model, timestamp=timestamp)
             if meta_parts:
                 self._record_transcript_fallback(" · ".join(meta_parts))
@@ -490,7 +517,121 @@ class OutputMixin:
         self._assistant_placeholder_written = False
         self._active_assistant_message = None
 
+    _OUTPUT_QUEUE_MAX = 10_000
+    _OUTPUT_LINES_PER_DRAIN = 400
+
+    def _ensure_metrics_slots(self) -> None:
+        if getattr(self, "_metrics_slots", None) is None:
+            self._metrics_slots: dict[str, tuple[str, str | None]] = {}
+            self._metrics_slots_lock = threading.Lock()
+            self._metrics_drain_scheduled = False
+
+    def _ensure_output_queue(self) -> None:
+        if getattr(self, "_pending_output_lines", None) is None:
+            self._pending_output_lines: deque[tuple[str, str | None]] = deque()
+            self._pending_output_lock = threading.Lock()
+            self._output_drain_scheduled = False
+            self._output_lines_dropped = 0
+            self._output_lines_dropped_total = 0
+
+    def _enqueue_output_line(self, line: str, raw_line: str | None) -> None:
+        """Called from the daemon reader thread for regular output lines.
+
+        Lines are buffered and drained in batches on the UI thread so the
+        reader consumes the wire at full speed instead of one blocking
+        call_from_thread round-trip per line.
+        """
+        self._ensure_output_queue()
+        with self._pending_output_lock:
+            if len(self._pending_output_lines) >= self._OUTPUT_QUEUE_MAX:
+                self._pending_output_lines.popleft()
+                self._output_lines_dropped += 1
+                self._output_lines_dropped_total += 1
+            self._pending_output_lines.append((line, raw_line))
+        if not self._output_drain_scheduled:
+            self._output_drain_scheduled = True
+            if not self._post_to_ui_thread(self._drain_pending_output_lines):
+                self._output_drain_scheduled = False
+
+    def _drain_pending_output_lines(self) -> None:
+        """UI-thread batch drain; bounded per tick to keep input responsive."""
+        self._output_drain_scheduled = False
+        queue = getattr(self, "_pending_output_lines", None)
+        if not queue:
+            self._flush_pending_metrics_slots()
+            return
+        batch: list[tuple[str, str | None]] = []
+        with self._pending_output_lock:
+            while queue and len(batch) < self._OUTPUT_LINES_PER_DRAIN:
+                batch.append(queue.popleft())
+            remaining = bool(queue)
+            dropped = self._output_lines_dropped
+            self._output_lines_dropped = 0
+        for line, raw_line in batch:
+            self._handle_output_line(line, raw_line)
+        self._flush_pending_metrics_slots()
+        if dropped:
+            self._write_transcript_line(f"[tui] dropped {dropped} output line(s) under sustained load.")
+        if remaining and not self._output_drain_scheduled:
+            self._output_drain_scheduled = True
+            try:
+                self.call_later(self._drain_pending_output_lines)
+            except Exception:
+                # The periodic drain timer picks the remainder up.
+                self._output_drain_scheduled = False
+
+    def _drain_all_pending_output_lines(self) -> None:
+        """Synchronously apply everything still buffered (used at exit)."""
+        queue = getattr(self, "_pending_output_lines", None)
+        if queue is not None:
+            while True:
+                with self._pending_output_lock:
+                    batch = list(queue)
+                    queue.clear()
+                if not batch:
+                    break
+                for line, raw_line in batch:
+                    self._handle_output_line(line, raw_line)
+        self._flush_pending_metrics_slots()
+
+    def _periodic_stream_drain(self) -> None:
+        """Safety-net tick: re-dispatch stragglers even if a nudge was lost."""
+        self._ensure_thread_dispatch_state()
+        self._drain_thread_dispatch_backlog()
+        self._drain_pending_output_lines()
+
+    def _store_metrics_line(self, kind: str, line: str, raw_line: str | None) -> None:
+        """Called from the daemon reader thread for usage/context events.
+
+        Last write wins per kind; the slot is drained on the UI thread either
+        by the scheduled callback or before the next regular line.
+        """
+        self._ensure_metrics_slots()
+        with self._metrics_slots_lock:
+            self._metrics_slots[kind] = (line, raw_line)
+        if not self._metrics_drain_scheduled:
+            self._metrics_drain_scheduled = True
+            if not self._post_to_ui_thread(self._flush_pending_metrics_slots):
+                self._metrics_drain_scheduled = False
+
+    def _flush_pending_metrics_slots(self) -> None:
+        slots = getattr(self, "_metrics_slots", None)
+        self._metrics_drain_scheduled = False
+        if not slots:
+            return
+        with self._metrics_slots_lock:
+            pending = list(slots.values())
+            slots.clear()
+        for line, raw_line in pending:
+            self._process_output_line(line, raw_line)
+
     def _handle_output_line(self, line: str, raw_line: str | None = None) -> None:
+        # Apply any queued indicator updates first so they observe the same
+        # ordering they had on the wire relative to this line.
+        self._flush_pending_metrics_slots()
+        self._process_output_line(line, raw_line)
+
+    def _process_output_line(self, line: str, raw_line: str | None = None) -> None:
         from swarmee_river.tui.event_router import handle_daemon_event as _handle_daemon_event_router
         from swarmee_river.tui.event_types import parse_output_line, parse_tui_event
 
@@ -622,7 +763,7 @@ class OutputMixin:
     def _collapse_intermediate_activity_boxes(self) -> None:
         block = self._active_reasoning_block
         if block is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 block.collapse()
         for record in list(self._tool_blocks.values()):
             if not isinstance(record, dict):
@@ -630,7 +771,7 @@ class OutputMixin:
             widget = record.get("widget")
             if widget is None:
                 continue
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 widget.collapse()
 
     def _finalize_turn(self, *, exit_status: str) -> None:
@@ -652,6 +793,12 @@ class OutputMixin:
             self._status_bar.set_plan_step(current=None, total=None)
         self.state.daemon.run_start_time = None
         self.state.daemon.query_active = False
+        from swarmee_river.tui.state import PlanningPhase
+
+        if self.state.plan.phase in (PlanningPhase.GENERATING, PlanningPhase.EXECUTING):
+            # A plan event would already have moved GENERATING -> REVIEWING;
+            # reaching turn end still in GENERATING means no plan arrived.
+            self.state.plan.transition_phase(PlanningPhase.IDLE)
         self._clear_pending_tool_starts()
         self._cancel_tool_progress_flush_timer()
         self._tool_progress_pending_ids = set()

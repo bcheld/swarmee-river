@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json as _json
 import os
 import time
@@ -24,6 +23,7 @@ from swarmee_river.tui.views.settings import (
     env_category_options,
     env_spec_by_key,
 )
+from swarmee_river.tui.ui_guard import ui_guard
 from swarmee_river.utils.provider_utils import normalize_provider_name
 
 _RUN_ACTIVE_TIER_WARNING = "[model] cannot change tier while a run is active."
@@ -180,18 +180,18 @@ class SettingsMixin:
         connect_widget = self._settings_bedrock_connect_timeout_input
         retries_widget = self._settings_bedrock_max_retries_input
         if read_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 read_widget.value = str(
                     extra.get("read_timeout_sec") or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_READ_TIMEOUT_SEC"]
                 )
         if connect_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 connect_widget.value = str(
                     extra.get("connect_timeout_sec")
                     or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_CONNECT_TIMEOUT_SEC"]
                 )
         if retries_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 retries_widget.value = str(
                     extra.get("max_retries") or self._BEDROCK_RUNTIME_DEFAULTS["SWARMEE_BEDROCK_MAX_RETRIES"]
                 )
@@ -202,7 +202,7 @@ class SettingsMixin:
         settings = load_settings()
         timeout_widget = self._settings_interrupt_timeout_input
         if timeout_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 timeout_widget.value = str(settings.runtime.interrupt_timeout_sec)
 
     def _refresh_settings_aws_athena_controls(self) -> None:
@@ -215,19 +215,19 @@ class SettingsMixin:
         athena_output_widget = getattr(self, "_settings_athena_output_input", None)
         athena_timeout_widget = getattr(self, "_settings_athena_timeout_input", None)
         if aws_region_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 aws_region_widget.value = str(settings.runtime.aws.region or self._AWS_ATHENA_DEFAULTS["AWS_REGION"])
         if athena_database_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 athena_database_widget.value = str(settings.runtime.athena.database or "")
         if athena_workgroup_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 athena_workgroup_widget.value = str(settings.runtime.athena.workgroup or "")
         if athena_output_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 athena_output_widget.value = str(settings.runtime.athena.output_location or "")
         if athena_timeout_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 athena_timeout_widget.value = str(
                     settings.runtime.athena.query_timeout_seconds or self._AWS_ATHENA_DEFAULTS["ATHENA_QUERY_TIMEOUT"]
                 )
@@ -260,10 +260,10 @@ class SettingsMixin:
         input_widget = self._settings_general_context_budget_input
         mode_value = "custom" if settings.context.max_prompt_tokens is not None else "auto"
         if mode_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 mode_widget.value = mode_value
         if input_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 input_widget.value = (
                     "" if settings.context.max_prompt_tokens is None else str(settings.context.max_prompt_tokens)
                 )
@@ -276,10 +276,10 @@ class SettingsMixin:
         toggle_keys = list(getattr(shortcuts, "toggle_transcript_mode", ["f8"]))
         copy_keys = list(getattr(shortcuts, "copy_selection", ["ctrl+shift+c", "ctrl+c", "meta+c", "super+c"]))
         if toggle_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 toggle_widget.value = ", ".join(toggle_keys)
         if copy_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 copy_widget.value = ", ".join(copy_keys)
 
     def _parse_shortcut_tokens(self, raw: str, *, label: str) -> list[str] | None:
@@ -534,17 +534,18 @@ class SettingsMixin:
         self._write_transcript_line(f"[settings] support bundle created: {bundle_path}")
 
     def _refresh_plan_actions_visibility(self) -> None:
-        """Show plan action buttons only when a plan is pending approval."""
-        import contextlib as _ctx
+        """Show plan action buttons only when a plan is awaiting user input."""
+        from swarmee_river.tui.state import PlanningPhase
 
-        with _ctx.suppress(Exception):
+        with ui_guard():
             pa = self.query_one("#engage_plan_actions_row")
+            phase = self.state.plan.phase
             has_plain_plan = bool(self.state.plan.received_structured_plan and str(self.state.plan.text or "").strip())
             has_plan_ui = bool(self.state.plan.plan_json) or bool(self.state.plan.pending_record) or has_plain_plan
-            if has_plan_ui and not self.state.daemon.query_active:
-                pa.styles.display = "block"
-            else:
-                pa.styles.display = "none"
+            visible = phase == PlanningPhase.REVIEWING or (
+                phase == PlanningPhase.IDLE and has_plan_ui and not self.state.daemon.query_active
+            )
+            pa.styles.display = "block" if visible else "none"
 
     def _refresh_settings_env_list(self) -> None:
         """Populate the Settings env list from env.example catalog."""
@@ -557,7 +558,7 @@ class SettingsMixin:
             options = env_category_options()
             category = options[0][1] if options else ""
             if category_widget is not None and category:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     category_widget.set_options(options)
                     category_widget.value = category
         if not table.columns:
@@ -575,11 +576,11 @@ class SettingsMixin:
         if selected_id and rows:
             for idx, (row_key, _current, _default, _state) in enumerate(rows):
                 if row_key == selected_id:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         table.move_cursor(row=idx)
                     break
         elif rows:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 table.move_cursor(row=0)
 
         cursor_coordinate = getattr(table, "cursor_coordinate", None)
@@ -621,7 +622,7 @@ class SettingsMixin:
             options: list[tuple[str, str]] = [("Select constrained value...", "__none__")]
             if has_choices:
                 options.extend((choice, choice) for choice in spec.choices)
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 select_widget.set_options(options)
                 selected_value = current_value or (
                     default_value if default_value and default_value != "(unset)" else ""
@@ -629,13 +630,13 @@ class SettingsMixin:
                 select_widget.value = (
                     selected_value if selected_value in {value for _label, value in options} else "__none__"
                 )
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 select_widget.styles.display = "block" if has_choices else "none"
         if input_widget is not None:
             candidate = current_value or (default_value if default_value != "(unset)" else "")
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 input_widget.value = candidate
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 input_widget.styles.display = "none" if has_choices else "block"
 
     def _refresh_settings_env_detail(self, selected_key: str | None) -> None:
@@ -645,7 +646,7 @@ class SettingsMixin:
         key = str(selected_key or "").strip()
         spec = env_spec_by_key(key)
         if spec is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 detail_widget.update("Select a variable to view details and edit its value.")
             return
 
@@ -675,7 +676,7 @@ class SettingsMixin:
             lines.append(f"  Allowed:  {choices_text}")
         lines.append(f"  {spec.description}")
         detail_text = "\n".join(lines)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             detail_widget.update(detail_text)
         self._set_settings_env_value_controls(key=spec.key, current_value=current, default_value=spec.default)
 
@@ -733,7 +734,7 @@ class SettingsMixin:
         notebook_provider_label = notebook_provider_default if notebook_provider_default != "__auto__" else "auto"
         provider_count = len(settings.models.providers)
         tier_count = sum(len(provider.tiers) for provider in settings.models.providers.values())
-        with contextlib.suppress(Exception):
+        with ui_guard():
             summary_widget.update(
                 "Runtime default: "
                 f"{provider_label}/{tier_default} | "
@@ -765,7 +766,7 @@ class SettingsMixin:
         self.state.settings_model_select_syncing = True
         try:
             provider_select.set_options(provider_options)
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 provider_select.value = provider_default if provider_default else "__auto__"
             selected_provider = (
                 provider_default
@@ -774,7 +775,7 @@ class SettingsMixin:
             )
             tier_options = self._settings_model_tier_options(settings, provider_value=selected_provider)
             tier_select.set_options(tier_options)
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 tier_values = {value for _label, value in tier_options}
                 tier_select.value = tier_default if tier_default in tier_values else tier_options[0][1]
         finally:
@@ -810,7 +811,7 @@ class SettingsMixin:
             if cursor_row < 0:
                 cursor_row = 0 if rows else -1
             if cursor_row >= 0:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     table.move_cursor(row=cursor_row)
                 self._settings_models_selected_id = rows[cursor_row][0]
             else:
@@ -820,7 +821,7 @@ class SettingsMixin:
 
         auth_widget = self._settings_auth_status
         if auth_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 auth_widget.update("\n".join(self._settings_auth_status_lines()))
 
         aws_input = self._settings_aws_profile_input
@@ -828,7 +829,7 @@ class SettingsMixin:
             bedrock = settings.models.providers.get("bedrock")
             extra = dict(getattr(bedrock, "extra", {}) or {})
             configured_profile = str(extra.get("aws_profile") or "").strip()
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 aws_input.value = configured_profile
 
         self._refresh_settings_model_detail()
@@ -843,7 +844,7 @@ class SettingsMixin:
             return
         selected = str(self._settings_models_selected_id or "").strip().lower()
         if "|" not in selected:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 detail_widget.update("Select a model row to inspect, or use Manage Models to edit.")
             return
         provider_name, tier_name = selected.split("|", 1)
@@ -851,7 +852,7 @@ class SettingsMixin:
         provider = settings.models.providers.get(provider_name)
         tier = provider.tiers.get(tier_name) if provider is not None else None
         if tier is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 detail_widget.update("Selected model tier is no longer available.")
             return
         pricing = resolve_pricing(provider=provider_name, model_id=tier.model_id)
@@ -862,7 +863,7 @@ class SettingsMixin:
                 "Pricing: "
                 f"${pricing.input_per_1m}/1M input, ${pricing.output_per_1m}/1M output, ${cached}/1M cached input"
             )
-        with contextlib.suppress(Exception):
+        with ui_guard():
             detail_widget.update(
                 "\n".join(
                     [
@@ -901,60 +902,116 @@ class SettingsMixin:
         price_cached_widget = getattr(self, "_settings_models_form_price_cached_input", None)
 
         if provider_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 provider_widget.value = provider_name or "openai"
         if tier_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 tier_widget.value = tier_name or "balanced"
         if model_id_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 model_id_widget.value = str(getattr(tier, "model_id", "") or "")
         if display_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 display_widget.value = str(getattr(tier, "display_name", "") or "")
         if description_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 description_widget.value = str(getattr(tier, "description", "") or "")
 
         provider_pricing = settings.pricing.providers.get(provider_name) if provider_name else None
         if price_input_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 price_input_widget.value = (
                     "" if provider_pricing is None or provider_pricing.input_per_1m is None
                     else str(provider_pricing.input_per_1m)
                 )
         if price_output_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 price_output_widget.value = (
                     "" if provider_pricing is None or provider_pricing.output_per_1m is None
                     else str(provider_pricing.output_per_1m)
                 )
         if price_cached_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 price_cached_widget.value = (
                     "" if provider_pricing is None or provider_pricing.cached_input_per_1m is None
                     else str(provider_pricing.cached_input_per_1m)
                 )
 
+    def _notify_settings_issue(self, message: str, *, severity: str = "error") -> None:
+        try:
+            self.notify(message, title="Settings", severity=severity, timeout=10)
+        except Exception:
+            with ui_guard():
+                self._write_transcript_line(f"[settings] {message}")
+
     def _load_project_settings_payload(self) -> tuple[dict[str, Any], Path]:
-        from swarmee_river.settings import deep_merge_dict, default_settings_template
+        from swarmee_river.settings import (
+            deep_merge_dict,
+            default_settings_template,
+            normalize_legacy_model_defaults,
+        )
 
         path = Path.cwd() / ".swarmee" / "settings.json"
         raw: dict[str, Any] = {}
+        corrupt = False
         if path.exists() and path.is_file():
-            with contextlib.suppress(OSError, ValueError):
+            try:
                 loaded = _json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                corrupt = True
+            else:
                 if isinstance(loaded, dict):
                     raw = loaded
+                else:
+                    corrupt = True
+        if corrupt and not bool(getattr(self, "_settings_payload_corrupt", False)):
+            self._notify_settings_issue(
+                f"{path} is unreadable or not valid JSON; using defaults. "
+                "It will be backed up before any settings change overwrites it."
+            )
+        self._settings_payload_corrupt = corrupt
+        raw = normalize_legacy_model_defaults(raw)
         defaults = default_settings_template().to_dict()
         merged = deep_merge_dict(defaults, raw) if raw else defaults
         return merged, path
 
-    def _save_project_settings_payload(self, payload: dict[str, Any], path: Path) -> None:
+    def _backup_corrupt_settings_file(self, path: Path) -> Path | None:
+        import shutil
+
+        try:
+            if not (path.exists() and path.is_file()):
+                return None
+            backup = path.with_name(f"{path.name}.broken-{int(time.time())}")
+            shutil.copy2(path, backup)
+            return backup
+        except OSError:
+            return None
+
+    def _save_project_settings_payload(self, payload: dict[str, Any], path: Path) -> bool:
         from swarmee_river.settings import SwarmeeSettings, save_settings
 
-        parsed = SwarmeeSettings.from_dict(payload if isinstance(payload, dict) else {})
-        save_settings(parsed, path=path)
+        # Never overwrite a file the user hand-edited into an unparseable
+        # state without preserving it first (doc 11 F1).
+        if bool(getattr(self, "_settings_payload_corrupt", False)):
+            backup = self._backup_corrupt_settings_file(path)
+            if backup is None and path.exists():
+                self._notify_settings_issue(
+                    f"could not back up unparseable {path.name}; settings change NOT saved."
+                )
+                return False
+            if backup is not None:
+                self._notify_settings_issue(
+                    f"unparseable {path.name} preserved as {backup.name}; saving fresh settings.",
+                    severity="warning",
+                )
+            self._settings_payload_corrupt = False
+        try:
+            parsed = SwarmeeSettings.from_dict(payload if isinstance(payload, dict) else {})
+            save_settings(parsed, path=path)
+        except Exception as exc:
+            self._notify_settings_issue(f"failed to save {path.name}: {exc}")
+            return False
+        return True
 
     def _project_settings_env_overrides(self) -> dict[str, str]:
         from swarmee_river.settings import normalize_project_env_overrides
@@ -967,6 +1024,20 @@ class SettingsMixin:
         for key, value in env_overrides.items():
             if value:
                 os.environ[key] = value
+
+    def _notify_restart_required(self, what: str) -> None:
+        """Settings the daemon reads at spawn time only apply after a restart."""
+        if not bool(getattr(self.state.daemon, "ready", False)):
+            return
+        # Forms persist several keys in one action; one notice is enough.
+        now = time.monotonic()
+        if now - float(getattr(self, "_restart_notice_last_mono", 0.0)) < 2.0:
+            return
+        self._restart_notice_last_mono = now
+        self._notify_settings_issue(
+            f"{what} saved; the running daemon keeps its current value until restart (/daemon restart).",
+            severity="warning",
+        )
 
     def _persist_project_setting_env_override(self, key: str, value: str | None) -> None:
         from swarmee_river.config.env_policy import INTERNAL_SETTINGS_ENV_OVERRIDE_ALLOWLIST, SECRET_ENV_ALLOWLIST
@@ -1005,7 +1076,8 @@ class SettingsMixin:
                 payload["env"] = internal_env_payload
             else:
                 payload.pop("env", None)
-            self._save_project_settings_payload(payload, path)
+            if self._save_project_settings_payload(payload, path):
+                self._notify_restart_required(normalized_key)
             return
 
         # Non-secret runtime configuration must be stored as structured settings.
@@ -1025,7 +1097,8 @@ class SettingsMixin:
                 bedrock.pop("aws_profile", None)
             if internal_env_payload:
                 temp_payload["env"] = internal_env_payload
-            self._save_project_settings_payload(temp_payload, path)
+            if self._save_project_settings_payload(temp_payload, path):
+                self._notify_restart_required("AWS profile")
             return
         if normalized_key == "SWARMEE_STATE_DIR":
             runtime = temp_payload.setdefault("runtime", {})
@@ -1035,7 +1108,8 @@ class SettingsMixin:
                 runtime.pop("state_dir", None)
             if internal_env_payload:
                 temp_payload["env"] = internal_env_payload
-            self._save_project_settings_payload(temp_payload, path)
+            if self._save_project_settings_payload(temp_payload, path):
+                self._notify_restart_required("State directory")
             return
 
         if normalized_value:
@@ -1085,7 +1159,8 @@ class SettingsMixin:
         else:
             migrated_payload.pop("env", None)
 
-        self._save_project_settings_payload(migrated_payload, path)
+        if self._save_project_settings_payload(migrated_payload, path):
+            self._notify_restart_required(normalized_key)
 
     def _model_tier_key(self, provider: str, tier: str) -> str:
         return f"{str(provider or '').strip().lower()}|{str(tier or '').strip().lower()}"
@@ -1148,7 +1223,7 @@ class SettingsMixin:
                 return provider, tier
         from textual.widgets import Select
 
-        with contextlib.suppress(Exception):
+        with ui_guard():
             provider_widget = self.query_one("#settings_models_form_provider", Select)
             tier_widget = self.query_one("#settings_models_form_tier", Select)
             provider = str(getattr(provider_widget, "value", "")).strip().lower()
@@ -1332,10 +1407,10 @@ class SettingsMixin:
                     self._write_transcript_line(f"[settings] invalid numeric {label} price: {raw_value}")
                     return
             else:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     provider_pricing.pop(key_name, None)
         if not provider_pricing:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 providers_pricing.pop(provider, None)
 
         self._save_project_settings_payload(payload, path)
@@ -1388,7 +1463,7 @@ class SettingsMixin:
             ("#settings_models_form_provider", "bedrock"),
             ("#settings_models_form_tier", "balanced"),
         ):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one(selector_id, Select).value = default_value
         for input_id in (
             "#settings_models_form_model_id",
@@ -1398,7 +1473,7 @@ class SettingsMixin:
             "#settings_models_form_price_output",
             "#settings_models_form_price_cached",
         ):
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one(input_id, Input).value = ""
         self._settings_models_selected_id = None
         self._refresh_settings_model_detail()
@@ -1412,7 +1487,7 @@ class SettingsMixin:
             refresh_shortcuts(settings)
         summary_widget = self._settings_general_summary
         if summary_widget is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 summary_widget.update(
                     "Workspace settings and runtime behavior.\n"
                     "Use Models for provider auth and model catalog management."
@@ -1424,7 +1499,7 @@ class SettingsMixin:
             extra = dict(getattr(bedrock, "extra", {}) or {})
             configured_profile = str(extra.get("aws_profile") or "").strip()
             if configured_profile and not str(getattr(aws_input, "value", "")).strip():
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     aws_input.value = configured_profile
 
         # -- Auto-Approve toggle --
@@ -1458,7 +1533,7 @@ class SettingsMixin:
         sel = self._settings_general_context_manager_select
         if sel is not None:
             val = str(settings.context.manager or "summarize").strip().lower()
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 sel.value = val
         self._refresh_context_budget_controls(settings)
         self._refresh_shortcut_controls(settings)
@@ -1467,7 +1542,7 @@ class SettingsMixin:
         sel = self._settings_general_preflight_select
         if sel is not None:
             val = "enabled" if bool(settings.runtime.preflight_enabled) else "disabled"
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 sel.value = val
 
         # -- Swarm toggle --
@@ -1495,7 +1570,7 @@ class SettingsMixin:
         sel = self._settings_general_preflight_level_select
         if sel is not None:
             val = str(settings.runtime.preflight_level or "summary").strip().lower()
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 sel.value = val
 
         # -- Limit Tool Results toggle --
@@ -1602,12 +1677,12 @@ class SettingsMixin:
         self.state.daemon.model_select_syncing = True
         self._model_select_programmatic_value = str(selected_value or "").strip().lower() or None
         try:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 selector = self.query_one("#model_select", Select)
                 selector.set_options(options)
                 selector.value = selected_value
         finally:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.call_after_refresh(self._release_model_select_syncing)
             if self.state.daemon.model_select_syncing:
                 self._release_model_select_syncing()
@@ -1658,7 +1733,7 @@ class SettingsMixin:
         )
 
     def _handle_model_info(self, event: dict[str, Any]) -> None:
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self._handle_connect_model_info_event(event)
         provider = str(event.get("provider", "")).strip().lower()
         tier = str(event.get("tier", "")).strip().lower()

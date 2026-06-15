@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from swarmee_river.state_paths import state_dir
+from swarmee_river.tui.ui_guard import ui_guard
 
 _PROMPT_FILE_SUFFIX = ".prompt.md"
 _TEMPLATES_FILENAME = "prompt_templates.json"
@@ -68,7 +68,7 @@ def load_prompt_templates() -> list[PromptTemplate]:
     path = _templates_path()
     if not path.exists():
         return []
-    with contextlib.suppress(Exception):
+    with ui_guard():
         raw = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(raw, list):
             templates: list[PromptTemplate] = []
@@ -110,7 +110,7 @@ def discover_prompt_templates() -> list[PromptTemplate]:
         for file_path in sorted(directory.glob(f"*{_PROMPT_FILE_SUFFIX}")):
             if not file_path.is_file():
                 continue
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 raw_text = file_path.read_text(encoding="utf-8", errors="replace")
                 meta, body = _strip_prompt_frontmatter(raw_text)
                 file_name = file_path.name

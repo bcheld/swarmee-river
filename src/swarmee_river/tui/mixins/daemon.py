@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import os
 import threading
 import time
@@ -15,6 +14,7 @@ from swarmee_river.tui.transport import (
     _SubprocessTransport,
     send_daemon_command,
 )
+from swarmee_river.tui.ui_guard import ui_guard
 
 _BROKER_STARTUP_TIMEOUT_S = 6.0
 _BROKER_STARTUP_TIMEOUT_WINDOWS_S = 20.0
@@ -34,7 +34,7 @@ def _broker_diagnostics_hint(cwd: Path) -> str:
     discovery = runtime_discovery_path(cwd=cwd)
     broker_log: str | None = None
     if discovery.exists():
-        with contextlib.suppress(Exception):
+        with ui_guard():
             payload = load_runtime_discovery(discovery)
             broker_log = payload.broker_log_path
     if broker_log:
@@ -72,7 +72,7 @@ class DaemonMixin:
                 "Keep this popup open while completing browser/device steps.",
             ]
         if self._auth_connect_screen is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self._auth_connect_screen.dismiss(None)
             self._auth_connect_screen = None
         screen = AuthConnectScreen(title=title, lines=intro)
@@ -89,7 +89,7 @@ class DaemonMixin:
         screen = self._auth_connect_screen
         if screen is None:
             return
-        with contextlib.suppress(Exception):
+        with ui_guard():
             screen.append_line(line)
 
     def _handle_connect_status_warning(self, text: str) -> bool:
@@ -113,6 +113,9 @@ class DaemonMixin:
     def _handle_daemon_exit(self, proc: _DaemonTransport, *, return_code: int) -> None:
         if self.state.daemon.proc is not proc:
             return
+        # Apply everything still on the wire (e.g. a final turn_complete)
+        # before deciding how to finalize the turn.
+        self._drain_all_pending_output_lines()
         was_query_active = self.state.daemon.query_active
         self.state.daemon.ready = False
         self.state.daemon.pending_model_select_value = None
@@ -141,17 +144,29 @@ class DaemonMixin:
         self._write_transcript_line("[daemon] run /daemon restart to restart the background agent.")
 
     def _stream_daemon_output(self, proc: _DaemonTransport) -> None:
+        from swarmee_river.tui.mixins.output import metrics_event_kind
+
         try:
             while True:
                 raw_line = proc.read_line()
                 if raw_line == "":
                     break
-                self._call_from_thread_safe(self._handle_output_line, raw_line.rstrip("\n"), raw_line)
+                line = raw_line.rstrip("\n")
+                metrics_kind = metrics_event_kind(line)
+                if metrics_kind is not None:
+                    # Usage/context indicators are last-write-wins: never queue
+                    # them behind transcript rendering, never drop them.
+                    self._store_metrics_line(metrics_kind, line, raw_line)
+                    continue
+                # Buffer instead of one blocking call_from_thread round-trip
+                # per line: the reader must consume the wire faster than the
+                # UI renders, or indicators and consent prompts arrive late.
+                self._enqueue_output_line(line, raw_line)
         except Exception as exc:
             self._call_from_thread_safe(self._write_transcript_line, f"[daemon] output stream error: {exc}")
         finally:
             return_code = 0
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 return_code = proc.wait()
             self._call_from_thread_safe(self._handle_daemon_exit, proc, return_code=return_code)
 
@@ -164,10 +179,10 @@ class DaemonMixin:
             proc.close()
             return
         send_daemon_command(proc, {"cmd": "shutdown"})
-        with contextlib.suppress(Exception):
+        with ui_guard():
             proc.wait(timeout=3.0)
         if proc.poll() is None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 proc.close()
 
     def _request_daemon_shutdown(self) -> None:
@@ -250,7 +265,7 @@ class DaemonMixin:
 
             if daemon is None:
                 try:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         shutdown_runtime_broker(cwd=cwd)
                     daemon_proc = spawn_swarmee_daemon(
                         session_id=requested_session_id,
@@ -298,22 +313,23 @@ class DaemonMixin:
         auto_approve: bool,
         mode: str | None = None,
         plan_context: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
+        """Dispatch a query to the daemon. Returns True only if it was sent."""
         from textual.widgets import Select
 
         from swarmee_river.tui.transport import send_daemon_command
 
         if not self.state.daemon.ready:
             self._write_transcript_line("[run] daemon is not ready. Use /daemon restart.")
-            return
+            return False
         proc = self.state.daemon.proc
         if proc is None or proc.poll() is not None:
             self._write_transcript_line("[run] daemon is not running. Use /daemon restart.")
             self.state.daemon.ready = False
-            return
+            return False
         if self.state.daemon.query_active:
             self._write_transcript_line("[run] already running; use /stop.")
-            return
+            return False
         self._dismiss_action_sheet(restore_focus=False)
         self._sync_selected_model_before_run()
 
@@ -412,7 +428,7 @@ class DaemonMixin:
             desired_provider = (self.state.daemon.model_provider_override or "").strip().lower()
             desired_tier = (self.state.daemon.model_tier_override or "").strip().lower()
         if not desired_tier:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 selector = self.query_one("#model_select", Select)
                 selected_value = str(getattr(selector, "value", "")).strip()
                 from swarmee_river.tui.model_select import parse_model_select_value
@@ -454,6 +470,14 @@ class DaemonMixin:
             if self._status_bar is not None:
                 self._status_bar.set_state("idle")
             self._write_transcript_line("[run] failed to send query to daemon.")
+            return False
+        from swarmee_river.tui.state import PlanningPhase
+
+        if mode_normalized == "plan":
+            self.state.plan.transition_phase(PlanningPhase.GENERATING)
+        elif mode_normalized == "execute" and self.state.plan.current_steps_total > 0:
+            self.state.plan.transition_phase(PlanningPhase.EXECUTING)
+        return True
 
     def _stop_run(self) -> None:
         from swarmee_river.tui.transport import send_daemon_command
@@ -553,7 +577,7 @@ class DaemonMixin:
         self._write_transcript_line(
             f"[daemon] runtime broker does not support '{normalized}'. Restarting broker/session transport..."
         )
-        with contextlib.suppress(Exception):
+        with ui_guard():
             shutdown_runtime_broker(cwd=Path.cwd())
         if normalized == "connect" and isinstance(self._pending_connect_payload, dict):
             self._pending_connect_retry_payload = dict(self._pending_connect_payload)
@@ -574,6 +598,57 @@ class DaemonMixin:
             self._write_transcript_line(f"[connect] retrying provider auth for {provider_label}...")
             self._append_auth_connect_popup_line(f"Retrying auth for {provider_label}...")
             self._pending_connect_retry_payload = None
+
+    def _write_ui_diagnostics(self) -> None:
+        """Summarize internal UI health: suppressed failures and drop counters."""
+        from swarmee_river.tui.ui_guard import ui_guard_failure_counts
+
+        lines = ["UI diagnostics:"]
+        counts = ui_guard_failure_counts()
+        if counts:
+            lines.append(f"  Suppressed UI failures ({sum(counts.values())} total):")
+            for label, count in sorted(counts.items(), key=lambda item: -item[1])[:10]:
+                lines.append(f"    {count:>5}  {label}")
+        else:
+            lines.append("  Suppressed UI failures: none")
+        dispatch_dropped = int(getattr(self, "_thread_dispatch_dropped_total", 0) or 0)
+        lines.append(f"  Dropped cross-thread dispatches: {dispatch_dropped}")
+        pending = getattr(self, "_pending_output_lines", None)
+        lines.append(f"  Buffered output lines awaiting render: {len(pending) if pending else 0}")
+        output_dropped = int(getattr(self, "_output_lines_dropped_total", 0) or 0)
+        lines.append(f"  Output lines dropped under load: {output_dropped}")
+        self._write_transcript_line("\n".join(lines))
+
+    def _write_keybindings_reference(self) -> None:
+        """List every keyboard shortcut, generated from BINDINGS so it can't drift."""
+        from textual.binding import Binding
+
+        grouped: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for entry in type(self).BINDINGS:
+            if isinstance(entry, Binding):
+                binding = entry
+            else:
+                key, action, description = entry
+                binding = Binding(key, action, description)
+            info = grouped.get(binding.action)
+            if info is None:
+                info = {"description": binding.description, "visible": [], "hidden": []}
+                grouped[binding.action] = info
+                order.append(binding.action)
+            (info["visible"] if binding.show else info["hidden"]).append(binding.key)
+        lines = ["Keyboard shortcuts (the footer shows the primary key):"]
+        for action in order:
+            info = grouped[action]
+            if info["visible"]:
+                primary = ", ".join(info["visible"])
+                alternates = list(info["hidden"])
+            else:
+                primary = info["hidden"][0]
+                alternates = info["hidden"][1:]
+            suffix = f"  (also: {', '.join(alternates)})" if alternates else ""
+            lines.append(f"  {primary:<18} {info['description']}{suffix}")
+        self._write_transcript_line("\n".join(lines))
 
     def _handle_pre_run_command(self, text: str) -> bool:
         from swarmee_river.tui.commands import (
@@ -603,6 +678,9 @@ class DaemonMixin:
         if action == "help":
             lines = [f"  {cmd:<16} {desc}" for cmd, desc in CommandPalette.TUI_COMMANDS]
             self._write_transcript_line("Available commands:\n" + "\n".join(lines))
+            return True
+        if action == "keys":
+            self._write_keybindings_reference()
             return True
         if action == "open_usage":
             self._write_transcript_line(_OPEN_USAGE_TEXT)
@@ -709,6 +787,9 @@ class DaemonMixin:
             return True
         if action == "diagnostics_usage":
             self._write_transcript_line(_DIAGNOSTICS_USAGE_TEXT)
+            return True
+        if action == "diagnostics_ui":
+            self._write_ui_diagnostics()
             return True
         if action == "diagnostics_bundle":
             from swarmee_river.diagnostics import create_support_bundle

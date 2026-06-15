@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json as _json
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,7 @@ from swarmee_river.tui.sidebar_artifacts import (
     build_artifact_table_rows,
     normalize_artifact_index_entry,
 )
+from swarmee_river.tui.ui_guard import ui_guard
 
 
 class ArtifactsMixin:
@@ -221,11 +221,11 @@ class ArtifactsMixin:
         if selected_id and rows:
             for idx, (item_id, _name, _kind, _created, _path) in enumerate(rows):
                 if item_id == selected_id:
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         table.move_cursor(row=idx)
                     break
         elif rows:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 table.move_cursor(row=0)
         cursor_coordinate = getattr(table, "cursor_coordinate", None)
         row_index = int(getattr(cursor_coordinate, "row", -1) or -1)

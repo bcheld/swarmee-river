@@ -17,7 +17,7 @@ _CONTEXT_USAGE_TEXT = (
     "/context add kb <id> | /context remove <index> | /context list | /context clear"
 )
 _SOP_USAGE_TEXT = "Usage: /sop list | /sop activate <name> | /sop deactivate <name> | /sop preview <name>"
-_DIAGNOSTICS_USAGE_TEXT = "Usage: /diagnostics bundle"
+_DIAGNOSTICS_USAGE_TEXT = "Usage: /diagnostics bundle | /diagnostics ui"
 
 _COPY_COMMAND_MAP: dict[str, str] = {
     "/copy": "transcript",
@@ -62,6 +62,8 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
     normalized = text.lower()
     if normalized == "/help":
         return "help", None
+    if normalized == "/keys":
+        return "keys", None
     if normalized == "/restore":
         return "restore", None
     if normalized == "/new":
@@ -122,6 +124,8 @@ def classify_pre_run_command(text: str) -> tuple[str, str | None] | None:
         return "diagnostics_usage", None
     if normalized == "/diagnostics bundle":
         return "diagnostics_bundle", None
+    if normalized == "/diagnostics ui":
+        return "diagnostics_ui", None
     model = classify_model_command(normalized)
     if model is not None:
         action, argument = model

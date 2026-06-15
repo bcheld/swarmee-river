@@ -1,10 +1,16 @@
 # 15 — Streaming & Transcript Rendering Performance
 
 **Date:** 2026-06-10
-**Status:** Proposed
+**Status:** In progress — see implementation status below
 **Theme:** TUI lag/unresponsiveness while the agent is streaming output — the cross-cutting cause behind several complaint categories ("all sorts of issues").
 
 ---
+
+**Implementation status (2026-06-12):**
+- DONE — F1: coalesced streaming renders, 150ms interval, finalize-once markdown + render-budget tests (df587af).
+- DONE — F2: reader-side buffering, batched UI drains, non-blocking nudges, bounded queue with visible drop warnings (04c89e1).
+- DONE — F3: renderable cache for finalized assistant messages (f78a859).
+- DONE — F4: streaming perf regression tests (df587af, 04c89e1).
 
 ## Problem Statement
 

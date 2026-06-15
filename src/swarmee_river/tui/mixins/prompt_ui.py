@@ -8,6 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Any
+from swarmee_river.tui.ui_guard import ui_guard
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,7 @@ class PromptUIMixin:
                 continue
             finally:
                 if getattr(target, "name", None) == "/dev/tty":
-                    with contextlib.suppress(Exception):
+                    with ui_guard():
                         target.close()
         return False
 
@@ -202,7 +203,7 @@ class PromptUIMixin:
     def _switch_side_tab(self, tab_id: str) -> None:
         from textual.widgets import TabbedContent
 
-        with contextlib.suppress(Exception):
+        with ui_guard():
             tabs = self.query_one("#side_tabs", TabbedContent)
             tabs.active = tab_id
         self._sync_settings_sidebar_autosize(tab_id)
@@ -221,7 +222,7 @@ class PromptUIMixin:
         for method_name in ("insert", "insert_text_at_cursor"):
             method = getattr(prompt_widget, method_name, None)
             if callable(method):
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     method(seeded)
                     break
         prompt_widget.focus()
@@ -273,6 +274,9 @@ class PromptUIMixin:
         from textual.widgets import TextArea
 
         self.query_one("#prompt", TextArea).focus()
+
+    def action_show_keys(self) -> None:
+        self._write_keybindings_reference()
 
     def action_submit_prompt(self) -> None:
         from textual.widgets import TextArea

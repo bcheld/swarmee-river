@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import contextlib
 import threading
 import time
 from collections import deque
 from typing import Any
 
 from swarmee_river.tui.text_sanitize import sanitize_output_text
+from swarmee_river.tui.ui_guard import ui_guard
 
 
 class TranscriptMixin:
@@ -39,7 +39,7 @@ class TranscriptMixin:
 
         loop = getattr(self, "_loop", None)
         if loop is not None:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 if bool(getattr(loop, "is_closed", lambda: False)()):
                     return False
 
@@ -120,12 +120,12 @@ class TranscriptMixin:
         from textual.widgets import TextArea
 
         text_widget = self.query_one("#transcript_text", TextArea)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             text_widget.scroll_end(animate=False)
         for method_name in ("action_cursor_document_end", "action_end"):
             method = getattr(text_widget, method_name, None)
             if callable(method):
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     method()
                     break
 
@@ -144,7 +144,7 @@ class TranscriptMixin:
             self._sync_transcript_text_widget(scroll_to_end=follow_tail)
             return
         if follow_tail:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
     def _get_scroll_proportion(self, widget: Any) -> float:
@@ -210,7 +210,7 @@ class TranscriptMixin:
         text_widget.styles.display = "none"
         rich_widget.styles.display = "block"
         if at_bottom:
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 rich_widget.scroll_end(animate=False)
         else:
             self.set_timer(0.05, lambda p=proportion: self._set_scroll_proportion(rich_widget, p))
@@ -233,13 +233,13 @@ class TranscriptMixin:
             node = renderable
         else:
             node = Static(renderable)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             transcript.mount(node)
         children = list(getattr(transcript, "children", []))
         if len(children) > self._TRANSCRIPT_MAX_LINES:
             overflow = len(children) - self._TRANSCRIPT_MAX_LINES
             for child in children[:overflow]:
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     child.remove()
         if isinstance(plain_text, str):
             self._record_transcript_fallback(plain_text)
@@ -247,7 +247,7 @@ class TranscriptMixin:
             self._record_transcript_fallback(renderable)
         if self._transcript_mode == "text":
             self._sync_transcript_text_widget()
-        with contextlib.suppress(Exception):
+        with ui_guard():
             transcript.scroll_end(animate=False)
 
     def _force_transcript_tail_after_refresh(self) -> None:
@@ -257,10 +257,10 @@ class TranscriptMixin:
             if self._transcript_mode == "text":
                 self._scroll_transcript_text_to_end()
                 return
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self.call_after_refresh(_scroll_to_tail)
 
     def _write_transcript(self, line: str) -> None:
@@ -268,6 +268,48 @@ class TranscriptMixin:
         from swarmee_river.tui.widgets import render_system_message
 
         self._mount_transcript_widget(render_system_message(line), plain_text=line)
+
+    def _post_to_ui_thread(self, callback: Any) -> bool:
+        """Fire-and-forget scheduling onto the UI loop. Never blocks.
+
+        Unlike call_from_thread this does not wait for the callback to run,
+        so the daemon reader thread can keep consuming the wire while the UI
+        is busy rendering. Returns False if scheduling was not possible (the
+        periodic drain timer is the safety net for that case).
+        """
+        if self.state.daemon.is_shutting_down:
+            return False
+        if getattr(self, "_thread_id", None) == threading.get_ident():
+            try:
+                callback()
+            except Exception:
+                return False
+            return True
+        loop = getattr(self, "_loop", None)
+        if loop is None:
+            return False
+
+        def _invoke_in_app_context() -> None:
+            try:
+                from textual._context import active_app
+
+                reset_token = active_app.set(self)
+            except Exception:
+                reset_token = None
+            try:
+                callback()
+            finally:
+                if reset_token is not None:
+                    with ui_guard():
+                        active_app.reset(reset_token)
+
+        try:
+            if loop.is_closed():
+                return False
+            loop.call_soon_threadsafe(_invoke_in_app_context)
+        except Exception:
+            return False
+        return True
 
     def _call_from_thread_safe(self, callback: Any, *args: Any, **kwargs: Any) -> None:
         if self.state.daemon.is_shutting_down:
@@ -391,7 +433,7 @@ class TranscriptMixin:
         transcript_text.styles.width = f"{self._split_ratio}fr"
         side.styles.width = "1fr"
         self.refresh(layout=True)
-        with contextlib.suppress(Exception):
+        with ui_guard():
             self._update_responsive_layout_classes()
 
     def action_toggle_transcript_mode(self) -> None:
@@ -408,7 +450,7 @@ class TranscriptMixin:
         for method_name in ("insert", "insert_text_at_cursor"):
             method = getattr(prompt_widget, method_name, None)
             if callable(method):
-                with contextlib.suppress(Exception):
+                with ui_guard():
                     method("/search ")
                     break
         # Hide palette again after insert (on_text_area_changed may re-show it)
@@ -425,7 +467,7 @@ class TranscriptMixin:
         term_lower = term.lower()
         transcript_text = self._get_transcript_text()
         if term_lower in transcript_text.lower():
-            with contextlib.suppress(Exception):
+            with ui_guard():
                 self.query_one("#transcript", VerticalScroll).scroll_end(animate=True)
             self._write_transcript_line("[search] found match in transcript.")
             return
